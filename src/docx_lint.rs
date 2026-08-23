@@ -1,5 +1,6 @@
 use crate::{
-    derive_docx_numbering, javascript_whitespace, text::JS_WHITESPACE_CLASS, DocxNumberAnchor,
+    derive_docx_numbering, javascript_whitespace, text::JS_WHITESPACE_CLASS, utf16_len,
+    DocxNumberAnchor,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -151,6 +152,10 @@ fn cross_references(
         .iter()
         .map(|anchor| anchor.number.as_str())
         .collect::<HashSet<_>>();
+    let ancestor_prefixes = anchors
+        .iter()
+        .flat_map(|anchor| anchor.match_indices('.').map(|(at, _)| &anchor[..at]))
+        .collect::<HashSet<_>>();
     let roman_anchors = romans
         .iter()
         .map(|anchor| anchor.number.as_str())
@@ -182,11 +187,7 @@ fn cross_references(
                 } else {
                     DocxCrossReferenceStatus::MissingRomanArticle
                 }
-            } else if anchors.contains(value)
-                || anchors
-                    .iter()
-                    .any(|anchor| anchor.starts_with(&format!("{value}.")))
-            {
+            } else if anchors.contains(value) || ancestor_prefixes.contains(value) {
                 DocxCrossReferenceStatus::Resolved
             } else if let Some((parent, _)) = value.rsplit_once('.') {
                 if child_depths.contains(&(parent, value.matches('.').count() + 1)) {
@@ -224,7 +225,7 @@ fn attachment_pattern() -> &'static Regex {
 }
 
 fn heading_like(text: &str, end: usize) -> bool {
-    text.encode_utf16().count() <= 80
+    utf16_len(text) <= 80
         || text[..end].to_uppercase() == text[..end]
         || text[end..]
             .trim_start_matches(javascript_whitespace)
@@ -276,17 +277,12 @@ fn attachments(paragraphs: &[String]) -> Vec<DocxAttachmentReference> {
         });
         found.extend(references);
     }
-    let mut label_order = Vec::<String>::new();
+    let mut label_order = HashMap::<String, usize>::new();
     for reference in &found {
-        if !label_order.contains(&reference.label) {
-            label_order.push(reference.label.clone());
-        }
+        let next = label_order.len();
+        label_order.entry(reference.label.clone()).or_insert(next);
     }
-    found.sort_by_key(|reference| {
-        label_order
-            .iter()
-            .position(|label| label == &reference.label)
-    });
+    found.sort_by_key(|reference| label_order[&reference.label]);
     for reference in &mut found {
         let Some(included) = anchors
             .get(reference.label.as_str())
@@ -320,7 +316,7 @@ fn derive_docx_lint_facts(paragraphs: &[String]) -> DocxStructureFacts {
 
 fn excerpt_around(text: &str, subject: &str) -> String {
     let text = crate::text::ScalarText::new(text);
-    let subject_len = subject.encode_utf16().count();
+    let subject_len = utf16_len(subject);
     let Some(index) = text
         .value
         .find(subject)

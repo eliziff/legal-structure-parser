@@ -2,10 +2,10 @@ use crate::{
     javascript_whitespace,
     locator::normalize_numbered_section_locator,
     public_structure_label,
-    text::{trim_javascript_whitespace as js_trim, JS_WHITESPACE_CLASS as JS_WS},
-    Derivation, DetectionProfile, DocumentBlock, DocumentKind, DocumentOrigin, DocumentStructure,
-    InstrumentCrossReferenceGraph, InstrumentCrossReferenceStatus, NodeKind, ScalarText,
-    StructureNode,
+    text::{equal_fold, trim_javascript_whitespace as js_trim, JS_WHITESPACE_CLASS as JS_WS},
+    utf16_len, Derivation, DetectionProfile, DocumentBlock, DocumentKind, DocumentOrigin,
+    DocumentStructure, InstrumentCrossReferenceGraph, InstrumentCrossReferenceStatus, NodeKind,
+    ScalarText, StructureNode,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -34,26 +34,8 @@ fn js_regex(pattern: &'static str, cell: &'static OnceLock<Regex>) -> &'static R
     })
 }
 
-fn equal_fold(left: &str, right: &str) -> bool {
-    if left.is_ascii() && right.is_ascii() {
-        left.eq_ignore_ascii_case(right)
-    } else {
-        left.to_lowercase() == right.to_lowercase()
-    }
-}
-
 fn context(value: usize) -> usize {
     value.min(2)
-}
-
-fn slice_utf16<'a>(text: &ScalarText<'a>, start: usize, end: usize) -> &'a str {
-    let Some(start) = text.byte_at_utf16(start) else {
-        return "";
-    };
-    let Some(end) = text.byte_at_utf16(end) else {
-        return "";
-    };
-    text.value.get(start..end).unwrap_or("")
 }
 
 #[derive(Clone, Serialize)]
@@ -295,7 +277,10 @@ fn position_label<'a>(document: &'a DocumentStructure, position: &BlockPosition)
         |number| Cow::Owned(format!("par{number}")),
     );
     if projection_order(document.profile) == ProjectionOrder::Legislation {
-        Cow::Owned(public_structure_label(&label))
+        match label {
+            Cow::Borrowed(label) => public_structure_label(label),
+            Cow::Owned(label) => Cow::Owned(public_structure_label(&label).into_owned()),
+        }
     } else {
         label
     }
@@ -310,7 +295,7 @@ fn parent_label<'a>(
         .and_then(|parent| document.nodes[parent].label.as_deref())?;
     Some(
         if projection_order(document.profile) == ProjectionOrder::Legislation {
-            Cow::Owned(public_structure_label(label))
+            public_structure_label(label)
         } else {
             Cow::Borrowed(label)
         },
@@ -396,7 +381,7 @@ fn projected_positions(document: &DocumentStructure) -> Vec<BlockPosition> {
                 seen.insert(label.clone())
                     .then(|| {
                         owners
-                            .get(&label)
+                            .get(label.as_ref())
                             .and_then(|owner| positions[*owner].parent)
                     })
                     .flatten()
@@ -484,17 +469,21 @@ impl DocumentQuery {
     pub fn anchors<'a>(
         &'a self,
         document: &'a DocumentStructure,
+        end: Option<usize>,
     ) -> impl Iterator<Item = impl Serialize + 'a> + 'a {
-        self.positions(document).iter().map(|position| {
+        self.positions(document).iter().filter_map(move |position| {
             let node = &document.nodes[position.node];
             let range = document.query_range(node);
-            DocumentAnchor {
+            if end.is_some_and(|end| range.start >= end) {
+                return None;
+            }
+            Some(DocumentAnchor {
                 kind: projected_kind(node).expect("projected node kind"),
                 label: position_label(document, position),
                 start: range.start,
-                end: range.end,
+                end: end.map_or(range.end, |end| range.end.min(end)),
                 parent_label: parent_label(document, position),
-            }
+            })
         })
     }
 
@@ -506,7 +495,7 @@ impl DocumentQuery {
     ) -> MaterializedDocumentBlock {
         let block = self.block(document, position);
         MaterializedDocumentBlock {
-            text: js_trim(slice_utf16(text, block.start, block.end)).to_owned(),
+            text: js_trim(text.slice_utf16(block.start..block.end).unwrap_or_default()).to_owned(),
             block,
         }
     }
@@ -568,37 +557,38 @@ impl DocumentQuery {
         found
     }
 
-    fn last_position_by_label<'a>(
-        &'a self,
-        document: &DocumentStructure,
-        label: &str,
-    ) -> Option<&'a BlockPosition> {
-        self.positions(document)
-            .iter()
-            .rev()
-            .find(|position| position_label(document, position) == label)
-    }
-
     pub fn subtree_labels(&self, document: &DocumentStructure, seed_label: &str) -> Vec<String> {
-        let mut labels = Vec::new();
-        for block in self.positions(document) {
-            let mut current = Some(block);
+        let positions = self.positions(document);
+        let position_labels = positions
+            .iter()
+            .map(|position| position_label(document, position).into_owned())
+            .collect::<Vec<_>>();
+        // Reverse lookup historically chose the last duplicate label.
+        let positions_by_label = position_labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| (label.as_str(), index))
+            .collect::<HashMap<_, _>>();
+        let mut subtree = Vec::new();
+        for (block_index, block) in positions.iter().enumerate() {
+            let mut current = Some(block_index);
             let mut seen = HashSet::new();
-            while let Some(candidate) = current {
-                let label = position_label(document, candidate);
-                if !seen.insert(label.to_string()) {
+            while let Some(candidate_index) = current {
+                let candidate = &positions[candidate_index];
+                let label = &position_labels[candidate_index];
+                if !seen.insert(label.as_str()) {
                     break;
                 }
                 if label == seed_label {
-                    labels.push(position_label(document, block).into_owned());
+                    subtree.push(position_label(document, block).into_owned());
                     break;
                 }
                 current = parent_label(document, candidate)
                     .as_deref()
-                    .and_then(|parent| self.last_position_by_label(document, parent));
+                    .and_then(|parent| positions_by_label.get(parent).copied());
             }
         }
-        labels
+        subtree
     }
 
     pub fn has_native_ancestor(
@@ -1011,6 +1001,7 @@ impl DocumentQuery {
                         && value.bytes().all(|byte| byte.is_ascii_digit())
                 })
                 .and_then(|value| value.parse().ok());
+            let pdf_page_label = pdf_page.map(|page| page.to_string());
             let printed_label = node
                 .aliases
                 .as_deref()
@@ -1018,9 +1009,7 @@ impl DocumentQuery {
                 .iter()
                 .map(|alias| js_trim(alias))
                 .find(|alias| {
-                    !alias.is_empty()
-                        && *alias
-                            != pdf_page.map_or_else(|| "null".to_owned(), |page| page.to_string())
+                    !alias.is_empty() && *alias != pdf_page_label.as_deref().unwrap_or("null")
                 })
                 .map(str::to_owned);
             pages.push(PageSpan {
@@ -1098,8 +1087,15 @@ impl DocumentQuery {
         } else {
             vec![seed_label.clone()]
         };
-        let initial_set = initial.iter().cloned().collect::<HashSet<_>>();
+        // Graph resolution historically chose the first duplicate label.
+        let positions_by_label = self
+            .positions(document)
+            .iter()
+            .rev()
+            .map(|position| (position_label(document, position).into_owned(), position))
+            .collect::<HashMap<_, _>>();
         let mut reached = vec![*seed];
+        let mut reached_labels = initial.iter().cloned().collect::<HashSet<_>>();
         let mut frontier = initial;
         let mut hops = 0;
         while follow != FollowDirection::None && hops < limit && !frontier.is_empty() {
@@ -1127,21 +1123,14 @@ impl DocumentQuery {
                     None
                 };
                 let Some(other) = other else { continue };
-                if initial_set.contains(other)
-                    || reached
-                        .iter()
-                        .any(|position| position_label(document, position) == other)
-                {
+                if reached_labels.contains(other) {
                     continue;
                 }
-                let Some(position) = self
-                    .positions(document)
-                    .iter()
-                    .find(|position| position_label(document, position) == other)
-                else {
+                let Some(&position) = positions_by_label.get(other) else {
                     continue;
                 };
                 reached.push(*position);
+                reached_labels.insert(other.to_owned());
                 next.push(other.to_owned());
             }
             frontier = next;
@@ -1377,7 +1366,10 @@ fn indexed_phrase_spans(
             .iter()
             .zip(words)
             .any(|(token, word)| {
-                !normalized_word_matches(slice_utf16(text, token.start, token.end), word)
+                !normalized_word_matches(
+                    text.slice_utf16(token.start..token.end).unwrap_or_default(),
+                    word,
+                )
             })
         {
             continue;
@@ -1555,7 +1547,10 @@ pub fn resolve_page(map: &PageMap, text: &str, requested: &str) -> PageLookup {
         return PageLookup::Found {
             page: page.clone(),
             matched_on: sense,
-            text: slice_utf16(&scalar, page.start, page.end).to_owned(),
+            text: scalar
+                .slice_utf16(page.start..page.end)
+                .unwrap_or_default()
+                .to_owned(),
         };
     }
     let describe = |page: &PageSpan| {

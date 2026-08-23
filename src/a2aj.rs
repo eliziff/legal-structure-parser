@@ -122,7 +122,7 @@ fn ordered_sections(map: &A2ajSectionMap) -> Result<Vec<(&str, &str)>, EngineErr
 
 #[cfg(test)]
 fn utf16_at(text: &str, byte: usize) -> usize {
-    text[..byte].encode_utf16().count()
+    utf16_len(&text[..byte])
 }
 
 fn provider_source(mut text: String, entries: &[(&str, &str)]) -> (String, Vec<NativeClaim>) {
@@ -301,9 +301,9 @@ fn words(text: &str) -> Vec<(Cow<'_, str>, usize, usize, usize, usize)> {
     RE.get_or_init(|| Regex::new(r"[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*").unwrap())
         .find_iter(text)
         .map(|item| {
-            utf16 += text[previous..item.start()].encode_utf16().count();
+            utf16 += utf16_len(&text[previous..item.start()]);
             let start = utf16;
-            utf16 += item.as_str().encode_utf16().count();
+            utf16 += utf16_len(item.as_str());
             previous = item.end();
             let word = item.as_str();
             let word = if word.is_ascii() && !word.bytes().any(|byte| byte.is_ascii_uppercase()) {

@@ -1362,7 +1362,7 @@ fn resolve_instrument_references(
 
     let mut targets =
         HashMap::<String, (Option<usize>, usize)>::with_capacity(nodes.len().saturating_mul(2));
-    let mut child_depths = HashSet::with_capacity(nodes.len());
+    let mut child_depths = HashMap::<String, HashSet<usize>>::with_capacity(nodes.len());
     let mut top_level_numeric = 0;
     let mut containers = 0;
     static TOP_LEVEL: OnceLock<Regex> = OnceLock::new();
@@ -1373,7 +1373,10 @@ fn resolve_instrument_references(
     for (node_index, node) in nodes.iter().enumerate() {
         let label = node.label.to_lowercase();
         if let Some(parent) = label_parent(&label) {
-            child_depths.insert(format!("{parent}:{}", label_depth(&label)));
+            child_depths
+                .entry(parent.to_owned())
+                .or_default()
+                .insert(label_depth(&label));
         } else if top_level.is_match(&label) {
             top_level_numeric += 1;
         }
@@ -1400,7 +1403,9 @@ fn resolve_instrument_references(
     }
     let numbers_here = |locator: &str| {
         if let Some(parent) = label_parent(locator) {
-            child_depths.contains(&format!("{parent}:{}", label_depth(locator)))
+            child_depths
+                .get(parent)
+                .is_some_and(|depths| depths.contains(&label_depth(locator)))
         } else if !locator.starts_with("sec") {
             containers >= MIN_ADDRESSABLE_NODES
         } else {

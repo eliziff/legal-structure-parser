@@ -556,6 +556,11 @@ pub fn resolve_structure_graph(
         nodes.push(node);
     }
 
+    let node_slots = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| (node.id.clone(), index))
+        .collect::<HashMap<_, _>>();
     for run in runs {
         let items = run
             .markers
@@ -622,8 +627,8 @@ pub fn resolve_structure_graph(
             .filter(|item| item.candidate.parent_candidate_id.is_none())
         {
             if let Some(node_id) = candidate_node_ids.get(&item.candidate.id) {
-                if let Some(node) = nodes.iter_mut().find(|node| node.id == *node_id) {
-                    node.parent_id = Some(id.clone());
+                if let Some(index) = node_slots.get(node_id) {
+                    nodes[*index].parent_id = Some(id.clone());
                 }
             }
         }

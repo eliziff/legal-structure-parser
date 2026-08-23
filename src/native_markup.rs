@@ -496,17 +496,16 @@ fn native_identity(
     if tag == "a" && matches!(provider, DocumentProvider::CourtListener) {
         if contains_ascii_word(attribute(attributes, "class"), "page-label", false) {
             static PAGE_ID: OnceLock<Regex> = OnceLock::new();
-            let label = [
-                attribute(attributes, "data-label").to_owned(),
+            let preferred = attribute(attributes, "data-label");
+            let label = if preferred.is_empty() {
                 PAGE_ID
                     .get_or_init(|| Regex::new(r"(?i)^p(\d{1,5})$").unwrap())
                     .captures(id)
                     .map(|capture| capture[1].to_owned())
-                    .unwrap_or_default(),
-            ]
-            .into_iter()
-            .find(|value| !value.is_empty())
-            .unwrap_or_default();
+                    .map_or(Cow::Borrowed(""), Cow::Owned)
+            } else {
+                Cow::Borrowed(preferred)
+            };
             return page_identity(&label, attributes, anchor, true);
         }
         return None;
@@ -533,18 +532,20 @@ fn native_identity(
     }
     if tag == "page-number" {
         static PAGE_ID: OnceLock<Regex> = OnceLock::new();
-        let raw = [
-            attribute(attributes, "label").to_owned(),
-            attribute(attributes, "page").to_owned(),
-            PAGE_ID
-                .get_or_init(|| Regex::new(r"(?i)(?:page|p)[_-]?(\d{1,5})$").unwrap())
-                .captures(id)
-                .map(|capture| capture[1].to_owned())
-                .unwrap_or_default(),
-        ]
-        .into_iter()
-        .find(|value| !value.is_empty())
-        .unwrap_or_default();
+        let preferred = ["label", "page"]
+            .into_iter()
+            .map(|name| attribute(attributes, name))
+            .find(|value| !value.is_empty());
+        let raw = preferred.map_or_else(
+            || {
+                PAGE_ID
+                    .get_or_init(|| Regex::new(r"(?i)(?:page|p)[_-]?(\d{1,5})$").unwrap())
+                    .captures(id)
+                    .map(|capture| capture[1].to_owned())
+                    .map_or(Cow::Borrowed(""), Cow::Owned)
+            },
+            Cow::Borrowed,
+        );
         return page_identity(&raw, attributes, anchor, false);
     }
     static PARAGRAPH: OnceLock<Regex> = OnceLock::new();

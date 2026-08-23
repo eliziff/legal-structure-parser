@@ -13,7 +13,7 @@ pub(crate) fn normalize_numbered_section_locator(value: &str) -> String {
     normalize_compact_numbered_section_locator(&compact_provision_label(value))
 }
 
-pub(crate) fn normalize_compact_numbered_section_locator(compact: &str) -> String {
+pub fn normalize_compact_numbered_section_locator(compact: &str) -> String {
     static NUMERIC: OnceLock<Regex> = OnceLock::new();
     static ALPHANUMERIC: OnceLock<Regex> = OnceLock::new();
     let numeric = NUMERIC.get_or_init(|| {

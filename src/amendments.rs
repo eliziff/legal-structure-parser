@@ -1,8 +1,9 @@
 use crate::{
     analyze_instrument, javascript_whitespace, normalize_document_locator,
-    text::trim_javascript_whitespace as js_trim, AuthoritativeTableCell, DocumentKind,
-    DocumentStructure, InstrumentCrossReferenceReason, InstrumentCrossReferenceStatus, NodeKind,
-    ScalarText, StructureNode,
+    text::{equal_fold, trim_javascript_whitespace as js_trim},
+    utf16_len, AuthoritativeTableCell, DocumentKind, DocumentStructure,
+    InstrumentCrossReferenceReason, InstrumentCrossReferenceStatus, NodeKind, ScalarText,
+    StructureNode,
 };
 use legal_grammar_tables::{
     compile_ecmascript_pattern, compile_table_entry, expand_pattern, load_tables, CompiledGrammar,
@@ -10,6 +11,7 @@ use legal_grammar_tables::{
 use regex::{Captures, Regex};
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -288,7 +290,7 @@ fn unquoted_block(body: &str) -> Option<String> {
         saw_text = true;
     }
     let block = js_trim(&kept.join("\n")).to_owned();
-    (block.encode_utf16().count() >= 3).then_some(block)
+    (utf16_len(&block) >= 3).then_some(block)
 }
 
 #[derive(Clone)]
@@ -757,21 +759,6 @@ fn analyze(text: &str, reconstruct_lineation: bool) -> Result<Analyzed, crate::E
     Ok(Analyzed { structure })
 }
 
-fn utf16_slice_at<'a>(
-    text: &'a str,
-    coordinates: &ScalarText<'_>,
-    start: usize,
-    end: usize,
-) -> &'a str {
-    let Some(start) = coordinates.byte_at_utf16(start) else {
-        return "";
-    };
-    let Some(end) = coordinates.byte_at_utf16(end) else {
-        return "";
-    };
-    text.get(start..end).unwrap_or("")
-}
-
 fn literal_pattern(literal: &str) -> Regex {
     let mut pattern = String::new();
     let mut plain = String::new();
@@ -831,51 +818,55 @@ fn resolve_target(structure: &DocumentStructure, target: &str, length: usize) ->
         });
     }
     let normalized = normalize_document_locator(DocumentKind::Section, target);
-    for key in [target.to_lowercase(), normalized] {
-        if key.is_empty() {
+    let (mut raw_match, mut normalized_match) = (None, None);
+    let (mut raw_ambiguous, mut normalized_ambiguous) = (false, false);
+    let mut prose = 0;
+    for node in &structure.nodes {
+        if !matches!(
+            node.kind,
+            NodeKind::Paragraph
+                | NodeKind::Prose
+                | NodeKind::Page
+                | NodeKind::Section
+                | NodeKind::Footnote
+                | NodeKind::Table
+                | NodeKind::Row
+                | NodeKind::Cell
+        ) {
             continue;
         }
-        let mut found = None;
-        let mut prose = 0;
-        for node in &structure.nodes {
-            if !matches!(
-                node.kind,
-                NodeKind::Paragraph
-                    | NodeKind::Prose
-                    | NodeKind::Page
-                    | NodeKind::Section
-                    | NodeKind::Footnote
-                    | NodeKind::Table
-                    | NodeKind::Row
-                    | NodeKind::Cell
-            ) {
-                continue;
-            }
-            let primary = if node.kind == NodeKind::Prose {
-                prose += 1;
-                format!("par{prose}")
-            } else {
-                let Some(label) = &node.label else { continue };
-                label.clone()
-            };
-            let matched = primary.to_lowercase() == key
-                || node
-                    .aliases
-                    .iter()
-                    .flatten()
-                    .chain(node.anchor.iter())
-                    .any(|label| label.to_lowercase() == key);
-            if matched && found.replace(node).is_some() {
-                found = None;
-                break;
-            }
+        let primary = if node.kind == NodeKind::Prose {
+            prose += 1;
+            Cow::Owned(format!("par{prose}"))
+        } else {
+            let Some(label) = &node.label else { continue };
+            Cow::Borrowed(label.as_str())
+        };
+        let (mut matches_raw, mut matches_normalized) = (
+            equal_fold(&primary, target),
+            !normalized.is_empty() && equal_fold(&primary, &normalized),
+        );
+        for label in node.aliases.iter().flatten().chain(node.anchor.iter()) {
+            matches_raw |= equal_fold(label, target);
+            matches_normalized |= !normalized.is_empty() && equal_fold(label, &normalized);
         }
-        if let Some(node) = found {
-            return Some(Target {
-                span: (node.range.start, node.range.end),
-                node: true,
-            });
+        if matches_raw {
+            raw_ambiguous |= raw_match.replace(node).is_some();
         }
+        if matches_normalized {
+            normalized_ambiguous |= normalized_match.replace(node).is_some();
+        }
+    }
+    let found = (!raw_ambiguous).then_some(raw_match).flatten().or_else(|| {
+        (!normalized_ambiguous)
+            .then_some(normalized_match)
+            .flatten()
+    });
+    if let Some(node) = found {
+        return Some(Target {
+            span: (node.range.start, node.range.end),
+            node: true,
+        });
     }
     None
 }
@@ -930,7 +921,7 @@ pub fn apply_amend_ops(
             end,
             receipt: json!({
                 "op": op, "start": start, "end": end,
-                "removed": utf16_slice_at(source, &coordinates, start, end), "inserted": replacement
+                "removed": coordinates.slice_utf16(start..end).unwrap_or_default(), "inserted": replacement
             }),
             replacement,
         });
@@ -1072,10 +1063,12 @@ pub fn apply_amend_ops(
                 else {
                     reject!("missing_new_text", target_name.to_owned());
                 };
-                let trimmed = utf16_slice_at(source, &coordinates, target.span.0, target.span.1)
+                let trimmed = coordinates
+                    .slice_utf16(target.span.0..target.span.1)
+                    .unwrap_or_default()
                     .trim_end_matches(javascript_whitespace);
                 let terminal = trimmed.chars().next_back();
-                let at = target.span.0 + trimmed.encode_utf16().count();
+                let at = target.span.0 + utf16_len(trimmed);
                 match terminal {
                     Some('.') => push(op, at - 1, at, format!("; {value}")),
                     Some(';') => push(op, at, at, format!(" {value}")),
@@ -1119,7 +1112,9 @@ pub fn apply_amend_ops(
                     );
                 };
                 let lead_end = (target.span.0 + 40).min(target.span.1);
-                let lead = utf16_slice_at(source, &coordinates, target.span.0, lead_end);
+                let lead = coordinates
+                    .slice_utf16(target.span.0..lead_end)
+                    .unwrap_or_default();
                 let Some(token) = cached!(
                     LEAD_TOKEN,
                     r"^(\s*)(\([^\s()]{1,12}\)|\d+[A-Za-z]?(?:\.\d+)*\.?)",
@@ -1131,13 +1126,8 @@ pub fn apply_amend_ops(
                         "no leading label token found".to_owned(),
                     );
                 };
-                let start = target.span.0 + token[1].encode_utf16().count();
-                push(
-                    op,
-                    start,
-                    start + token[2].encode_utf16().count(),
-                    label.to_owned(),
-                );
+                let start = target.span.0 + utf16_len(&token[1]);
+                push(op, start, start + utf16_len(&token[2]), label.to_owned());
             }
             _ => failures.push(fail(
                 "unsupported_apply",
@@ -1335,12 +1325,11 @@ fn mapped_locator(locator: &str, mapping: &[Move]) -> Option<String> {
 }
 
 fn leading_label_span(
-    source: &str,
     coordinates: &ScalarText<'_>,
     node: &StructureNode,
 ) -> Option<(usize, usize, String)> {
     let range = node.marker_range?;
-    let marker = utf16_slice_at(source, coordinates, range.start, range.end);
+    let marker = coordinates.slice_utf16(range.start..range.end)?;
     let found = cached!(
         LEADING_LABEL,
         r"(\([^\s()]{1,12}\)|\d+[A-Za-z]?(?:[.-]\d+[A-Za-z]?)*\.?)\s*$",
@@ -1348,10 +1337,10 @@ fn leading_label_span(
     )
     .captures(marker)?
     .get(1)?;
-    let start = range.start + marker[..found.start()].encode_utf16().count();
+    let start = range.start + utf16_len(&marker[..found.start()]);
     Some((
         start,
-        start + found.as_str().encode_utf16().count(),
+        start + utf16_len(found.as_str()),
         found.as_str().to_owned(),
     ))
 }
@@ -1450,7 +1439,7 @@ pub fn delete_provision_and_renumber_siblings(
         .filter(|(_, node)| {
             node.label
                 .as_deref()
-                .is_some_and(|label| occurrence_base(label).to_lowercase() == requested)
+                .is_some_and(|label| equal_fold(occurrence_base(label), &requested))
         })
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
@@ -1562,14 +1551,14 @@ pub fn delete_provision_and_renumber_siblings(
         replacement: String::new(),
         receipt: json!({
             "kind": "delete_provision", "start": selected.range.start, "end": selected.range.end,
-            "removed": utf16_slice_at(source, &coordinates, selected.range.start, selected.range.end), "inserted": "",
+            "removed": coordinates.slice_utf16(selected.range.start..selected.range.end).unwrap_or_default(), "inserted": "",
             "from": selected_label, "to": null
         }),
     }];
     let mut heading_spans = Vec::new();
     for step in &mapping {
         let node = &before.structure.nodes[step.node];
-        let Some((start, end, old)) = leading_label_span(source, &coordinates, node) else {
+        let Some((start, end, old)) = leading_label_span(&coordinates, node) else {
             failures.push(delete_failure(
                 "heading_not_found",
                 format!("No leading label token at {}", step.from),
@@ -1585,7 +1574,7 @@ pub fn delete_provision_and_renumber_siblings(
             replacement: inserted.clone(),
             receipt: json!({
                 "kind": "renumber_heading", "start": start, "end": end,
-                "removed": utf16_slice_at(source, &coordinates, start, end), "inserted": inserted,
+                "removed": coordinates.slice_utf16(start..end).unwrap_or_default(), "inserted": inserted,
                 "from": step.from, "to": step.to
             }),
         });
@@ -1655,7 +1644,7 @@ pub fn delete_provision_and_renumber_siblings(
             replacement: inserted.clone(),
             receipt: json!({
                 "kind": "update_cross_reference", "start": edge.source_start, "end": edge.source_end,
-                "removed": utf16_slice_at(source, &coordinates, edge.source_start, edge.source_end), "inserted": inserted,
+                "removed": coordinates.slice_utf16(edge.source_start..edge.source_end).unwrap_or_default(), "inserted": inserted,
                 "from": locator, "to": moved
             }),
         });

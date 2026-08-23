@@ -763,6 +763,11 @@ pub fn journal_document_structure(
     let mut offset = 0;
     let mut paragraphs = 0;
     let mut pages = 0;
+    let page_labels = page_labels
+        .iter()
+        .rev()
+        .map(|value| (value.pdf_page, value.label.trim()))
+        .collect::<HashMap<_, _>>();
 
     for line in reader.lines() {
         let line = line.map_err(EngineError::source)?;
@@ -788,9 +793,8 @@ pub fn journal_document_structure(
         let pdf_page = page.pdf_page.filter(|value| *value > 0);
         if let Some(pdf_page) = pdf_page {
             let label = page_labels
-                .iter()
-                .find(|value| value.pdf_page == pdf_page)
-                .map(|value| value.label.trim())
+                .get(&pdf_page)
+                .copied()
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned)
                 .unwrap_or_else(|| pdf_page.to_string());

@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 macro_rules! cached_regex {
     ($name:ident, $pattern:expr) => {{
@@ -248,19 +249,21 @@ fn heading_level(words: &[&str], enumerated: bool) -> bool {
     if words.len() == 1 && heading_enumerator(words[0]) {
         return true;
     }
-    let text = words.join(" ");
-    if !level_opens(&text) || text.ends_with(['.', ',', ';']) {
+    let last = words.last().unwrap();
+    if !level_opens(words[0]) || last.ends_with(['.', ',', ';']) {
         return false;
     }
-    if text.ends_with(['?', ':']) {
+    if last.ends_with(['?', ':']) {
         return true;
     }
     let title = words.iter().all(|word| {
-        let letters = word
-            .chars()
-            .filter(|value| value.is_alphabetic())
-            .collect::<String>();
-        utf16_len(&letters) < 4 || letters.chars().next().is_some_and(char::is_uppercase)
+        let (length, first) = word.chars().filter(|value| value.is_alphabetic()).fold(
+            (0, None),
+            |(length, first), character| {
+                (length + character.len_utf16(), first.or(Some(character)))
+            },
+        );
+        length < 4 || first.is_some_and(char::is_uppercase)
     });
     title || enumerated || words.len() <= 6
 }
@@ -829,7 +832,7 @@ fn quoted_dot(text: &ScalarText<'_>, marker: &Marker) -> bool {
 struct Hypothesis {
     style: MarkerStyle,
     markers: Vec<Marker>,
-    all: Vec<Marker>,
+    all: Arc<[Marker]>,
     short: bool,
     score: f64,
 }
@@ -915,7 +918,7 @@ fn detect_paragraphs(
                 hypotheses.push(Hypothesis {
                     style,
                     markers: chain,
-                    all: candidates,
+                    all: candidates.into(),
                     short: false,
                     score,
                 });
@@ -923,7 +926,7 @@ fn detect_paragraphs(
                 hypotheses.push(Hypothesis {
                     style,
                     markers: chain,
-                    all: candidates,
+                    all: candidates.into(),
                     short: true,
                     score,
                 });
@@ -947,12 +950,13 @@ fn detect_paragraphs(
         } else {
             monotone_scopes(&style_markers, 8)
         };
+        let all: Arc<[Marker]> = style_markers.into();
         for scope in scopes.iter() {
             if scope.len() >= 5 {
                 hypotheses.push(Hypothesis {
                     style,
                     markers: scope.clone(),
-                    all: style_markers.clone(),
+                    all: Arc::clone(&all),
                     short: false,
                     score: 0.0,
                 });
@@ -966,7 +970,7 @@ fn detect_paragraphs(
                     || (scopes
                         .iter()
                         .all(|other| std::ptr::eq(other, scope) || other.len() == 1)
-                        && style_markers.iter().all(|value| {
+                        && all.iter().all(|value| {
                             scope.iter().any(|mark| mark.start == value.start)
                                 || value.number > scope.last().unwrap().number + 1
                         })))
@@ -974,7 +978,7 @@ fn detect_paragraphs(
                 hypotheses.push(Hypothesis {
                     style,
                     markers: scope.clone(),
-                    all: style_markers.clone(),
+                    all: Arc::clone(&all),
                     short: true,
                     score: 0.0,
                 });

@@ -3,6 +3,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 #[cfg(feature = "structure-inference")]
@@ -55,6 +56,7 @@ pub use journal::{
     journal_document_structure, journal_text_document_structure, pair_journal_footnotes,
     JournalFootnotePairing, JournalPageLabel, JournalPairNote,
 };
+pub use locator::normalize_compact_numbered_section_locator;
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
 pub use native_markup::{analyze_native_markup, NativeMarkupInput};
 pub use numeric_sequence::*;
@@ -63,7 +65,10 @@ pub use quote_verification::*;
 pub use tables::AuthoritativeTableCell;
 pub(crate) use tables::AuthoritativeTables;
 pub(crate) use text::javascript_whitespace;
-pub use text::{normalize_javascript_whitespace, utf16_len, ScalarText};
+pub use text::{
+    normalize_javascript_whitespace, utf16_len, utf16_prefix_ceil, ScalarText,
+    JS_WHITESPACE_CLASS,
+};
 
 pub const EVIDENCE_SCHEMA: &str = "legalpdf.structure-evidence.v1";
 pub const DOCUMENT_STRUCTURE_SCHEMA: &str = "legalpdf.document-structure.v1";
@@ -612,7 +617,10 @@ pub(crate) fn node_depths<'a>(nodes: &'a [StructureNode]) -> HashMap<&'a str, us
     depths
 }
 
-pub(crate) fn public_structure_label(value: &str) -> String {
+pub(crate) fn public_structure_label(value: &str) -> Cow<'_, str> {
+    if !value.contains('@') {
+        return Cow::Borrowed(value);
+    }
     let mut result = String::with_capacity(value.len());
     let mut rest = value;
     while let Some(at) = rest.find('@') {
@@ -629,7 +637,7 @@ pub(crate) fn public_structure_label(value: &str) -> String {
         }
     }
     result.push_str(rest);
-    result
+    Cow::Owned(result)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
