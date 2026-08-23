@@ -1,4 +1,4 @@
-use crate::{javascript_whitespace, text::trim_javascript_whitespace, ScalarText};
+use crate::{javascript_whitespace, text::trim_javascript_whitespace, utf16_len, ScalarText};
 use legal_grammar_tables::{AsciiBoundedGrammar, CompiledEcmascriptGrammar};
 use regex::Regex;
 use serde::Serialize;
@@ -387,7 +387,7 @@ fn lowercase_words(text: &str) -> usize {
         .find_iter(text)
         .filter(|word| {
             let first = word.as_str().chars().next().unwrap();
-            word.as_str().encode_utf16().count() >= 3
+            utf16_len(word.as_str()) >= 3
                 && first.len_utf16() == 1
                 && LOWERCASE.is_match(&first.to_string())
         })
@@ -402,7 +402,7 @@ fn trim_window_edges(text: &str) -> String {
 
 pub fn classify_citator_excerpt(excerpt: &str) -> ExcerptClassification {
     let text = trim_javascript_whitespace(excerpt);
-    let text_length = text.encode_utf16().count();
+    let text_length = utf16_len(text);
     if text_length < 60 {
         return refusal("shorter_than_min_excerpt");
     }
@@ -443,7 +443,7 @@ pub fn classify_citator_excerpt(excerpt: &str) -> ExcerptClassification {
         .iter()
         .flat_map(|segment| segment.split('\n'))
         .map(|line| trim_javascript_whitespace(line))
-        .map(|line| (line, lowercase_words(line), line.encode_utf16().count()))
+        .map(|line| (line, lowercase_words(line), utf16_len(line)))
         .reduce(|best, candidate| {
             if (candidate.1, candidate.2) > (best.1, best.2) {
                 candidate

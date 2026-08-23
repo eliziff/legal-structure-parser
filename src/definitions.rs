@@ -1,4 +1,4 @@
-use crate::{text::ScalarText, utf16_len, ScalarRange};
+use crate::{text::ScalarText, utf16_len, ScalarRange, JS_WHITESPACE_CLASS};
 use aho_corasick::AhoCorasick;
 use regex::Regex as R;
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,15 @@ pub struct DefinitionsResult {
 static PAREN: LazyLock<R> = LazyLock::new(|| R::new(r"\(([^()]*)\)").unwrap());
 static QUOTED: LazyLock<R> = LazyLock::new(|| R::new(r#""([A-Z][A-Za-z0-9&' -]{0,79})""#).unwrap());
 static LIST: LazyLock<R> = LazyLock::new(|| {
-    R::new(r#"^"([A-Z][A-Za-z0-9&'\- ]{0,79})"[\u{0009}-\u{000D}\u{0020}\u{00A0}\u{1680}\u{2000}-\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}\u{FEFF}]+(?:means|shall mean|has the meaning|shall have the meaning)"#).unwrap()
+    R::new(
+        &[
+            r#"^"([A-Z][A-Za-z0-9&'\- ]{0,79})""#,
+            JS_WHITESPACE_CLASS,
+            r"+(?:means|shall mean|has the meaning|shall have the meaning)",
+        ]
+        .concat(),
+    )
+    .unwrap()
 });
 
 impl DefinitionOccurrence {

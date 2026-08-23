@@ -6,7 +6,7 @@
 
 use std::{borrow::Cow, ops::Range, sync::OnceLock};
 
-pub(crate) const JS_WHITESPACE_CLASS: &str = r"[\u{0009}-\u{000d}\u{0020}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}]";
+pub const JS_WHITESPACE_CLASS: &str = r"[\u{0009}-\u{000d}\u{0020}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}]";
 
 pub struct ScalarText<'a> {
     pub(crate) value: &'a str,
@@ -52,14 +52,13 @@ impl<'a> ScalarText<'a> {
     }
 
     pub(crate) fn with_same_coordinates<'b>(&'b self, value: &'b str) -> ScalarText<'b> {
-        debug_assert!(
-            self.value
+        debug_assert!(self
+            .value
+            .char_indices()
+            .map(|(byte, character)| (byte, character.len_utf8()))
+            .eq(value
                 .char_indices()
-                .map(|(byte, character)| (byte, character.len_utf8()))
-                .eq(value
-                    .char_indices()
-                    .map(|(byte, character)| (byte, character.len_utf8())))
-        );
+                .map(|(byte, character)| (byte, character.len_utf8()))));
         ScalarText {
             value,
             offsets: Cow::Borrowed(self.offsets.as_ref()),
@@ -218,6 +217,14 @@ impl<'a> ScalarText<'a> {
         self.value
             .get(self.byte_at_scalar(range.start)?..self.byte_at_scalar(range.end)?)
     }
+
+    pub fn slice_utf16(&self, range: Range<usize>) -> Option<&'a str> {
+        if range.start > range.end {
+            return None;
+        }
+        self.value
+            .get(self.byte_at_utf16(range.start)?..self.byte_at_utf16(range.end)?)
+    }
 }
 
 pub fn utf16_len(value: &str) -> usize {
@@ -225,6 +232,30 @@ pub fn utf16_len(value: &str) -> usize {
         value.len()
     } else {
         value.encode_utf16().count()
+    }
+}
+
+/// Return the shortest valid UTF-8 prefix containing `limit` JavaScript code
+/// units. The final scalar is retained when the limit splits a surrogate pair.
+pub fn utf16_prefix_ceil(value: &str, limit: usize) -> &str {
+    if value.is_ascii() {
+        return &value[..value.len().min(limit)];
+    }
+    let mut utf16 = 0;
+    for (byte, character) in value.char_indices() {
+        if utf16 >= limit {
+            return &value[..byte];
+        }
+        utf16 += character.len_utf16();
+    }
+    value
+}
+
+pub(crate) fn equal_fold(left: &str, right: &str) -> bool {
+    if left.is_ascii() && right.is_ascii() {
+        left.eq_ignore_ascii_case(right)
+    } else {
+        left.to_lowercase() == right.to_lowercase()
     }
 }
 

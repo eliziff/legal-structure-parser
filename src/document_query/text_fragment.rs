@@ -98,8 +98,8 @@ impl<'a> FragmentText<'a> {
 
     fn slice(self, start: usize, end: usize) -> &'a str {
         match self {
-            Self::Document(_, _, text) => slice_utf16(text, start, end),
-            Self::Text(query) => slice_utf16(&query.text, start, end),
+            Self::Document(_, _, text) => text.slice_utf16(start..end).unwrap_or_default(),
+            Self::Text(query) => query.text.slice_utf16(start..end).unwrap_or_default(),
         }
     }
 
@@ -159,16 +159,25 @@ fn leading_label_length(value: &str) -> usize {
         )
         .then_some(found)
     });
-    label.map_or(0, |found| value[..found.end()].encode_utf16().count())
+    label.map_or(0, |found| utf16_len(&value[..found.end()]))
 }
 
 fn strip_leading_labels(value: &str) -> String {
     let scalar = ScalarText::new(value);
     let mut start = 0;
     loop {
-        let length = leading_label_length(slice_utf16(&scalar, start, scalar.utf16_len()));
+        let length = leading_label_length(
+            scalar
+                .slice_utf16(start..scalar.utf16_len())
+                .unwrap_or_default(),
+        );
         if length == 0 {
-            return js_trim(slice_utf16(&scalar, start, scalar.utf16_len())).to_owned();
+            return js_trim(
+                scalar
+                    .slice_utf16(start..scalar.utf16_len())
+                    .unwrap_or_default(),
+            )
+            .to_owned();
         }
         start += length;
     }
@@ -226,7 +235,7 @@ fn adjust_span_edges(text: FragmentText<'_>, original: PhraseSpan) -> PhraseSpan
         .find(text.slice(start, end)) else {
             break;
         };
-        end -= artifact.as_str().encode_utf16().count();
+        end -= utf16_len(artifact.as_str());
         if end <= start {
             return original;
         }
@@ -368,12 +377,16 @@ fn choose_source_span(text: FragmentText<'_>, quote: &str) -> Option<PhraseSpan>
         ),
         quote_text(quote),
     ];
+    let mut folded_rendered = None::<Vec<String>>;
     for wanted in wanted {
         for folded in [false, true] {
             let folded_wanted = folded.then(|| wanted.to_lowercase());
             let mut matches = spans.iter().enumerate().filter(|(index, _)| {
                 if let Some(wanted) = &folded_wanted {
-                    rendered[*index].to_lowercase() == *wanted
+                    folded_rendered.get_or_insert_with(|| {
+                        rendered.iter().map(|value| value.to_lowercase()).collect()
+                    })[*index]
+                        == *wanted
                 } else {
                     rendered[*index] == wanted
                 }
@@ -512,7 +525,7 @@ fn build_directive(
     }
     let target_count = directive_match_count(document, &target, "", "");
     let range_required = target.contains('\n');
-    let range_preferred = target_words.len() >= 20 || target.encode_utf16().count() >= 150;
+    let range_preferred = target_words.len() >= 20 || utf16_len(&target) >= 150;
     if range_required || range_preferred {
         if let Some(range) = build_range_directive(block, &span, document) {
             return Some(range);
@@ -629,8 +642,11 @@ fn unique_paragraph_edge(
         } else {
             &words[words.len() - length..]
         };
-        let target =
-            normalize_blank_whitespace(slice_utf16(&scalar, edge[0].start, edge.last()?.end));
+        let target = normalize_blank_whitespace(
+            scalar
+                .slice_utf16(edge[0].start..edge.last()?.end)
+                .unwrap_or_default(),
+        );
         if directive_match_count(document, &target, "", "") == 1 {
             return Some(target);
         }
