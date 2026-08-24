@@ -1,7 +1,7 @@
 use crate::{
-    utf16_len, Block, CoverageState, Derivation, DetectionProfile, DocumentInput,
-    DocumentStructure, DocumentType, EngineError, EvidenceKind, NativeClaim, NodeKind, Origin,
-    ScalarRange, ScalarText, Scope, ScopeKind, EVIDENCE_SCHEMA,
+    locator::normalize_section_locator, text::equal_fold, utf16_len, Block, CoverageState,
+    Derivation, DetectionProfile, DocumentInput, DocumentStructure, EngineError, EvidenceKind,
+    NativeClaim, NodeKind, Origin, ScalarRange, ScalarText, Scope, ScopeKind,
 };
 use aho_corasick::AhoCorasick;
 use regex::Regex;
@@ -75,10 +75,11 @@ fn object_entries(map: &A2ajSectionMap) -> Result<Vec<(usize, &str, &str)>, Engi
         .map(|(index, (key, value))| (index, key.as_str(), value.as_str()))
         .collect::<Vec<_>>();
     entries.sort_by_key(|(index, key, _)| {
-        let integer = key
-            .parse::<u32>()
-            .ok()
-            .filter(|number| number.to_string() == *key && *number < u32::MAX);
+        let integer = key.parse::<u32>().ok().filter(|number| {
+            *number < u32::MAX
+                && key.bytes().all(|byte| byte.is_ascii_digit())
+                && (key.len() == 1 || !key.starts_with('0'))
+        });
         (integer.is_none(), integer.unwrap_or_default(), *index)
     });
     Ok(entries)
@@ -90,7 +91,7 @@ fn ordered_sections(map: &A2ajSectionMap) -> Result<Vec<(&str, &str)>, EngineErr
     entries.sort_by(|left, right| {
         let (a, b) = (left.1.trim(), right.1.trim());
         let preamble =
-            |value: &str| matches!(value.to_lowercase().as_str(), "preamble" | "préambule");
+            |value: &str| equal_fold(value, "preamble") || equal_fold(value, "préambule");
         let provisions = (
             crate::inference::provision_label(a).is_some_and(|(_, end)| end == a.len()),
             crate::inference::provision_label(b).is_some_and(|(_, end)| end == b.len()),
@@ -149,7 +150,7 @@ fn provider_source(mut text: String, entries: &[(&str, &str)]) -> (String, Vec<N
             label: Some(format!("sec{}", label.trim())),
             aliases: Vec::new(),
             range: ScalarRange { start, end: scalar },
-            origin_id: ORIGIN.to_owned(),
+            origin_id: ORIGIN,
             parent_label: None,
             anchor: None,
         });
@@ -216,7 +217,7 @@ fn provider_claims(coordinates: &ScalarText<'_>, map: &A2ajSectionMap) -> Vec<Na
                 start: coordinates.scalar(start),
                 end: coordinates.scalar(start + value.len()),
             },
-            origin_id: ORIGIN.to_owned(),
+            origin_id: ORIGIN,
             parent_label: None,
             anchor: None,
         });
@@ -250,16 +251,14 @@ fn evidence(
         });
     let text_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
     Ok(DocumentInput {
-        schema_version: EVIDENCE_SCHEMA.to_owned(),
         document_id: input.id.clone().unwrap_or_else(|| input.citation.clone()),
         provider: "a2aj".to_owned(),
         url: input.url.clone(),
         doc_type: Some(if input.source_kind == A2ajSourceKind::Cases {
-            DocumentType::Cases
+            "cases"
         } else {
-            DocumentType::Laws
+            "laws"
         }),
-        provider_revision: "a2aj-adapter-v1".to_owned(),
         profile,
         report_start_page,
         require_report_start,
@@ -267,7 +266,6 @@ fn evidence(
         text,
         text_sha256,
         source_sha256: None,
-        offset_unit: "unicode-scalar".to_owned(),
         scope: Scope {
             kind: if input.excerpt_of.is_some() {
                 ScopeKind::Excerpt
@@ -282,7 +280,6 @@ fn evidence(
         native_claims: claims,
         coverage: Vec::new(),
         exclusions: Vec::new(),
-        paragraph_breaks: Vec::new(),
     })
 }
 
@@ -459,6 +456,18 @@ fn apply_provider_section_evidence(
 }
 
 pub fn a2aj_document_structure(mut input: A2ajInput) -> Result<DocumentStructure, EngineError> {
+    // Scoped keys are user locators; complete maps retain provider labels such as "Schedule 2".
+    if input.excerpt_of.is_some() {
+        if let Some(map) = &mut input.section_map {
+            for (label, _) in map {
+                let normalized = normalize_section_locator(label);
+                *label = normalized
+                    .strip_prefix("sec")
+                    .unwrap_or(&normalized)
+                    .to_owned();
+            }
+        }
+    }
     let has_text = !input.text.trim().is_empty();
     let ordered = match (&input.section_map, has_text) {
         (Some(map), true) => {
@@ -497,8 +506,10 @@ pub fn a2aj_document_structure(mut input: A2ajInput) -> Result<DocumentStructure
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "document-query")]
     use crate::{DocumentBlock, DocumentKind, DocumentOrigin, DocumentQuery};
 
+    #[cfg(feature = "document-query")]
     fn document_blocks(input: A2ajInput) -> (DocumentStructure, Vec<DocumentBlock>) {
         let document = a2aj_document_structure(input).unwrap();
         let blocks = DocumentQuery::new().blocks(&document, None).collect();
@@ -521,6 +532,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "document-query")]
     fn map_rendering_and_provider_evidence_match_a2aj() {
         let mut mapped = A2ajInput::new("fixture", A2ajSourceKind::Laws, "");
         mapped.section_map = Some(

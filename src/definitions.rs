@@ -18,8 +18,6 @@ pub struct DefinitionOccurrence {
     pub source_artifact_id: Option<String>,
 }
 
-pub type DefinitionParagraph = DefinitionOccurrence;
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DefinedTerm {
     pub term: String,
@@ -77,7 +75,7 @@ fn bounded(text: &str, start: usize, end: usize) -> bool {
     !left.is_ascii_alphanumeric() && !right.is_ascii_lowercase() && !right.is_ascii_digit()
 }
 
-pub fn derive_definitions(text: &str, paragraphs: &[DefinitionParagraph]) -> DefinitionsResult {
+pub fn derive_definitions(text: &str, paragraphs: &[DefinitionOccurrence]) -> DefinitionsResult {
     let document = ScalarText::new(text);
     let spans = paragraphs
         .iter()

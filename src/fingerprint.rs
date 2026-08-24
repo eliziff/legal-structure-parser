@@ -70,6 +70,37 @@ pub fn document_fingerprint(document: &DocumentStructure) -> DocumentFingerprint
         .iter()
         .map(|node| node.rendered_range)
         .collect::<Vec<Option<ScalarRange>>>();
+    let nodes = document
+        .nodes
+        .iter()
+        .map(|node| {
+            (
+                (
+                    &node.id,
+                    &node.kind,
+                    &node.range,
+                    &node.origin_id,
+                    &node.source,
+                    &node.label,
+                    &node.locator_kind,
+                    &node.aliases,
+                    &node.parent_id,
+                    &node.anchor,
+                ),
+                (
+                    &node.content_start,
+                    &node.marker_range,
+                    &node.row_span,
+                    &node.column_span,
+                    &node.display_value,
+                    &node.page_indexes,
+                    &node.line_ids,
+                    &node.grammar,
+                    &node.proof,
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
     let components = BTreeMap::from([
         (
             "identity",
@@ -89,7 +120,7 @@ pub fn document_fingerprint(document: &DocumentStructure) -> DocumentFingerprint
             )),
         ),
         ("text", text_sha256),
-        ("nodes", serialization_sha256(&document.nodes)),
+        ("nodes", serialization_sha256(&nodes)),
         (
             "document",
             serialization_sha256(&(query_text_sha256, rendered_ranges)),

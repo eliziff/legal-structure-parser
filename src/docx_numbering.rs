@@ -1,4 +1,4 @@
-use crate::javascript_whitespace;
+use crate::{javascript_whitespace, text::trim_javascript_start};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -31,14 +31,10 @@ pub struct DocxNumberingResult {
     pub gaps: Vec<DocxNumberingGap>,
 }
 
-fn trim_start_javascript_whitespace(value: &str) -> &str {
-    value.trim_start_matches(javascript_whitespace)
-}
-
 fn after_prefix<'a>(value: &'a str, prefixes: &[&str]) -> Option<&'a str> {
     prefixes.iter().find_map(|prefix| {
         let rest = value.strip_prefix(prefix)?;
-        let trimmed = trim_start_javascript_whitespace(rest);
+        let trimmed = trim_javascript_start(rest);
         (trimmed.len() < rest.len()).then_some(trimmed)
     })
 }
@@ -87,7 +83,7 @@ fn collect_number_anchors(paragraphs: &[String]) -> Vec<DocxNumberAnchor> {
             if !number.contains('.') && number.parse::<u32>().ok()? > 500 {
                 return None;
             }
-            let rest = trim_start_javascript_whitespace(rest);
+            let rest = trim_javascript_start(rest);
             let heading_like = rest.is_empty()
                 || rest
                     .chars()

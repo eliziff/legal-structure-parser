@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: cargo test -p legal-grammar-tables --locked
+      - run: cargo check -p legal-structure --locked
+      - run: cargo test -p legal-structure --locked --all-features
+      - run: cargo check -p legal-structure-python --locked

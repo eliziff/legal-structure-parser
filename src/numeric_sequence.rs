@@ -37,6 +37,7 @@ pub fn select_numeric_sequence(
     let mut prior_page_best = HashMap::<u32, usize>::new();
     let mut same_page_best = HashMap::<u32, usize>::new();
     let mut current_page = None;
+    let mut options = Vec::new();
     let mut group = 0;
     while group < candidates.len() {
         let end = (group + 1..candidates.len())
@@ -76,24 +77,23 @@ pub fn select_numeric_sequence(
                     candidate.value.saturating_sub(201).max(1)
                 }
             };
-            let mut options = (first..candidate.value)
-                .flat_map(|value| {
-                    [
-                        prior_page_best
-                            .get(&value)
-                            .copied()
-                            .map(|index| (index, false)),
-                        same_page_best
-                            .get(&value)
-                            .copied()
-                            .map(|index| (index, true)),
-                    ]
-                    .into_iter()
-                    .flatten()
-                })
-                .collect::<Vec<_>>();
+            options.clear();
+            options.extend((first..candidate.value).flat_map(|value| {
+                [
+                    prior_page_best
+                        .get(&value)
+                        .copied()
+                        .map(|index| (index, false)),
+                    same_page_best
+                        .get(&value)
+                        .copied()
+                        .map(|index| (index, true)),
+                ]
+                .into_iter()
+                .flatten()
+            }));
             options.sort_unstable();
-            for (previous, same_page) in options {
+            for &(previous, same_page) in &options {
                 let gap = candidate.value - candidates[previous].value - 1;
                 let penalty = match policy {
                     NumericSequencePolicy::RootedConsecutive => 0.0,

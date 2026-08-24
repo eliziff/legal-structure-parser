@@ -1,3 +1,5 @@
+mod delete_renumber;
+
 use legal_structure::{
     analyze_instrument, normalize_document_locator, utf16_len, AuthoritativeTableCell, DocumentKind,
     DocumentStructure, NodeKind, ScalarText, StructureNode,
@@ -1193,20 +1195,45 @@ fn consolidate_amendment(
     result["parse"] = parse;
     Ok(result)
 }
+fn default_true() -> bool { true }
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Input {
-    source: String, amendment: String,
-    #[serde(default)] reconstruct_lineation: bool,
+#[serde(tag = "operation")]
+enum Input {
+    #[serde(rename = "consolidate")]
+    Consolidate {
+        source: String,
+        amendment: String,
+        #[serde(default, rename = "reconstructLineation")]
+        reconstruct_lineation: bool,
+    },
+    #[serde(rename = "delete_and_renumber")]
+    DeleteAndRenumber {
+        source: String,
+        target: String,
+        #[serde(default = "default_true", rename = "reconstructLineation")]
+        reconstruct_lineation: bool,
+    },
 }
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
     io::stdin().read_to_string(&mut input)?;
     let input: Input = serde_json::from_str(&input)?;
-    let result = consolidate_amendment(
-        &input.source, &input.amendment, input.reconstruct_lineation,
-    )?;
+    let result = match input {
+        Input::Consolidate {
+            source,
+            amendment,
+            reconstruct_lineation,
+        } => consolidate_amendment(&source, &amendment, reconstruct_lineation)?,
+        Input::DeleteAndRenumber {
+            source,
+            target,
+            reconstruct_lineation,
+        } => delete_renumber::delete_provision_and_renumber_siblings(
+            &source,
+            &target,
+            reconstruct_lineation,
+        )?,
+    };
     serde_json::to_writer(io::stdout().lock(), &result)?;
     Ok(())
 }
-

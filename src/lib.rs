@@ -1,21 +1,17 @@
 #[cfg(feature = "structure-inference")]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use sha2::{Digest, Sha256};
-use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 #[cfg(feature = "structure-inference")]
 use std::sync::OnceLock;
 
 #[cfg(feature = "a2aj")]
 mod a2aj;
-#[cfg(all(feature = "structure-inference", feature = "document-query"))]
-mod amendments;
-#[cfg(feature = "structure-inference")]
+#[cfg(feature = "citator")]
 mod citator;
 mod definitions;
+mod document;
 #[cfg(feature = "document-query")]
 mod document_block;
 #[cfg(feature = "document-query")]
@@ -24,27 +20,34 @@ mod docx_lint;
 mod docx_numbering;
 mod fingerprint;
 mod instrument;
+#[cfg(feature = "structure-inference")]
+mod instrument_contents;
+#[cfg(feature = "structure-inference")]
+mod instrument_references;
 #[cfg(feature = "journal")]
 mod journal;
+#[cfg(feature = "journal")]
+mod journal_pairing;
 mod locator;
-#[cfg(all(feature = "structure-inference", feature = "document-query"))]
+#[cfg(feature = "native-markup")]
 mod native_markup;
 mod numeric_sequence;
-#[cfg(feature = "document-query")]
+#[cfg(feature = "quote-verification")]
 mod quote_verification;
 mod tables;
 mod text;
 #[cfg(feature = "a2aj")]
 pub use a2aj::{a2aj_document_structure, A2ajInput, A2ajSectionMap, A2ajSourceKind};
-#[cfg(all(feature = "structure-inference", feature = "document-query"))]
-pub use amendments::*;
-#[cfg(feature = "structure-inference")]
+#[cfg(feature = "citator")]
 pub use citator::*;
 pub use definitions::*;
-#[cfg(feature = "document-query")]
-pub use document_block::{
-    DocumentBlock, DocumentKind, DocumentOrigin, DocumentProvider, DocumentType,
+pub(crate) use document::{node_depths, public_structure_label};
+pub use document::{
+    CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, NodeKind, Note, NoteKindV2,
+    NoteReference, StructureDiagnostic, StructureNode,
 };
+#[cfg(feature = "document-query")]
+pub use document_block::{DocumentBlock, DocumentKind, DocumentOrigin};
 #[cfg(feature = "document-query")]
 pub use document_query::*;
 pub use docx_lint::*;
@@ -56,22 +59,22 @@ pub use journal::{
     journal_document_structure, journal_text_document_structure, pair_journal_footnotes,
     JournalFootnotePairing, JournalPageLabel, JournalPairNote,
 };
-pub use locator::normalize_compact_numbered_section_locator;
-#[cfg(all(feature = "structure-inference", feature = "document-query"))]
+pub use locator::{normalize_compact_numbered_section_locator, normalize_section_locator};
+#[cfg(feature = "native-markup")]
 pub use native_markup::{analyze_native_markup, NativeMarkupInput};
 pub use numeric_sequence::*;
-#[cfg(feature = "document-query")]
+#[cfg(feature = "quote-verification")]
 pub use quote_verification::*;
 pub use tables::AuthoritativeTableCell;
 pub(crate) use tables::AuthoritativeTables;
 pub(crate) use text::javascript_whitespace;
 pub use text::{
-    normalize_javascript_whitespace, utf16_len, utf16_prefix_ceil, ScalarText,
-    JS_WHITESPACE_CLASS,
+    last_scalars, normalize_decimal_digit, normalize_javascript_whitespace, normalize_note_symbol,
+    trim_javascript_whitespace, utf16_len, utf16_prefix_ceil, ScalarText, JS_WHITESPACE_CLASS,
 };
 
-pub const EVIDENCE_SCHEMA: &str = "legalpdf.structure-evidence.v1";
 pub const DOCUMENT_STRUCTURE_SCHEMA: &str = "legalpdf.document-structure.v1";
+pub const ENGINE_SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_ENGINE_SHA256");
 const ENGINE_ORIGIN: &str = "legalpdf.structure-engine";
 
 #[cfg(feature = "structure-inference")]
@@ -119,7 +122,6 @@ impl EngineError {
         }
     }
 
-    #[cfg(feature = "document-query")]
     fn source(message: impl Display) -> Self {
         Self {
             code: "invalid_source",
@@ -149,9 +151,8 @@ impl ScalarRange {
     }
 }
 
-#[derive(Clone, Copy, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd)]
-#[serde(rename_all = "snake_case")]
-enum EvidenceKind {
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) enum EvidenceKind {
     Paragraph,
     Prose,
     Page,
@@ -165,8 +166,7 @@ enum EvidenceKind {
     Cell,
 }
 
-#[derive(Clone, Copy, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum CoverageState {
     Absent,
     Augment,
@@ -200,7 +200,7 @@ pub struct Scope {
 }
 
 impl Scope {
-    pub fn complete() -> Self {
+    pub(crate) fn complete() -> Self {
         Self {
             kind: ScopeKind::Complete,
             excerpt_of: None,
@@ -214,52 +214,33 @@ pub struct Origin {
     pub id: String,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct NativeClaim {
     id: String,
     kind: EvidenceKind,
     label: Option<String>,
     aliases: Vec<String>,
     range: ScalarRange,
-    origin_id: String,
+    origin_id: &'static str,
     parent_label: Option<String>,
     anchor: Option<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Coverage {
     kind: EvidenceKind,
     range: ScalarRange,
     state: CoverageState,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Exclusion {
     range: ScalarRange,
     applies_to: Vec<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ParagraphBreak {
-    at: usize,
-    origin_id: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DocumentInput {
-    schema_version: String,
+pub(crate) struct DocumentInput {
     document_id: String,
     provider: String,
-    #[cfg(feature = "document-query")]
     url: Option<String>,
-    #[cfg(feature = "document-query")]
-    doc_type: Option<DocumentType>,
-    provider_revision: String,
+    doc_type: Option<&'static str>,
     profile: DetectionProfile,
     report_start_page: Option<u32>,
     require_report_start: bool,
@@ -267,24 +248,11 @@ pub struct DocumentInput {
     text: String,
     text_sha256: String,
     source_sha256: Option<String>,
-    offset_unit: String,
     scope: Scope,
     origins: Vec<Origin>,
     native_claims: Vec<NativeClaim>,
     coverage: Vec<Coverage>,
     exclusions: Vec<Exclusion>,
-    paragraph_breaks: Vec<ParagraphBreak>,
-}
-
-fn hash(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn nonempty(values: impl IntoIterator<Item = impl AsRef<str>>) -> bool {
-    values.into_iter().all(|value| !value.as_ref().is_empty())
 }
 
 impl EvidenceKind {
@@ -306,128 +274,6 @@ impl EvidenceKind {
 }
 
 impl DocumentInput {
-    fn validate(&self) -> Result<(), EngineError> {
-        let length = self.text.chars().count();
-        if self.schema_version != EVIDENCE_SCHEMA
-            || self.offset_unit != "unicode-scalar"
-            || !nonempty([
-                &self.document_id,
-                &self.provider,
-                &self.provider_revision,
-                &self.text_sha256,
-            ])
-            || !hash(&self.text_sha256)
-            || format!("{:x}", Sha256::digest(self.text.as_bytes())) != self.text_sha256
-            || self
-                .source_sha256
-                .as_deref()
-                .is_some_and(|value| !hash(value))
-            || match self.scope.kind {
-                ScopeKind::Complete => self.scope.excerpt_of.is_some(),
-                ScopeKind::Excerpt => self.scope.excerpt_of.as_deref().is_none_or(str::is_empty),
-            }
-        {
-            return Err(EngineError::invalid("invalid evidence identity or schema"));
-        }
-        if self.profile != DetectionProfile::Legislation && self.allow_hyphenated_sections {
-            return Err(EngineError::invalid(
-                "hyphenated-section option requires legislation profile",
-            ));
-        }
-        if matches!(
-            self.profile,
-            DetectionProfile::CaseRootedComplete | DetectionProfile::CaseContiguousComplete
-        ) && self.scope.kind != ScopeKind::Complete
-        {
-            return Err(EngineError::invalid(
-                "complete case profile requires complete document scope",
-            ));
-        }
-        if matches!(
-            self.profile,
-            DetectionProfile::Legislation
-                | DetectionProfile::Instrument
-                | DetectionProfile::Journal
-        ) && (self.report_start_page.is_some() || self.require_report_start)
-        {
-            return Err(EngineError::invalid(
-                "report-page options require a case profile",
-            ));
-        }
-        let origins = self
-            .origins
-            .iter()
-            .map(|value| value.id.as_str())
-            .collect::<HashSet<_>>();
-        if origins.len() != self.origins.len() || origins.contains("") {
-            return Err(EngineError::invalid("origins are invalid or duplicated"));
-        }
-        let claims = self
-            .native_claims
-            .iter()
-            .map(|value| value.id.as_str())
-            .collect::<HashSet<_>>();
-        if claims.len() != self.native_claims.len()
-            || self.native_claims.iter().any(|value| {
-                value.id.is_empty()
-                    || !value.range.valid(length)
-                    || !origins.contains(value.origin_id.as_str())
-                    || !nonempty(value.aliases.iter())
-                    || value.label.as_deref().is_some_and(str::is_empty)
-                    || value.anchor.as_deref().is_some_and(str::is_empty)
-            })
-        {
-            return Err(EngineError::invalid(
-                "native claims are invalid or duplicated",
-            ));
-        }
-        let mut coverage = BTreeMap::<EvidenceKind, Vec<ScalarRange>>::new();
-        for value in &self.coverage {
-            if !value.range.valid(length) {
-                return Err(EngineError::invalid("coverage is invalid"));
-            }
-            coverage.entry(value.kind).or_default().push(value.range);
-        }
-        for kind in [
-            EvidenceKind::Paragraph,
-            EvidenceKind::Prose,
-            EvidenceKind::Page,
-            EvidenceKind::Section,
-            EvidenceKind::Heading,
-            EvidenceKind::Footnote,
-            EvidenceKind::Endnote,
-        ] {
-            let Some(rows) = coverage.get_mut(&kind) else {
-                return Err(EngineError::invalid("coverage kind is missing"));
-            };
-            rows.sort_by_key(|value| value.start);
-            let mut cursor = 0;
-            for range in rows {
-                if range.start != cursor {
-                    return Err(EngineError::invalid("coverage has a gap or overlap"));
-                }
-                cursor = range.end;
-            }
-            if cursor != length {
-                return Err(EngineError::invalid("coverage does not span text"));
-            }
-        }
-        if self.exclusions.iter().any(|value| {
-            !value.range.valid(length)
-                || value.applies_to.is_empty()
-                || !nonempty(value.applies_to.iter())
-        }) || self
-            .paragraph_breaks
-            .iter()
-            .any(|value| value.at > length || !origins.contains(value.origin_id.as_str()))
-        {
-            return Err(EngineError::invalid(
-                "exclusion or paragraph break is invalid",
-            ));
-        }
-        Ok(())
-    }
-
     fn clip_inference(&self, kind: EvidenceKind, range: ScalarRange) -> Option<ScalarRange> {
         let mut end = range.end;
         for value in self
@@ -464,372 +310,6 @@ impl DocumentInput {
         self.coverage
             .iter()
             .any(|value| value.state != CoverageState::Complete)
-    }
-}
-
-impl TryFrom<Value> for DocumentInput {
-    type Error = EngineError;
-    fn try_from(value: Value) -> Result<Self, Self::Error> {
-        let evidence: DocumentInput = serde_json::from_value(value)
-            .map_err(|error| EngineError::invalid(error.to_string()))?;
-        evidence.validate()?;
-        Ok(evidence)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NodeKind {
-    Paragraph,
-    Page,
-    Section,
-    Heading,
-    Footnote,
-    Endnote,
-    Prose,
-    List,
-    ListItem,
-    Table,
-    Row,
-    Cell,
-}
-
-impl NodeKind {
-    fn evidence(self) -> EvidenceKind {
-        match self {
-            Self::Paragraph => EvidenceKind::Paragraph,
-            Self::Prose => EvidenceKind::Prose,
-            Self::Page => EvidenceKind::Page,
-            Self::Section => EvidenceKind::Section,
-            Self::Heading => EvidenceKind::Heading,
-            Self::Footnote => EvidenceKind::Footnote,
-            Self::Endnote => EvidenceKind::Endnote,
-            Self::List | Self::ListItem => EvidenceKind::List,
-            Self::Table => EvidenceKind::Table,
-            Self::Row => EvidenceKind::Row,
-            Self::Cell => EvidenceKind::Cell,
-        }
-    }
-    fn name(self) -> &'static str {
-        match self {
-            Self::ListItem => "list_item",
-            _ => self.evidence().name(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Derivation {
-    Native,
-    Heuristic,
-    Model,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NoteKindV2 {
-    Footnote,
-    Endnote,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct StructureNode {
-    pub id: String,
-    pub kind: NodeKind,
-    pub range: ScalarRange,
-    #[serde(skip)]
-    pub rendered_range: Option<ScalarRange>,
-    pub origin_id: String,
-    pub source: Derivation,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub locator_kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub aliases: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub anchor: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content_start: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub marker_range: Option<ScalarRange>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub page_indexes: Vec<usize>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub line_ids: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub grammar: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub proof: Option<ResolutionProofV2>,
-}
-
-impl StructureNode {
-    pub(crate) fn new(
-        id: String,
-        kind: NodeKind,
-        range: ScalarRange,
-        origin_id: impl Into<String>,
-        source: Derivation,
-        parent_id: Option<String>,
-    ) -> Self {
-        Self {
-            id,
-            kind,
-            range,
-            rendered_range: None,
-            origin_id: origin_id.into(),
-            source,
-            label: None,
-            locator_kind: None,
-            aliases: None,
-            parent_id,
-            anchor: None,
-            content_start: None,
-            marker_range: None,
-            page_indexes: Vec::new(),
-            line_ids: Vec::new(),
-            grammar: None,
-            proof: None,
-        }
-    }
-}
-
-pub(crate) fn node_depths<'a>(nodes: &'a [StructureNode]) -> HashMap<&'a str, usize> {
-    let parents = nodes
-        .iter()
-        .map(|node| (node.id.as_str(), node.parent_id.as_deref()))
-        .collect::<HashMap<_, _>>();
-    let mut seen = HashSet::new();
-    let mut depths = HashMap::with_capacity(nodes.len());
-    for node in nodes {
-        seen.clear();
-        let mut depth = 0;
-        let mut parent = node.parent_id.as_deref();
-        while let Some(id) = parent.filter(|id| seen.insert(*id)) {
-            depth += 1;
-            parent = parents.get(id).copied().flatten();
-        }
-        depths.insert(node.id.as_str(), depth);
-    }
-    depths
-}
-
-pub(crate) fn public_structure_label(value: &str) -> Cow<'_, str> {
-    if !value.contains('@') {
-        return Cow::Borrowed(value);
-    }
-    let mut result = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some(at) = rest.find('@') {
-        result.push_str(&rest[..at]);
-        let digits = rest[at + 1..]
-            .bytes()
-            .take_while(u8::is_ascii_digit)
-            .count();
-        if digits == 0 {
-            result.push('@');
-            rest = &rest[at + 1..];
-        } else {
-            rest = &rest[at + 1 + digits..];
-        }
-    }
-    result.push_str(rest);
-    Cow::Owned(result)
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct NoteReference {
-    pub range: ScalarRange,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Note {
-    pub id: String,
-    pub node_id: String,
-    pub kind: NoteKindV2,
-    pub label_range: ScalarRange,
-    pub body_range: ScalarRange,
-    pub references: Vec<NoteReference>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub primary_reference: Option<ScalarRange>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct CitedAuthority {
-    pub citation: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub canonical: Option<String>,
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiagnosticSeverity {
-    Info,
-    Warning,
-    Error,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct StructureDiagnostic {
-    pub code: String,
-    pub severity: DiagnosticSeverity,
-    pub ranges: Vec<ScalarRange>,
-    pub node_ids: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct DocumentStructure {
-    pub schema_version: String,
-    pub document_id: String,
-    pub offset_unit: String,
-    #[serde(default)]
-    pub provider: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub doc_type: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub profile: Option<DetectionProfile>,
-    #[serde(default)]
-    pub revision: String,
-    pub text: String,
-    #[serde(skip)]
-    pub rendered_text: Option<String>,
-    pub text_sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_sha256: Option<String>,
-    pub scope: Scope,
-    pub origins: Vec<Origin>,
-    pub nodes: Vec<StructureNode>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub notes: Vec<Note>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub cited_authorities: Vec<CitedAuthority>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub definitions: Vec<DefinedTerm>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub docx: Option<DocxStructureFacts>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub selected_hypothesis: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub contents: Option<InstrumentContentsReading>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cross_references: Option<InstrumentCrossReferenceGraph>,
-    pub diagnostics: Vec<StructureDiagnostic>,
-}
-
-impl DocumentStructure {
-    pub(crate) fn project_scalar_parts(
-        coordinates: &ScalarText<'_>,
-        nodes: &mut [StructureNode],
-        notes: &mut [Note],
-        diagnostics: &mut [StructureDiagnostic],
-    ) {
-        let utf16_range = |range: &mut ScalarRange| {
-            range.start = coordinates.utf16(range.start);
-            range.end = coordinates.utf16(range.end);
-        };
-        for node in nodes {
-            utf16_range(&mut node.range);
-            if let Some(start) = &mut node.content_start {
-                *start = coordinates.utf16(*start);
-            }
-            if let Some(range) = &mut node.marker_range {
-                utf16_range(range);
-            }
-        }
-        for note in notes {
-            utf16_range(&mut note.label_range);
-            utf16_range(&mut note.body_range);
-            for reference in &mut note.references {
-                utf16_range(&mut reference.range);
-            }
-            if let Some(reference) = &mut note.primary_reference {
-                utf16_range(reference);
-            }
-        }
-        for diagnostic in diagnostics {
-            for range in &mut diagnostic.ranges {
-                utf16_range(range);
-            }
-        }
-    }
-
-    pub(crate) fn from_scalar_parts(
-        document_id: String,
-        text: String,
-        text_sha256: String,
-        source_sha256: Option<String>,
-        scope: Scope,
-        origins: Vec<Origin>,
-        mut nodes: Vec<StructureNode>,
-        mut notes: Vec<Note>,
-        mut diagnostics: Vec<StructureDiagnostic>,
-    ) -> Self {
-        let coordinates = ScalarText::new(&text);
-        Self::project_scalar_parts(&coordinates, &mut nodes, &mut notes, &mut diagnostics);
-        Self::from_projected_parts(
-            document_id,
-            text,
-            text_sha256,
-            source_sha256,
-            scope,
-            origins,
-            nodes,
-            notes,
-            diagnostics,
-        )
-    }
-
-    pub(crate) fn from_projected_parts(
-        document_id: String,
-        text: String,
-        text_sha256: String,
-        source_sha256: Option<String>,
-        scope: Scope,
-        origins: Vec<Origin>,
-        nodes: Vec<StructureNode>,
-        notes: Vec<Note>,
-        diagnostics: Vec<StructureDiagnostic>,
-    ) -> Self {
-        Self {
-            schema_version: DOCUMENT_STRUCTURE_SCHEMA.to_owned(),
-            document_id,
-            offset_unit: "utf16".to_owned(),
-            provider: "local-pdf".to_owned(),
-            url: None,
-            doc_type: None,
-            profile: None,
-            revision: text_sha256.clone(),
-            text,
-            rendered_text: None,
-            text_sha256,
-            source_sha256,
-            scope,
-            origins,
-            nodes,
-            notes,
-            cited_authorities: Vec::new(),
-            definitions: Vec::new(),
-            docx: None,
-            selected_hypothesis: None,
-            contents: None,
-            cross_references: None,
-            diagnostics,
-        }
-    }
-
-    pub fn query_text(&self) -> &str {
-        self.rendered_text.as_deref().unwrap_or(&self.text)
-    }
-
-    pub fn query_range(&self, node: &StructureNode) -> ScalarRange {
-        node.rendered_range.unwrap_or(node.range)
     }
 }
 
@@ -934,7 +414,7 @@ pub struct ResolutionProofV2 {
 
 #[cfg(feature = "structure-inference")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ResolvedRole {
+pub(crate) enum ResolvedRole {
     NumberedParagraph,
     Section,
     ListItem,
@@ -942,7 +422,7 @@ pub enum ResolvedRole {
 
 #[cfg(feature = "structure-inference")]
 impl ResolvedRole {
-    pub fn node_kind(self) -> NodeKind {
+    pub(crate) fn node_kind(self) -> NodeKind {
         match self {
             Self::NumberedParagraph => NodeKind::Paragraph,
             Self::Section => NodeKind::Section,
@@ -953,12 +433,12 @@ impl ResolvedRole {
 
 #[cfg(feature = "structure-inference")]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResolvedCandidate {
-    pub candidate: StructureMarkerCandidate,
-    pub role: Option<ResolvedRole>,
-    pub proof: ResolutionProofV2,
-    pub page_indexes: Vec<usize>,
-    pub line_ids: Vec<String>,
+pub(crate) struct ResolvedCandidate<'a> {
+    pub(crate) candidate: &'a StructureMarkerCandidate,
+    pub(crate) role: Option<ResolvedRole>,
+    pub(crate) proof: ResolutionProofV2,
+    pub(crate) page_indexes: &'a [usize],
+    pub(crate) line_ids: &'a [String],
 }
 
 #[derive(Clone)]
@@ -1001,8 +481,6 @@ mod derive;
 pub(crate) use candidates::resolve_structure_candidates;
 #[cfg(feature = "structure-inference")]
 pub use candidates::{detect_structure_candidate_runs, resolve_structure_graph};
-#[cfg(all(feature = "structure-inference", feature = "document-query"))]
-pub use derive::derive_document_structure;
 #[cfg(any(feature = "journal", test))]
 pub(crate) use derive::derive_native_structure_evidence;
 #[cfg(all(feature = "structure-inference", test))]

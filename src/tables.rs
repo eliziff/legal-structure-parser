@@ -2,6 +2,7 @@ use super::*;
 use crate::text::ScalarText;
 
 const MAX_SAFE_INTEGER: usize = 9_007_199_254_740_991;
+const MAX_TABLE_CELLS: usize = 500_000;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +18,8 @@ pub struct AuthoritativeTableCell {
     pub column_span: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_value: Option<String>,
     pub start: usize,
     pub end: usize,
 }
@@ -45,6 +48,7 @@ impl<'a> AuthoritativeTables<'a> {
         }
         let mut cells = Vec::with_capacity(facts.len());
         let mut occupied = Vec::with_capacity(facts.len());
+        let mut occupied_count = 0usize;
         let invalid = || EngineError::invalid("Invalid table-cell coordinates or text bounds");
         for (index, fact) in facts.iter().enumerate() {
             let span_end = |start: usize, span: Option<usize>| {
@@ -64,6 +68,14 @@ impl<'a> AuthoritativeTables<'a> {
             {
                 return Err(invalid());
             }
+            let area = (last_row - fact.row + 1)
+                .checked_mul(last_column - fact.column + 1)
+                .ok_or_else(invalid)?;
+            occupied_count = occupied_count
+                .checked_add(area)
+                .filter(|count| *count <= MAX_TABLE_CELLS)
+                .ok_or_else(invalid)?;
+            occupied.reserve(area);
             occupied.extend((fact.row..=last_row).flat_map(|row| {
                 (fact.column..=last_column).map(move |column| (fact.table, row, column, index))
             }));
@@ -137,18 +149,27 @@ impl<'a> AuthoritativeTables<'a> {
             let start = at.max(range.start);
             let end = start.max(range.end);
             masked.push_str(&text[at..start]);
-            masked.extend(
-                text[start..end]
-                    .chars()
-                    .map(|c| if c == '\n' { '\n' } else { ' ' }),
-            );
+            for character in text[start..end].chars() {
+                if character == '\n' {
+                    masked.push('\n');
+                } else {
+                    masked.push(' ');
+                    if character.len_utf16() == 2 {
+                        masked.push(' ');
+                    }
+                }
+            }
             at = end;
         }
         masked.push_str(&text[at..]);
         masked
     }
 
-    pub fn nodes(&self, semantic_nodes: &[StructureNode], origin_id: &str) -> Vec<StructureNode> {
+    pub fn nodes(
+        &self,
+        semantic_nodes: &[StructureNode],
+        origin_id: &'static str,
+    ) -> Vec<StructureNode> {
         if self.cells.is_empty() {
             return Vec::new();
         }
@@ -219,6 +240,9 @@ impl<'a> AuthoritativeTables<'a> {
                     );
                     node.label = Some(node.id.clone());
                     node.anchor.clone_from(&cell.fact.address);
+                    node.row_span = cell.fact.row_span;
+                    node.column_span = cell.fact.column_span;
+                    node.display_value.clone_from(&cell.fact.display_value);
                     nodes.push(node);
                 }
             }
@@ -250,17 +274,23 @@ mod tests {
             row_span: None,
             column_span: None,
             address: Some("A1".into()),
+            display_value: None,
             start,
             end,
         }
     }
 
     #[test]
-    fn masks_utf16_cells_without_moving_scalars_or_line_breaks() {
+    fn masks_cells_without_moving_utf16_boundaries_or_line_breaks() {
         let text = "x\r\n😀 cell\ny";
         let facts = [fact(3, 10)];
         let tables = AuthoritativeTables::new(&ScalarText::new(text), &facts).unwrap();
-        assert_eq!(tables.masked_text(text.to_owned()), "x\r\n      \ny");
+        let masked = tables.masked_text(text.to_owned());
+        assert_eq!(utf16_len(&masked), utf16_len(text));
+        assert_eq!(
+            ScalarText::new(&masked).utf16_at_byte(masked.find('y').unwrap()),
+            ScalarText::new(text).utf16_at_byte(text.find('y').unwrap()),
+        );
         assert!(AuthoritativeTables::new(&ScalarText::new(text), &[fact(4, 10)]).is_err());
     }
 
@@ -291,6 +321,14 @@ mod tests {
                 .to_string()
                 .contains("Overlapping")
         );
+        assert!(AuthoritativeTables::new(
+            &ScalarText::new("a"),
+            &[AuthoritativeTableCell {
+                row_span: Some(MAX_TABLE_CELLS + 1),
+                ..fact(0, 1)
+            }],
+        )
+        .is_err());
     }
 
     #[derive(Clone, Deserialize)]

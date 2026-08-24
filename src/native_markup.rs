@@ -3,21 +3,61 @@ use crate::text::{
 };
 use crate::{
     derive::derive_trusted, utf16_len, CitedAuthority, CoverageState, DetectionProfile,
-    DocumentInput, DocumentProvider, DocumentStructure, DocumentType, EngineError, EvidenceKind,
-    Exclusion, NativeClaim, Origin, ParagraphBreak, ScalarRange, ScalarText, Scope, ScopeKind,
-    EVIDENCE_SCHEMA,
+    DocumentInput, DocumentStructure, EngineError, EvidenceKind, Exclusion, NativeClaim, Origin,
+    ScalarRange, ScalarText, Scope, ScopeKind,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "document-query"))]
 use crate::DocumentKind;
 
 const ORIGIN: &str = "provider-adapter";
+
+#[derive(Clone, Copy)]
+enum DocumentProvider {
+    A2aj,
+    CourtListener,
+    Tna,
+    GovInfo,
+    GovUkEt,
+    Hansard,
+    Journal,
+    LocalPdf,
+}
+
+impl DocumentProvider {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::A2aj => "a2aj",
+            Self::CourtListener => "courtlistener",
+            Self::Tna => "tna",
+            Self::GovInfo => "govinfo",
+            Self::GovUkEt => "govuk-et",
+            Self::Hansard => "hansard",
+            Self::Journal => "journal",
+            Self::LocalPdf => "local-pdf",
+        }
+    }
+
+    fn from_name(value: &str) -> Option<Self> {
+        Some(match value {
+            "a2aj" => Self::A2aj,
+            "courtlistener" => Self::CourtListener,
+            "tna" => Self::Tna,
+            "govinfo" => Self::GovInfo,
+            "govuk-et" => Self::GovUkEt,
+            "hansard" => Self::Hansard,
+            "journal" => Self::Journal,
+            "local-pdf" => Self::LocalPdf,
+            _ => return None,
+        })
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -67,7 +107,6 @@ impl Kind {
     }
 }
 
-#[derive(Clone)]
 struct PendingBlock {
     tag: String,
     kind: Kind,
@@ -82,7 +121,6 @@ struct PendingBlock {
     page_scheme: Option<String>,
 }
 
-#[derive(Clone)]
 struct RawBlock {
     kind: Kind,
     label: String,
@@ -148,60 +186,54 @@ fn contains_ascii_word(value: &str, word: &str, insensitive: bool) -> bool {
     })
 }
 
-fn replace_regex(
-    value: String,
-    slot: &'static OnceLock<Regex>,
-    pattern: &str,
-    replacement: &str,
-) -> String {
-    let regex = slot.get_or_init(|| Regex::new(pattern).unwrap());
-    if regex.is_match(&value) {
-        regex.replace_all(&value, replacement).into_owned()
-    } else {
-        value
-    }
-}
-
-fn replace_numeric_entities(value: String, regex: &Regex, radix: u32) -> String {
-    if !regex.is_match(&value) {
-        return value;
-    }
-    regex
-        .replace_all(&value, |captures: &regex::Captures<'_>| {
-            u32::from_str_radix(&captures[1], radix)
-                .ok()
-                .filter(|value| *value <= 0x10ffff)
-                .and_then(char::from_u32)
-                .map_or_else(|| captures[0].to_owned(), |value| value.to_string())
-        })
-        .into_owned()
-}
-
 fn decode_entities(value: &str) -> Cow<'_, str> {
     if !value.contains('&') {
         return Cow::Borrowed(value);
     }
-    static NBSP: OnceLock<Regex> = OnceLock::new();
-    static AMP: OnceLock<Regex> = OnceLock::new();
-    static LT: OnceLock<Regex> = OnceLock::new();
-    static GT: OnceLock<Regex> = OnceLock::new();
-    static QUOT: OnceLock<Regex> = OnceLock::new();
-    static APOS: OnceLock<Regex> = OnceLock::new();
-    static DECIMAL: OnceLock<Regex> = OnceLock::new();
-    static HEX: OnceLock<Regex> = OnceLock::new();
-    let value = replace_regex(value.to_owned(), &NBSP, r"(?i)&(?:nbsp|#160);", " ");
-    let value = replace_regex(value, &AMP, r"(?i)&amp;", "&");
-    let value = replace_regex(value, &LT, r"(?i)&lt;", "<");
-    let value = replace_regex(value, &GT, r"(?i)&gt;", ">");
-    let value = replace_regex(value, &QUOT, r"(?i)&quot;", "\"");
-    let value = replace_regex(value, &APOS, r"(?i)&(?:apos|#39);", "'");
-    let decimal = DECIMAL.get_or_init(|| Regex::new(r"&#(\d+);").unwrap());
-    let value = replace_numeric_entities(value, decimal, 10);
-    let hex = HEX.get_or_init(|| Regex::new(r"(?i)&#x([0-9a-f]+);").unwrap());
-    Cow::Owned(replace_numeric_entities(value, hex, 16))
+    static EARLY: OnceLock<Regex> = OnceLock::new();
+    static LATE: OnceLock<Regex> = OnceLock::new();
+    let value = EARLY
+        .get_or_init(|| Regex::new(r"(?i)&(?:nbsp|#160|amp);").unwrap())
+        .replace_all(value, |captures: &regex::Captures<'_>| {
+            if captures[0].eq_ignore_ascii_case("&amp;") {
+                "&"
+            } else {
+                " "
+            }
+        });
+    let late =
+        LATE.get_or_init(|| Regex::new(r"(?i)&(?:lt|gt|quot|apos|#\d+|#x[0-9a-f]+);").unwrap());
+    if !late.is_match(&value) {
+        return value;
+    }
+    late.replace_all(&value, |captures: &regex::Captures<'_>| {
+        let entity = &captures[0];
+        let body = &entity[1..entity.len() - 1];
+        let character = if body.eq_ignore_ascii_case("lt") {
+            Some('<')
+        } else if body.eq_ignore_ascii_case("gt") {
+            Some('>')
+        } else if body.eq_ignore_ascii_case("quot") {
+            Some('"')
+        } else if body.eq_ignore_ascii_case("apos") {
+            Some('\'')
+        } else {
+            body.strip_prefix("#x")
+                .or_else(|| body.strip_prefix("#X"))
+                .map(|digits| (digits, 16))
+                .or_else(|| body.strip_prefix('#').map(|digits| (digits, 10)))
+                .and_then(|(digits, radix)| u32::from_str_radix(digits, radix).ok())
+                .and_then(char::from_u32)
+        };
+        character.map_or_else(|| entity.to_owned(), |value| value.to_string())
+    })
+    .into_owned()
+    .into()
 }
 
-fn parse_attributes(raw: &str, attributes: &mut HashMap<String, String>) {
+type Attributes<'a> = Vec<(&'a str, Cow<'a, str>)>;
+
+fn parse_attributes<'a>(raw: &'a str, attributes: &mut Attributes<'a>) {
     attributes.clear();
     let mut at = 0;
     while at < raw.len() {
@@ -225,7 +257,7 @@ fn parse_attributes(raw: &str, attributes: &mut HashMap<String, String>) {
             at += raw[at..].chars().next().unwrap().len_utf8();
             continue;
         }
-        let name = raw[name_start..at].to_ascii_lowercase();
+        let name = &raw[name_start..at];
         while at < raw.len() && raw[at..].chars().next().is_some_and(javascript_whitespace) {
             at += raw[at..].chars().next().unwrap().len_utf8();
         }
@@ -237,7 +269,7 @@ fn parse_attributes(raw: &str, attributes: &mut HashMap<String, String>) {
             at += raw[at..].chars().next().unwrap().len_utf8();
         }
         let Some(first) = raw[at..].chars().next() else {
-            attributes.entry(name).or_insert_with(String::new);
+            attributes.push((name, Cow::Borrowed("")));
             break;
         };
         let (start, end) = if matches!(first, '"' | '\'') {
@@ -264,33 +296,39 @@ fn parse_attributes(raw: &str, attributes: &mut HashMap<String, String>) {
             }
             (start, at)
         };
-        attributes.entry(name).or_insert_with(|| {
-            let decoded = decode_entities(&raw[start..end]);
-            trim_js(&decoded).to_owned()
-        });
+        let value = match decode_entities(&raw[start..end]) {
+            Cow::Borrowed(value) => Cow::Borrowed(trim_js(value)),
+            Cow::Owned(value) => Cow::Owned(trim_js(&value).to_owned()),
+        };
+        attributes.push((name, value));
     }
 }
 
-fn attribute<'a>(attributes: &'a HashMap<String, String>, name: &str) -> &'a str {
-    attributes.get(name).map(String::as_str).unwrap_or_default()
+fn attribute<'a>(attributes: &'a Attributes<'_>, name: &str) -> &'a str {
+    attributes
+        .iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_ref())
+        .unwrap_or_default()
 }
 
 fn clean_section_id(raw: &str) -> String {
     static PREFIX: OnceLock<Regex> = OnceLock::new();
     static NAMED: OnceLock<Regex> = OnceLock::new();
-    static OPENS: OnceLock<Regex> = OnceLock::new();
     let prefix = PREFIX.get_or_init(|| {
         Regex::new(r"(?i)^(?:section|sec|article|part|chapter|subsection|level|lvl)[_-]*").unwrap()
     });
     let named = NAMED
         .get_or_init(|| Regex::new(r"(?i)__(?:subsection|paragraph|subparagraph)[_-]*").unwrap());
     let without_prefix = prefix.replace(raw, "");
-    let mut value = named.replace_all(&without_prefix, "(").into_owned();
+    let value = named.replace_all(&without_prefix, "(");
     let mut result = String::with_capacity(value.len());
-    while !value.is_empty() {
-        let first = value.chars().next().unwrap();
+    let mut at = 0;
+    while at < value.len() {
+        let rest = &value[at..];
+        let first = rest.chars().next().unwrap();
         if matches!(first, '_' | '-') {
-            let after = &value[first.len_utf8()..];
+            let after = &rest[first.len_utf8()..];
             let length = after
                 .find(|value| matches!(value, '_' | '-'))
                 .unwrap_or(after.len());
@@ -300,18 +338,20 @@ fn clean_section_id(raw: &str) -> String {
                     || (token.len() == 1 && token.as_bytes()[0].is_ascii_alphabetic())
                     || token.bytes().all(|byte| b"ivxlcdmIVXLCDM".contains(&byte)));
             if admissible {
-                result.push('(');
+                if !result.ends_with('(') {
+                    result.push('(');
+                }
                 result.push_str(token);
                 result.push(')');
-                value.drain(..first.len_utf8() + length);
+                at += first.len_utf8() + length;
                 continue;
             }
         }
-        result.push(first);
-        value.drain(..first.len_utf8());
+        if first != '(' || !result.ends_with('(') {
+            result.push(first);
+        }
+        at += first.len_utf8();
     }
-    let opens = OPENS.get_or_init(|| Regex::new(r"\(+").unwrap());
-    let mut result = opens.replace_all(&result, "(").into_owned();
     let open = result.matches('(').count();
     let close = result.matches(')').count();
     result.extend(std::iter::repeat(')').take(open.saturating_sub(close)));
@@ -319,16 +359,23 @@ fn clean_section_id(raw: &str) -> String {
 }
 
 fn page_value(raw: &str) -> String {
-    static STAR: OnceLock<Regex> = OnceLock::new();
-    static PAGE: OnceLock<Regex> = OnceLock::new();
-    let star = STAR.get_or_init(|| Regex::new(r"^\*+").unwrap());
-    let mut value = raw;
-    if let Some(found) = star.find(value) {
-        value = value[found.end()..].trim_start_matches(javascript_whitespace);
-    }
-    let page = PAGE.get_or_init(|| Regex::new(r"(?i)^(?:page|p\.)").unwrap());
-    if let Some(found) = page.find(value) {
-        let rest = &value[found.end()..];
+    let without_stars = raw.trim_start_matches('*');
+    let mut value = if without_stars.len() == raw.len() {
+        raw
+    } else {
+        without_stars.trim_start_matches(javascript_whitespace)
+    };
+    let rest = value
+        .get(..4)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("page"))
+        .map(|_| &value[4..])
+        .or_else(|| {
+            value
+                .get(..2)
+                .filter(|prefix| prefix.eq_ignore_ascii_case("p."))
+                .map(|_| &value[2..])
+        });
+    if let Some(rest) = rest {
         if rest.chars().next().is_some_and(javascript_whitespace) {
             value = rest.trim_start_matches(javascript_whitespace);
         }
@@ -338,7 +385,7 @@ fn page_value(raw: &str) -> String {
 
 fn page_identity(
     raw: &str,
-    attributes: &HashMap<String, String>,
+    attributes: &Attributes<'_>,
     anchor: Option<String>,
     inline: bool,
 ) -> Option<PendingBlock> {
@@ -358,10 +405,7 @@ fn page_identity(
                 .collect::<String>()
         )
     };
-    let citation_index = ["citation-index", "data-citation-index"]
-        .into_iter()
-        .find_map(|name| attribute(attributes, name).parse::<usize>().ok())
-        .filter(|value| *value != 0);
+    let (citation_index, page_scheme) = page_citation_identity(attributes);
     Some(PendingBlock {
         tag: String::new(),
         kind: Kind::Page,
@@ -373,9 +417,20 @@ fn page_identity(
         inline,
         page_label: Some(page_label),
         citation_index,
-        page_scheme: (!attribute(attributes, "pagescheme").is_empty())
-            .then(|| attribute(attributes, "pagescheme").to_owned()),
+        page_scheme,
     })
+}
+
+fn page_citation_identity(attributes: &Attributes<'_>) -> (Option<usize>, Option<String>) {
+    let citation_index = ["citation-index", "data-citation-index"]
+        .into_iter()
+        .find_map(|name| attribute(attributes, name).parse::<usize>().ok())
+        .filter(|value| *value != 0);
+    (
+        citation_index,
+        (!attribute(attributes, "pagescheme").is_empty())
+            .then(|| attribute(attributes, "pagescheme").to_owned()),
+    )
 }
 
 fn numbered_id(id: &str) -> Option<String> {
@@ -429,14 +484,12 @@ fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<Pend
         .chars()
         .filter(|value| !javascript_whitespace(*value))
         .collect::<String>();
-    let id_symbol = compact
-        .to_ascii_lowercase()
-        .strip_prefix("fn")
-        .is_some_and(|rest| {
-            rest.chars()
-                .next()
-                .is_some_and(|value| matches!(value, '-' | '*' | '†' | '['))
-        });
+    let compact_lower = compact.to_ascii_lowercase();
+    let id_symbol = compact_lower.strip_prefix("fn").is_some_and(|rest| {
+        rest.chars()
+            .next()
+            .is_some_and(|value| matches!(value, '-' | '*' | '†' | '['))
+    });
     let symbol = if !marker.is_empty() {
         marker
     } else if id_symbol {
@@ -447,7 +500,11 @@ fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<Pend
     Some(PendingBlock {
         tag: String::new(),
         kind: Kind::Footnote,
-        label: if symbol.to_ascii_lowercase().starts_with("fn") {
+        label: if symbol
+            .as_bytes()
+            .get(..2)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"fn"))
+        {
             symbol.to_owned()
         } else {
             format!("fn{symbol}")
@@ -468,7 +525,7 @@ fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<Pend
 fn courtlistener_footnote_body(
     provider: DocumentProvider,
     tag: &str,
-    attributes: &HashMap<String, String>,
+    attributes: &Attributes<'_>,
 ) -> bool {
     if !matches!(provider, DocumentProvider::CourtListener) {
         return false;
@@ -485,7 +542,8 @@ fn courtlistener_footnote_body(
 fn native_identity(
     provider: DocumentProvider,
     tag: &str,
-    attributes: &HashMap<String, String>,
+    attributes: &Attributes<'_>,
+    courtlistener_footnote: bool,
 ) -> Option<PendingBlock> {
     let id = ["eid", "id", "name"]
         .into_iter()
@@ -516,17 +574,19 @@ fn native_identity(
         {
             let raw = ["label", "data-label"]
                 .into_iter()
-                .map(|name| attribute(attributes, name).to_owned())
+                .map(|name| attribute(attributes, name))
                 .find(|value| !value.is_empty())
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .to_owned();
             return page_identity(&raw, attributes, anchor, true);
         }
-        if courtlistener_footnote_body(provider, tag, attributes) {
+        if courtlistener_footnote {
             let raw = ["data-label", "label", "n"]
                 .into_iter()
-                .map(|name| attribute(attributes, name).to_owned())
+                .map(|name| attribute(attributes, name))
                 .find(|value| !value.is_empty())
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .to_owned();
             return footnote_identity(&raw, &id, anchor);
         }
     }
@@ -631,20 +691,6 @@ fn native_identity(
             citation_index: None,
             page_scheme: None,
         })
-}
-
-fn courtlistener_footnote_container(
-    provider: DocumentProvider,
-    tag: &str,
-    attributes: &HashMap<String, String>,
-) -> bool {
-    static ID: OnceLock<Regex> = OnceLock::new();
-    matches!(provider, DocumentProvider::CourtListener)
-        && (courtlistener_footnote_body(provider, tag, attributes)
-            || contains_ascii_word(attribute(attributes, "class"), "footnotes", true)
-            || ID
-                .get_or_init(|| Regex::new(r"(?i)^(?:fn|footnote)[_-]").unwrap())
-                .is_match(attribute(attributes, "id")))
 }
 
 fn citation_page_alias(citation: &str, label: &str) -> String {
@@ -801,12 +847,11 @@ fn parse_tag(raw: &str, closing: bool) -> Option<(String, &str)> {
     Some((tag, attrs))
 }
 
-fn append_text(parts: &mut Vec<String>, position: &mut usize, value: String) {
+fn append_text(text: &mut String, position: &mut usize, value: &str) {
     if value.is_empty() {
         return;
     }
-    let prior = parts.last().map(String::as_str).unwrap_or_default();
-    let separated = prior.chars().next_back().is_some_and(|value| {
+    let separated = text.chars().next_back().is_some_and(|value| {
         javascript_whitespace(value) || matches!(value, '(' | '[' | '{' | '/' | '-')
     }) || value.chars().next().is_some_and(|value| {
         javascript_whitespace(value)
@@ -815,47 +860,45 @@ fn append_text(parts: &mut Vec<String>, position: &mut usize, value: String) {
                 '.' | ',' | ';' | ':' | '!' | '?' | ')' | '}' | ']' | '/' | '-'
             )
     });
-    if !prior.is_empty() && !separated {
-        parts.push(" ".to_owned());
+    if !text.is_empty() && !separated {
+        text.push(' ');
         *position += 1;
     }
-    *position += utf16_len(&value);
-    parts.push(value);
+    *position += utf16_len(value);
+    text.push_str(value);
 }
 
-fn append_break(parts: &mut Vec<String>, position: &mut usize) {
-    if parts.is_empty() || parts.last().is_some_and(|value| value.ends_with('\n')) {
+fn append_break(text: &mut String, position: &mut usize) {
+    if text.is_empty() || text.ends_with('\n') {
         return;
     }
-    parts.push("\n".to_owned());
+    text.push('\n');
     *position += 1;
 }
 
-fn normalized_text(parts: Vec<String>) -> String {
-    let mut result = String::with_capacity(parts.iter().map(String::len).sum());
-    for part in parts {
-        for character in part.chars() {
-            if character == '\n' {
-                while result.ends_with(' ') || result.ends_with('\t') {
-                    result.pop();
-                }
-                if !result.ends_with("\n\n") {
-                    result.push(character);
-                }
-            } else {
+fn normalized_text(text: String) -> String {
+    let mut result = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character == '\n' {
+            while result.ends_with(' ') || result.ends_with('\t') {
+                result.pop();
+            }
+            if !result.ends_with("\n\n") {
                 result.push(character);
             }
+        } else {
+            result.push(character);
         }
     }
     result
 }
 
-fn render_markup(
+fn render_markup<'a>(
     provider: DocumentProvider,
-    markup: &str,
+    markup: &'a str,
     page_citations: &[String],
 ) -> Result<RenderedMarkup, EngineError> {
-    let mut parts = Vec::new();
+    let mut text = String::new();
     let mut blocks = Vec::new();
     let mut open = Vec::<PendingBlock>::new();
     let mut tag_stack = Vec::<String>::new();
@@ -869,7 +912,7 @@ fn render_markup(
     let mut position = 0;
     let mut harvard_casebody = false;
     let mut page_starts = Vec::<PageStart>::new();
-    let mut attributes = HashMap::new();
+    let mut attributes = Attributes::new();
     let mut at = 0;
     while at < markup.len() {
         if markup.as_bytes()[at] != b'<' {
@@ -918,7 +961,7 @@ fn render_markup(
                     ),
                 });
             }
-            append_text(&mut parts, &mut position, rendered);
+            append_text(&mut text, &mut position, &rendered);
             at = end;
             continue;
         }
@@ -931,7 +974,7 @@ fn render_markup(
         if markup[at..].starts_with("<![CDATA[") {
             if let Some(end) = markup[at + 9..].find("]]>") {
                 let value = &markup[at + 9..at + 9 + end];
-                append_text(&mut parts, &mut position, value.to_owned());
+                append_text(&mut text, &mut position, value);
                 at += 9 + end + 3;
                 continue;
             }
@@ -1002,7 +1045,7 @@ fn render_markup(
                 }
             }
             if break_tag(&tag) {
-                append_break(&mut parts, &mut position);
+                append_break(&mut text, &mut position);
             }
             at = end;
             continue;
@@ -1043,11 +1086,18 @@ fn render_markup(
                 },
             ));
         }
-        let mut identity = native_identity(provider, &tag, &attributes);
         let footnote_body = courtlistener_footnote_body(provider, &tag, &attributes);
+        let mut identity = native_identity(provider, &tag, &attributes, footnote_body);
         if !self_closing {
             tag_stack.push(tag.clone());
-            if courtlistener_footnote_container(provider, &tag, &attributes) {
+            static FOOTNOTE_CONTAINER_ID: OnceLock<Regex> = OnceLock::new();
+            if matches!(provider, DocumentProvider::CourtListener)
+                && (footnote_body
+                    || contains_ascii_word(attribute(&attributes, "class"), "footnotes", true)
+                    || FOOTNOTE_CONTAINER_ID
+                        .get_or_init(|| Regex::new(r"(?i)^(?:fn|footnote)[_-]").unwrap())
+                        .is_match(attribute(&attributes, "id")))
+            {
                 open_excluded.push(OpenRange {
                     tag: tag.clone(),
                     depth,
@@ -1073,16 +1123,13 @@ fn render_markup(
                 .is_none_or(|value| value.kind != Kind::Page)
             && !in_footnote
         {
+            let (citation_index, page_scheme) = page_citation_identity(&attributes);
             text_page = Some(TextPage {
                 start: position,
                 anchor: (!attribute(&attributes, "id").is_empty())
                     .then(|| attribute(&attributes, "id").to_owned()),
-                citation_index: ["citation-index", "data-citation-index"]
-                    .into_iter()
-                    .find_map(|name| attribute(&attributes, name).parse::<usize>().ok())
-                    .filter(|value| *value != 0),
-                page_scheme: (!attribute(&attributes, "pagescheme").is_empty())
-                    .then(|| attribute(&attributes, "pagescheme").to_owned()),
+                citation_index,
+                page_scheme,
             });
         }
         if identity
@@ -1092,7 +1139,7 @@ fn render_markup(
         {
             let identity = identity.take().unwrap();
             if !identity.inline {
-                append_break(&mut parts, &mut position);
+                append_break(&mut text, &mut position);
             }
             let page_label = identity.page_label.as_deref().unwrap_or_default();
             page_starts.push(PageStart {
@@ -1107,7 +1154,7 @@ fn render_markup(
                 ),
             });
         } else if let Some(mut identity) = identity.filter(|value| value.kind != Kind::Page) {
-            append_break(&mut parts, &mut position);
+            append_break(&mut text, &mut position);
             identity.tag = tag.clone();
             identity.start = position;
             identity.parent_label = open
@@ -1118,11 +1165,11 @@ fn render_markup(
             open.push(identity);
         }
         if tag == "br" {
-            append_break(&mut parts, &mut position);
+            append_break(&mut text, &mut position);
         }
         at = end;
     }
-    let mut normalized = normalized_text(parts);
+    let mut normalized = normalized_text(text);
     let leading = normalized.len() - normalized.trim_start_matches(javascript_whitespace).len();
     let leading_trim = utf16_len(&normalized[..leading]);
     let trimmed = trim_js(&normalized);
@@ -1150,19 +1197,17 @@ fn render_markup(
             });
         }
     }
-    for index in 0..page_starts.len() {
-        let page = &page_starts[index];
-        let end = page_starts
-            .get(index + 1)
-            .map_or(raw_end, |next| next.start);
+    let mut page_starts = page_starts.into_iter().peekable();
+    while let Some(page) = page_starts.next() {
+        let end = page_starts.peek().map_or(raw_end, |next| next.start);
         if end > page.start {
             blocks.push(RawBlock {
                 kind: Kind::Page,
-                label: page.label.clone(),
+                label: page.label,
                 start: page.start,
                 end,
-                anchor: page.anchor.clone(),
-                aliases: page.aliases.clone(),
+                anchor: page.anchor,
+                aliases: page.aliases,
                 parent_label: None,
             });
         }
@@ -1171,8 +1216,7 @@ fn render_markup(
     // leading trim is subtracted and split-surrogate positions stay invalid.
     let normalized_coordinates = ScalarText::new(&normalized);
     let normalized_utf16 = normalized_coordinates.utf16_len();
-    let mut projected = Vec::with_capacity(blocks.len());
-    for block in blocks {
+    for block in &mut blocks {
         let start = block.start.checked_sub(leading_trim).ok_or_else(|| {
             EngineError::source("native block starts before trimmed provider text")
         })?;
@@ -1185,9 +1229,7 @@ fn render_markup(
                 "native block has an invalid provider UTF-16 range",
             ));
         }
-        let claim_end = if end <= text_utf16 {
-            end
-        } else {
+        if end > text_utf16 {
             if block.end <= raw_end || block.end > normalized_utf16 {
                 return Err(EngineError::source(
                     "native block has an invalid trim overhang",
@@ -1207,9 +1249,9 @@ fn render_markup(
                     "native block trim overhang contains text",
                 ));
             }
-            text_utf16
-        };
-        projected.push((block, start, end, claim_end));
+        }
+        block.start = start;
+        block.end = end;
     }
     let mut projected_exclusions = Vec::with_capacity(exclusions.len());
     for range in exclusions {
@@ -1229,14 +1271,7 @@ fn render_markup(
     normalized.drain(..leading);
     Ok(RenderedMarkup {
         text: normalized,
-        blocks: projected
-            .into_iter()
-            .map(|(mut block, start, end, _)| {
-                block.start = start;
-                block.end = end;
-                block
-            })
-            .collect(),
+        blocks,
         exclusions: projected_exclusions,
         cited_authorities,
         source_hash: format!("{:x}", Sha256::digest(markup.as_bytes())),
@@ -1350,29 +1385,29 @@ fn native_markup_evidence(
             .scalar_at_utf16(offset)
             .ok_or_else(|| EngineError::source("provider UTF-16 range splits a Unicode scalar"))
     };
-    let mut claims = Vec::new();
     let text_utf16 = coordinates.utf16_len();
-    for (index, raw) in rendered_blocks.iter().enumerate() {
+    let native_kinds = rendered_blocks
+        .iter()
+        .map(|block| block.kind.evidence())
+        .collect::<HashSet<_>>();
+    let mut claims = Vec::with_capacity(rendered_blocks.len());
+    for (index, raw) in rendered_blocks.into_iter().enumerate() {
         let id = format!("native-{:06}", index + 1);
         let claim_end = raw.end.min(text_utf16);
         claims.push(NativeClaim {
             id,
             kind: raw.kind.evidence(),
-            label: Some(raw.label.clone()),
-            aliases: raw.aliases.clone(),
+            label: Some(raw.label),
+            aliases: raw.aliases,
             range: ScalarRange {
                 start: scalar(raw.start)?,
                 end: scalar(claim_end)?,
             },
-            origin_id: ORIGIN.to_owned(),
-            parent_label: raw.parent_label.clone(),
-            anchor: raw.anchor.clone(),
+            origin_id: ORIGIN,
+            parent_label: raw.parent_label,
+            anchor: raw.anchor,
         });
     }
-    let native_kinds = rendered_blocks
-        .iter()
-        .map(|block| block.kind.evidence())
-        .collect::<HashSet<_>>();
     let scalar_end = coordinates.len();
     let coverage = crate::whole_document_coverage(scalar_end, |kind| {
         if native_kinds.contains(&kind) {
@@ -1399,12 +1434,10 @@ fn native_markup_evidence(
         _ => return Err(EngineError::source("invalid native-markup scope")),
     };
     let evidence = DocumentInput {
-        schema_version: EVIDENCE_SCHEMA.to_owned(),
         document_id: id,
         provider: provider.as_str().to_owned(),
         url,
-        doc_type: Some(DocumentType::Cases),
-        provider_revision: adapter_revision.clone(),
+        doc_type: Some("cases"),
         profile: match profile {
             "case_contiguous_complete" => DetectionProfile::CaseContiguousComplete,
             _ => DetectionProfile::CaseLossy,
@@ -1415,7 +1448,6 @@ fn native_markup_evidence(
         text_sha256: format!("{:x}", Sha256::digest(text.as_bytes())),
         text,
         source_sha256: Some(adapter_revision),
-        offset_unit: "unicode-scalar".to_owned(),
         scope: Scope {
             kind: scope_kind,
             excerpt_of: scope.excerpt_of,
@@ -1426,7 +1458,6 @@ fn native_markup_evidence(
         native_claims: claims,
         coverage,
         exclusions,
-        paragraph_breaks: Vec::<ParagraphBreak>::new(),
     };
     Ok((evidence, cited_authorities))
 }
@@ -1469,7 +1500,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        assert_eq!(normalized_text(vec!["\n\n\n \n".to_owned()]), "\n\n");
+        assert_eq!(normalized_text("\n\n\n \n".to_owned()), "\n\n");
         assert_eq!(
             rendered.cited_authorities,
             [
@@ -1488,6 +1519,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "document-query")]
     fn provider_blocks_keep_rendered_utf16_offsets_across_astral_text() {
         let document = analyze_native_markup(NativeMarkupInput {
             provider: "courtlistener".to_owned(),

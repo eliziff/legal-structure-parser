@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 mod grammar_word;
 
@@ -52,6 +52,7 @@ impl AsciiBoundedGrammar {
 }
 
 pub const GRAMMAR_CORPUS_FORMAT: &str = "legal-grammar-corpus:v1";
+const GRAMMAR_CORPUS_JSON: &str = include_str!("../../data/grammar-corpus.json");
 pub const SOURCE_WHITESPACE: &str = concat!(
     r" \t\n\r\f\v\x1c-\x1f\x85\u00a0\u1680",
     r"\u2000-\u200a\u2028\u2029\u202f\u205f\u3000"
@@ -62,12 +63,12 @@ pub const ECMASCRIPT_WHITESPACE: &str = concat!(
 );
 pub const ECMASCRIPT_WORD: &str = "0-9A-Z_a-z";
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct GrammarVector {
-    pub input: String,
-    pub groups: Value,
+#[derive(Debug, Deserialize)]
+struct GrammarEvidenceVector {
+    input: String,
+    groups: Value,
     #[serde(default)]
-    pub canonical: Option<Value>,
+    canonical: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,10 +77,27 @@ pub struct GrammarEntry {
     pub pattern: String,
     #[serde(default)]
     pub flags: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrammarEvidenceEntry {
+    id: String,
     #[serde(default)]
-    pub canonical: Value,
+    canonical: Value,
     #[serde(default)]
-    pub vectors: Vec<GrammarVector>,
+    vectors: Vec<GrammarEvidenceVector>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrammarEvidenceTable {
+    #[serde(default)]
+    entries: Vec<GrammarEvidenceEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrammarEvidenceCorpus {
+    format: String,
+    tables: BTreeMap<String, GrammarEvidenceTable>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,15 +117,44 @@ struct GrammarCorpus {
 #[derive(Debug, Clone)]
 pub struct TableEntry {
     pub entry: GrammarEntry,
-    pub defs: HashMap<String, String>,
+    pub defs: Arc<HashMap<String, String>>,
 }
 
 fn load_static_tables() -> std::result::Result<BTreeMap<String, TableEntry>, String> {
     let mut result = BTreeMap::new();
-    let corpus: GrammarCorpus = serde_json::from_str(include_str!(
-        "../../data/grammar-corpus.json"
-    ))
-    .map_err(|error| format!("grammar-corpus.json: {error}"))?;
+    let corpus: GrammarCorpus = serde_json::from_str(GRAMMAR_CORPUS_JSON)
+        .map_err(|error| format!("grammar-corpus.json: {error}"))?;
+    if corpus.format != GRAMMAR_CORPUS_FORMAT {
+        return Err(format!(
+            "unexpected grammar corpus format {:?}",
+            corpus.format
+        ));
+    }
+    for (name, table) in corpus.tables {
+        let defs = Arc::new(table.defs);
+        for entry in table.entries {
+            let id = entry.id.clone();
+            if result
+                .insert(
+                    id.clone(),
+                    TableEntry {
+                        entry,
+                        defs: Arc::clone(&defs),
+                    },
+                )
+                .is_some()
+            {
+                return Err(format!("{name}: duplicate grammar entry id {id:?}"));
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn load_static_evidence() -> std::result::Result<BTreeMap<String, GrammarEvidenceEntry>, String> {
+    let mut result = BTreeMap::new();
+    let corpus: GrammarEvidenceCorpus = serde_json::from_str(GRAMMAR_CORPUS_JSON)
+        .map_err(|error| format!("grammar-corpus.json: {error}"))?;
     if corpus.format != GRAMMAR_CORPUS_FORMAT {
         return Err(format!(
             "unexpected grammar corpus format {:?}",
@@ -117,16 +164,7 @@ fn load_static_tables() -> std::result::Result<BTreeMap<String, TableEntry>, Str
     for (name, table) in corpus.tables {
         for entry in table.entries {
             let id = entry.id.clone();
-            if result
-                .insert(
-                    id.clone(),
-                    TableEntry {
-                        entry,
-                        defs: table.defs.clone(),
-                    },
-                )
-                .is_some()
-            {
+            if result.insert(id.clone(), entry).is_some() {
                 return Err(format!("{name}: duplicate grammar entry id {id:?}"));
             }
         }
@@ -468,8 +506,6 @@ pub fn compile_pattern(id: &str, pattern: &str, flags: &str) -> Result<FancyRege
             id: id.to_owned(),
             pattern: pattern.to_owned(),
             flags: flags.to_owned(),
-            canonical: Value::Null,
-            vectors: Vec::new(),
         },
         &HashMap::new(),
     )
@@ -484,8 +520,6 @@ pub fn compile_ecmascript_pattern(
         id: id.to_owned(),
         pattern: pattern.to_owned(),
         flags: flags.to_owned(),
-        canonical: Value::Null,
-        vectors: Vec::new(),
     };
     compile_ecmascript_entry(&entry, &HashMap::new())
 }
@@ -720,7 +754,12 @@ fn canonicalize(groups: &mut HashMap<String, Option<String>>, rules: &Value) -> 
 
 pub fn run_vectors() -> Result<Vec<String>> {
     let mut failures = Vec::new();
-    for (entry_id, table_entry) in load_tables()? {
+    let tables = load_tables()?;
+    let evidence = load_static_evidence().map_err(Error::Message)?;
+    for (entry_id, table_entry) in tables {
+        let evidence = evidence
+            .get(entry_id)
+            .ok_or_else(|| Error::Message(format!("missing grammar evidence: {entry_id}")))?;
         let pattern = match compile_entry(&table_entry.entry, &table_entry.defs) {
             Ok(pattern) => pattern,
             Err(error) => {
@@ -728,7 +767,7 @@ pub fn run_vectors() -> Result<Vec<String>> {
                 continue;
             }
         };
-        for vector in &table_entry.entry.vectors {
+        for vector in &evidence.vectors {
             let captures = pattern.captures(&vector.input).map_err(|error| {
                 Error::Message(format!("{entry_id}: matching vector failed: {error}"))
             })?;
@@ -769,7 +808,7 @@ pub fn run_vectors() -> Result<Vec<String>> {
                 }
             }
             if let Some(expected_canonical) = vector.canonical.as_ref().and_then(Value::as_object) {
-                canonicalize(&mut groups, &table_entry.entry.canonical)?;
+                canonicalize(&mut groups, &evidence.canonical)?;
                 for (name, expected_value) in expected_canonical {
                     let expected_value = expected_value.as_str().map(str::to_owned);
                     if groups.get(name).cloned().flatten() != expected_value {
@@ -830,9 +869,10 @@ mod tests {
     fn anchor_windows_equal_full_scans_for_every_frozen_grammar() {
         const FILLER: &str = " The tribunal weighed the record before it and reserved judgment on the remaining issues, having heard the parties at length on costs. ";
         let tables = load_tables().unwrap();
+        let evidence = load_static_evidence().unwrap();
         let mut core = String::new();
-        for value in tables.values() {
-            for vector in &value.entry.vectors {
+        for id in tables.keys() {
+            for vector in &evidence[id].vectors {
                 core.push_str(&vector.input);
                 core.push_str(FILLER);
             }
