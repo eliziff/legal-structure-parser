@@ -9,6 +9,7 @@ members = ["grammar", "python"]
 default-members = ["."]
 resolver = "2"
 
+
 [features]
 default = []
 structure-inference = ["dep:legal-grammar-tables"]
