@@ -13,7 +13,41 @@ const EXTENDED_US_CITATION_IDS: [&str; 4] = [
     "cite.us.law.full",
     "cite.us.law.short",
 ];
-const FUNCTION_WORDS: &str = "the of to that in a an and is was were be as for on with by it this not or which would may must court judge held found stated";
+fn function_word(word: &str) -> bool {
+    matches!(
+        word,
+        "the"
+            | "of"
+            | "to"
+            | "that"
+            | "in"
+            | "a"
+            | "an"
+            | "and"
+            | "is"
+            | "was"
+            | "were"
+            | "be"
+            | "as"
+            | "for"
+            | "on"
+            | "with"
+            | "by"
+            | "it"
+            | "this"
+            | "not"
+            | "or"
+            | "which"
+            | "would"
+            | "may"
+            | "must"
+            | "court"
+            | "judge"
+            | "held"
+            | "found"
+            | "stated"
+    )
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,13 +62,6 @@ pub struct ExcerptClassification {
 }
 
 type Hit = Range<usize>;
-
-#[derive(Serialize)]
-pub struct CitationMatch<'a> {
-    pub text: &'a str,
-    pub start: usize,
-    pub end: usize,
-}
 
 #[derive(Serialize)]
 pub struct ProviderCitationMatch<'a> {
@@ -156,12 +183,17 @@ fn standard_us_matches(value: &str, pattern: &Regex) -> Vec<Hit> {
     while let Some(captures) = pattern.captures_at(value, cursor) {
         let citation = captures.name("citation").expect("standard citation");
         let reporter = captures.name("reporter").expect("standard reporter");
-        let key = reporter
-            .as_str()
-            .chars()
-            .filter(|character| !javascript_whitespace(*character))
-            .collect::<String>();
-        if STANDARD_SURFACES.contains(&key) {
+        let reporter = reporter.as_str();
+        let known = if reporter.chars().any(javascript_whitespace) {
+            let compact = reporter
+                .chars()
+                .filter(|character| !javascript_whitespace(*character))
+                .collect::<String>();
+            STANDARD_SURFACES.contains(&compact)
+        } else {
+            STANDARD_SURFACES.contains(reporter)
+        };
+        if known {
             found.push(citation.start()..citation.end());
         }
         cursor = citation.start() + 1;
@@ -277,18 +309,6 @@ pub fn provider_citations_in_text(text: &str) -> Vec<ProviderCitationMatch<'_>> 
         .collect()
 }
 
-pub fn citations_in_text(text: &str, extended_us_fallback: bool) -> Vec<CitationMatch<'_>> {
-    let document = ScalarText::new(text);
-    citation_hits(text, extended_us_fallback)
-        .into_iter()
-        .map(|hit| CitationMatch {
-            text: &text[hit.clone()],
-            start: document.utf16_at_byte(hit.start).unwrap(),
-            end: document.utf16_at_byte(hit.end).unwrap(),
-        })
-        .collect()
-}
-
 pub fn citation_lookup_key(value: &str) -> String {
     let mut characters = value.nfkc().peekable();
     let mut key = String::with_capacity(value.len());
@@ -336,8 +356,7 @@ static PINPOINT: LazyLock<Regex> = LazyLock::new(|| {
 });
 static GLUE: LazyLock<Regex> = LazyLock::new(|| ecmascript(r"^[\s,;]*(?:and\s+)?$", ""));
 
-fn citation_spans(text: &str) -> (Vec<Hit>, usize) {
-    let document = ScalarText::new(text);
+fn citation_spans(text: &str, document: &ScalarText<'_>) -> (Vec<Hit>, usize) {
     let hits = citation_hits(text, true);
     let tokens = hits.len();
     let mut spans = Vec::with_capacity(tokens);
@@ -386,10 +405,15 @@ fn lowercase_words(text: &str) -> usize {
     WORDS
         .find_iter(text)
         .filter(|word| {
-            let first = word.as_str().chars().next().unwrap();
-            utf16_len(word.as_str()) >= 3
-                && first.len_utf16() == 1
-                && LOWERCASE.is_match(&first.to_string())
+            let word = word.as_str();
+            let first = word.chars().next().unwrap();
+            if word.is_ascii() {
+                word.len() >= 3 && first.is_ascii_lowercase()
+            } else {
+                utf16_len(word) >= 3
+                    && first.len_utf16() == 1
+                    && LOWERCASE.is_match(&word[..first.len_utf8()])
+            }
         })
         .count()
 }
@@ -402,12 +426,12 @@ fn trim_window_edges(text: &str) -> String {
 
 pub fn classify_citator_excerpt(excerpt: &str) -> ExcerptClassification {
     let text = trim_javascript_whitespace(excerpt);
-    let text_length = utf16_len(text);
+    let document = ScalarText::new(text);
+    let text_length = document.utf16_len();
     if text_length < 60 {
         return refusal("shorter_than_min_excerpt");
     }
-    let (spans, cite_tokens) = citation_spans(text);
-    let document = ScalarText::new(text);
+    let (spans, cite_tokens) = citation_spans(text, &document);
     let cite_chars = spans
         .iter()
         .map(|span| {
@@ -433,11 +457,7 @@ pub fn classify_citator_excerpt(excerpt: &str) -> ExcerptClassification {
     let words = segments.join(" ").to_lowercase();
     let function_words = words
         .split(|character: char| !character.is_ascii_lowercase() && character != '\'')
-        .filter(|word| {
-            FUNCTION_WORDS
-                .split(' ')
-                .any(|candidate| candidate == *word)
-        })
+        .filter(|word| function_word(word))
         .count();
     let best = segments
         .iter()
@@ -496,7 +516,7 @@ pub fn classify_citator_excerpt(excerpt: &str) -> ExcerptClassification {
 }
 
 fn has_citation(text: &str) -> bool {
-    CITATION_PATTERN.is_match(text) || !citation_hits(text, true).is_empty()
+    !citation_hits(text, true).is_empty()
 }
 
 pub fn has_citation_in_text(text: &str) -> bool {

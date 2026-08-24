@@ -1,4 +1,6 @@
 use super::*;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 #[cfg(feature = "structure-inference")]
 pub fn detect_structure_candidate_runs(value: &str) -> Vec<StructureCandidateRun> {
@@ -61,19 +63,16 @@ pub fn detect_structure_candidate_runs(value: &str) -> Vec<StructureCandidateRun
     let mut hierarchy = grouped
         .into_values()
         .filter(|(markers, _)| !markers.is_empty())
-        .map(|(mut markers, consecutive)| {
-            markers.sort_by_key(|marker| (marker.range.start, marker.level));
-            StructureCandidateRun {
-                id: String::new(),
-                grammar: CandidateGrammar::Hierarchy,
-                range: ScalarRange {
-                    start: markers[0].range.start,
-                    end: markers.iter().map(|marker| marker.range.end).max().unwrap(),
-                },
-                rooted: markers[0].parent_candidate_id.is_none(),
-                consecutive,
-                markers,
-            }
+        .map(|(markers, consecutive)| StructureCandidateRun {
+            id: String::new(),
+            grammar: CandidateGrammar::Hierarchy,
+            range: ScalarRange {
+                start: markers[0].range.start,
+                end: markers.iter().map(|marker| marker.range.end).max().unwrap(),
+            },
+            rooted: markers[0].parent_candidate_id.is_none(),
+            consecutive,
+            markers,
         })
         .collect::<Vec<_>>();
     let captured = hierarchy
@@ -126,10 +125,10 @@ pub fn detect_structure_candidate_runs(value: &str) -> Vec<StructureCandidateRun
     runs
 }
 #[cfg(feature = "structure-inference")]
-pub(crate) fn resolve_structure_candidates(
-    runs: &[StructureCandidateRun],
-    evidence: &[CandidateEvidenceV2],
-) -> Result<Vec<ResolvedCandidate>, EngineError> {
+pub(crate) fn resolve_structure_candidates<'a>(
+    runs: &'a [StructureCandidateRun],
+    evidence: &'a [CandidateEvidenceV2],
+) -> Result<Vec<ResolvedCandidate<'a>>, EngineError> {
     let provision_starts = runs
         .iter()
         .filter(|run| run.grammar == CandidateGrammar::Hierarchy && run.rooted && run.consecutive)
@@ -235,11 +234,11 @@ pub(crate) fn resolve_structure_candidates(
                 (None, ResolutionRuleV2::InsufficientEvidence)
             };
             resolved.push(ResolvedCandidate {
-                candidate: candidate.clone(),
+                candidate,
                 role,
                 proof: ResolutionProofV2 { rule, observations },
-                page_indexes: item.map_or_else(Vec::new, |item| item.page_indexes.clone()),
-                line_ids: item.map_or_else(Vec::new, |item| item.line_ids.clone()),
+                page_indexes: item.map_or(&[], |item| item.page_indexes.as_slice()),
+                line_ids: item.map_or(&[], |item| item.line_ids.as_slice()),
             });
         }
     }
@@ -329,27 +328,24 @@ pub fn resolve_structure_graph(
         }
     }
     let resolved_candidates = resolve_structure_candidates(runs, evidence)?;
-    let resolved_by_candidate = resolved_candidates
-        .iter()
-        .map(|resolved| (resolved.candidate.id.as_str(), resolved))
-        .collect::<HashMap<_, _>>();
 
     let mut identities = nodes
         .iter()
-        .map(|node| {
+        .enumerate()
+        .map(|(index, node)| {
             (
                 (
                     node.kind,
                     node.marker_range
                         .map_or(node.range.start, |range| range.start),
                 ),
-                node.id.clone(),
+                index,
             )
         })
         .collect::<HashMap<_, _>>();
     let mut generated_node_ids = HashSet::new();
-    let mut paired_candidate_nodes = HashMap::<String, String>::new();
-    let mut pending_parents = HashMap::<String, Option<String>>::new();
+    let mut paired_candidate_nodes = HashMap::<&str, usize>::new();
+    let mut pending_parents = HashMap::<usize, Option<&str>>::new();
     let mut counters = HashMap::<NodeKind, usize>::new();
     for node in &nodes {
         *counters.entry(node.kind).or_default() += 1;
@@ -383,8 +379,9 @@ pub fn resolve_structure_graph(
             NoteKindV2::Footnote => NodeKind::Footnote,
             NoteKindV2::Endnote => NodeKind::Endnote,
         };
-        let note_node_id = if let Some(id) = identities.get(&(kind, pair.label.range.start)) {
-            id.clone()
+        let note_node_index = if let Some(&index) = identities.get(&(kind, pair.label.range.start))
+        {
+            index
         } else {
             let ordinal = counters.entry(kind).or_default();
             *ordinal += 1;
@@ -400,13 +397,15 @@ pub fn resolve_structure_graph(
             page_indexes.extend(pair.body.page_indexes.iter().copied());
             page_indexes.sort_unstable();
             page_indexes.dedup();
-            let mut line_ids = Vec::with_capacity(pair.body.line_ids.len() + 1);
-            line_ids.push(pair.label.line_id.clone());
-            line_ids.extend(pair.body.line_ids.iter().cloned());
             let mut seen_lines = HashSet::new();
-            line_ids.retain(|line_id| seen_lines.insert(line_id.clone()));
+            let line_ids = std::iter::once(pair.label.line_id.as_str())
+                .chain(pair.body.line_ids.iter().map(String::as_str))
+                .filter(|line_id| seen_lines.insert(*line_id))
+                .map(str::to_owned)
+                .collect();
+            let index = nodes.len();
             let mut node = StructureNode::new(
-                id.clone(),
+                id,
                 kind,
                 pair.body.range,
                 ENGINE_ORIGIN,
@@ -431,16 +430,16 @@ pub fn resolve_structure_graph(
                 observations: Vec::new(),
             });
             nodes.push(node);
-            identities.insert((kind, pair.label.range.start), id.clone());
-            generated_node_ids.insert(id.clone());
-            id
+            identities.insert((kind, pair.label.range.start), index);
+            generated_node_ids.insert(index);
+            index
         };
         for candidate in runs.iter().flat_map(|run| &run.markers) {
             if candidate.marker_range.start <= pair.label.range.start
                 && pair.label.range.end <= candidate.marker_range.end
             {
                 if paired_candidate_nodes
-                    .insert(candidate.id.clone(), note_node_id.clone())
+                    .insert(candidate.id.as_str(), note_node_index)
                     .is_some()
                 {
                     return Err(EngineError::invalid(format!(
@@ -457,11 +456,13 @@ pub fn resolve_structure_graph(
             .filter(|reference| seen.insert(reference.range))
             .map(|reference| NoteReference {
                 range: reference.range,
+                page_indexes: vec![reference.page_index],
+                line_ids: vec![reference.line_id.clone()],
             })
             .collect::<Vec<_>>();
         notes.push(Note {
             id: pair.pair_id.clone(),
-            node_id: note_node_id,
+            node_id: nodes[note_node_index].id.clone(),
             kind: pair.kind,
             label_range: pair.label.range,
             body_range: pair.body.range,
@@ -470,18 +471,19 @@ pub fn resolve_structure_graph(
         });
     }
 
-    let mut candidate_node_ids = paired_candidate_nodes.clone();
-    for resolved in &resolved_candidates {
-        if candidate_node_ids.contains_key(&resolved.candidate.id) {
+    let mut candidate_node_ids = paired_candidate_nodes;
+    let mut resolved_candidates = resolved_candidates;
+    for resolved in &mut resolved_candidates {
+        if candidate_node_ids.contains_key(resolved.candidate.id.as_str()) {
             continue;
         }
         let Some(role) = resolved.role else { continue };
         let kind = role.node_kind();
-        if let Some(id) = identities.get(&(kind, resolved.candidate.marker_range.start)) {
-            candidate_node_ids.insert(resolved.candidate.id.clone(), id.clone());
+        if let Some(&index) = identities.get(&(kind, resolved.candidate.marker_range.start)) {
+            candidate_node_ids.insert(resolved.candidate.id.as_str(), index);
             pending_parents
-                .entry(id.clone())
-                .or_insert_with(|| resolved.candidate.parent_candidate_id.clone());
+                .entry(index)
+                .or_insert(resolved.candidate.parent_candidate_id.as_deref());
             continue;
         }
         let ordinal = counters.entry(kind).or_default();
@@ -493,10 +495,11 @@ pub fn resolve_structure_graph(
                 id
             )));
         }
-        identities.insert((kind, resolved.candidate.marker_range.start), id.clone());
-        candidate_node_ids.insert(resolved.candidate.id.clone(), id.clone());
-        pending_parents.insert(id.clone(), resolved.candidate.parent_candidate_id.clone());
-        generated_node_ids.insert(id.clone());
+        let index = nodes.len();
+        identities.insert((kind, resolved.candidate.marker_range.start), index);
+        candidate_node_ids.insert(resolved.candidate.id.as_str(), index);
+        pending_parents.insert(index, resolved.candidate.parent_candidate_id.as_deref());
+        generated_node_ids.insert(index);
         let label = match role {
             ResolvedRole::NumberedParagraph => {
                 format!("par{}", resolved.candidate.grammar_value)
@@ -542,8 +545,8 @@ pub fn resolve_structure_graph(
         node.aliases = aliases;
         node.content_start = Some(resolved.candidate.content_start);
         node.marker_range = Some(resolved.candidate.marker_range);
-        node.page_indexes.clone_from(&resolved.page_indexes);
-        node.line_ids.clone_from(&resolved.line_ids);
+        node.page_indexes = resolved.page_indexes.to_vec();
+        node.line_ids = resolved.line_ids.to_vec();
         node.grammar = Some(
             match role {
                 ResolvedRole::NumberedParagraph => "numeric",
@@ -552,14 +555,16 @@ pub fn resolve_structure_graph(
             }
             .to_owned(),
         );
-        node.proof = Some(resolved.proof.clone());
+        node.proof = Some(ResolutionProofV2 {
+            rule: resolved.proof.rule,
+            observations: std::mem::take(&mut resolved.proof.observations),
+        });
         nodes.push(node);
     }
 
-    let node_slots = nodes
+    let resolved_by_candidate = resolved_candidates
         .iter()
-        .enumerate()
-        .map(|(index, node)| (node.id.clone(), index))
+        .map(|resolved| (resolved.candidate.id.as_str(), resolved))
         .collect::<HashMap<_, _>>();
     for run in runs {
         let items = run
@@ -588,12 +593,14 @@ pub fn resolve_structure_graph(
             .collect::<Vec<_>>();
         page_indexes.sort_unstable();
         page_indexes.dedup();
-        let mut line_ids = items
-            .iter()
-            .flat_map(|item| item.line_ids.iter().cloned())
-            .collect::<Vec<_>>();
         let mut seen_lines = HashSet::new();
-        line_ids.retain(|line_id| seen_lines.insert(line_id.clone()));
+        let line_ids = items
+            .iter()
+            .flat_map(|item| item.line_ids.iter().map(String::as_str))
+            .filter(|line_id| seen_lines.insert(*line_id))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let index = nodes.len();
         let mut node = StructureNode::new(
             id.clone(),
             NodeKind::List,
@@ -621,15 +628,13 @@ pub fn resolve_structure_graph(
             observations: vec![CandidateObservationV2::ListItemLayout],
         });
         nodes.push(node);
-        generated_node_ids.insert(id.clone());
+        generated_node_ids.insert(index);
         for item in items
             .iter()
             .filter(|item| item.candidate.parent_candidate_id.is_none())
         {
-            if let Some(node_id) = candidate_node_ids.get(&item.candidate.id) {
-                if let Some(index) = node_slots.get(node_id) {
-                    nodes[*index].parent_id = Some(id.clone());
-                }
+            if let Some(&index) = candidate_node_ids.get(item.candidate.id.as_str()) {
+                nodes[index].parent_id = Some(id.clone());
             }
         }
     }
@@ -650,25 +655,22 @@ pub fn resolve_structure_graph(
     }
 
     for index in 0..nodes.len() {
-        if (!generated_node_ids.contains(&nodes[index].id)
-            && !pending_parents.contains_key(&nodes[index].id))
+        if (!generated_node_ids.contains(&index) && !pending_parents.contains_key(&index))
             || nodes[index].parent_id.is_some()
             || nodes[index].kind == NodeKind::Page
         {
             continue;
         }
         let candidate_parent = pending_parents
-            .get(&nodes[index].id)
-            .and_then(|candidate| candidate.as_ref())
-            .and_then(|candidate| candidate_node_ids.get(candidate))
-            .filter(|parent| **parent != nodes[index].id)
-            .cloned();
-        let has_declared_parent = pending_parents
-            .get(&nodes[index].id)
-            .is_some_and(Option::is_some);
+            .get(&index)
+            .and_then(|candidate| *candidate)
+            .and_then(|candidate| candidate_node_ids.get(candidate).copied())
+            .filter(|parent| *parent != index)
+            .map(|parent| nodes[parent].id.clone());
+        let has_declared_parent = pending_parents.get(&index).is_some_and(Option::is_some);
         let enclosing = (candidate_parent.is_none()
             && !has_declared_parent
-            && generated_node_ids.contains(&nodes[index].id))
+            && generated_node_ids.contains(&index))
         .then(|| {
             nodes
                 .iter()
@@ -698,7 +700,11 @@ pub fn resolve_structure_graph(
         let node_ids = run
             .markers
             .iter()
-            .filter_map(|candidate| candidate_node_ids.get(&candidate.id).cloned())
+            .filter_map(|candidate| {
+                candidate_node_ids
+                    .get(candidate.id.as_str())
+                    .map(|index| nodes[*index].id.clone())
+            })
             .collect::<Vec<_>>();
         let resolved_count = node_ids.len();
         StructureDiagnostic {
@@ -717,10 +723,10 @@ pub fn resolve_structure_graph(
     }));
     let mut origins = nodes
         .iter()
-        .map(|node| node.origin_id.clone())
+        .map(|node| node.origin_id.as_ref())
         .collect::<HashSet<_>>()
         .into_iter()
-        .map(|id| Origin { id })
+        .map(|id| Origin { id: id.to_owned() })
         .collect::<Vec<_>>();
     origins.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(DocumentStructure::from_scalar_parts(

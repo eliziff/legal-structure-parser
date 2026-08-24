@@ -1,10 +1,13 @@
 use crate::{
-    javascript_whitespace, normalize_javascript_whitespace, text::JS_WHITESPACE_CLASS as JS_WS,
-    tokenize_source_text, utf16_len, DocumentWordSpan, ScalarText,
+    document_query::{tokenize_source_text, DocumentWordSpan},
+    javascript_whitespace, normalize_javascript_whitespace,
+    text::JS_WHITESPACE_CLASS as JS_WS,
+    utf16_len, ScalarText,
 };
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 use std::sync::OnceLock;
 use unicode_normalization::UnicodeNormalization;
 
@@ -15,6 +18,7 @@ const MAX_MARKED_QUOTE_CHARS: usize = 4_000;
 const MAX_MARKED_QUOTE_EDITS: usize = 4;
 const MAX_FUZZY_SOURCE_CHARS: usize = 50_000;
 const COPY_STOP_WORDS: &str = "a an and are as at be but by for from has have if in into is it its of on or that the their there these this to was were will with which would when who whom whose";
+static CONTENT: OnceLock<Regex> = OnceLock::new();
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +30,7 @@ pub struct VisibleEvidenceText {
 }
 
 type Repair<'a> = (f64, Option<&'a str>);
+type RepairToken = (String, [usize; 2]);
 
 struct MarkedQuote {
     text: String,
@@ -51,6 +56,9 @@ fn js_non_ws() -> &'static str {
 }
 
 fn normalize_repair_word(value: &str) -> String {
+    if value.is_ascii() {
+        return value.to_ascii_lowercase();
+    }
     let mut normalized = String::with_capacity(value.len());
     for character in value.chars() {
         let character = match character {
@@ -63,24 +71,22 @@ fn normalize_repair_word(value: &str) -> String {
     normalized
 }
 
-fn repair_tokens(value: &str, coordinates: &ScalarText<'_>, limit: usize) -> Vec<DocumentWordSpan> {
+fn repair_tokens(value: &str, limit: usize) -> Vec<RepairToken> {
     static TOKEN: OnceLock<Regex> = OnceLock::new();
     regex(r"\p{L}[\p{L}\p{N}'’\u{2010}-\u{2015}-]*|\p{N}+", &TOKEN)
         .find_iter(value)
         .take(limit)
-        .map(|token| DocumentWordSpan {
-            word: normalize_repair_word(token.as_str()),
-            start: coordinates.utf16_at_byte(token.start()).unwrap(),
-            end: coordinates.utf16_at_byte(token.end()).unwrap(),
+        .map(|token| {
+            (
+                normalize_repair_word(token.as_str()),
+                [token.start(), token.end()],
+            )
         })
         .collect()
 }
 
-fn nearest_verbatim_excerpt<'a>(claim_body: &str, span_text: &'a str) -> Repair<'a> {
-    let claim_coordinates = ScalarText::new(claim_body);
-    let span_coordinates = ScalarText::new(span_text);
-    let claim = repair_tokens(claim_body, &claim_coordinates, 400);
-    let span = repair_tokens(span_text, &span_coordinates, 4_000);
+fn nearest_verbatim_excerpt<'a>(claim: &[RepairToken], span_text: &'a str) -> Repair<'a> {
+    let span = repair_tokens(span_text, 4_000);
     if claim.is_empty() || span.is_empty() {
         return (0.0, None);
     }
@@ -89,7 +95,7 @@ fn nearest_verbatim_excerpt<'a>(claim_body: &str, span_text: &'a str) -> Repair<
     let mut runs = vec![0; claim.len() + 1];
     for (span_index, span_token) in span.iter().enumerate() {
         for claim_index in (0..claim.len()).rev() {
-            runs[claim_index + 1] = if span_token.word == claim[claim_index].word {
+            runs[claim_index + 1] = if span_token.0 == claim[claim_index].0 {
                 runs[claim_index] + 1
             } else {
                 0
@@ -101,15 +107,7 @@ fn nearest_verbatim_excerpt<'a>(claim_body: &str, span_text: &'a str) -> Repair<
         }
     }
     let excerpt = (best >= 6)
-        .then(|| {
-            let start = span_coordinates
-                .byte_at_utf16(span[best_span_end - best].start)
-                .unwrap();
-            let end = span_coordinates
-                .byte_at_utf16(span[best_span_end - 1].end)
-                .unwrap();
-            &span_text[start..end]
-        })
+        .then(|| &span_text[span[best_span_end - best].1[0]..span[best_span_end - 1].1[1]])
         .filter(|excerpt| utf16_len(excerpt) >= 25);
     (best as f64 / claim.len() as f64, excerpt)
 }
@@ -127,31 +125,47 @@ fn truncate_suggestion(excerpt: &str) -> &str {
 }
 
 pub fn quote_repair_suggestion(claim_body: &str, spans: &[String]) -> Option<String> {
+    let claim = repair_tokens(claim_body, 400);
     let mut best: Option<Repair<'_>> = None;
     for span in spans {
-        let repair = nearest_verbatim_excerpt(claim_body, span);
+        let repair = nearest_verbatim_excerpt(&claim, span);
         if repair.1.is_some() && best.as_ref().is_none_or(|best| repair.0 > best.0) {
             best = Some(repair);
         }
     }
-    let repair = best.filter(|repair| repair.0 >= 0.5)?;
+    repair_suggestion(best?)
+}
+
+fn repair_suggestion(repair: Repair<'_>) -> Option<String> {
+    let excerpt = repair.1.filter(|_| repair.0 >= 0.5)?;
     Some(format!(
         "closest verbatim excerpt of its cited span: “{}” — if this serves, resubmit quoting it exactly as shown",
-        truncate_suggestion(repair.1.unwrap())
+        truncate_suggestion(excerpt)
     ))
 }
 
 fn representation(value: &str) -> String {
-    normalize_javascript_whitespace(
-        &value
-            .nfc()
-            .map(|character| match character {
-                '“' | '”' | '„' | '‟' => '"',
-                '‘' | '’' | '‚' | '‛' => '\'',
-                character => character,
-            })
-            .collect::<String>(),
-    )
+    if value.is_ascii() {
+        return normalize_javascript_whitespace(value);
+    }
+    let mut normalized = String::with_capacity(value.len());
+    let mut separating = false;
+    for character in value.nfc().map(|character| match character {
+        '“' | '”' | '„' | '‟' => '"',
+        '‘' | '’' | '‚' | '‛' => '\'',
+        character => character,
+    }) {
+        if javascript_whitespace(character) {
+            separating = !normalized.is_empty();
+        } else {
+            if separating {
+                normalized.push(' ');
+            }
+            normalized.push(character);
+            separating = false;
+        }
+    }
+    normalized
 }
 
 fn marked_quotes(text: &str) -> Vec<MarkedQuote> {
@@ -219,40 +233,27 @@ pub fn marked_quote_spans(text: &str) -> Vec<MarkedQuoteSpan> {
 }
 
 fn letter_or_number(character: char) -> bool {
-    static VALUE: OnceLock<Regex> = OnceLock::new();
     let mut buffer = [0; 4];
-    regex(r"^[\p{L}\p{N}]$", &VALUE).is_match(character.encode_utf8(&mut buffer))
+    regex(r"[\p{L}\p{N}]", &CONTENT).is_match(character.encode_utf8(&mut buffer))
 }
 
 fn flexible_spaces(value: &str) -> String {
-    regex::escape(value).replace(' ', &format!("{JS_WS}+"))
+    static WHITESPACE_RUN: OnceLock<String> = OnceLock::new();
+    regex::escape(value).replace(' ', WHITESPACE_RUN.get_or_init(|| format!("{JS_WS}+")))
 }
 
-fn source_supports_marked_quote(quote: &str, source: &str) -> bool {
+fn altered_quote_regex(expected: &str) -> Option<Regex> {
     static EDIT: OnceLock<Regex> = OnceLock::new();
-    static CONTENT: OnceLock<Regex> = OnceLock::new();
-    let expected = representation(quote);
-    let available = representation(source);
-    if expected.is_empty() {
-        return false;
-    }
-    if available.contains(&expected) {
-        return true;
-    }
-    if utf16_len(&available) > MAX_FUZZY_SOURCE_CHARS
-        || utf16_len(&expected) > MAX_MARKED_QUOTE_CHARS
-    {
-        return false;
-    }
     let edits = regex(r"\[[^\]\r\n]+\]|…|\.{3}", &EDIT)
-        .find_iter(&expected)
+        .find_iter(expected)
+        .take(MAX_MARKED_QUOTE_EDITS + 1)
         .collect::<Vec<_>>();
     if edits.is_empty() || edits.len() > MAX_MARKED_QUOTE_EDITS {
-        return false;
+        return None;
     }
     let mut cursor = 0;
-    let mut pattern = String::new();
-    let mut literal = String::new();
+    let mut pattern = String::from(r"(?:^|[^\p{L}\p{N}])(?:");
+    let mut has_content = false;
     for edit in edits {
         let before = expected[cursor..edit.start()].trim_end_matches(javascript_whitespace);
         let after = &expected[edit.end()..];
@@ -262,13 +263,13 @@ fn source_supports_marked_quote(quote: &str, source: &str) -> bool {
             letter_or_number(character) || matches!(character, '\'' | '’')
         });
         pattern.push_str(&flexible_spaces(before));
-        literal.push_str(before);
+        has_content |= regex(r"[\p{L}\p{N}]", &CONTENT).is_match(before);
         if edit.as_str().starts_with('[') {
             if adjacent {
                 pattern.push_str(js_non_ws());
                 pattern.push('*');
             } else {
-                pattern.push_str(&format!("{JS_WS}+(?:{}+{JS_WS}+)?", js_non_ws()));
+                write!(pattern, "{JS_WS}+(?:{}+{JS_WS}+)?", js_non_ws()).unwrap();
             }
         } else {
             pattern.push_str("(?s:.*?)");
@@ -282,28 +283,23 @@ fn source_supports_marked_quote(quote: &str, source: &str) -> bool {
     }
     let tail = &expected[cursor..];
     pattern.push_str(&flexible_spaces(tail));
-    literal.push_str(tail);
-    if !regex(r"[\p{L}\p{N}]", &CONTENT).is_match(&literal) {
-        return false;
+    if !has_content && !regex(r"[\p{L}\p{N}]", &CONTENT).is_match(tail) {
+        return None;
     }
-    Regex::new(&format!(
-        r"(?:^|[^\p{{L}}\p{{N}}])(?:{pattern})(?:$|[^\p{{L}}\p{{N}}])"
-    ))
-    .expect("altered quote regex must compile")
-    .is_match(&available)
+    pattern.push_str(r")(?:$|[^\p{L}\p{N}])");
+    Some(Regex::new(&pattern).expect("altered quote regex must compile"))
 }
 
-fn unmarked_chunks(text: &str, quotes: &[MarkedQuote], labels: &[&str]) -> Vec<String> {
+fn unmarked_text(text: &str, quotes: &[MarkedQuote], labels: &[&str]) -> String {
     static ARTIFACT: OnceLock<Regex> = OnceLock::new();
-    let mut clean = text.to_owned();
-    let mut ranges = quotes
-        .iter()
-        .map(|quote| quote.marked[0]..quote.marked[1])
-        .collect::<Vec<_>>();
-    ranges.sort_unstable_by(|left, right| right.start.cmp(&left.start));
-    for range in ranges {
-        clean.replace_range(range, "\0");
+    let mut clean = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for quote in quotes {
+        clean.push_str(&text[cursor..quote.marked[0]]);
+        clean.push('\0');
+        cursor = quote.marked[1];
     }
+    clean.push_str(&text[cursor..]);
     let artifact = ARTIFACT.get_or_init(|| {
         Regex::new(&format!(
             r"\[@[^\]\r\n]+\]|\[\d+\]|\[\[[^\]\r\n]+\]\]|\[[^\]\r\n]+\]\([^\)\r\n]+\)|https?://{}+",
@@ -311,37 +307,44 @@ fn unmarked_chunks(text: &str, quotes: &[MarkedQuote], labels: &[&str]) -> Vec<S
         ))
         .expect("prose artifact regex must compile")
     });
-    clean = artifact.replace_all(&clean, "\0").into_owned();
+    if artifact.is_match(&clean) {
+        clean = artifact.replace_all(&clean, "\0").into_owned();
+    }
     let mut seen = HashSet::new();
     for &label in labels {
         if utf16_len(label) < 4 || !seen.insert(label) {
             continue;
         }
-        clean = RegexBuilder::new(&regex::escape(label))
+        let label = RegexBuilder::new(&regex::escape(label))
             .case_insensitive(true)
             .build()
-            .expect("evidence label regex must compile")
-            .replace_all(&clean, "\0")
-            .into_owned();
+            .expect("evidence label regex must compile");
+        if label.is_match(&clean) {
+            clean = label.replace_all(&clean, "\0").into_owned();
+        }
     }
     clean
-        .split('\0')
-        .filter(|chunk| !chunk.is_empty())
-        .map(str::to_owned)
-        .collect()
 }
 
 fn copy_content_word(word: &str) -> bool {
     utf16_len(word) > 2 && !COPY_STOP_WORDS.split(' ').any(|stop| stop == word)
 }
 
-fn copied_run<'a>(
-    chunks: &[String],
-    sources: &'a [VisibleEvidenceText],
-) -> Option<(&'a str, String)> {
-    let prose = chunks
-        .iter()
-        .map(|chunk| tokenize_source_text(chunk))
+fn enough_copy_content(run: &[DocumentWordSpan]) -> bool {
+    let mut distinct = HashSet::with_capacity(MIN_COPY_DISTINCT_CONTENT_TOKENS);
+    run.iter()
+        .filter(|token| copy_content_word(&token.word))
+        .any(|token| {
+            distinct.insert(token.word.as_str())
+                && distinct.len() == MIN_COPY_DISTINCT_CONTENT_TOKENS
+        })
+}
+
+fn copied_run<'a>(unmarked: &str, sources: &'a [VisibleEvidenceText]) -> Option<(&'a str, String)> {
+    let prose = unmarked
+        .split('\0')
+        .filter(|chunk| !chunk.is_empty())
+        .map(|chunk| (chunk, tokenize_source_text(chunk)))
         .collect::<Vec<_>>();
     for source in sources {
         let source_tokens = tokenize_source_text(&source.text);
@@ -355,7 +358,7 @@ fn copied_run<'a>(
                 .or_default()
                 .push(index);
         }
-        for (chunk_index, prose) in prose.iter().enumerate() {
+        for (chunk, prose) in &prose {
             if prose.len() < MIN_COPY_TOKENS {
                 continue;
             }
@@ -396,17 +399,9 @@ fn copied_run<'a>(
                     if normalized_length < MIN_COPY_CHARS {
                         continue;
                     }
-                    if run
-                        .iter()
-                        .filter(|token| copy_content_word(&token.word))
-                        .map(|token| token.word.as_str())
-                        .collect::<HashSet<_>>()
-                        .len()
-                        < MIN_COPY_DISTINCT_CONTENT_TOKENS
-                    {
+                    if !enough_copy_content(run) {
                         continue;
                     }
-                    let chunk = &chunks[chunk_index];
                     let coordinates = ScalarText::new(chunk);
                     let start = coordinates.byte_at_utf16(run[0].start).unwrap();
                     let end = coordinates.byte_at_utf16(run.last().unwrap().end).unwrap();
@@ -428,18 +423,42 @@ pub fn grounded_prose_errors(
         .iter()
         .filter(|source| cited_evidence_ids.contains(&source.evidence_id))
         .collect::<Vec<_>>();
+    let support = quotes
+        .iter()
+        .map(|quote| {
+            let expected = representation(&quote.text);
+            let fuzzy = utf16_len(&expected) <= MAX_MARKED_QUOTE_CHARS;
+            (expected, fuzzy, OnceLock::new())
+        })
+        .collect::<Vec<_>>();
+    let mut supported = vec![false; quotes.len()];
+    for &source in &cited {
+        let available = representation(&source.text);
+        let fuzzy = utf16_len(&available) <= MAX_FUZZY_SOURCE_CHARS;
+        for (index, (expected, expected_fuzzy, altered)) in support.iter().enumerate() {
+            if supported[index] || expected.is_empty() {
+                continue;
+            }
+            supported[index] = available.contains(expected.as_str())
+                || (fuzzy
+                    && *expected_fuzzy
+                    && altered
+                        .get_or_init(|| altered_quote_regex(expected))
+                        .as_ref()
+                        .is_some_and(|pattern| pattern.is_match(&available)));
+        }
+    }
+    drop(support);
     let mut errors = Vec::new();
-    for quote in &quotes {
-        if cited
-            .iter()
-            .any(|source| source_supports_marked_quote(&quote.text, &source.text))
-        {
+    for (index, quote) in quotes.iter().enumerate() {
+        if supported[index] {
             continue;
         }
+        let claim = repair_tokens(&quote.text, 400);
         let mut repaired = None;
         for &source in &cited {
             if let Some(suggestion) =
-                quote_repair_suggestion(&quote.text, std::slice::from_ref(&source.text))
+                repair_suggestion(nearest_verbatim_excerpt(&claim, &source.text))
             {
                 repaired = Some((source, suggestion));
                 break;
@@ -470,9 +489,8 @@ pub fn grounded_prose_errors(
         .iter()
         .flat_map(|source| source.labels.iter().map(String::as_str))
         .collect::<Vec<_>>();
-    if let Some((evidence_id, copied)) =
-        copied_run(&unmarked_chunks(text, &quotes, &labels), visible_evidence)
-    {
+    let unmarked = unmarked_text(text, &quotes, &labels);
+    if let Some((evidence_id, copied)) = copied_run(&unmarked, visible_evidence) {
         errors.push(format!(
             "unmarked copied passage {} matches visible evidence {}; quote it explicitly or write a genuine paraphrase",
             serde_json::to_string(&copied).unwrap(),

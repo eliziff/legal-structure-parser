@@ -1,6 +1,7 @@
 use legal_structure_core::{
-    a2aj_document_structure, pair_journal_footnotes as pair_journal, A2ajInput, A2ajSourceKind,
-    DocumentBlock, DocumentKind, DocumentOrigin, DocumentQuery, DocumentStructure, ScalarText,
+    a2aj_document_structure, pair_journal_footnotes as pair_journal, utf16_len, A2ajInput,
+    A2ajSourceKind, DocumentBlock, DocumentKind, DocumentOrigin, DocumentQuery, DocumentStructure,
+    ScalarText,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -63,12 +64,10 @@ fn parse_kind(value: &str) -> PyResult<DocumentKind> {
     }
 }
 
-fn text_slice(text: &[u16], start: usize, end: usize) -> PyResult<String> {
-    let units = text
-        .get(start..end)
-        .ok_or_else(|| PyRuntimeError::new_err("document block is outside its text"))?;
-    String::from_utf16(units)
-        .map_err(|_| PyRuntimeError::new_err("document block splits a Unicode character"))
+fn text_slice(text: &ScalarText<'_>, start: usize, end: usize) -> PyResult<String> {
+    text.slice_utf16(start..end)
+        .map(str::to_owned)
+        .ok_or_else(|| PyRuntimeError::new_err("document block splits a Unicode character"))
 }
 
 fn numbered<'py>(py: Python<'py>, label: Option<String>) -> PyResult<Bound<'py, PyAny>> {
@@ -211,7 +210,7 @@ impl Document {
             return 1.0;
         };
         let value = (last.start - first.start) as f64
-            / self.structure.query_text().encode_utf16().count().max(1) as f64;
+            / utf16_len(self.structure.query_text()).max(1) as f64;
         (value * 10_000.0).round() / 10_000.0
     }
 
@@ -235,11 +234,7 @@ impl Document {
     }
 
     fn segments(&self) -> PyResult<Vec<(String, Option<String>, Option<String>, String)>> {
-        let text = self
-            .structure
-            .query_text()
-            .encode_utf16()
-            .collect::<Vec<_>>();
+        let text = ScalarText::new(self.structure.query_text());
         let mut blocks = self
             .primary()
             .map(|(_, kind)| self.top_blocks(kind).collect::<Vec<_>>())
@@ -270,12 +265,12 @@ impl Document {
             ));
             cursor = cursor.max(block.end);
         }
-        if cursor < text.len() || segments.is_empty() {
+        if cursor < text.utf16_len() || segments.is_empty() {
             segments.push((
                 "text".to_owned(),
                 None,
                 None,
-                text_slice(&text, cursor, text.len())?,
+                text_slice(&text, cursor, text.utf16_len())?,
             ));
         }
         Ok(segments)

@@ -1,6 +1,7 @@
 #[cfg(feature = "structure-inference")]
 use super::inference::{formal_heading, statute_spine};
 use super::*;
+use sha2::{Digest, Sha256};
 
 fn evidence(text: &str, profile: DetectionProfile) -> DocumentInput {
     let range = ScalarRange {
@@ -8,14 +9,10 @@ fn evidence(text: &str, profile: DetectionProfile) -> DocumentInput {
         end: text.chars().count(),
     };
     DocumentInput {
-        schema_version: EVIDENCE_SCHEMA.into(),
         document_id: "test".into(),
         provider: "test".into(),
-        #[cfg(feature = "document-query")]
         url: None,
-        #[cfg(feature = "document-query")]
         doc_type: None,
-        provider_revision: "1".into(),
         profile,
         report_start_page: None,
         require_report_start: false,
@@ -23,7 +20,6 @@ fn evidence(text: &str, profile: DetectionProfile) -> DocumentInput {
         text: text.into(),
         text_sha256: format!("{:x}", Sha256::digest(text.as_bytes())),
         source_sha256: None,
-        offset_unit: "unicode-scalar".into(),
         scope: Scope {
             kind: ScopeKind::Complete,
             excerpt_of: None,
@@ -49,7 +45,6 @@ fn evidence(text: &str, profile: DetectionProfile) -> DocumentInput {
         })
         .collect(),
         exclusions: Vec::new(),
-        paragraph_breaks: Vec::new(),
     }
 }
 
@@ -69,29 +64,6 @@ fn section_locator_prefixes_are_delimited() {
             expected
         );
     }
-}
-
-#[test]
-fn validates_scope_and_ranges() {
-    let mut value = evidence("abc", DetectionProfile::CaseRootedComplete);
-    value.scope = Scope {
-        kind: ScopeKind::Excerpt,
-        excerpt_of: Some("whole".into()),
-    };
-    assert!(value.validate().is_err());
-    value.profile = DetectionProfile::CaseLossy;
-    assert!(value.validate().is_ok());
-    value.native_claims.push(NativeClaim {
-        id: "bad".into(),
-        kind: EvidenceKind::Page,
-        label: Some("page1".into()),
-        aliases: Vec::new(),
-        range: ScalarRange { start: 0, end: 4 },
-        origin_id: "native".into(),
-        parent_label: None,
-        anchor: None,
-    });
-    assert!(value.validate().is_err());
 }
 
 #[test]

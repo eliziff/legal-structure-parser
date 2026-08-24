@@ -1,5 +1,8 @@
 use super::*;
-use std::sync::Arc;
+use std::{
+    collections::{hash_map::Entry, BTreeMap},
+    sync::Arc,
+};
 
 macro_rules! cached_regex {
     ($name:ident, $pattern:expr) => {{
@@ -138,9 +141,7 @@ fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool) -> Vec<Marker> {
             result.push(Marker {
                 number: number.parse().unwrap(),
                 start,
-                content_start: line.scalar_start
-                    + line.text[..line.text.len() - value.len()].chars().count()
-                    + value[..content].chars().count(),
+                content_start: line.scalar_start + lead + content,
                 style,
                 score: 1.0,
                 formal: false,
@@ -161,10 +162,8 @@ fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool) -> Vec<Marker> {
                         result.push(Marker {
                             number: number.parse().unwrap(),
                             start,
-                            content_start: start
-                                + line.text[..line.text.len() - rest.len() + length]
-                                    .chars()
-                                    .count(),
+                            content_start: text
+                                .scalar(line.byte_start + line.text.len() - rest.len() + length),
                             style: MarkerStyle::Dot,
                             score: 1.0,
                             formal: false,
@@ -175,8 +174,6 @@ fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool) -> Vec<Marker> {
             }
         }
     }
-    result.sort_by_key(|marker| marker.start);
-    result.dedup_by_key(|marker| marker.start);
     result
 }
 
@@ -217,11 +214,10 @@ fn word_count(value: &str, letters_only: bool) -> usize {
     count
 }
 
-fn median(values: &[usize]) -> f64 {
+fn median(values: &mut [usize]) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
-    let mut values = values.to_vec();
     values.sort_unstable();
     let middle = values.len() / 2;
     if values.len() % 2 == 1 {
@@ -298,35 +294,31 @@ pub(super) fn formal_heading(value: &str) -> bool {
         return false;
     }
     let words = heading.split_whitespace().collect::<Vec<_>>();
-    let mut levels: Vec<(Vec<&str>, bool)> = vec![(Vec::new(), false)];
+    let mut start = 0;
+    let mut enumerated = false;
     for (index, word) in words.iter().enumerate() {
         let opener = words
             .get(index + 1)
             .is_some_and(|next| !heading_enumerator(next) && level_opens(next));
         if heading_enumerator(word) && opener {
-            if levels.last().unwrap().0.is_empty() {
-                levels.last_mut().unwrap().1 = true;
-            } else {
-                levels.push((Vec::new(), true));
+            if start < index && !heading_level(&words[start..index], enumerated) {
+                return false;
             }
-        } else {
-            levels.last_mut().unwrap().0.push(word);
+            start = index + 1;
+            enumerated = true;
         }
     }
-    levels
-        .iter()
-        .all(|(words, enumerated)| heading_level(words, *enumerated))
+    heading_level(&words[start..], enumerated)
 }
 
 fn sentence_heading(value: &str, following: &str) -> bool {
     let heading = trim_leading_parenthetical(value);
-    let words = heading.split_whitespace().collect::<Vec<_>>();
+    let mut words = heading.split_whitespace();
+    let word_count = words.clone().count();
     utf16_len(heading) <= 120
-        && (4..=18).contains(&words.len())
+        && (4..=18).contains(&word_count)
         && heading.chars().next().is_some_and(char::is_uppercase)
-        && words
-            .iter()
-            .any(|word| word.chars().next().is_some_and(char::is_lowercase))
+        && words.any(|word| word.chars().next().is_some_and(char::is_lowercase))
         && !heading.chars().any(|value| "[].,;:!?".contains(value))
         && following
             .trim_start()
@@ -379,7 +371,7 @@ fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usize>>; 2]) ->
                 at += 1;
                 continue;
             };
-            let start = line.scalar_start + line.text[..at].chars().count();
+            let start = text.scalar(line.byte_start + at);
             if known[index].is_some_and(|known| known.contains(&start)) {
                 at = end;
                 continue;
@@ -393,7 +385,7 @@ fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usize>>; 2]) ->
                 result[index].push(Marker {
                     number: line.text[digits..tail].parse().unwrap(),
                     start,
-                    content_start: line.scalar_start + line.text[..end].chars().count(),
+                    content_start: text.scalar(line.byte_start + end),
                     style,
                     score: if formal { 0.6 } else { 0.35 },
                     formal,
@@ -450,25 +442,26 @@ fn sole_chain(chain: &[Marker], candidates: &[Marker]) -> bool {
 }
 
 fn endnote_shaped(text: &ScalarText<'_>, chain: &[Marker]) -> bool {
+    let length = text.utf16_len();
     chain.len() >= 8
-        && text.utf16_len() > 0
+        && length > 0
         && chain
             .iter()
-            .filter(|value| text.utf16(value.start) as f64 > text.utf16_len() as f64 * 0.75)
+            .filter(|value| text.utf16(value.start) as f64 > length as f64 * 0.75)
             .count() as f64
             / chain.len() as f64
             >= 0.7
 }
 
-fn monotone_scopes(markers: &[Marker], max_gap: u32) -> Vec<Vec<Marker>> {
+fn monotone_scopes<'a>(
+    markers: impl IntoIterator<Item = &'a Marker>,
+    max_gap: u32,
+) -> Vec<Vec<Marker>> {
     let mut scopes = Vec::<Vec<Marker>>::new();
     let mut by_last = HashMap::<u32, Vec<usize>>::new();
     for marker in markers {
-        let candidates = (marker.number.saturating_sub(max_gap)..marker.number)
+        let index = (marker.number.saturating_sub(max_gap)..marker.number)
             .flat_map(|value| by_last.get(&value).into_iter().flatten().copied())
-            .collect::<Vec<_>>();
-        let index = candidates
-            .into_iter()
             .reduce(|best, current| {
                 let left = scopes[current][0].number;
                 let right = scopes[best][0].number;
@@ -520,20 +513,13 @@ pub(super) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
     let all = paragraph_markers(text, false);
     let mut boundaries = all.iter().map(|marker| marker.start).collect::<Vec<_>>();
     boundaries.push(text.len());
-    boundaries.sort_unstable();
-    boundaries.dedup();
     let mut runs = Vec::new();
     for style in [MarkerStyle::Bracket, MarkerStyle::Dot, MarkerStyle::Bare] {
-        let markers = all
-            .iter()
-            .filter(|marker| marker.style == style)
-            .cloned()
-            .collect::<Vec<_>>();
-        for scope in monotone_scopes(&markers, 8) {
+        for scope in monotone_scopes(all.iter().filter(|marker| marker.style == style), 8) {
             if scope.len() < 2 {
                 continue;
             }
-            let mut candidates = scope
+            let candidates = scope
                 .iter()
                 .map(|marker| {
                     let end = next_boundary(&boundaries, marker.start, text.len());
@@ -564,12 +550,8 @@ pub(super) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
                 start: candidates[0].range.start,
                 end: candidates.last().unwrap().range.end,
             };
-            let ordinal = runs.len() + 1;
-            for (index, candidate) in candidates.iter_mut().enumerate() {
-                candidate.id = format!("numeric-{ordinal:06}-{:04}", index + 1);
-            }
             runs.push(StructureCandidateRun {
-                id: format!("numeric-{ordinal:06}"),
+                id: String::new(),
                 grammar: CandidateGrammar::Numeric,
                 range,
                 rooted: scope[0].number == 1,
@@ -591,9 +573,7 @@ pub(super) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
 }
 
 pub(super) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateRun> {
-    #[derive(Clone)]
     struct RawEnumerator {
-        family: u8,
         value: u32,
         start: usize,
         content_start: usize,
@@ -602,18 +582,17 @@ pub(super) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
     let mut by_family = BTreeMap::<u8, Vec<RawEnumerator>>::new();
     for line in lines(text) {
         let trimmed = line.text.trim_start_matches(instrument_space);
-        let start =
-            line.scalar_start + line.text[..line.text.len() - trimmed.len()].chars().count();
+        let trimmed_byte = line.byte_start + line.text.len() - trimmed.len();
+        let start = text.scalar(trimmed_byte);
         let Some((token, at)) = instrument_marker(trimmed, true, true) else {
             continue;
         };
-        let content_start = start + trimmed[..at].chars().count();
+        let content_start = text.scalar(trimmed_byte + at);
         for (family, value) in enum_readings(token).into_iter().flatten() {
             let Ok(value) = value.parse::<u32>() else {
                 continue;
             };
             by_family.entry(family).or_default().push(RawEnumerator {
-                family,
                 value,
                 start,
                 content_start,
@@ -629,7 +608,7 @@ pub(super) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
     boundaries.sort_unstable();
     boundaries.dedup();
     let mut runs = Vec::new();
-    for markers in by_family.into_values() {
+    for (family, markers) in by_family {
         let mut scopes = Vec::<Vec<RawEnumerator>>::new();
         for marker in markers {
             let target = scopes
@@ -669,7 +648,7 @@ pub(super) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
                             end: marker.content_start,
                         },
                         label: surface_label,
-                        grammar_value: format!("{}:{}", marker.family, marker.value),
+                        grammar_value: format!("{family}:{}", marker.value),
                         parent_candidate_id: None,
                         level: 0,
                         content_start: marker.content_start,
@@ -747,10 +726,11 @@ fn recover_contiguous(
     }
     if let Some(first) = line.first().filter(|value| value.number > 1) {
         let end = candidates.partition_point(|value| value.start < first.start);
+        let first_utf16 = text.utf16(first.start);
         let mut matching = candidates[..end].iter().filter(|value| {
             value.number == first.number - 1
                 && value.formal
-                && text.utf16(first.start) - text.utf16(value.start) <= 2_000
+                && first_utf16 - text.utf16(value.start) <= 2_000
         });
         if let Some(candidate) = matching.next() {
             if matching.next().is_none() {
@@ -782,8 +762,9 @@ fn fill_lossy_marker_gaps(
     let candidates = std::mem::take(&mut candidates[style as usize]);
     let mut recovered = HashMap::<u32, Vec<Marker>>::new();
     for candidate in candidates {
-        let before = spine[..spine.partition_point(|value| value.start < candidate.start)].last();
-        let after = spine.get(spine.partition_point(|value| value.start <= candidate.start));
+        let at = spine.partition_point(|value| value.start < candidate.start);
+        let before = spine[..at].last();
+        let after = spine.get(at);
         let between = before.zip(after).is_some_and(|(left, right)| {
             left.number < candidate.number && candidate.number < right.number
         });
@@ -843,7 +824,7 @@ fn paragraph_ranges(
     all: &[Marker],
     style: MarkerStyle,
     fill_gaps: bool,
-    extra: &[usize],
+    extra: &[ScalarRange],
 ) -> Vec<Block> {
     let selected = if fill_gaps && style != MarkerStyle::Bare {
         fill_lossy_marker_gaps(text, selected, style)
@@ -854,7 +835,7 @@ fn paragraph_ranges(
         .iter()
         .map(|value| value.start)
         .chain(selected.iter().map(|value| value.start))
-        .chain(extra.iter().copied())
+        .chain(extra.iter().map(|value| value.start))
         .chain([text.len()])
         .collect::<Vec<_>>();
     boundaries.sort_unstable();
@@ -878,15 +859,17 @@ fn detect_paragraphs(
     profile: DetectionProfile,
     excluded: &[ScalarRange],
 ) -> Vec<Block> {
+    let text_length = text.utf16_len();
     let strict = profile != DetectionProfile::CaseLossy;
     let contiguous = profile == DetectionProfile::CaseContiguousComplete;
     let rooted = profile == DetectionProfile::CaseRootedComplete;
     let markers = paragraph_markers(text, contiguous);
     let mut by_style: [Vec<Marker>; 3] = std::array::from_fn(|_| Vec::new());
-    for marker in &markers {
+    for marker in markers {
         let filtered = rooted || (contiguous && marker.style != MarkerStyle::Bare);
-        if !filtered || marker_visible(marker, excluded) && (!strict || !quoted_dot(text, marker)) {
-            by_style[marker.style as usize].push(marker.clone());
+        if !filtered || marker_visible(&marker, excluded) && (!strict || !quoted_dot(text, &marker))
+        {
+            by_style[marker.style as usize].push(marker);
         }
     }
     let mut joined: [Vec<Marker>; 2] = std::array::from_fn(|_| Vec::new());
@@ -1015,32 +998,23 @@ fn detect_paragraphs(
         })
     });
     for hypothesis in hypotheses {
-        let offsets = hypothesis
-            .all
-            .iter()
-            .map(|value| value.start)
-            .collect::<Vec<_>>();
-        let mut next = HashMap::new();
-        for (index, start) in offsets.iter().enumerate() {
-            next.insert(
-                *start,
-                offsets.get(index + 1).copied().unwrap_or(text.len()),
-            );
+        let mut next = HashMap::with_capacity(hypothesis.all.len());
+        for pair in hypothesis.all.windows(2) {
+            next.insert(pair[0].start, pair[1].start);
         }
-        let preliminary = hypothesis
+        if let Some(last) = hypothesis.all.last() {
+            next.insert(last.start, text.len());
+        }
+        let first_start = hypothesis.markers[0].start;
+        let last_start = hypothesis.markers.last().unwrap().start;
+        let mut counts = hypothesis
             .markers
             .iter()
-            .map(|marker| ScalarRange {
-                start: marker.start,
-                end: next.get(&marker.start).copied().unwrap_or(text.len()),
-            })
-            .collect::<Vec<_>>();
-        let counts = preliminary
-            .iter()
-            .map(|range| {
-                if range.end >= range.start {
+            .map(|marker| {
+                let end = next.get(&marker.start).copied().unwrap_or(text.len());
+                if end >= marker.start {
                     word_count(
-                        text.slice(range.start..range.end)
+                        text.slice(marker.start..end)
                             .expect("section range is bounded"),
                         contiguous,
                     )
@@ -1050,22 +1024,21 @@ fn detect_paragraphs(
             })
             .collect::<Vec<_>>();
         let bounded = if counts.len() > 1 {
-            &counts[..counts.len() - 1]
+            counts.len() - 1
         } else {
-            &counts[..]
+            counts.len()
         };
-        let median = median(bounded);
-        let mean = bounded.iter().sum::<usize>() as f64 / bounded.len().max(1) as f64;
-        let maximum = bounded.iter().copied().max().unwrap_or(0);
+        let mean = counts[..bounded].iter().sum::<usize>() as f64 / bounded.max(1) as f64;
+        let maximum = counts[..bounded].iter().copied().max().unwrap_or(0);
+        let median = median(&mut counts[..bounded]);
         // The structure engine scores the unmodified hypothesis. Lossy heading inference
         // changes only the returned ranges after that hypothesis is accepted.
-        let start = text.utf16(preliminary[0].start) as f64 / text.utf16_len().max(1) as f64;
-        let span = (text.utf16(preliminary.last().unwrap().start)
-            - text.utf16(preliminary[0].start)) as f64
-            / text.utf16_len().max(1) as f64;
+        let first_utf16 = text.utf16(first_start);
+        let start = first_utf16 as f64 / text_length.max(1) as f64;
+        let span = (text.utf16(last_start) - first_utf16) as f64 / text_length.max(1) as f64;
         if hypothesis.short {
-            if text.utf16_len() <= 6_000
-                && (text.utf16(preliminary[0].start) <= 1_200 || start <= 0.5)
+            if text_length <= 6_000
+                && (first_utf16 <= 1_200 || start <= 0.5)
                 && counts.iter().copied().max().unwrap_or(0) >= 30
             {
                 return paragraph_ranges(
@@ -1074,17 +1047,17 @@ fn detect_paragraphs(
                     &hypothesis.all,
                     hypothesis.style,
                     !strict,
-                    &excluded.iter().map(|value| value.start).collect::<Vec<_>>(),
+                    excluded,
                 );
             }
             continue;
         }
-        let substantive =
-            counts.iter().filter(|value| **value >= 12).count() as f64 / preliminary.len() as f64;
+        let substantive = counts.iter().filter(|value| **value >= 12).count() as f64
+            / hypothesis.markers.len() as f64;
         if !(median >= 12.0 || mean >= 20.0 || maximum >= 30)
             || span < 0.05
             || (hypothesis.style == MarkerStyle::Bracket
-                && text.utf16_len() > 6_000
+                && text_length > 6_000
                 && start > 0.7
                 && substantive < 0.5)
             || (hypothesis.style != MarkerStyle::Bracket && substantive < 0.7)
@@ -1099,14 +1072,15 @@ fn detect_paragraphs(
             &hypothesis.all,
             hypothesis.style,
             !strict,
-            &excluded.iter().map(|value| value.start).collect::<Vec<_>>(),
+            excluded,
         );
     }
     Vec::new()
 }
 
 fn gapped_paragraphs(blocks: &[Block]) -> bool {
-    let values = blocks
+    let mut prior = None;
+    blocks
         .iter()
         .filter(|value| value.kind == NodeKind::Paragraph)
         .filter_map(|value| {
@@ -1117,8 +1091,11 @@ fn gapped_paragraphs(blocks: &[Block]) -> bool {
                 .parse::<u32>()
                 .ok()
         })
-        .collect::<Vec<_>>();
-    values.windows(2).any(|pair| pair[1] != pair[0] + 1)
+        .any(|value| {
+            let gapped = prior.is_some_and(|prior| value != prior + 1);
+            prior = Some(value);
+            gapped
+        })
 }
 
 fn clipped_case_paragraphs(
@@ -1149,7 +1126,6 @@ fn clipped_case_paragraphs(
     blocks
 }
 
-#[derive(Clone)]
 struct PageMarker {
     number: u32,
     start: usize,
@@ -1157,10 +1133,6 @@ struct PageMarker {
 }
 
 fn page_markers(text: &ScalarText<'_>, report_start: Option<u32>) -> Vec<PageMarker> {
-    let page_word = cached_regex!(PAGE_WORD, r"(?iu)\bpage\b");
-    if !page_word.is_match(text.value) {
-        return Vec::new();
-    }
     let regex = cached_regex!(
         VALUE,
         r"(?imu)\[[ \t]*pages?[ \t]*[.:,;]?[ \t]*(\d{1,4})[ \t]*[.:,;]?[ \t]*[\]\[)}]?[ \t]*[.,;:]?|^[ \t]*\[?[ \t]*page[ \t]*[.:,;]?[ \t]*(\d{1,4})[ \t]*[\])}]?[ \t]*[.,;:]?[ \t]*$"
@@ -1184,8 +1156,8 @@ fn page_markers(text: &ScalarText<'_>, report_start: Option<u32>) -> Vec<PageMar
             if report_start.is_some_and(|start| number < start) {
                 continue;
             }
-            let start = line.scalar_start + line.text[..whole.start()].chars().count();
-            let content_start = line.scalar_start + line.text[..whole.end()].chars().count();
+            let start = text.scalar(line.byte_start + whole.start());
+            let content_start = text.scalar(line.byte_start + whole.end());
             result.push(PageMarker {
                 number,
                 start,
@@ -1207,14 +1179,14 @@ fn detect_pages(
     let mut scopes = Vec::<Vec<PageMarker>>::new();
     let mut by_last = HashMap::<u32, Vec<usize>>::new();
     for marker in page_markers(text, report_start) {
-        let candidates = marker
+        let number = marker.number;
+        let index = marker
             .number
             .checked_sub(1)
             .and_then(|number| by_last.get(&number))
-            .cloned()
-            .unwrap_or_default();
-        let index = candidates
             .into_iter()
+            .flatten()
+            .copied()
             .reduce(|best, current| {
                 if scopes[current].last().unwrap().start > scopes[best].last().unwrap().start {
                     current
@@ -1224,26 +1196,31 @@ fn detect_pages(
             })
             .unwrap_or(scopes.len());
         if index == scopes.len() {
-            scopes.push(vec![marker.clone()]);
+            scopes.push(vec![marker]);
         } else {
             let previous = scopes[index].last().unwrap().number;
             if let Some(values) = by_last.get_mut(&previous) {
                 values.retain(|value| *value != index);
             }
-            scopes[index].push(marker.clone());
+            scopes[index].push(marker);
         }
-        by_last.entry(marker.number).or_default().push(index);
+        by_last.entry(number).or_default().push(index);
     }
-    scopes.retain(|scope| scope.len() >= 3);
-    scopes.sort_by_key(|scope| std::cmp::Reverse(scope.len()));
-    if scopes.is_empty()
-        || scopes
-            .get(1)
-            .is_some_and(|other| other.len() == scopes[0].len())
-    {
+    let mut best = Vec::new();
+    let mut tied = false;
+    for scope in scopes.into_iter().filter(|scope| scope.len() >= 3) {
+        match scope.len().cmp(&best.len()) {
+            std::cmp::Ordering::Greater => {
+                best = scope;
+                tied = false;
+            }
+            std::cmp::Ordering::Equal => tied = true,
+            std::cmp::Ordering::Less => {}
+        }
+    }
+    if best.is_empty() || tied {
         return Vec::new();
     }
-    let best = &scopes[0];
     let mut blocks = best
         .windows(2)
         .map(|pair| {
@@ -1323,7 +1300,6 @@ pub(super) struct SectionMark {
     pub(super) aliases: Vec<String>,
 }
 
-#[derive(Clone)]
 struct LabelPart<'a> {
     separator: char,
     digits: Option<&'a str>,
@@ -1419,8 +1395,9 @@ pub(super) fn compare_labels(left: &str, right: &str, fraction: bool) -> std::cm
             (None, None) => {
                 let ordered = a
                     .text
-                    .to_ascii_uppercase()
-                    .cmp(&b.text.to_ascii_uppercase());
+                    .bytes()
+                    .map(|byte| byte.to_ascii_uppercase())
+                    .cmp(b.text.bytes().map(|byte| byte.to_ascii_uppercase()));
                 if ordered != Equal {
                     return ordered;
                 }
@@ -1764,9 +1741,8 @@ fn choose_sections<'a>(
 }
 
 fn section_guard(value: &[&SectionMark], text: &ScalarText<'_>) -> bool {
-    !value.is_empty()
-        && text.utf16_len() > 0
-        && text.utf16(value[0].start) as f64 / text.utf16_len() as f64 <= 0.7
+    let length = text.utf16_len();
+    !value.is_empty() && length > 0 && text.utf16(value[0].start) as f64 / length as f64 <= 0.7
 }
 
 fn scope_winner<'a>(
@@ -1774,30 +1750,41 @@ fn scope_winner<'a>(
     marks: &[&'a SectionMark],
     text: &ScalarText<'_>,
 ) -> Option<Vec<&'a SectionMark>> {
-    let mut values = scopes
-        .into_iter()
-        .map(|scope| {
-            if scope.first().is_some_and(|value| {
-                value.style != SectionStyle::DotTerm && section_key(&value.label).count() == 1
-            }) {
-                expand_descendants(scope, marks, text.len())
-            } else {
-                scope
-            }
-        })
-        .filter(|scope| section_guard(scope, text))
-        .collect::<Vec<_>>();
-    values.sort_by(|left, right| {
-        right
-            .len()
-            .cmp(&left.len())
-            .then(left[0].start.cmp(&right[0].start))
-    });
-    let best = values.first()?;
-    let unambiguous = !values.iter().skip(1).any(|value| {
-        value.len() == best.len() && value[0].start == best[0].start && !same_labels(value, best)
-    });
-    unambiguous.then(|| values.swap_remove(0))
+    let mut best: Option<Vec<&'a SectionMark>> = None;
+    let mut ambiguous = false;
+    for scope in scopes.into_iter().map(|scope| {
+        if scope.first().is_some_and(|value| {
+            value.style != SectionStyle::DotTerm && section_key(&value.label).count() == 1
+        }) {
+            expand_descendants(scope, marks, text.len())
+        } else {
+            scope
+        }
+    }) {
+        if !section_guard(&scope, text) {
+            continue;
+        }
+        let Some(current) = best.as_ref() else {
+            best = Some(scope);
+            continue;
+        };
+        let better = scope.len() > current.len()
+            || scope.len() == current.len() && scope[0].start < current[0].start;
+        let competing = scope.len() == current.len()
+            && scope[0].start == current[0].start
+            && !same_labels(&scope, current);
+        if better {
+            best = Some(scope);
+            ambiguous = false;
+        } else if competing {
+            ambiguous = true;
+        }
+    }
+    if ambiguous {
+        None
+    } else {
+        best
+    }
 }
 
 fn statute_winner<'a>(
@@ -1868,7 +1855,7 @@ fn short_root(
             candidates.push(SectionMark {
                 label: value.to_owned(),
                 start: line.scalar_start + leading_ascii_space(line.text),
-                content_start: line.scalar_start + line.text.chars().count(),
+                content_start: text.scalar(line.byte_end),
                 style: SectionStyle::Integer,
                 family: SectionFamily::Bare,
                 aliases: Vec::new(),
@@ -1889,15 +1876,10 @@ fn short_root(
                 invalid = true;
                 continue;
             };
-            let parenthetical = next.text.trim_start().starts_with('(')
-                && next.text.trim_start()[1..]
-                    .chars()
-                    .next()
-                    .is_some_and(char::is_numeric);
-            if !heading.is_match(next.text.trim_start())
-                && !parenthetical
-                && !status.is_match(next.text.trim_start())
-            {
+            let next_value = next.text.trim_start();
+            let parenthetical = next_value.starts_with('(')
+                && next_value[1..].chars().next().is_some_and(char::is_numeric);
+            if !heading.is_match(next_value) && !parenthetical && !status.is_match(next_value) {
                 invalid = true;
             } else {
                 marker.content_start = next.scalar_start + leading_ascii_space(next.text);
@@ -1909,29 +1891,21 @@ fn short_root(
     }
     candidates.sort_by_key(|value| value.start);
     candidates.dedup_by(|left, right| left.label == right.label && left.start == right.start);
-    let ones = candidates
-        .iter()
-        .filter(|value| value.label == "1")
-        .cloned()
-        .collect::<Vec<_>>();
-    let twos = candidates
-        .iter()
-        .filter(|value| value.label == "2")
-        .cloned()
-        .collect::<Vec<_>>();
-    if ones.len() != 1
-        || twos.len() > 1
-        || twos.first().is_some_and(|two| two.start <= ones[0].start)
-    {
+    let mut ones = candidates.iter().filter(|value| value.label == "1");
+    let Some(one) = ones.next() else {
+        return Vec::new();
+    };
+    if ones.next().is_some() {
         return Vec::new();
     }
-    let result = if twos.is_empty() {
-        vec![ones[0].clone()]
-    } else {
-        vec![ones[0].clone(), twos[0].clone()]
-    };
-    if text.utf16(result[0].start) as f64 / text.utf16_len().max(1) as f64 <= 0.7 {
-        result
+    let mut twos = candidates.iter().filter(|value| value.label == "2");
+    let two = twos.next();
+    if twos.next().is_some() || two.is_some_and(|two| two.start <= one.start) {
+        return Vec::new();
+    }
+    let accepted = text.utf16(one.start) as f64 / text.utf16_len().max(1) as f64 <= 0.7;
+    if accepted {
+        candidates
     } else {
         Vec::new()
     }
@@ -2005,40 +1979,37 @@ fn statute_spine_from_lines(
     }
 }
 
+#[cfg(test)]
 pub(super) fn statute_spine(text: &ScalarText<'_>, allow_hyphen: bool) -> Vec<SectionMark> {
     statute_spine_from_lines(text, allow_hyphen, &lines(text).collect::<Vec<_>>())
 }
 
 pub(crate) fn dotted_order<'a>(labels: impl Iterator<Item = &'a str>) -> Option<bool> {
-    let dotted = labels
-        .filter(|value| value.contains('.') && !value.contains('-'))
-        .collect::<Vec<_>>();
-    let inversions = |fraction| {
-        dotted
-            .windows(2)
-            .filter(|pair| compare_labels(pair[0], pair[1], fraction).is_gt())
-            .count()
+    let mut dotted = labels.filter(|value| value.contains('.') && !value.contains('-'));
+    let Some(mut prior) = dotted.next() else {
+        return Some(false);
     };
-    let component = inversions(false);
-    let fraction = inversions(true);
+    let (mut component, mut fraction, mut different) = (0, 0, false);
+    for value in dotted {
+        let component_order = compare_labels(prior, value, false);
+        let fraction_order = compare_labels(prior, value, true);
+        component += usize::from(component_order.is_gt());
+        fraction += usize::from(fraction_order.is_gt());
+        different |= component_order != fraction_order;
+        prior = value;
+    }
     if component != fraction {
         return Some(fraction < component);
     }
-    if dotted.windows(2).any(|pair| {
-        compare_labels(pair[0], pair[1], false) != compare_labels(pair[0], pair[1], true)
-    }) {
-        None
-    } else {
-        Some(false)
-    }
+    (!different).then_some(false)
 }
 
-fn emphasis_sections(text: &ScalarText<'_>) -> Vec<SectionMark> {
+fn emphasis_sections(text: &ScalarText<'_>, source: &[Line<'_>]) -> Vec<SectionMark> {
     if !text.value.contains("**") {
         return Vec::new();
     }
     let mut candidates = Vec::new();
-    for line in lines(text) {
+    for line in source {
         let lead = leading_ascii_space(line.text);
         let value = &line.text[lead..];
         let Some(value) = value.strip_prefix("**") else {
@@ -2060,7 +2031,7 @@ fn emphasis_sections(text: &ScalarText<'_>) -> Vec<SectionMark> {
             content_start: line.scalar_start
                 + lead
                 + 2
-                + label.chars().count()
+                + label.len()
                 + 2
                 + leading_ascii_space(rest),
             style: section_style(label, false),
@@ -2092,11 +2063,10 @@ fn emphasis_sections(text: &ScalarText<'_>) -> Vec<SectionMark> {
             result.push(marker);
         }
     }
-    if result.is_empty()
-        || text.utf16(result[0].start) as f64 / text.utf16_len().max(1) as f64 > 0.7
-        || (text.utf16_len() - text.utf16(result[0].start)) as f64
-            / (text.utf16_len().max(1) as f64)
-            < 0.1
+    let length = text.utf16_len();
+    let start = text.utf16(result[0].start);
+    if start as f64 / length.max(1) as f64 > 0.7
+        || (length - start) as f64 / (length.max(1) as f64) < 0.1
     {
         Vec::new()
     } else {
@@ -2143,8 +2113,9 @@ fn coherent_sections(marks: &[SectionMark]) -> bool {
 }
 
 fn selected_sections(text: &ScalarText<'_>, allow_hyphen: bool) -> Vec<SectionMark> {
-    let emphasis = emphasis_sections(text);
-    let flat = statute_spine(text, allow_hyphen);
+    let source = lines(text).collect::<Vec<_>>();
+    let emphasis = emphasis_sections(text, &source);
+    let flat = statute_spine_from_lines(text, allow_hyphen, &source);
     let mut selected = if emphasis.is_empty() {
         flat
     } else if flat.is_empty() {
@@ -2235,7 +2206,6 @@ struct ChildMark<'a> {
     content_start: usize,
 }
 
-#[derive(Clone)]
 pub(super) struct GrammarPoint {
     pub(super) range: ScalarRange,
     pub(super) label: String,
@@ -2287,19 +2257,19 @@ fn enum_readings(token: &str) -> [Option<(u8, String)>; 2] {
         _ => None,
     };
     let upper = bytes.iter().any(u8::is_ascii_uppercase);
-    let alpha = alpha.map(|value| (if upper { 3 } else { 1 }, value.to_string()));
-    let roman = roman_value(token).map(|value| (if upper { 4 } else { 2 }, value.to_string()));
+    let alpha = alpha.map(|value| (if upper { 3 } else { 1 }, value));
+    let roman = roman_value(token).map(|value| (if upper { 4 } else { 2 }, value));
     if token.len() > 1 {
         [
             roman
-                .clone()
-                .filter(|(_, value)| value.parse::<u32>().unwrap() <= 50)
+                .filter(|(_, value)| *value <= 50)
                 .or(alpha)
-                .or(roman),
+                .or(roman)
+                .map(|(family, value)| (family, value.to_string())),
             None,
         ]
     } else {
-        [alpha, roman]
+        [alpha, roman].map(|reading| reading.map(|(family, value)| (family, value.to_string())))
     }
 }
 
@@ -2430,6 +2400,7 @@ fn compare_child_values(left: &str, right: &str) -> std::cmp::Ordering {
 }
 
 fn admitted_dialects<'a>(
+    text: &ScalarText<'_>,
     source: &mut [Line<'a>],
 ) -> ([bool; 2], Vec<(usize, &'a str, usize, usize)>) {
     let mut live: [[(String, usize); 5]; 2] = Default::default();
@@ -2439,7 +2410,7 @@ fn admitted_dialects<'a>(
         let trimmed = line.text.trim_start_matches(instrument_space);
         let lead = line.text.len() - trimmed.len();
         line.byte_start += lead;
-        line.scalar_start += line.text[..lead].chars().count();
+        line.scalar_start = text.scalar(line.byte_start);
         line.text = trimmed.trim_end_matches(instrument_space);
         let value = line.text;
         if value.starts_with('(') {
@@ -2478,11 +2449,19 @@ impl StructureState {
         code: &'static str,
     ) -> String {
         let base = format!("{parent}({token})");
-        let occurrence = self.used.entry(base.clone()).or_insert(1);
-        let label = (*occurrence > 1)
-            .then(|| format!("{base}@{occurrence}"))
-            .unwrap_or(base);
-        *occurrence += 1;
+        let label = match self.used.entry(base) {
+            Entry::Vacant(entry) => {
+                let label = entry.key().clone();
+                entry.insert(2);
+                label
+            }
+            Entry::Occupied(mut entry) => {
+                let occurrence = *entry.get();
+                let label = format!("{}@{occurrence}", entry.key());
+                *entry.get_mut() += 1;
+                label
+            }
+        };
         self.nodes.push((
             GrammarPoint {
                 range: ScalarRange {
@@ -2563,7 +2542,7 @@ impl StructureState {
         };
         let label = self.emit_child(token, start, content_start, parent, depth, code);
         if pass < 4 {
-            self.stack.last_mut().unwrap().label = label.clone();
+            self.stack.last_mut().unwrap().label = label;
         }
     }
 
@@ -2635,14 +2614,15 @@ impl StructureState {
 
         self.stack.retain(|frame| frame.family <= family);
         let at = self.stack.iter().position(|frame| frame.family == family);
-        let (root, root_depth) = self.section.clone().unwrap();
+        let (root, root_depth) = self.section.as_ref().unwrap();
+        let root_depth = *root_depth;
         let parent = at
             .and_then(|index| index.checked_sub(1))
             .and_then(|index| self.stack.get(index))
             .or_else(|| self.stack.iter().rev().find(|frame| frame.family < family))
             .map_or_else(|| root.clone(), |frame| frame.label.clone());
         if let Some(index) = at {
-            self.stack[index].value = value.clone();
+            self.stack[index].value = value;
         } else {
             self.stack.push(EnumFrame {
                 family,
@@ -2687,8 +2667,8 @@ fn enumerated_children(
         let (token, content, close) = legislation_marker(line, newline)?;
         Some(ChildMark {
             token,
-            start: range.start + value[..prefix + close].chars().count(),
-            content_start: range.start + value[..prefix + content].chars().count(),
+            start: text.scalar(bytes.start + prefix + close),
+            content_start: text.scalar(bytes.start + prefix + content),
         })
     });
     if let Some(marker) = leading {
@@ -2705,7 +2685,7 @@ fn enumerated_children(
             markers.push(ChildMark {
                 token,
                 start,
-                content_start: content_start + inline_line[..at].chars().count(),
+                content_start: text.scalar(text.byte(content_start) + at),
             });
         }
     }
@@ -2721,9 +2701,7 @@ fn enumerated_children(
                 markers.push(ChildMark {
                     token,
                     start: line_scalar,
-                    content_start: line_scalar
-                        + line[..line.len() - trimmed.len()].chars().count()
-                        + trimmed[..at].chars().count(),
+                    content_start: text.scalar(line_byte + line.len() - trimmed.len() + at),
                 });
             }
         }
@@ -2844,7 +2822,7 @@ pub(super) fn detect_instrument_grammar(text: &ScalarText<'_>) -> Vec<GrammarPoi
         .into_iter()
         .peekable();
     let direct = spine.peek().is_none();
-    let (dialects, dialect_markers) = admitted_dialects(&mut lines);
+    let (dialects, dialect_markers) = admitted_dialects(text, &mut lines);
     let mut dialect_markers = dialect_markers.into_iter().peekable();
     let mut state = StructureState::default();
     for line in lines.iter().copied() {
@@ -2859,7 +2837,7 @@ pub(super) fn detect_instrument_grammar(text: &ScalarText<'_>) -> Vec<GrammarPoi
             .map(|mark| (format!("sec{}", mark.label), mark.content_start, false))
             .or_else(|| {
                 instrument_top(value, direct).map(|(label, at, container)| {
-                    (label, start + value[..at].chars().count(), container)
+                    (label, text.scalar(line.byte_start + at), container)
                 })
             });
         if let Some((label, content_start, container)) = selected {
@@ -2890,11 +2868,7 @@ pub(super) fn detect_instrument_grammar(text: &ScalarText<'_>) -> Vec<GrammarPoi
                     ""
                 };
                 if let Some((token, at)) = instrument_marker(inline, false, false) {
-                    state.child(
-                        token,
-                        content_start,
-                        content_start + inline[..at].chars().count(),
-                    );
+                    state.child(token, content_start, text.scalar(content_byte + at));
                 }
             }
             continue;
@@ -2909,7 +2883,7 @@ pub(super) fn detect_instrument_grammar(text: &ScalarText<'_>) -> Vec<GrammarPoi
             None => None,
         };
         if let Some((token, at)) = marker {
-            state.child(token, start, start + value[..at].chars().count());
+            state.child(token, start, text.scalar(line.byte_start + at));
         }
     }
     let mut open = Vec::<usize>::new();
@@ -2942,6 +2916,9 @@ fn detect_legislation(
     native_claims: &[NativeClaim],
 ) -> Vec<Block> {
     let sections = selected_sections(text, allow_hyphenated_sections);
+    let merge_native = native_claims
+        .iter()
+        .any(|claim| claim.kind == EvidenceKind::Section && claim.parent_label.is_none());
     let mut result = Vec::new();
     let mut parent_blocks = HashMap::<String, Vec<usize>>::new();
     for (index, section) in sections.iter().enumerate() {
@@ -2965,11 +2942,16 @@ fn detect_legislation(
             matches!(section.family, SectionFamily::Bare | SectionFamily::DotTerm),
             None,
         );
-        parent_blocks
-            .entry(parent.to_ascii_lowercase())
-            .or_default()
-            .extend(result.len()..result.len() + children.len());
+        if merge_native && !children.is_empty() {
+            parent_blocks
+                .entry(parent.to_ascii_lowercase())
+                .or_default()
+                .extend(result.len()..result.len() + children.len());
+        }
         result.extend(children);
+    }
+    if !merge_native {
+        return result;
     }
     let mut retained = vec![true; result.len()];
     for claim in native_claims
@@ -2994,7 +2976,7 @@ fn detect_legislation(
         let content_start = value[lead..]
             .strip_prefix(label)
             .map_or(claim.range.start, |_| {
-                claim.range.start + value[..lead].chars().count() + label.chars().count()
+                claim.range.start + lead + label.len()
             });
         let parent = format!("sec{label}");
         let children = enumerated_children(
@@ -3037,32 +3019,34 @@ fn add_ranges(mut blocks: Vec<Block>, length: usize) -> Vec<Block> {
 
 fn detect_journal(text: &ScalarText<'_>) -> Vec<Block> {
     let source = javascript_lines(text);
+    let section = cached_regex!(
+        SECTION,
+        r"(?u)^[ \t]*([IVXLCDM]+|[A-Z])\.[ \t]+([^\x08]{3,180})$"
+    );
     let mut result = add_ranges(
         source
             .iter()
-            .filter_map(|line| {
-                cached_regex!(
-                    SECTION,
-                    r"(?u)^[ \t]*([IVXLCDM]+|[A-Z])\.[ \t]+([^\x08]{3,180})$"
-                )
-                .captures(line.text)
-                .map(|capture| (line, capture))
-            })
+            .filter_map(|line| section.captures(line.text).map(|capture| (line, capture)))
             .map(|(line, capture)| {
                 let whole = capture.get(0).unwrap();
-                let title = capture[2].split_whitespace().collect::<Vec<_>>().join(" ");
-                let alias = title
-                    .to_lowercase()
-                    .chars()
-                    .map(|value| if value.is_alphanumeric() { value } else { ' ' })
-                    .collect::<String>()
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ");
+                let lowercase = capture[2].to_lowercase();
+                let alias = lowercase
+                    .split(|value: char| !value.is_alphanumeric())
+                    .filter(|value| !value.is_empty())
+                    .fold(
+                        String::with_capacity(lowercase.len()),
+                        |mut alias, value| {
+                            if !alias.is_empty() {
+                                alias.push(' ');
+                            }
+                            alias.push_str(value);
+                            alias
+                        },
+                    );
                 let mut block = Block::labelled(
                     NodeKind::Section,
                     format!("sec{}", &capture[1]),
-                    line.scalar_start + line.text[..whole.start()].chars().count(),
+                    text.scalar(line.byte_start + whole.start()),
                     0,
                 );
                 block.aliases = std::iter::once(capture[1].to_owned())
@@ -3073,20 +3057,17 @@ fn detect_journal(text: &ScalarText<'_>) -> Vec<Block> {
             .collect(),
         text.len(),
     );
+    let note = cached_regex!(NOTE, r"(?u)^[ \t]*(\d{1,5})\t[ \t]*$");
     result.extend(add_ranges(
         source
             .iter()
-            .filter_map(|line| {
-                cached_regex!(NOTE, r"(?u)^[ \t]*(\d{1,5})\t[ \t]*$")
-                    .captures(line.text)
-                    .map(|capture| (line, capture))
-            })
+            .filter_map(|line| note.captures(line.text).map(|capture| (line, capture)))
             .map(|(line, capture)| {
                 let whole = capture.get(0).unwrap();
                 let mut block = Block::labelled(
                     NodeKind::Footnote,
                     format!("fn{}", capture[1].parse::<u32>().unwrap()),
-                    line.scalar_start + line.text[..whole.start()].chars().count(),
+                    text.scalar(line.byte_start + whole.start()),
                     0,
                 );
                 block.aliases.push(capture[1].to_owned());
@@ -3101,9 +3082,9 @@ fn detect_journal(text: &ScalarText<'_>) -> Vec<Block> {
         if start.is_none() && !blank {
             start = line
                 .text
-                .char_indices()
-                .find(|(_, value)| !javascript_whitespace(*value))
-                .map(|(at, _)| line.scalar_start + line.text[..at].chars().count());
+                .chars()
+                .position(|value| !javascript_whitespace(value))
+                .map(|at| line.scalar_start + at);
         }
         let next_blank = source
             .get(index + 1)
@@ -3112,19 +3093,23 @@ fn detect_journal(text: &ScalarText<'_>) -> Vec<Block> {
             let end = if index + 1 == source.len() {
                 text.len()
             } else {
-                line.scalar_start + line.text.chars().count()
+                text.scalar(line.byte_end)
             };
             let value = text
                 .slice(block_start..end)
                 .expect("journal block range is bounded");
-            let block_start =
-                if cached_regex!(PAGE, r"(?iu)^\[page [^\]\n]{1,40}\]").is_match(value) {
-                    value
-                        .find('\n')
-                        .map_or(end, |at| block_start + value[..=at].chars().count())
-                } else {
-                    block_start
-                };
+            let first_line = value.split_once('\n').map_or(value, |(line, _)| line);
+            let page_marker = first_line
+                .find(']')
+                .and_then(|end| crate::locator::literal_page_marker(&first_line[..=end], true))
+                .is_some_and(|label| !label.is_empty() && label.len() <= 40);
+            let block_start = if page_marker {
+                value
+                    .find('\n')
+                    .map_or(end, |at| text.scalar(text.byte(block_start) + at + 1))
+            } else {
+                block_start
+            };
             if block_start < end {
                 result.push(Block {
                     kind: NodeKind::Prose,
@@ -3148,13 +3133,6 @@ fn detect_journal(text: &ScalarText<'_>) -> Vec<Block> {
 }
 
 pub(super) fn inferred_blocks(evidence: &DocumentInput, text: &ScalarText<'_>) -> Vec<Block> {
-    let mut paragraph_exclusions = evidence
-        .exclusions
-        .iter()
-        .filter(|value| value.applies_to.iter().any(|name| name == "paragraph"))
-        .map(|value| value.range)
-        .collect::<Vec<_>>();
-    paragraph_exclusions.sort_by_key(|range| (range.start, range.end));
     match evidence.profile {
         DetectionProfile::Legislation => detect_legislation(
             text,
@@ -3163,12 +3141,21 @@ pub(super) fn inferred_blocks(evidence: &DocumentInput, text: &ScalarText<'_>) -
         ),
         DetectionProfile::Instrument => detect_instrument(text),
         DetectionProfile::Journal => detect_journal(text),
-        _ => detect_case(
-            text,
-            evidence.profile,
-            evidence.report_start_page,
-            evidence.require_report_start,
-            &paragraph_exclusions,
-        ),
+        _ => {
+            let mut exclusions = evidence
+                .exclusions
+                .iter()
+                .filter(|value| value.applies_to.iter().any(|name| name == "paragraph"))
+                .map(|value| value.range)
+                .collect::<Vec<_>>();
+            exclusions.sort_unstable_by_key(|range| (range.start, range.end));
+            detect_case(
+                text,
+                evidence.profile,
+                evidence.report_start_page,
+                evidence.require_report_start,
+                &exclusions,
+            )
+        }
     }
 }

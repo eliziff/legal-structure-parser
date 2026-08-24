@@ -1,9 +1,10 @@
-use crate::{
-    analyze_instrument, normalize_document_locator, text::equal_fold, utf16_len,
-    AuthoritativeTableCell, DocumentKind, DocumentStructure, InstrumentCrossReferenceReason,
+use crate::equal_fold;
+use legal_grammar_tables::compile_ecmascript_pattern;
+use legal_structure::{
+    analyze_instrument, normalize_document_locator, utf16_len, AuthoritativeTableCell,
+    DocumentKind, DocumentStructure, InstrumentCrossReferenceReason,
     InstrumentCrossReferenceStatus, ScalarText, StructureNode,
 };
-use legal_grammar_tables::compile_ecmascript_pattern;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -20,12 +21,14 @@ macro_rules! cached {
     }};
 }
 
-
 struct Analyzed {
     structure: DocumentStructure,
 }
 
-fn analyze(text: &str, reconstruct_lineation: bool) -> Result<Analyzed, crate::EngineError> {
+fn analyze(
+    text: &str,
+    reconstruct_lineation: bool,
+) -> Result<Analyzed, legal_structure::EngineError> {
     let structure = analyze_instrument(
         text,
         String::new(),
@@ -35,14 +38,12 @@ fn analyze(text: &str, reconstruct_lineation: bool) -> Result<Analyzed, crate::E
     Ok(Analyzed { structure })
 }
 
-
 struct Splice {
     start: usize,
     end: usize,
     replacement: String,
     receipt: Value,
 }
-
 
 fn occurrence_base(label: &str) -> &str {
     let Some(at) = label.rfind('@') else {
@@ -69,8 +70,9 @@ fn numbering_parent(label: &str) -> String {
 fn at_or_below(label: &str, root: &str) -> bool {
     let label = occurrence_base(label);
     label == root
-        || label.starts_with(&format!("{root}("))
-        || label.starts_with(&format!("{root}."))
+        || label
+            .strip_prefix(root)
+            .is_some_and(|suffix| suffix.starts_with(['(', '.']))
 }
 
 fn numbering_family(label: &str, family: &str) -> bool {
@@ -227,11 +229,12 @@ pub fn delete_provision_and_renumber_siblings(
     source: &str,
     target: &str,
     reconstruct_lineation: bool,
-) -> Result<Value, crate::EngineError> {
+) -> Result<Value, legal_structure::EngineError> {
     let before = analyze(source, reconstruct_lineation)?;
     let coordinates = ScalarText::new(source);
-    let requested = if target.to_lowercase().starts_with("sec") {
-        target.to_lowercase()
+    let lower = target.to_lowercase();
+    let requested = if lower.starts_with("sec") {
+        lower
     } else {
         normalize_document_locator(DocumentKind::Section, target).to_lowercase()
     };
@@ -518,4 +521,27 @@ pub fn delete_provision_and_renumber_siblings(
         "failures": [],
         "verification": { "headingsRenumbered": headings, "referencesUpdated": references }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closes_a_numbering_gap_and_updates_references() {
+        let source = [
+            "8.01 First. See Section 8.03.",
+            "8.02 Delete me.",
+            "8.03 Third.",
+            "8.04 Fourth.",
+        ]
+        .join("\n\n");
+
+        let result = delete_provision_and_renumber_siblings(&source, "8.02", true).unwrap();
+
+        assert!(result["failures"].as_array().unwrap().is_empty());
+        assert_eq!(result["verification"]["headingsRenumbered"], 2);
+        assert_eq!(result["verification"]["referencesUpdated"], 1);
+        assert!(result["text"].as_str().unwrap().contains("8.02 Third."));
+    }
 }

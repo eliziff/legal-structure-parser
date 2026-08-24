@@ -27,32 +27,37 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
     });
     #[cfg(not(feature = "structure-inference"))]
     let inferred = precomputed.unwrap_or_default();
-    let native_labels = evidence
-        .native_claims
-        .iter()
-        .flat_map(|claim| {
-            claim
-                .label
+    let native_claims = std::mem::take(&mut evidence.native_claims);
+    let native_labels = (!inferred.is_empty())
+        .then(|| {
+            native_claims
                 .iter()
-                .chain(&claim.aliases)
-                .map(|label| (claim.kind, label.to_ascii_lowercase()))
+                .flat_map(|claim| {
+                    claim
+                        .label
+                        .iter()
+                        .chain(&claim.aliases)
+                        .map(|label| (claim.kind, label.to_ascii_lowercase()))
+                })
+                .collect::<HashSet<_>>()
         })
-        .collect::<HashSet<_>>();
-    let mut nodes = evidence
-        .native_claims
-        .iter()
+        .unwrap_or_default();
+    let mut native_parents = Vec::with_capacity(native_claims.len());
+    let mut nodes = native_claims
+        .into_iter()
         .map(|claim| {
+            native_parents.push(claim.parent_label);
             let mut node = StructureNode::new(
-                claim.id.clone(),
+                claim.id,
                 native_kind(claim.kind),
                 claim.range,
-                claim.origin_id.clone(),
+                claim.origin_id,
                 Derivation::Native,
                 None,
             );
-            node.label.clone_from(&claim.label);
-            node.aliases = (!claim.aliases.is_empty()).then(|| claim.aliases.clone());
-            node.anchor.clone_from(&claim.anchor);
+            node.label = claim.label;
+            node.aliases = (!claim.aliases.is_empty()).then_some(claim.aliases);
+            node.anchor = claim.anchor;
             node
         })
         .collect::<Vec<_>>();
@@ -107,28 +112,33 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
         node.content_start = block.content_start;
         nodes.push(node);
     }
-    let mut labels = HashMap::with_capacity(nodes.len());
-    for (position, node) in nodes.iter().enumerate() {
-        for label in node.label.iter().chain(node.aliases.iter().flatten()) {
-            labels.insert(label.to_ascii_lowercase(), position);
-        }
-    }
-    for (position, parent) in evidence
-        .native_claims
+    if native_parents
         .iter()
-        .map(|claim| claim.parent_label.as_ref())
-        .chain(generated_parents.iter().map(Option::as_ref))
-        .enumerate()
+        .chain(&generated_parents)
+        .any(Option::is_some)
     {
-        nodes[position].parent_id = parent
-            .and_then(|label| match labels.get(label) {
-                Some(&position) => Some(position),
-                None if label.bytes().any(|byte| byte.is_ascii_uppercase()) => {
-                    labels.get(&label.to_ascii_lowercase()).copied()
-                }
-                None => None,
-            })
-            .map(|parent_position| nodes[parent_position].id.clone());
+        let mut labels = HashMap::with_capacity(nodes.len());
+        for (position, node) in nodes.iter().enumerate() {
+            for label in node.label.iter().chain(node.aliases.iter().flatten()) {
+                labels.insert(label.to_ascii_lowercase(), position);
+            }
+        }
+        for (position, parent) in native_parents
+            .iter()
+            .map(Option::as_ref)
+            .chain(generated_parents.iter().map(Option::as_ref))
+            .enumerate()
+        {
+            nodes[position].parent_id = parent
+                .and_then(|label| match labels.get(label) {
+                    Some(&position) => Some(position),
+                    None if label.bytes().any(|byte| byte.is_ascii_uppercase()) => {
+                        labels.get(&label.to_ascii_lowercase()).copied()
+                    }
+                    None => None,
+                })
+                .map(|parent_position| nodes[parent_position].id.clone());
+        }
     }
     DocumentStructure::project_scalar_parts(&coordinates, &mut nodes, &mut [], &mut diagnostics);
     drop(coordinates);
@@ -136,10 +146,8 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
     let provider = std::mem::take(&mut evidence.provider);
     let profile = evidence.profile;
     let text_sha256 = std::mem::take(&mut evidence.text_sha256);
-    #[cfg(feature = "document-query")]
     let url = evidence.url.take();
-    #[cfg(feature = "document-query")]
-    let doc_type = evidence.doc_type.map(|value| value.as_str().to_owned());
+    let doc_type = evidence.doc_type.map(str::to_owned);
     let text = std::mem::take(&mut evidence.text);
     let source_sha256 = evidence.source_sha256.take();
     let scope = evidence.scope;
@@ -157,11 +165,8 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
     );
     structure.provider = provider;
     structure.profile = Some(profile);
-    #[cfg(feature = "document-query")]
-    {
-        structure.url = url;
-        structure.doc_type = doc_type;
-    }
+    structure.url = url;
+    structure.doc_type = doc_type;
     structure
 }
 
@@ -179,32 +184,15 @@ pub(crate) fn derive_native_structure_evidence(
     Ok(infer_graph(evidence, Some(Vec::new())))
 }
 
-#[cfg(feature = "document-query")]
-fn compose_with(
-    input: DocumentInput,
-    validate: bool,
-    precomputed: Option<Vec<Block>>,
-) -> Result<DocumentStructure, EngineError> {
-    if validate {
-        input.validate()?;
-    }
-    Ok(infer_graph(input, precomputed))
-}
-
-#[cfg(all(feature = "structure-inference", feature = "document-query"))]
-pub fn derive_document_structure(input: DocumentInput) -> Result<DocumentStructure, EngineError> {
-    compose_with(input, true, None)
-}
-
-#[cfg(all(feature = "structure-inference", feature = "document-query"))]
+#[cfg(feature = "structure-inference")]
 pub(crate) fn derive_trusted(input: DocumentInput) -> Result<DocumentStructure, EngineError> {
-    compose_with(input, false, None)
+    Ok(infer_graph(input, None))
 }
 
-#[cfg(all(feature = "structure-inference", feature = "document-query"))]
+#[cfg(feature = "structure-inference")]
 pub(crate) fn derive_trusted_inferred(
     input: DocumentInput,
     inferred: Vec<Block>,
 ) -> Result<DocumentStructure, EngineError> {
-    compose_with(input, false, Some(inferred))
+    Ok(infer_graph(input, Some(inferred)))
 }
