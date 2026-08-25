@@ -7,13 +7,14 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyDictMethods, PyList, PyListMethods};
 use pyo3::IntoPyObjectExt;
 
-#[pyfunction]
+#[pyfunction(signature = (text, page_labels, include_context=false))]
 fn pair_numbered_footnotes<'py>(
     py: Python<'py>,
     text: &str,
     page_labels: Vec<String>,
+    include_context: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let result = py.detach(|| pair(text, &page_labels));
+    let result = py.detach(|| pair(text, &page_labels, include_context));
     let notes = PyList::empty(py);
     for note in result.notes {
         let item = PyDict::new(py);
@@ -23,8 +24,10 @@ fn pair_numbered_footnotes<'py>(
         item.set_item("ref_page_index", note.ref_page_index)?;
         item.set_item("body", note.body)?;
         item.set_item("truncated", note.truncated)?;
-        item.set_item("proposition", note.proposition)?;
-        item.set_item("passage", note.passage)?;
+        if include_context {
+            item.set_item("proposition", note.proposition)?;
+            item.set_item("passage", note.passage)?;
+        }
         notes.append(item)?;
     }
     let output = PyDict::new(py);

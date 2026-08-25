@@ -30,7 +30,7 @@ No features are enabled by default. Enable only the public operations needed:
 | `document-query` | `DocumentQuery` navigation and text lookup |
 | `a2aj` | `a2aj_document_structure` (enables structure inference) |
 | `native-markup` | `analyze_native_markup` (enables structure inference) |
-| `footnote-pairing` | `pair_numbered_footnotes` pairs numbered bodies with in-text references and returns each reference's proposition sentence and preceding passage |
+| `footnote-pairing` | `pair_numbered_footnotes` pairs numbered bodies with in-text references; opt into proposition sentences and preceding passages with `include_context` |
 | `citator` | Citation matching, lookup keys, and excerpt classification |
 | `quote-verification` | Grounded quote checks (enables document queries) |
 
