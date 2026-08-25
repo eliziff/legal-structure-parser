@@ -1,4 +1,3 @@
-pub use crate::journal_pairing::*;
 use crate::locator::literal_page_marker;
 use crate::{
     CoverageState, DetectionProfile, DocumentInput, DocumentStructure, EngineError, EvidenceKind,
@@ -12,6 +11,13 @@ use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
 
 const ORIGIN: &str = "provider-adapter";
+
+#[derive(Clone, Deserialize)]
+pub struct JournalPageLabel {
+    #[serde(rename = "page_label")]
+    pub label: String,
+    pub pdf_page: usize,
+}
 
 #[derive(Deserialize)]
 struct Page {

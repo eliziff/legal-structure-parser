@@ -1,7 +1,6 @@
 use legal_structure_core::{
-    a2aj_document_structure, pair_journal_footnotes as pair_journal, utf16_len, A2ajInput,
-    A2ajSourceKind, DocumentBlock, DocumentKind, DocumentOrigin, DocumentQuery, DocumentStructure,
-    ScalarText,
+    a2aj_document_structure, pair_numbered_footnotes as pair, utf16_len, A2ajInput, A2ajSourceKind,
+    DocumentBlock, DocumentKind, DocumentOrigin, DocumentQuery, DocumentStructure, ScalarText,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -9,12 +8,12 @@ use pyo3::types::{PyAny, PyDict, PyDictMethods, PyList, PyListMethods};
 use pyo3::IntoPyObjectExt;
 
 #[pyfunction]
-fn pair_journal_footnotes<'py>(
+fn pair_numbered_footnotes<'py>(
     py: Python<'py>,
     text: &str,
     page_labels: Vec<String>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let result = py.detach(|| pair_journal(text, &page_labels));
+    let result = py.detach(|| pair(text, &page_labels));
     let notes = PyList::empty(py);
     for note in result.notes {
         let item = PyDict::new(py);
@@ -280,5 +279,5 @@ impl Document {
 #[pymodule]
 fn legal_structure(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Document>()?;
-    module.add_function(wrap_pyfunction!(pair_journal_footnotes, module)?)
+    module.add_function(wrap_pyfunction!(pair_numbered_footnotes, module)?)
 }
