@@ -221,31 +221,18 @@ fn adjust_span_edges_with_options(
     trim_leading: bool,
 ) -> PhraseSpan {
     static TRAILING_ARTIFACT: OnceLock<Regex> = OnceLock::new();
-    static TRAILING_BILINGUAL: OnceLock<Regex> = OnceLock::new();
     static LEADING_ATTACHED_ORDER: OnceLock<Regex> = OnceLock::new();
     static LEADING_NUMBERED_ITEM: OnceLock<Regex> = OnceLock::new();
-    static LEADING_AMENDMENT_LABEL: OnceLock<Regex> = OnceLock::new();
-    static LEADING_BILINGUAL_TAIL: OnceLock<Regex> = OnceLock::new();
-    static TRAILING_COMPLETE_BILINGUAL_LABEL: OnceLock<Regex> = OnceLock::new();
-    static TRAILING_FRENCH_ACT_LABEL: OnceLock<Regex> = OnceLock::new();
     let mut start = original.start;
     let mut end = original.end;
     if trim_leading {
         let value = text.slice(start, end);
         let leading = [
             js_regex(
-                r"(?u)^(\[\s*\d{1,4}\s*\]AND\s+)CONSIDERING\b",
+                r"(?u)^(\[\s*\d{1,4}\s*\])AND\s+CONSIDERING\b",
                 &LEADING_ATTACHED_ORDER,
             ),
             js_regex(r"(?u)^(\d{1,4}\s+[–—]\s+)\p{Lu}", &LEADING_NUMBERED_ITEM),
-            js_regex(
-                r#"(?iu)^(by\s+[\p{L}]{1,8}\d{1,6}/\d{1,4};\s*\([a-z]{1,3}\)\s*)[“\"][^”\"]+[”\"]\s+means\b"#,
-                &LEADING_AMENDMENT_LABEL,
-            ),
-            js_regex(
-                r#"(?iu)^([\p{L}][\p{L}'’.-]*(?:\s+[\p{L}][\p{L}'’.-]*){0,3}\s*(?:(?:»|Â»)\s*)?\)\s*)[“\"][^”\"\r\n]{1,80}[”\"]\s+means\b"#,
-                &LEADING_BILINGUAL_TAIL,
-            ),
         ]
         .into_iter()
         .find_map(|pattern| pattern.captures(value))
@@ -272,29 +259,6 @@ fn adjust_span_edges_with_options(
         end -= utf16_len(artifact.as_str());
         if end <= start {
             return original;
-        }
-    }
-    if let Some(bilingual) =
-        js_regex(r"(?u)\s*\(\s*(?:«|Â«)\s*[^)]*$", &TRAILING_BILINGUAL).find(text.slice(start, end))
-    {
-        if bilingual.start() > 0 {
-            end = start + utf16_len(&text.slice(start, end)[..bilingual.start()]);
-        }
-    }
-    for pattern in [
-        js_regex(
-            r"(?u)\s*;\s*(?:«|Â«)\s*[^»\r\n]{1,80}(?:»|Â»)\s*$",
-            &TRAILING_COMPLETE_BILINGUAL_LABEL,
-        ),
-        js_regex(
-            r"(?iu)\s*;\s*\(\s*(?:loi|règlement)\s*$",
-            &TRAILING_FRENCH_ACT_LABEL,
-        ),
-    ] {
-        if let Some(edge) = pattern.find(text.slice(start, end)) {
-            if edge.start() > 0 {
-                end = start + utf16_len(&text.slice(start, end)[..edge.start()]);
-            }
         }
     }
     if start == original.start && end == original.end {
@@ -1218,10 +1182,17 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         options
     }
 
-    fn safe_lexical_gap(&self, left: &LexicalTerm, right: &LexicalTerm) -> bool {
+    fn safe_lexical_gap(
+        &self,
+        left: &LexicalTerm,
+        right: &LexicalTerm,
+        allow_line_break: bool,
+    ) -> bool {
         let gap = self.replay.document.slice(left.end, right.start);
-        !gap.chars()
-            .any(|character| matches!(character, '\r' | '\n'))
+        (allow_line_break
+            || !gap
+                .chars()
+                .any(|character| matches!(character, '\r' | '\n')))
             && !opens_markdown(gap)
     }
 
@@ -1233,10 +1204,11 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             .replay
             .document
             .slice(words[left_word].end, words[right_word].start);
-        if gap
-            .chars()
-            .any(|character| matches!(character, '\r' | '\n'))
-            || self.pdf && js_regex(r#"(?u)(?:»|Â»)\s*[“\"]"#, &BILINGUAL_RECORD).is_match(gap)
+        if self.pdf
+            && (gap
+                .chars()
+                .any(|character| matches!(character, '\r' | '\n'))
+                || js_regex(r#"(?u)(?:»|Â»)\s*[“\"]"#, &BILINGUAL_RECORD).is_match(gap))
         {
             return true;
         }
@@ -1289,7 +1261,12 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
 
     fn replay_exact_text(&self, target: &str, prefix: &str, suffix: &str) -> ExactDirectiveReplay {
         browser_spelled_term(target).map_or_else(ExactDirectiveReplay::default, |term| {
-            self.replay.replay_exact(&term, prefix, suffix, false)
+            self.replay.replay_exact(
+                &term,
+                prefix,
+                suffix,
+                !self.pdf || !prefix.is_empty() || !suffix.is_empty(),
+            )
         })
     }
 
@@ -1309,7 +1286,11 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         )
     }
 
-    fn endpoint_terms_from_start(&mut self, piece: MaximalCorePiece) -> Vec<LexicalTerm> {
+    fn endpoint_terms_from_start(
+        &mut self,
+        piece: MaximalCorePiece,
+        context: bool,
+    ) -> Vec<LexicalTerm> {
         let Some(first_atom) = self.atom_at(piece.first_word) else {
             return Vec::new();
         };
@@ -1327,7 +1308,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             let Some(next) = self.atom_at(last.last_word + 1) else {
                 break;
             };
-            if next.last_word > piece.last_word || !self.safe_lexical_gap(&last, &next) {
+            if next.last_word > piece.last_word || !self.safe_lexical_gap(&last, &next, context) {
                 break;
             }
             last = next;
@@ -1343,7 +1324,11 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         terms
     }
 
-    fn endpoint_terms_from_end(&mut self, piece: MaximalCorePiece) -> Vec<LexicalTerm> {
+    fn endpoint_terms_from_end(
+        &mut self,
+        piece: MaximalCorePiece,
+        context: bool,
+    ) -> Vec<LexicalTerm> {
         let Some(last_atom) = self.atom_at(piece.last_word) else {
             return Vec::new();
         };
@@ -1361,7 +1346,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             let Some(previous) = self.atom_at(first.first_word - 1) else {
                 break;
             };
-            if previous.first_word < piece.first_word || !self.safe_lexical_gap(&previous, &first) {
+            if previous.first_word < piece.first_word
+                || !self.safe_lexical_gap(&previous, &first, context)
+            {
                 break;
             }
             first = previous;
@@ -1580,7 +1567,8 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             if !self.context_allowed(&term, desired, required) {
                 continue;
             }
-            let unique = self.replay_exact_text(&term.text, "", "").count == 1;
+            let unique = browser_spelled_term(&term.text)
+                .is_some_and(|target| self.replay.replay_exact(&target, "", "", true).count == 1);
             allowed.push(term);
             if unique {
                 break;
@@ -1684,14 +1672,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         let exact_targets = self.exact_target_for(piece).into_iter().collect::<Vec<_>>();
 
         let bare = vec![(None, None)];
-        let bare_directive = self.shortest_for(piece, &exact_targets, &bare);
-        let prefer_context =
-            self.pdf && piece.first_word == piece.last_word && bare_directive.is_some();
-        let mut directive = if prefer_context {
-            None
-        } else {
-            bare_directive.clone()
-        };
+        let mut directive = self.shortest_for(piece, &exact_targets, &bare);
         if directive.is_none() {
             let words = self.replay.document.tokens();
             let prefix = if piece.first_word > piece.context_first_word {
@@ -1703,7 +1684,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     context_first_word: piece.context_first_word,
                     context_last_word: piece.first_word - 1,
                 };
-                let terms = self.endpoint_terms_from_end(context);
+                let terms = self.endpoint_terms_from_end(context, true);
                 self.shortest_sufficient_context(terms, desired, required)
             } else {
                 Vec::new()
@@ -1717,7 +1698,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     context_first_word: piece.last_word + 1,
                     context_last_word: piece.context_last_word,
                 };
-                let terms = self.endpoint_terms_from_start(context);
+                let terms = self.endpoint_terms_from_start(context, true);
                 self.shortest_sufficient_context(terms, desired, required)
             } else {
                 Vec::new()
@@ -1752,9 +1733,6 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     break;
                 }
             }
-            if directive.is_none() {
-                directive = bare_directive;
-            }
         }
         self.directive_cache.insert(key, directive.clone());
         directive
@@ -1768,45 +1746,38 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         desired: PhraseSpan,
         required: &HashSet<usize>,
         require_multiword_endpoints: bool,
+        allow_ordered_start: bool,
     ) -> Option<String> {
         if piece.first_word >= piece.last_word {
             return None;
         }
 
         let mut heads = Vec::new();
-        for term in self.endpoint_terms_from_start(head_piece) {
+        for term in self.endpoint_terms_from_start(head_piece, false) {
             if term.first_word != piece.first_word {
                 continue;
             }
             if require_multiword_endpoints && term.first_word == term.last_word {
                 continue;
             }
-            let unique = self.replay_exact_text(&term.text, "", "").count == 1;
             heads.push(term);
-            if unique {
-                break;
-            }
         }
         let mut tails = Vec::new();
-        for term in self.endpoint_terms_from_end(tail_piece) {
+        for term in self.endpoint_terms_from_end(tail_piece, false) {
             if term.last_word != piece.last_word {
                 continue;
             }
             if require_multiword_endpoints && term.first_word == term.last_word {
                 continue;
             }
-            let unique = self.replay_exact_text(&term.text, "", "").count == 1;
             tails.push(term);
-            if unique {
-                break;
-            }
         }
         if heads.is_empty() || tails.is_empty() {
             return None;
         }
 
         let words = self.replay.document.tokens();
-        let mut prefixes = if piece.first_word > piece.context_first_word {
+        let prefixes = if piece.first_word > piece.context_first_word {
             let context = MaximalCorePiece {
                 start: words[piece.context_first_word].start,
                 end: words[piece.first_word - 1].end,
@@ -1815,14 +1786,12 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                 context_first_word: piece.context_first_word,
                 context_last_word: piece.first_word - 1,
             };
-            let terms = self.endpoint_terms_from_end(context);
+            let terms = self.endpoint_terms_from_end(context, true);
             self.shortest_sufficient_context(terms, desired, required)
         } else {
             Vec::new()
         };
-        prefixes.retain(|term| !self.has_structural_seam(term.last_word, piece.first_word));
-
-        let mut suffixes = if piece.last_word < piece.context_last_word {
+        let suffixes = if piece.last_word < piece.context_last_word {
             let context = MaximalCorePiece {
                 start: words[piece.last_word + 1].start,
                 end: words[piece.context_last_word].end,
@@ -1831,13 +1800,11 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                 context_first_word: piece.last_word + 1,
                 context_last_word: piece.context_last_word,
             };
-            let terms = self.endpoint_terms_from_start(context);
+            let terms = self.endpoint_terms_from_start(context, true);
             self.shortest_sufficient_context(terms, desired, required)
         } else {
             Vec::new()
         };
-        suffixes.retain(|term| !self.has_structural_seam(piece.last_word, term.first_word));
-
         let one_sided = prefixes
             .iter()
             .cloned()
@@ -1865,9 +1832,30 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     if head.last_word >= tail.first_word {
                         continue;
                     }
+                    let ordered_start = allow_ordered_start
+                        && !self.pdf
+                        && head.last_word - head.first_word + 1 >= 3;
+                    if !ordered_start {
+                        let Some(tail_term) = browser_spelled_term(&tail.text) else {
+                            continue;
+                        };
+                        if (head.last_word + 1..tail.first_word).any(|first_word| {
+                            self.replay
+                                .spelled_term_at(&tail_term, first_word, false)
+                                .is_some()
+                        }) {
+                            continue;
+                        }
+                    }
                     for (prefix, suffix) in contexts {
                         let prefix = prefix.as_ref().map_or("", |term| term.text.as_str());
                         let suffix = suffix.as_ref().map_or("", |term| term.text.as_str());
+                        if !ordered_start
+                            && (self.replay_exact_text(&head.text, prefix, "").count != 1
+                                || self.replay_exact_text(&tail.text, "", suffix).count != 1)
+                        {
+                            continue;
+                        }
                         if !selects(
                             piece,
                             self.replay_range_text(&head.text, &tail.text, prefix, suffix),
@@ -1891,6 +1879,102 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             }
         }
         None
+    }
+
+    fn bare_atomic_directive(&mut self, piece: MaximalCorePiece) -> Option<String> {
+        self.exact_target_for(piece).and_then(|target| {
+            let replay = self.replay_exact_text(&target.text, "", "");
+            (replay.count == 1 && selects(piece, replay.first))
+                .then(|| text_directive(&target.text, "", ""))
+        })
+    }
+
+    fn full_exact_directive_across_lines(&mut self, piece: MaximalCorePiece) -> Option<String> {
+        let words = self.replay.document.tokens();
+        let target = fragment_spelling(
+            self.replay
+                .document
+                .slice(words[piece.first_word].start, words[piece.last_word].end),
+        );
+        let target_term = browser_spelled_term(&target)?;
+        let prefixes = if piece.first_word > piece.context_first_word {
+            self.endpoint_terms_from_end(
+                MaximalCorePiece {
+                    start: words[piece.context_first_word].start,
+                    end: words[piece.first_word - 1].end,
+                    first_word: piece.context_first_word,
+                    last_word: piece.first_word - 1,
+                    context_first_word: piece.context_first_word,
+                    context_last_word: piece.first_word - 1,
+                },
+                true,
+            )
+        } else {
+            Vec::new()
+        };
+        let suffixes = if piece.last_word < piece.context_last_word {
+            self.endpoint_terms_from_start(
+                MaximalCorePiece {
+                    start: words[piece.last_word + 1].start,
+                    end: words[piece.context_last_word].end,
+                    first_word: piece.last_word + 1,
+                    last_word: piece.context_last_word,
+                    context_first_word: piece.last_word + 1,
+                    context_last_word: piece.context_last_word,
+                },
+                true,
+            )
+        } else {
+            Vec::new()
+        };
+        let mut contexts = vec![(None, None)];
+        contexts.extend(prefixes.iter().cloned().map(|prefix| (Some(prefix), None)));
+        contexts.extend(suffixes.iter().cloned().map(|suffix| (None, Some(suffix))));
+        contexts.extend(prefixes.into_iter().flat_map(|prefix| {
+            suffixes
+                .iter()
+                .cloned()
+                .map(move |suffix| (Some(prefix.clone()), Some(suffix)))
+        }));
+
+        contexts
+            .into_iter()
+            .filter_map(|(prefix, suffix)| {
+                let prefix = prefix.as_ref().map_or("", |term| term.text.as_str());
+                let suffix = suffix.as_ref().map_or("", |term| term.text.as_str());
+                let replay = self.replay.replay_exact(&target_term, prefix, suffix, true);
+                (replay.count == 1 && selects(piece, replay.first))
+                    .then(|| text_directive(&target, prefix, suffix))
+            })
+            .min_by_key(String::len)
+    }
+
+    fn is_one_source_line(&self, piece: MaximalCorePiece) -> bool {
+        !self
+            .replay
+            .document
+            .slice(piece.start, piece.end)
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n'))
+    }
+
+    fn ends_after_sentence_opening_capital(&self, piece: MaximalCorePiece) -> bool {
+        if piece.first_word == piece.last_word {
+            return false;
+        }
+        let words = self.replay.document.tokens();
+        let gap = self
+            .replay
+            .document
+            .slice(words[piece.last_word - 1].end, words[piece.last_word].start);
+        gap.contains('.')
+            && self
+                .replay
+                .document
+                .slice(words[piece.last_word].start, words[piece.last_word].end)
+                .chars()
+                .next()
+                .is_some_and(char::is_uppercase)
     }
 
     fn candidate_for(
@@ -1932,6 +2016,35 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             required,
         )
         .map(|directive| self.candidate_for(piece, quote_index, directive))
+    }
+
+    fn bare_atomic_replays(&mut self, piece: MaximalCorePiece) -> bool {
+        self.bare_atomic_directive(piece).is_some()
+    }
+
+    fn crosses_lossy_pdf_tight_token_seam(&self, piece: MaximalCorePiece) -> bool {
+        static ORDINAL_SUFFIX: OnceLock<Regex> = OnceLock::new();
+        let words = self.replay.document.tokens();
+        (piece.first_word..piece.last_word).any(|left| {
+            let left_text = self
+                .replay
+                .document
+                .slice(words[left].start, words[left].end);
+            let right_text = self
+                .replay
+                .document
+                .slice(words[left + 1].start, words[left + 1].end);
+            left_text
+                .chars()
+                .all(|character| character.is_ascii_digit())
+                && js_regex(r"(?iu)^(?:st|nd|rd|th)$", &ORDINAL_SUFFIX).is_match(right_text)
+                && self
+                    .replay
+                    .document
+                    .slice(words[left].end, words[left + 1].start)
+                    .chars()
+                    .any(javascript_whitespace)
+        })
     }
 }
 
@@ -1982,6 +2095,75 @@ fn cover_run(
         }
     }
     best.remove(&(last_word + 1))
+}
+
+#[derive(Clone, Default)]
+struct RangeRepair {
+    candidates: Vec<Candidate>,
+    painted_words: usize,
+    pinned_overlap_words: usize,
+    encoded_length: usize,
+}
+
+fn better_range_repair(left: Option<RangeRepair>, right: RangeRepair) -> RangeRepair {
+    let Some(left) = left else {
+        return right;
+    };
+    let left_score = (
+        left.painted_words,
+        left.pinned_overlap_words,
+        left.candidates.len(),
+        left.encoded_length,
+    );
+    let right_score = (
+        right.painted_words,
+        right.pinned_overlap_words,
+        right.candidates.len(),
+        right.encoded_length,
+    );
+    if right_score < left_score {
+        right
+    } else {
+        left
+    }
+}
+
+fn repair_with_ranges(
+    needed_words: &HashSet<usize>,
+    pinned_words: &HashSet<usize>,
+    candidates: &[Candidate],
+) -> Option<Vec<Candidate>> {
+    let mut needed = needed_words.iter().copied().collect::<Vec<_>>();
+    needed.sort_unstable();
+    if needed.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let mut best = HashMap::<usize, RangeRepair>::new();
+    best.insert(0, RangeRepair::default());
+    for needed_index in 0..needed.len() {
+        let Some(prefix) = best.get(&needed_index).cloned() else {
+            continue;
+        };
+        let word = needed[needed_index];
+        for candidate in candidates {
+            if candidate.piece.first_word > word || candidate.piece.last_word < word {
+                continue;
+            }
+            let after =
+                needed.partition_point(|needed_word| *needed_word <= candidate.piece.last_word);
+            let mut repair = prefix.clone();
+            repair.painted_words += candidate.piece.last_word - candidate.piece.first_word + 1;
+            repair.pinned_overlap_words += (candidate.piece.first_word..=candidate.piece.last_word)
+                .filter(|painted| pinned_words.contains(painted))
+                .count();
+            repair.encoded_length += candidate.encoded_length;
+            repair.candidates.push(candidate.clone());
+            let previous = best.remove(&after);
+            best.insert(after, better_range_repair(previous, repair));
+        }
+    }
+    best.remove(&needed.len()).map(|repair| repair.candidates)
 }
 
 fn duplicate_signature_metadata(document: FragmentText<'_>, desired: PhraseSpan) -> HashSet<usize> {
@@ -2127,17 +2309,37 @@ fn build_fragment_plan(
                 } else {
                     None
                 };
+            let whole_stays_in_structural_piece = line_pieces
+                .iter()
+                .any(|piece| piece.first_word <= first_word && piece.last_word >= last_word);
             if !pdf {
-                if let Some(directive) = range_pieces.and_then(|(head, tail)| {
-                    planner.range_directive_for(whole, head, tail, desired, &required, false)
-                }) {
+                let conservative = range_pieces.and_then(|(head, tail)| {
+                    planner.range_directive_for(whole, head, tail, desired, &required, false, false)
+                });
+                let exact_precedence = conservative.as_ref().is_some_and(|directive| {
+                    let needs_external_prefix = directive
+                        .strip_prefix("text=")
+                        .and_then(|value| value.split(',').next())
+                        .is_some_and(|start| start.ends_with('-'));
+                    whole_stays_in_structural_piece
+                        && planner.is_one_source_line(whole)
+                        && needs_external_prefix
+                        && !planner.ends_after_sentence_opening_capital(whole)
+                });
+                if exact_precedence {
+                    if let Some(directive) = planner.bare_atomic_directive(whole) {
+                        built.push(planner.candidate_for(whole, quote_index, directive).piece);
+                        continue;
+                    }
+                }
+                let ordered = range_pieces.and_then(|(head, tail)| {
+                    planner.range_directive_for(whole, head, tail, desired, &required, false, true)
+                });
+                if let Some(directive) = ordered.or(conservative) {
                     built.push(planner.candidate_for(whole, quote_index, directive).piece);
                     continue;
                 }
             }
-            let whole_stays_in_structural_piece = line_pieces
-                .iter()
-                .any(|piece| piece.first_word <= first_word && piece.last_word >= last_word);
             if pdf || whole_stays_in_structural_piece {
                 if let Some(directive) = planner.atomic_directive_for(
                     whole,
@@ -2147,24 +2349,20 @@ fn build_fragment_plan(
                     desired,
                     &required,
                 ) {
-                    built.push(planner.candidate_for(whole, quote_index, directive).piece);
-                    continue;
+                    if !pdf {
+                        built.push(planner.candidate_for(whole, quote_index, directive).piece);
+                        continue;
+                    }
+                    if planner.bare_atomic_replays(whole)
+                        && !planner.crosses_lossy_pdf_tight_token_seam(whole)
+                    {
+                        built.push(planner.candidate_for(whole, quote_index, directive).piece);
+                        continue;
+                    }
                 }
             }
-
-            // PDF extraction lines are not browser page boundaries. Prefer a
-            // source-replayed range with stable endpoints before making short
-            // line pieces carry the quote independently.
-            if pdf {
-                if let Some(directive) = range_pieces.and_then(|(head, tail)| {
-                    planner.range_directive_for(whole, head, tail, desired, &required, true)
-                }) {
-                    built.push(planner.candidate_for(whole, quote_index, directive).piece);
-                    continue;
-                }
-            }
-
             let mut candidates = Vec::<Candidate>::new();
+            let mut risk_words = HashSet::<usize>::new();
             let mut candidate_keys = HashSet::<(usize, usize, String)>::new();
             let add_candidate =
                 |candidate: Candidate,
@@ -2204,13 +2402,21 @@ fn build_fragment_plan(
                     desired,
                     &required,
                 ) {
-                    add_candidate(candidate, &mut candidates, &mut candidate_keys);
+                    let bare_unique = !pdf || planner.bare_atomic_replays(piece);
+                    if !pdf || !planner.crosses_lossy_pdf_tight_token_seam(piece) {
+                        if pdf && !bare_unique {
+                            risk_words.extend(piece.first_word..=piece.last_word);
+                        }
+                        add_candidate(candidate, &mut candidates, &mut candidate_keys);
+                    }
                 }
             }
 
-            if let Some(cover) = cover_run(first_word, last_word, &candidates) {
-                built.extend(cover.into_iter().map(|candidate| candidate.piece));
-                continue;
+            if !pdf {
+                if let Some(cover) = cover_run(first_word, last_word, &candidates) {
+                    built.extend(cover.into_iter().map(|candidate| candidate.piece));
+                    continue;
+                }
             }
 
             // A duplicated structural piece may be impossible to select alone
@@ -2218,6 +2424,16 @@ fn build_fragment_plan(
             // between unique neighbouring pieces. Browser replay remains the
             // authority: only ranges resolving to their declared source span
             // become set-cover candidates.
+            let mut range_candidates = Vec::<Candidate>::new();
+            let mut range_candidate_keys = HashSet::<(usize, usize, String)>::new();
+            if pdf {
+                if let Some(directive) = range_pieces.and_then(|(head, tail)| {
+                    planner.range_directive_for(whole, head, tail, desired, &required, true, false)
+                }) {
+                    let candidate = planner.candidate_for(whole, quote_index, directive);
+                    add_candidate(candidate, &mut range_candidates, &mut range_candidate_keys);
+                }
+            }
             for (head_index, head) in line_pieces.iter().copied().enumerate() {
                 for tail in line_pieces.iter().copied().skip(head_index + 1) {
                     let candidate_first = first_word.max(head.first_word);
@@ -2241,13 +2457,72 @@ fn build_fragment_plan(
                     let mut range_tail = tail;
                     range_tail.last_word = candidate_last;
                     range_tail.end = source_words[candidate_last].end;
-                    if let Some(directive) = planner
-                        .range_directive_for(span, range_head, range_tail, desired, &required, pdf)
-                    {
+                    if let Some(directive) = planner.range_directive_for(
+                        span, range_head, range_tail, desired, &required, pdf, !pdf,
+                    ) {
                         let candidate = planner.candidate_for(span, quote_index, directive);
-                        add_candidate(candidate, &mut candidates, &mut candidate_keys);
+                        add_candidate(candidate, &mut range_candidates, &mut range_candidate_keys);
                     }
                 }
+            }
+
+            if pdf {
+                let pinned_words = candidates
+                    .iter()
+                    .flat_map(|candidate| candidate.piece.first_word..=candidate.piece.last_word)
+                    .collect::<HashSet<_>>();
+                let needed_words = (first_word..=last_word)
+                    .filter(|word| !pinned_words.contains(word))
+                    .collect::<HashSet<_>>();
+                let range_coverable = range_candidates
+                    .iter()
+                    .flat_map(|candidate| candidate.piece.first_word..=candidate.piece.last_word)
+                    .collect::<HashSet<_>>();
+                let mut repair_words = needed_words.clone();
+                repair_words.extend(
+                    risk_words
+                        .iter()
+                        .filter(|word| range_coverable.contains(word))
+                        .copied(),
+                );
+                let repair = repair_with_ranges(&repair_words, &pinned_words, &range_candidates);
+                if needed_words
+                    .iter()
+                    .all(|word| range_coverable.contains(word))
+                    && repair.is_some()
+                {
+                    built.extend(candidates.into_iter().map(|candidate| candidate.piece));
+                    built.extend(
+                        repair
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|candidate| candidate.piece),
+                    );
+                    continue;
+                }
+
+                if let Some(directive) = planner.full_exact_directive_across_lines(whole) {
+                    built.push(planner.candidate_for(whole, quote_index, directive).piece);
+                    continue;
+                }
+
+                complete = false;
+                built.extend(candidates.into_iter().map(|candidate| candidate.piece));
+                let coverable = repair_words
+                    .iter()
+                    .filter(|word| range_coverable.contains(word))
+                    .copied()
+                    .collect::<HashSet<_>>();
+                if let Some(partial) =
+                    repair_with_ranges(&coverable, &pinned_words, &range_candidates)
+                {
+                    built.extend(partial.into_iter().map(|candidate| candidate.piece));
+                }
+                continue;
+            }
+
+            for candidate in range_candidates {
+                add_candidate(candidate, &mut candidates, &mut candidate_keys);
             }
             if let Some(cover) = cover_run(first_word, last_word, &candidates) {
                 built.extend(cover.into_iter().map(|candidate| candidate.piece));
@@ -2404,6 +2679,28 @@ mod tests {
         pieces.len() == 2
     }
 
+    fn pdf_full_exact_fallback(
+        document: &str,
+        first_word: usize,
+        last_word: usize,
+        context_first_word: usize,
+        context_last_word: usize,
+    ) -> Option<String> {
+        let search = TextSearch::new(document);
+        let fragment = FragmentText::Text(&search);
+        let replay = BrowserReplay::new(fragment);
+        let words = fragment.tokens();
+        let mut planner = MaximalPlanner::new(&replay, true, false);
+        planner.full_exact_directive_across_lines(MaximalCorePiece {
+            start: words[first_word].start,
+            end: words[last_word].end,
+            first_word,
+            last_word,
+            context_first_word,
+            context_last_word,
+        })
+    }
+
     #[test]
     fn maximal_plan_uses_one_range_and_exact_context_for_one_word() {
         let document = "Act means the first rule. Act means the second rule.";
@@ -2412,6 +2709,16 @@ mod tests {
         assert_eq!(one_word.paint_quotes, ["Act"]);
         assert_eq!(one_word.painted_words, 1);
         assert_ne!(one_word.directives, ["text=Act"]);
+
+        let unique_pdf = plan(
+            "lead solitary tail",
+            "lead solitary tail",
+            &["solitary"],
+            true,
+        );
+        assert!(unique_pdf.source_safe_complete);
+        assert_eq!(unique_pdf.paint_quotes, ["solitary"]);
+        assert_eq!(unique_pdf.directives, ["text=solitary"]);
 
         let markdown =
             "Regulations.\n\n**Act** means this statute. **senior officer** means this official.";
@@ -2425,6 +2732,346 @@ mod tests {
         assert_eq!(range.paint_quotes.len(), 1);
         assert_eq!(range.directives.len(), 1);
         assert!(is_range_directive(&range.directives[0]));
+    }
+
+    #[test]
+    fn maximal_html_plan_ranges_across_plain_newlines_and_markdown_seams() {
+        let html = "Unique lead Applicant and\nrespondent identify the issues to resolve tail";
+        let exact = plan(
+            html,
+            html,
+            &["Applicant and respondent identify the issues to"],
+            false,
+        );
+        assert!(exact.source_safe_complete);
+        assert_eq!(
+            exact.paint_quotes,
+            ["Applicant and respondent identify the issues to"]
+        );
+        assert_eq!(exact.directives.len(), 1);
+        assert!(is_range_directive(&exact.directives[0]));
+
+        let markdown =
+            "Unique lead **Applicant and**\n**respondent identify the issues to** resolve tail";
+        let split = plan(
+            markdown,
+            markdown,
+            &["Applicant and respondent identify the issues to"],
+            false,
+        );
+        assert!(split.source_safe_complete);
+        assert_eq!(
+            split.paint_quotes,
+            ["Applicant and respondent identify the issues to"]
+        );
+        assert_eq!(split.directives.len(), 1);
+        assert!(is_range_directive(&split.directives[0]));
+    }
+
+    #[test]
+    fn maximal_html_plan_keeps_substantive_and_after_an_attached_paragraph_label() {
+        let quote = "[5]AND CONSIDERING that the Rules are to be liberally interpreted with the aim of ensuring that";
+        let plan = plan(quote, quote, &[quote], false);
+
+        assert!(plan.source_safe_complete);
+        assert_eq!(plan.painted_words, 16);
+        assert_eq!(plan.paint_quotes.len(), 1);
+        assert!(plan.paint_quotes[0].starts_with("AND CONSIDERING"));
+        assert!(!plan.paint_quotes[0].contains("[5]"));
+    }
+
+    #[test]
+    fn maximal_plan_keeps_substantive_bilingual_and_amendment_edges() {
+        let leading = "d'accessibilité ») \"barrier\" means a barrier described in section 3";
+        let leading_plan = plan(leading, leading, &[leading], false);
+        assert!(leading_plan.source_safe_complete);
+        assert_eq!(leading_plan.source_word_intervals[0].first_word, 0);
+        assert!(leading_plan
+            .paint_quotes
+            .join(" ")
+            .contains("d'accessibilité"));
+
+        let trailing = "watering of livestock or poultry. (« fins domestiques »)";
+        let trailing_plan = plan(trailing, trailing, &[trailing], false);
+        assert!(trailing_plan.source_safe_complete);
+        assert!(trailing_plan
+            .paint_quotes
+            .join(" ")
+            .contains("fins domestiques"));
+
+        let amendment = "by AR123/2024; (a) \"term\" means a value";
+        let amendment_plan = plan(amendment, amendment, &[amendment], false);
+        assert!(amendment_plan.source_safe_complete);
+        assert!(amendment_plan.paint_quotes.join(" ").contains("AR123"));
+    }
+
+    #[test]
+    fn maximal_html_plan_prefers_a_unique_exact_over_a_prefix_context_range() {
+        let document = "Marker alpha beta gamma one tail. Other alpha beta gamma two tail.";
+        let exact = plan(
+            "Marker alpha beta gamma one tail.",
+            document,
+            &["alpha beta gamma one tail"],
+            false,
+        );
+
+        assert!(exact.source_safe_complete);
+        assert_eq!(exact.paint_quotes, ["alpha beta gamma one tail"]);
+        assert_eq!(exact.directives.len(), 1);
+        assert!(!is_range_directive(&exact.directives[0]));
+        assert!(!exact.directives[0].contains("-,"));
+    }
+
+    #[test]
+    fn maximal_html_plan_keeps_the_range_at_a_sentence_opening_end() {
+        let document = "Marker alpha beta gamma one. Tail Other alpha beta gamma two. Tail";
+        let range = plan(
+            "Marker alpha beta gamma one. Tail",
+            document,
+            &["alpha beta gamma one. Tail"],
+            false,
+        );
+
+        assert!(range.source_safe_complete);
+        assert_eq!(range.paint_quotes, ["alpha beta gamma one. Tail"]);
+        assert_eq!(range.directives.len(), 1);
+        assert!(is_range_directive(&range.directives[0]));
+    }
+
+    #[test]
+    fn maximal_pdf_full_exact_fallback_crosses_lines_only_when_unique() {
+        let unique = pdf_full_exact_fallback("lead alpha\nbeta tail", 1, 2, 1, 2);
+        assert_eq!(unique, Some("text=alpha%20beta".to_owned()));
+
+        let repeated = pdf_full_exact_fallback("alpha\nbeta alpha\nbeta", 0, 1, 0, 1);
+        assert_eq!(repeated, None);
+    }
+
+    #[test]
+    fn maximal_pdf_full_exact_fallback_uses_distinct_unpainted_label_context() {
+        let document =
+            "(ii) the Agreement entered\ninto force\n(iii) the Agreement entered\ninto force";
+        let directive = pdf_full_exact_fallback(document, 8, 11, 0, 11)
+            .expect("the distinct label context selects the repeated full target");
+
+        assert!(directive.contains("iii"));
+        assert!(directive.contains("-,Agreement%20entered%20into%20force"));
+    }
+
+    #[test]
+    fn maximal_plan_keeps_a_repeated_tail_when_ordered_replay_is_exact() {
+        let document = "to the fund now\n20 th ancillary pension benefit—that is not a core pension benefit that";
+        let range = plan(document, document, &[document], true);
+
+        assert!(range.source_safe_complete);
+        assert_eq!(range.painted_words, 17);
+        let directive = range
+            .directives
+            .iter()
+            .find(|directive| is_range_directive(directive))
+            .expect("the split ordinal keeps range repair available");
+        assert!(directive.ends_with(",benefit%20that"));
+        assert!(range.paint_quotes.iter().any(|painted| painted
+            == "to the fund now 20 th ancillary pension benefit—that is not a core pension benefit that"));
+    }
+
+    #[test]
+    fn maximal_html_range_accepts_a_three_word_repeated_start_when_order_selects_desired_span() {
+        let document = "alpha beta gamma desired omega. alpha beta gamma other omega.";
+        let range = plan(
+            "alpha beta gamma desired omega.",
+            document,
+            &["alpha beta gamma desired omega"],
+            false,
+        );
+
+        assert!(range.source_safe_complete);
+        assert_eq!(range.paint_quotes, ["alpha beta gamma desired omega"]);
+        assert_eq!(range.directives, ["text=alpha%20beta%20gamma,omega."]);
+        assert_eq!(range.source_word_intervals[0].first_word, 0);
+        assert_eq!(range.source_word_intervals[0].last_word, 4);
+    }
+
+    #[test]
+    fn maximal_html_range_grows_when_an_earlier_ordered_pair_would_be_wrong() {
+        let document = "alpha wrong beta. marker alpha desired beta.";
+        let range = plan(
+            "marker alpha desired beta.",
+            document,
+            &["alpha desired beta"],
+            false,
+        );
+
+        assert!(range.source_safe_complete);
+        assert_eq!(range.paint_quotes, ["alpha desired beta"]);
+        assert_eq!(range.directives.len(), 1);
+        assert_ne!(range.directives[0], "text=alpha,beta");
+        assert_eq!(range.source_word_intervals[0].first_word, 4);
+        assert_eq!(range.source_word_intervals[0].last_word, 6);
+    }
+
+    #[test]
+    fn maximal_plan_ranges_across_markdown_seams_with_endpoints_inside_pieces() {
+        let document = "Unique marker **respect**\n**alpha including** one\nOther marker **respect**\n**beta including** two";
+        let block = "Unique marker **respect**\n**alpha including** one";
+        let split = plan(block, document, &["respect\nalpha including"], false);
+
+        assert!(split.source_safe_complete);
+        assert_eq!(split.paint_quotes, ["respect alpha including"]);
+        assert_eq!(split.directives.len(), 1);
+        assert!(is_range_directive(&split.directives[0]));
+        assert!(split.directives[0].contains("respect"));
+        assert!(split.directives[0].contains("including"));
+    }
+
+    #[test]
+    fn maximal_pdf_plan_keeps_bare_unique_structural_islands() {
+        let document = "yukon alpha unique\nbilingual beta distinct";
+        let plan = plan(document, document, &[document], true);
+
+        assert!(plan.source_safe_complete);
+        assert_eq!(
+            plan.paint_quotes,
+            ["yukon alpha unique", "bilingual beta distinct"]
+        );
+        assert_eq!(plan.directives.len(), 2);
+        assert!(plan
+            .directives
+            .iter()
+            .all(|directive| !is_range_directive(directive)));
+        assert_eq!(plan.painted_words, 6);
+    }
+
+    #[test]
+    fn maximal_pdf_plan_repairs_only_a_context_dependent_middle_island() {
+        let quote = "(1) left unique island\nrepeated middle words\nright unique island";
+        let document = format!("{quote}\nunrelated repeated middle words elsewhere");
+        let plan = plan(quote, &document, &[quote], true);
+
+        assert!(plan.source_safe_complete);
+        assert_eq!(plan.painted_words, 9);
+        assert_eq!(plan.directives.len(), 4);
+        assert_eq!(
+            plan.directives
+                .iter()
+                .filter(|directive| is_range_directive(directive))
+                .count(),
+            1,
+            "directives={:?} paint={:?}",
+            plan.directives,
+            plan.paint_quotes,
+        );
+        assert!(plan
+            .paint_quotes
+            .iter()
+            .all(|painted| !painted.contains("(1)")));
+        assert!(plan
+            .source_word_intervals
+            .iter()
+            .any(|interval| interval.first_word == 1 && interval.last_word == 3));
+        assert!(plan
+            .source_word_intervals
+            .iter()
+            .any(|interval| interval.first_word == 7 && interval.last_word == 9));
+        assert!(plan
+            .source_word_intervals
+            .iter()
+            .any(|interval| interval.first_word == 4 && interval.last_word == 6));
+        assert!(plan.source_word_intervals.iter().any(|interval| {
+            interval.first_word <= 4
+                && interval.last_word >= 6
+                && interval.last_word - interval.first_word + 1 < 9
+        }));
+    }
+
+    #[test]
+    fn maximal_pdf_plan_retains_an_unrepairable_context_exact_island() {
+        let one_word_document = "first marker Act ending\nsecond marker Act ending";
+        let one_word = plan(
+            "second marker Act ending",
+            one_word_document,
+            &["Act"],
+            true,
+        );
+        assert!(one_word.source_safe_complete);
+        assert_eq!(one_word.paint_quotes, ["Act"]);
+        assert_eq!(one_word.painted_words, 1);
+        assert_eq!(one_word.directives.len(), 1);
+        assert!(!is_range_directive(&one_word.directives[0]));
+        assert_ne!(one_word.directives, ["text=Act"]);
+    }
+
+    #[test]
+    fn maximal_pdf_plan_locates_a_quote_split_by_source_lineation() {
+        let text = "\"settlement area\" means, as the case may be,\n(a) the area described in appendix A to the\nGwich'in Agreement,\n(c) the area described in appendix A to the\nSahtu Agreement; (région désignée)\n\"Tłı̨chǫ Agreement\" means the Land Claims";
+        let document = DocumentStructure::from_scalar_parts(
+            "document".to_owned(),
+            text.to_owned(),
+            "revision".to_owned(),
+            None,
+            crate::Scope::complete(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let block = "(c) the area described in appendix A to the Sahtu Agreement; ( région désignée ) \" Tłı̨chǫ Agreement\" means the Land Claims";
+        let quote = "area described in appendix A to the Sahtu Agreement;";
+        let plan = DocumentQuery::new().text_fragment_plan(
+            &document,
+            block,
+            &[quote.to_owned()],
+            true,
+            false,
+        );
+
+        assert!(plan.source_safe_complete);
+        assert_eq!(plan.painted_words, 9);
+        assert!(!plan.directives.is_empty());
+    }
+
+    #[test]
+    fn maximal_pdf_plan_uses_cross_line_context_without_painting_it() {
+        let document = "(a) public body means a body under the Freedom of Information and Protection of Privacy Act;\n(z) public body means a public body as defined in clause 1(k) of the Freedom of\nInformation and Protection of Privacy Act;\n(aa) “Registrar” means the court registrar";
+        let block = "(z) public body means a public body as defined in clause 1(k) of the Freedom of Information and Protection of Privacy Act; (aa) “Registrar” means the court registrar";
+        let quote = "of Privacy Act; (aa) “Registrar” means";
+        let plan = plan(block, document, &[quote], true);
+
+        assert!(
+            plan.source_safe_complete,
+            "directives={:?} paint={:?}",
+            plan.directives, plan.paint_quotes
+        );
+        assert_eq!(plan.painted_words, 5);
+        assert!(plan
+            .paint_quotes
+            .iter()
+            .any(|painted| painted == "of Privacy Act"));
+        assert!(plan
+            .paint_quotes
+            .iter()
+            .all(|painted| !painted.contains("Information and Protection")));
+        assert!(plan
+            .paint_quotes
+            .iter()
+            .all(|painted| !painted.contains("(aa)")));
+    }
+
+    #[test]
+    fn maximal_pdf_plan_ranges_a_split_ordinal_token() {
+        let quote = "left unique island\nDATED at Ottawa this 20 th day\nright unique island";
+        let plan = plan(quote, quote, &[quote], true);
+
+        assert!(plan.source_safe_complete);
+        assert_eq!(plan.painted_words, 13);
+        assert!(plan
+            .directives
+            .iter()
+            .any(|directive| is_range_directive(directive)));
+        assert!(!plan
+            .paint_quotes
+            .iter()
+            .any(|painted| painted == "DATED at Ottawa this 20 th day"));
     }
 
     #[test]
@@ -2486,7 +3133,6 @@ mod tests {
             "alpha beta gamma delta".len()
         );
         assert!(is_range_directive(&first.directives[0]));
-        assert_ne!(first.directives[0], "text=alpha,delta");
 
         let punctuated = plan(
             "Unique lead equalization date applies.",
@@ -2518,8 +3164,24 @@ mod tests {
         let pdf = plan(block, document, &["Alpha one\nBeta two"], true);
         assert!(pdf.source_safe_complete);
         assert_eq!(pdf.painted_words, 4);
-        assert_eq!(pdf.paint_quotes.join(" "), "Alpha one Beta two");
+        assert!(pdf
+            .paint_quotes
+            .iter()
+            .any(|painted| painted == "Alpha one"));
+        assert!(pdf.paint_quotes.iter().any(|painted| painted == "Beta two"));
+        assert!(pdf
+            .paint_quotes
+            .iter()
+            .any(|painted| painted == "Alpha one Beta two"));
         assert!(!pdf.directives.is_empty());
+        assert!(pdf
+            .paint_quotes
+            .iter()
+            .all(|painted| { !painted.contains("Unique lead") && !painted.contains("Tail end") }));
+        assert!(pdf
+            .directives
+            .iter()
+            .any(|directive| is_range_directive(directive)));
 
         let legal_reference =
             "The duties arise under sections 3(1)(a). The minister acts promptly.";
