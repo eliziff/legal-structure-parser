@@ -352,7 +352,11 @@ fn strip_reference_sites(text: &str, base: usize, sites: &[(usize, usize)]) -> S
     collapse_python_whitespace(&output)
 }
 
-pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFootnotePairing {
+pub fn pair_numbered_footnotes(
+    text: &str,
+    page_labels: &[String],
+    include_context: bool,
+) -> NumberedFootnotePairing {
     let segments = page_segments(text, page_labels);
     let mut labels = Vec::new();
     let mut bodies = Vec::with_capacity(segments.len());
@@ -454,46 +458,49 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
             chosen,
         ));
     }
-    let mut spans = notes
-        .iter()
-        .filter_map(|(_, site)| site.map(|site| (site.start, site.end)))
-        .collect::<Vec<_>>();
-    spans.sort_unstable();
-    let boundaries = sentence_boundaries(&stream);
-    let mut order = notes
-        .iter()
-        .enumerate()
-        .filter_map(|(index, (_, site))| site.map(|site| (site.start, index)))
-        .collect::<Vec<_>>();
-    order.sort_unstable();
-    let mut previous_end = 0;
-    for (_, index) in order {
-        let site = notes[index].1.unwrap();
-        let prior = boundaries.partition_point(|boundary| boundary.1 <= site.start);
-        let prior_end = prior.checked_sub(1).map_or(0, |index| boundaries[index].1);
-        let (start, end) = if prior > 0 && stream[prior_end..site.start].trim().is_empty() {
-            (
-                prior.checked_sub(2).map_or(0, |index| boundaries[index].1),
-                prior_end,
-            )
-        } else {
-            let following = boundaries.partition_point(|boundary| boundary.0 < site.start);
-            (
-                prior_end,
-                boundaries
-                    .get(following)
-                    .map_or(stream.len(), |boundary| boundary.1),
-            )
-        };
-        notes[index].0.proposition =
-            Some(strip_reference_sites(&stream[start..end], start, &spans));
-        let passage = if previous_end <= site.start {
-            strip_reference_sites(&stream[previous_end..site.start], previous_end, &spans)
-        } else {
-            String::new()
-        };
-        notes[index].0.passage = Some(last_scalars(&passage, 1200).to_owned());
-        previous_end = site.end;
+    let refs_assigned = notes.iter().filter(|(_, site)| site.is_some()).count();
+    if include_context {
+        let mut spans = notes
+            .iter()
+            .filter_map(|(_, site)| site.map(|site| (site.start, site.end)))
+            .collect::<Vec<_>>();
+        spans.sort_unstable();
+        let boundaries = sentence_boundaries(&stream);
+        let mut order = notes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (_, site))| site.map(|site| (site.start, index)))
+            .collect::<Vec<_>>();
+        order.sort_unstable();
+        let mut previous_end = 0;
+        for (_, index) in order {
+            let site = notes[index].1.unwrap();
+            let prior = boundaries.partition_point(|boundary| boundary.1 <= site.start);
+            let prior_end = prior.checked_sub(1).map_or(0, |index| boundaries[index].1);
+            let (start, end) = if prior > 0 && stream[prior_end..site.start].trim().is_empty() {
+                (
+                    prior.checked_sub(2).map_or(0, |index| boundaries[index].1),
+                    prior_end,
+                )
+            } else {
+                let following = boundaries.partition_point(|boundary| boundary.0 < site.start);
+                (
+                    prior_end,
+                    boundaries
+                        .get(following)
+                        .map_or(stream.len(), |boundary| boundary.1),
+                )
+            };
+            notes[index].0.proposition =
+                Some(strip_reference_sites(&stream[start..end], start, &spans));
+            let passage = if previous_end <= site.start {
+                strip_reference_sites(&stream[previous_end..site.start], previous_end, &spans)
+            } else {
+                String::new()
+            };
+            notes[index].0.passage = Some(last_scalars(&passage, 1200).to_owned());
+            previous_end = site.end;
+        }
     }
     static CROSSREF: OnceLock<Regex> = OnceLock::new();
     let crossref = CROSSREF.get_or_init(|| Regex::new(r"(?i)\b(?:(?:supra|infra),?\s+(?:foot)?notes?|op\.?\s*cit\.?,?\s+(?:foot)?notes?|see\s+(?:also\s+)?footnote)\s+([0-9]{1,3})\b").unwrap());
@@ -520,7 +527,7 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
     NumberedFootnotePairing {
         labels_candidates: labels.len(),
         labels_selected: selected.len(),
-        refs_assigned: spans.len(),
+        refs_assigned,
         notes: notes.into_iter().map(|(note, _)| note).collect(),
         symbol_labels_dropped,
         ambiguous_sites,
