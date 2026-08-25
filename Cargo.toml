@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "Fast deterministic legal-document structure detection and queries"
-repository = "https://github.com/eliziff/legal-structure"
+repository = "https://github.com/eliziff/legal-structure-parser"
 readme = "README.md"
 
 [workspace]
