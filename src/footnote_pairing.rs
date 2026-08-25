@@ -1,19 +1,11 @@
 use crate::last_scalars;
 use regex::Regex;
-use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
     sync::OnceLock,
 };
 
-#[derive(Clone, Deserialize)]
-pub struct JournalPageLabel {
-    #[serde(rename = "page_label")]
-    pub label: String,
-    pub pdf_page: usize,
-}
-
-pub struct JournalPairNote {
+pub struct PairedFootnote {
     pub label: String,
     pub restart_sequence: usize,
     pub note_page_index: usize,
@@ -24,8 +16,8 @@ pub struct JournalPairNote {
     pub passage: Option<String>,
 }
 
-pub struct JournalFootnotePairing {
-    pub notes: Vec<JournalPairNote>,
+pub struct NumberedFootnotePairing {
+    pub notes: Vec<PairedFootnote>,
     pub symbol_labels_dropped: usize,
     pub labels_candidates: usize,
     pub labels_selected: usize,
@@ -37,7 +29,7 @@ pub struct JournalFootnotePairing {
     pub pages: usize,
 }
 
-struct JournalLabel {
+struct FootnoteLabel {
     value: String,
     page: usize,
     order: usize,
@@ -46,7 +38,7 @@ struct JournalLabel {
 }
 
 #[derive(Clone, Copy)]
-struct JournalSite {
+struct ReferenceSite {
     start: usize,
     end: usize,
     page: usize,
@@ -64,7 +56,7 @@ fn collapse_python_whitespace(value: &str) -> String {
     output
 }
 
-fn normalize_journal_flow(raw: &str) -> String {
+fn normalize_flow(raw: &str) -> String {
     let mut output = String::with_capacity(raw.len());
     let (mut soft_hyphen, mut line_feed) = (false, false);
     let mut separator = "";
@@ -111,7 +103,7 @@ fn normalize_journal_flow(raw: &str) -> String {
     output
 }
 
-fn journal_label(line: &str) -> Option<(&str, usize)> {
+fn footnote_label(line: &str) -> Option<(&str, usize)> {
     static LABEL: OnceLock<Regex> = OnceLock::new();
     let first = *line
         .trim_start_matches(|character: char| character.is_ascii_whitespace())
@@ -130,7 +122,7 @@ fn journal_label(line: &str) -> Option<(&str, usize)> {
     Some((label.as_str(), label.end()))
 }
 
-fn journal_segments(text: &str, labels: &[String]) -> Vec<(usize, usize)> {
+fn page_segments(text: &str, labels: &[String]) -> Vec<(usize, usize)> {
     let mut found = Vec::new();
     let mut cursor = 0;
     for label in labels
@@ -170,16 +162,16 @@ fn journal_segments(text: &str, labels: &[String]) -> Vec<(usize, usize)> {
     segments
 }
 
-fn segment_journal_notes(
+fn segment_footnotes(
     text: &str,
     segment: (usize, usize),
     page: usize,
-) -> (Vec<JournalLabel>, String) {
+) -> (Vec<FootnoteLabel>, String) {
     let (start, end) = segment;
     let mut label_lines = Vec::new();
     let mut offset = start;
     for line in text[start..end].split_inclusive('\n') {
-        let Some((value, mut after)) = journal_label(line) else {
+        let Some((value, mut after)) = footnote_label(line) else {
             offset += line.len();
             continue;
         };
@@ -203,8 +195,8 @@ fn segment_journal_notes(
     let mut notes = Vec::with_capacity(label_lines.len());
     for (position, (offset, value, body_column)) in label_lines.iter().enumerate() {
         let body_end = label_lines.get(position + 1).map_or(end, |value| value.0);
-        let body = normalize_journal_flow(&text[offset + body_column..body_end]);
-        notes.push(JournalLabel {
+        let body = normalize_flow(&text[offset + body_column..body_end]);
+        notes.push(FootnoteLabel {
             value: value.clone(),
             page,
             order: *offset,
@@ -219,8 +211,8 @@ fn segment_journal_notes(
     (notes, text[start..body_end].to_owned())
 }
 
-fn journal_sites(stream: &str, pages: &[(usize, usize)]) -> HashMap<u32, Vec<JournalSite>> {
-    let mut sites = HashMap::<u32, Vec<JournalSite>>::new();
+fn reference_sites(stream: &str, pages: &[(usize, usize)]) -> HashMap<u32, Vec<ReferenceSite>> {
+    let mut sites = HashMap::<u32, Vec<ReferenceSite>>::new();
     let bytes = stream.as_bytes();
     let mut start = 0;
     while start < bytes.len() {
@@ -239,7 +231,7 @@ fn journal_sites(stream: &str, pages: &[(usize, usize)]) -> HashMap<u32, Vec<Jou
         {
             let value = stream[start..end].parse::<u32>().unwrap();
             let page = pages[pages.partition_point(|value| value.0 <= start) - 1].1;
-            sites.entry(value).or_default().push(JournalSite {
+            sites.entry(value).or_default().push(ReferenceSite {
                 start,
                 end,
                 page,
@@ -251,7 +243,7 @@ fn journal_sites(stream: &str, pages: &[(usize, usize)]) -> HashMap<u32, Vec<Jou
     sites
 }
 
-fn journal_backbone(labels: &[JournalLabel], supported: &HashSet<usize>) -> HashSet<usize> {
+fn footnote_backbone(labels: &[FootnoteLabel], supported: &HashSet<usize>) -> HashSet<usize> {
     let numeric = labels
         .iter()
         .enumerate()
@@ -262,7 +254,7 @@ fn journal_backbone(labels: &[JournalLabel], supported: &HashSet<usize>) -> Hash
     fn select(
         indexes: &[usize],
         numeric_len: usize,
-        labels: &[JournalLabel],
+        labels: &[FootnoteLabel],
         supported: &HashSet<usize>,
         selected: &mut HashSet<usize>,
     ) {
@@ -345,7 +337,7 @@ fn sentence_boundaries(text: &str) -> Vec<(usize, usize)> {
     boundaries
 }
 
-fn strip_journal_sites(text: &str, base: usize, sites: &[(usize, usize)]) -> String {
+fn strip_reference_sites(text: &str, base: usize, sites: &[(usize, usize)]) -> String {
     let mut output = String::new();
     let mut cursor = 0;
     for &(start, end) in sites {
@@ -360,14 +352,14 @@ fn strip_journal_sites(text: &str, base: usize, sites: &[(usize, usize)]) -> Str
     collapse_python_whitespace(&output)
 }
 
-pub fn pair_journal_footnotes(text: &str, page_labels: &[String]) -> JournalFootnotePairing {
-    let segments = journal_segments(text, page_labels);
+pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFootnotePairing {
+    let segments = page_segments(text, page_labels);
     let mut labels = Vec::new();
     let mut bodies = Vec::with_capacity(segments.len());
     for (page, segment) in segments.iter().copied().enumerate() {
-        let (mut notes, body) = segment_journal_notes(text, segment, page);
+        let (mut notes, body) = segment_footnotes(text, segment, page);
         labels.append(&mut notes);
-        bodies.push(normalize_journal_flow(&body));
+        bodies.push(normalize_flow(&body));
     }
     labels.sort_by_key(|label| label.order);
     let mut stream = String::new();
@@ -379,7 +371,7 @@ pub fn pair_journal_footnotes(text: &str, page_labels: &[String]) -> JournalFoot
         stream_pages.push((stream.len(), page));
         stream.push_str(body);
     }
-    let sites = journal_sites(&stream, &stream_pages);
+    let sites = reference_sites(&stream, &stream_pages);
     let supported = labels
         .iter()
         .enumerate()
@@ -392,7 +384,7 @@ pub fn pair_journal_footnotes(text: &str, page_labels: &[String]) -> JournalFoot
                 .then_some(index)
         })
         .collect::<HashSet<_>>();
-    let selected = journal_backbone(&labels, &supported);
+    let selected = footnote_backbone(&labels, &supported);
     let same_page = selected
         .iter()
         .filter(|index| {
@@ -449,7 +441,7 @@ pub fn pair_journal_footnotes(text: &str, page_labels: &[String]) -> JournalFoot
             assigned_cursor = site.end;
         }
         notes.push((
-            JournalPairNote {
+            PairedFootnote {
                 label: numeric.to_string(),
                 restart_sequence,
                 note_page_index: label.page,
@@ -493,9 +485,10 @@ pub fn pair_journal_footnotes(text: &str, page_labels: &[String]) -> JournalFoot
                     .map_or(stream.len(), |boundary| boundary.1),
             )
         };
-        notes[index].0.proposition = Some(strip_journal_sites(&stream[start..end], start, &spans));
+        notes[index].0.proposition =
+            Some(strip_reference_sites(&stream[start..end], start, &spans));
         let passage = if previous_end <= site.start {
-            strip_journal_sites(&stream[previous_end..site.start], previous_end, &spans)
+            strip_reference_sites(&stream[previous_end..site.start], previous_end, &spans)
         } else {
             String::new()
         };
@@ -524,7 +517,7 @@ pub fn pair_journal_footnotes(text: &str, page_labels: &[String]) -> JournalFoot
         .iter()
         .filter(|label| label.value.parse::<u32>().is_err())
         .count();
-    JournalFootnotePairing {
+    NumberedFootnotePairing {
         labels_candidates: labels.len(),
         labels_selected: selected.len(),
         refs_assigned: spans.len(),

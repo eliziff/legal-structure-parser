@@ -19,6 +19,8 @@ mod document_query;
 mod docx_lint;
 mod docx_numbering;
 mod fingerprint;
+#[cfg(feature = "footnote-pairing")]
+mod footnote_pairing;
 mod instrument;
 #[cfg(feature = "structure-inference")]
 mod instrument_contents;
@@ -26,8 +28,6 @@ mod instrument_contents;
 mod instrument_references;
 #[cfg(feature = "journal")]
 mod journal;
-#[cfg(feature = "journal")]
-mod journal_pairing;
 mod locator;
 #[cfg(feature = "native-markup")]
 mod native_markup;
@@ -53,12 +53,11 @@ pub use document_query::*;
 pub use docx_lint::*;
 pub use docx_numbering::*;
 pub use fingerprint::*;
+#[cfg(feature = "footnote-pairing")]
+pub use footnote_pairing::{pair_numbered_footnotes, NumberedFootnotePairing, PairedFootnote};
 pub use instrument::*;
 #[cfg(feature = "journal")]
-pub use journal::{
-    journal_document_structure, journal_text_document_structure, pair_journal_footnotes,
-    JournalFootnotePairing, JournalPageLabel, JournalPairNote,
-};
+pub use journal::{journal_document_structure, journal_text_document_structure, JournalPageLabel};
 pub use locator::{normalize_compact_numbered_section_locator, normalize_section_locator};
 #[cfg(feature = "native-markup")]
 pub use native_markup::{analyze_native_markup, NativeMarkupInput};

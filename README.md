@@ -3,8 +3,8 @@
 Fast, deterministic legal-document structure for Rust applications.
 
 The crate produces one provider-neutral `DocumentStructure` from agreements,
-provider markup, court decisions, journal articles, or extracted document
-text. Format adapters can preserve authoritative PDF and DOCX signals while
+provider markup, court decisions, or extracted document text. Format adapters
+can preserve authoritative PDF and DOCX signals while
 feeding that same structure engine. The result owns its text, nodes, origins,
 notes, tables, and cross-references; a per-document `DocumentQuery` lazily
 indexes only the query operations a caller uses.
@@ -30,7 +30,7 @@ No features are enabled by default. Enable only the public operations needed:
 | `document-query` | `DocumentQuery` navigation and text lookup |
 | `a2aj` | `a2aj_document_structure` (enables structure inference) |
 | `native-markup` | `analyze_native_markup` (enables structure inference) |
-| `journal` | Journal JSONL/text structure and footnote pairing |
+| `footnote-pairing` | Pair numbered footnote bodies with in-text references |
 | `citator` | Citation matching, lookup keys, and excerpt classification |
 | `quote-verification` | Grounded quote checks (enables document queries) |
 

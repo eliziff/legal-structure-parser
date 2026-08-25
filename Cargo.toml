@@ -20,6 +20,7 @@ citator = ["dep:legal-grammar-tables"]
 quote-verification = ["document-query"]
 native-markup = ["structure-inference"]
 a2aj = ["structure-inference"]
+footnote-pairing = []
 journal = []
 
 [dependencies]
