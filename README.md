@@ -1,4 +1,4 @@
-# Legal Structure
+# Legal Structure Parser
 
 Fast, deterministic legal-document structure for Rust applications.
 
@@ -13,7 +13,7 @@ indexes only the query operations a caller uses.
 
 ```toml
 [dependencies]
-legal-structure = { git = "https://github.com/eliziff/legal-structure.git", features = ["structure-inference"] }
+legal-structure = { git = "https://github.com/eliziff/legal-structure-parser.git", features = ["structure-inference"] }
 ```
 
 ```rust
