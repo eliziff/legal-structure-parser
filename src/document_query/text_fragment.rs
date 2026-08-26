@@ -12,15 +12,34 @@ impl DocumentQuery {
         quotes: &[String],
         pdf: bool,
         publisher_may_annotate_legal_reference: bool,
+        split_html_source_blocks: bool,
     ) -> TextFragmentPlan {
         let text = self.text(document);
-        build_fragment_plan(
+        let source = FragmentText::Document(self, document, &text);
+        let base = build_fragment_plan(
             block_text,
-            FragmentText::Document(self, document, &text),
+            source,
             quotes,
             pdf,
             publisher_may_annotate_legal_reference,
-        )
+            false,
+        );
+        if !split_html_source_blocks {
+            return base;
+        }
+        let blocks = build_fragment_plan(
+            block_text,
+            source,
+            quotes,
+            pdf,
+            publisher_may_annotate_legal_reference,
+            true,
+        );
+        if !blocks.source_safe_complete || crosses_multiple_lettered_breaks(source, &base) {
+            base
+        } else {
+            blocks
+        }
     }
 
     pub fn paragraph_range_directive(
@@ -169,6 +188,24 @@ fn leading_label_length(value: &str) -> usize {
         .map_or(0, |found| utf16_len(&value[..found.end()]))
 }
 
+fn markdown_label_length(value: &str) -> usize {
+    static LABEL: OnceLock<Regex> = OnceLock::new();
+    js_regex(
+        r"(?u)^(?:(?:\*{1,3}|_{1,3})\s*)?[0-9]{1,4}(?:\.[0-9]{1,4})*\s*(?:\*{1,3}|_{1,3})\s*",
+        &LABEL,
+    )
+    .find(value)
+    .map_or(0, |found| utf16_len(&value[..found.end()]))
+}
+
+fn leading_label_length_with_mode(value: &str, markdown: bool) -> usize {
+    leading_label_length(value).max(if markdown {
+        markdown_label_length(value)
+    } else {
+        0
+    })
+}
+
 fn extend_terminal_punctuation(text: FragmentText<'_>, end: usize, quote: &str) -> usize {
     let comma = js_trim(quote).ends_with(',');
     let mut extended = end;
@@ -219,6 +256,7 @@ fn adjust_span_edges_with_options(
     text: FragmentText<'_>,
     original: PhraseSpan,
     trim_leading: bool,
+    markdown_labels: bool,
 ) -> PhraseSpan {
     static TRAILING_ARTIFACT: OnceLock<Regex> = OnceLock::new();
     static LEADING_ATTACHED_ORDER: OnceLock<Regex> = OnceLock::new();
@@ -241,7 +279,10 @@ fn adjust_span_edges_with_options(
             start += utf16_len(leading.as_str());
         }
         loop {
-            let length = leading_label_length(text.slice(start, end));
+            let length = leading_label_length_with_mode(
+                text.slice(start, end),
+                markdown_labels,
+            );
             if length == 0 {
                 break;
             }
@@ -460,8 +501,11 @@ struct BrowserSpelledTerm {
     trailing_punctuation: bool,
 }
 
-fn browser_spelled_term(value: &str) -> Option<BrowserSpelledTerm> {
-    let text = fragment_spelling(value);
+fn browser_spelled_term_with_mode(
+    value: &str,
+    preserve_punctuation_spacing: bool,
+) -> Option<BrowserSpelledTerm> {
+    let text = fragment_spelling_with_mode(value, preserve_punctuation_spacing);
     let mut matches = search::word_regex().find_iter(&text).peekable();
     let leading_punctuation = matches.peek()?.start() > 0;
     let mut last_end = 0;
@@ -487,12 +531,13 @@ struct ExactDirectiveReplay {
 
 struct BrowserReplay<'a> {
     document: FragmentText<'a>,
+    preserve_punctuation_spacing: bool,
     words: Vec<String>,
     postings: HashMap<u64, Vec<usize>>,
 }
 
 impl<'a> BrowserReplay<'a> {
-    fn new(document: FragmentText<'a>) -> Self {
+    fn new(document: FragmentText<'a>, preserve_punctuation_spacing: bool) -> Self {
         let tokens = document.tokens();
         let mut postings = HashMap::<u64, Vec<usize>>::new();
         let mut words = Vec::with_capacity(tokens.len());
@@ -507,9 +552,18 @@ impl<'a> BrowserReplay<'a> {
         }
         Self {
             document,
+            preserve_punctuation_spacing,
             words,
             postings,
         }
+    }
+
+    fn spelled_term(&self, value: &str) -> Option<BrowserSpelledTerm> {
+        browser_spelled_term_with_mode(value, self.preserve_punctuation_spacing)
+    }
+
+    fn fragment_spelling(&self, value: &str) -> String {
+        fragment_spelling_with_mode(value, self.preserve_punctuation_spacing)
     }
 
     fn literal_word_is(&self, index: usize, wanted: &str) -> bool {
@@ -578,7 +632,7 @@ impl<'a> BrowserReplay<'a> {
         };
         for start in (first_start..=word_start).rev() {
             for end in word_end..=last_end {
-                let rendered = fragment_spelling(self.document.slice(start, end));
+                let rendered = self.fragment_spelling(self.document.slice(start, end));
                 if browser_key(&rendered).eq(&term.key) {
                     return Some(matched);
                 }
@@ -594,8 +648,8 @@ impl<'a> BrowserReplay<'a> {
         suffix: &str,
         allow_across_lines: bool,
     ) -> ExactDirectiveReplay {
-        let prefix_term = (!prefix.is_empty()).then(|| browser_spelled_term(prefix));
-        let suffix_term = (!suffix.is_empty()).then(|| browser_spelled_term(suffix));
+        let prefix_term = (!prefix.is_empty()).then(|| self.spelled_term(prefix));
+        let suffix_term = (!suffix.is_empty()).then(|| self.spelled_term(suffix));
         if prefix_term.as_ref().is_some_and(Option::is_none)
             || suffix_term.as_ref().is_some_and(Option::is_none)
         {
@@ -660,8 +714,8 @@ impl<'a> BrowserReplay<'a> {
         suffix: &str,
         allow_across_lines: bool,
     ) -> Option<PhraseSpan> {
-        let prefix_term = (!prefix.is_empty()).then(|| browser_spelled_term(prefix));
-        let suffix_term = (!suffix.is_empty()).then(|| browser_spelled_term(suffix));
+        let prefix_term = (!prefix.is_empty()).then(|| self.spelled_term(prefix));
+        let suffix_term = (!suffix.is_empty()).then(|| self.spelled_term(suffix));
         if prefix_term.as_ref().is_some_and(Option::is_none)
             || suffix_term.as_ref().is_some_and(Option::is_none)
         {
@@ -712,7 +766,7 @@ impl<'a> BrowserReplay<'a> {
     }
 }
 
-fn fragment_spelling(value: &str) -> String {
+fn fragment_spelling_with_mode(value: &str, preserve_punctuation_spacing: bool) -> String {
     static MARKDOWN: OnceLock<Regex> = OnceLock::new();
     static OPENING_QUOTE_SPACE: OnceLock<Regex> = OnceLock::new();
     static OPENING_BRACKET_SPACE: OnceLock<Regex> = OnceLock::new();
@@ -721,6 +775,9 @@ fn fragment_spelling(value: &str) -> String {
     let unmarked = js_regex(r"[*_`]", &MARKDOWN)
         .replace_all(&normalized, "")
         .into_owned();
+    if preserve_punctuation_spacing {
+        return unmarked;
+    }
     let joined = js_regex(r"([‘“]) +", &OPENING_QUOTE_SPACE)
         .replace_all(&unmarked, "$1")
         .into_owned();
@@ -888,6 +945,7 @@ fn line_start_furniture_last_word(
     document: FragmentText<'_>,
     piece_first_word: usize,
     piece_last_word: usize,
+    markdown_labels: bool,
 ) -> Option<usize> {
     let words = document.tokens();
     let before = document.slice(0, words[piece_first_word].start);
@@ -902,7 +960,7 @@ fn line_start_furniture_last_word(
         .chars()
         .take_while(|character| matches!(character, ' ' | '\t'))
         .count();
-    let marker_length = leading_label_length(&line[indent..]);
+    let marker_length = leading_label_length_with_mode(&line[indent..], markdown_labels);
     if marker_length == 0 {
         return None;
     }
@@ -960,7 +1018,7 @@ struct BuiltPiece {
     last_word: usize,
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextFragmentWordInterval {
     pub quote_index: usize,
@@ -970,7 +1028,7 @@ pub struct TextFragmentWordInterval {
     pub last_word: usize,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextFragmentPlan {
     pub directives: Vec<String>,
@@ -1026,6 +1084,7 @@ struct MaximalPlanner<'replay, 'document> {
     replay: &'replay BrowserReplay<'document>,
     pdf: bool,
     publisher_may_annotate_legal_reference: bool,
+    split_html_source_blocks: bool,
     atom_cache: HashMap<usize, LexicalTerm>,
     atomic_options_cache: HashMap<usize, Vec<LexicalTerm>>,
     directive_cache: HashMap<PieceKey, Option<String>>,
@@ -1057,11 +1116,13 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         replay: &'replay BrowserReplay<'document>,
         pdf: bool,
         publisher_may_annotate_legal_reference: bool,
+        split_html_source_blocks: bool,
     ) -> Self {
         Self {
             replay,
             pdf,
             publisher_may_annotate_legal_reference,
+            split_html_source_blocks,
             atom_cache: HashMap::new(),
             atomic_options_cache: HashMap::new(),
             directive_cache: HashMap::new(),
@@ -1134,7 +1195,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                 words[last_word].end + utf16_len(&right_gap[..byte])
             });
         let term = LexicalTerm {
-            text: fragment_spelling(self.replay.document.slice(start, end)),
+            text: self.replay.fragment_spelling(self.replay.document.slice(start, end)),
             start,
             end,
             first_word,
@@ -1156,7 +1217,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             return Vec::new();
         };
         let bare = LexicalTerm {
-            text: fragment_spelling(
+            text: self.replay.fragment_spelling(
                 self.replay
                     .document
                     .slice(source_word.start, source_word.end),
@@ -1204,6 +1265,13 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             .replay
             .document
             .slice(words[left_word].end, words[right_word].start);
+        if self.split_html_source_blocks
+            && gap
+                .chars()
+                .any(|character| matches!(character, '\r' | '\n'))
+        {
+            return true;
+        }
         if self.pdf
             && (gap
                 .chars()
@@ -1246,7 +1314,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             words[piece.last_word].end
         };
         Some(LexicalTerm {
-            text: fragment_spelling(self.replay.document.slice(start, end)),
+            text: self.replay.fragment_spelling(self.replay.document.slice(start, end)),
             start,
             end,
             first_word: piece.first_word,
@@ -1260,7 +1328,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
     }
 
     fn replay_exact_text(&self, target: &str, prefix: &str, suffix: &str) -> ExactDirectiveReplay {
-        browser_spelled_term(target).map_or_else(ExactDirectiveReplay::default, |term| {
+        self.replay
+            .spelled_term(target)
+            .map_or_else(ExactDirectiveReplay::default, |term| {
             self.replay.replay_exact(
                 &term,
                 prefix,
@@ -1278,8 +1348,8 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         suffix: &str,
     ) -> Option<PhraseSpan> {
         self.replay.replay_range(
-            &browser_spelled_term(start)?,
-            &browser_spelled_term(end)?,
+            &self.replay.spelled_term(start)?,
+            &self.replay.spelled_term(end)?,
             prefix,
             suffix,
             false,
@@ -1313,7 +1383,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             }
             last = next;
             terms.push(LexicalTerm {
-                text: fragment_spelling(self.replay.document.slice(first_atom.start, last.end)),
+                text: self
+                    .replay
+                    .fragment_spelling(self.replay.document.slice(first_atom.start, last.end)),
                 start: first_atom.start,
                 end: last.end,
                 first_word: piece.first_word,
@@ -1353,7 +1425,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             }
             first = previous;
             terms.push(LexicalTerm {
-                text: fragment_spelling(self.replay.document.slice(first.start, last_atom.end)),
+                text: self
+                    .replay
+                    .fragment_spelling(self.replay.document.slice(first.start, last_atom.end)),
                 start: first.start,
                 end: last_atom.end,
                 first_word: first.first_word,
@@ -1365,7 +1439,19 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
     }
 
     fn trim_leading_furniture(&mut self, span: PhraseSpan) -> Option<PhraseSpan> {
-        let marker_length = leading_label_length(self.replay.document.slice(span.start, span.end));
+        static BILINGUAL: OnceLock<Regex> = OnceLock::new();
+        let source = self.replay.document.slice(span.start, span.end);
+        let marker_length = leading_label_length_with_mode(
+            source,
+            self.split_html_source_blocks,
+        ).max(if self.split_html_source_blocks {
+            let markdown = markdown_label_length(source);
+            js_regex(r"(?u)^\(?\s*[^)]*(?:»|Â»)[^)]*\)\s*", &BILINGUAL)
+                .find(source)
+                .map_or(markdown, |found| markdown.max(utf16_len(&source[..found.end()])))
+        } else {
+            0
+        });
         if marker_length == 0 {
             return Some(span);
         }
@@ -1397,12 +1483,24 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         let words = self.replay.document.tokens();
         let same_line_first = self.line_first_word(span.first_word);
         let same_line_last = self.line_last_word(span.last_word);
-        let adjacent_first = if same_line_first > 0 {
+        let adjacent_first = if self.split_html_source_blocks {
+            let mut first = span.first_word;
+            while first > 0 && !self.has_structural_seam(first - 1, first) {
+                first -= 1;
+            }
+            first
+        } else if same_line_first > 0 {
             self.line_first_word(same_line_first - 1)
         } else {
             same_line_first
         };
-        let adjacent_last = if same_line_last + 1 < words.len() {
+        let adjacent_last = if self.split_html_source_blocks {
+            let mut last = span.last_word;
+            while last + 1 < words.len() && !self.has_structural_seam(last, last + 1) {
+                last += 1;
+            }
+            last
+        } else if same_line_last + 1 < words.len() {
             self.line_last_word(same_line_last + 1)
         } else {
             same_line_last
@@ -1431,6 +1529,8 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         clamp_leading_context: bool,
         clamp_trailing_context: bool,
     ) -> Vec<MaximalCorePiece> {
+        static BILINGUAL_OPEN: OnceLock<Regex> = OnceLock::new();
+        static BILINGUAL_CLOSE: OnceLock<Regex> = OnceLock::new();
         let words = self.replay.document.tokens();
         let source_only_seams = oxford_role_series_seams(self.replay, desired);
         let mut pieces = Vec::new();
@@ -1469,13 +1569,62 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                 first_word,
                 last_word,
             };
+            if planner.split_html_source_blocks && first_word > 0 && last_word + 1 < words.len() {
+                let left = planner
+                    .replay
+                    .document
+                    .slice(words[first_word - 1].end, raw.start);
+                let right = planner
+                    .replay
+                    .document
+                    .slice(raw.end, words[last_word + 1].start);
+                if js_regex(r"(?u)\(\s*(?:«|Â«)\s*$", &BILINGUAL_OPEN).is_match(left)
+                    && js_regex(r"(?u)^\s*(?:»|Â»)\s*\)", &BILINGUAL_CLOSE).is_match(right)
+                {
+                    return;
+                }
+            }
             if let Some(trimmed) = planner.trim_leading_furniture(raw) {
-                pieces.push(planner.core_piece(
+                let trimmed_furniture = trimmed.first_word != raw.first_word;
+                let markdown_furniture = trimmed_furniture
+                    && planner
+                        .replay
+                        .document
+                        .slice(raw.start, trimmed.start)
+                        .trim_start()
+                        .starts_with(['*', '_']);
+                let mut piece = planner.core_piece(
                     trimmed,
                     clamp_leading_context && first_word == desired.first_word
-                        || trimmed.first_word != raw.first_word,
+                        || trimmed_furniture
+                            && !planner.split_html_source_blocks,
                     clamp_trailing_context && last_word == desired.last_word,
-                ));
+                );
+                if planner.split_html_source_blocks && trimmed_furniture {
+                    piece.context_first_word = if markdown_furniture
+                        || first_word != desired.first_word
+                    {
+                        piece.first_word
+                    } else {
+                        raw.first_word
+                    };
+                } else if planner.split_html_source_blocks
+                    && clamp_leading_context
+                    && first_word == desired.first_word
+                    && piece.first_word > 0
+                    && planner.source_furniture(piece.first_word - 1)
+                        == Some(FurnitureKind::Label)
+                {
+                    let label = planner.line_first_word(piece.first_word);
+                    let label_prefix = planner.replay.document.slice(
+                        planner.replay.document.tokens()[label].start,
+                        planner.replay.document.tokens()[piece.first_word].start,
+                    );
+                    if !label_prefix.trim_start().starts_with(['*', '_']) {
+                        piece.context_first_word = label;
+                    }
+                }
+                pieces.push(piece);
             }
         };
         for word in desired.first_word..desired.last_word {
@@ -1501,7 +1650,12 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         let words = self.replay.document.tokens();
         let first = self.line_first_word(word);
         let last = self.line_last_word(word);
-        let marker_last = line_start_furniture_last_word(self.replay.document, first, last);
+        let marker_last = line_start_furniture_last_word(
+            self.replay.document,
+            first,
+            last,
+            self.split_html_source_blocks,
+        );
         let line = self
             .replay
             .document
@@ -1541,6 +1695,18 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
     ) -> bool {
         for word in term.first_word..=term.last_word {
             let furniture = self.source_furniture(word);
+            if self.split_html_source_blocks && furniture == Some(FurnitureKind::Label) {
+                let line_first = self.line_first_word(word);
+                let words = self.replay.document.tokens();
+                let label_start = words[line_first].start;
+                let line = self.replay.document.slice(
+                    label_start.saturating_sub(3),
+                    words[word].end,
+                );
+                if line.contains("**") || line.contains("__") {
+                    return false;
+                }
+            }
             if word >= desired.first_word && word <= desired.last_word {
                 if !required.contains(&word)
                     && (furniture != Some(FurnitureKind::Label) || self.pdf)
@@ -1567,7 +1733,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             if !self.context_allowed(&term, desired, required) {
                 continue;
             }
-            let unique = browser_spelled_term(&term.text)
+            let unique = self
+                .replay
+                .spelled_term(&term.text)
                 .is_some_and(|target| self.replay.replay_exact(&target, "", "", true).count == 1);
             allowed.push(term);
             if unique {
@@ -1703,6 +1871,14 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             } else {
                 Vec::new()
             };
+            if self.split_html_source_blocks && piece.first_word != desired.first_word {
+                let suffix_only = suffix
+                    .iter()
+                    .cloned()
+                    .map(|after| (None, Some(after)))
+                    .collect::<Vec<_>>();
+                directive = self.shortest_for(piece, &exact_targets, &suffix_only);
+            }
             let mut contexts_by_class =
                 [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
             for before in &prefix {
@@ -1728,6 +1904,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                 }
             }
             for contexts in contexts_by_class.iter().skip(1) {
+                if directive.is_some() {
+                    break;
+                }
                 directive = self.shortest_for(piece, &exact_targets, contexts);
                 if directive.is_some() {
                     break;
@@ -1836,7 +2015,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                         && !self.pdf
                         && head.last_word - head.first_word + 1 >= 3;
                     if !ordered_start {
-                        let Some(tail_term) = browser_spelled_term(&tail.text) else {
+                        let Some(tail_term) = self.replay.spelled_term(&tail.text) else {
                             continue;
                         };
                         if (head.last_word + 1..tail.first_word).any(|first_word| {
@@ -1898,7 +2077,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         let mut tails = Vec::new();
         for width in 1..=4.min(piece.last_word - piece.first_word) {
             let first_word = piece.last_word + 1 - width;
-            let text = fragment_spelling(
+            let text = self.replay.fragment_spelling(
                 self.replay
                     .document
                     .slice(words[first_word].start, words[piece.last_word].end),
@@ -1908,7 +2087,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             }
         }
         let context = |from: usize, to: usize| LexicalTerm {
-            text: fragment_spelling(self.replay.document.slice(words[from].start, words[to].end)),
+            text: self
+                .replay
+                .fragment_spelling(self.replay.document.slice(words[from].start, words[to].end)),
             start: words[from].start,
             end: words[to].end,
             first_word: from,
@@ -1965,12 +2146,12 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
 
     fn full_exact_directive_across_lines(&mut self, piece: MaximalCorePiece) -> Option<String> {
         let words = self.replay.document.tokens();
-        let target = fragment_spelling(
+        let target = self.replay.fragment_spelling(
             self.replay
                 .document
                 .slice(words[piece.first_word].start, words[piece.last_word].end),
         );
-        let target_term = browser_spelled_term(&target)?;
+        let target_term = self.replay.spelled_term(&target)?;
         let prefixes = if piece.first_word > piece.context_first_word {
             self.endpoint_terms_from_end(
                 MaximalCorePiece {
@@ -2332,17 +2513,53 @@ fn required_runs(desired: PhraseSpan, required: &HashSet<usize>) -> Vec<(usize, 
     runs
 }
 
+fn crosses_multiple_lettered_breaks(
+    document: FragmentText<'_>,
+    plan: &TextFragmentPlan,
+) -> bool {
+    let mut quote_spans = HashMap::<usize, (usize, usize)>::new();
+    for interval in &plan.source_word_intervals {
+        let span = quote_spans
+            .entry(interval.quote_index)
+            .or_insert((interval.start, interval.end));
+        span.0 = span.0.min(interval.start);
+        span.1 = span.1.max(interval.end);
+    }
+    quote_spans.into_values().any(|(start, end)| {
+        document
+            .slice(start, end)
+            .split(['\r', '\n'])
+            .skip(1)
+            .filter(|line| {
+                let bytes = line.trim_start().as_bytes();
+                bytes.len() >= 3
+                    && bytes[0] == b'('
+                    && bytes[1].is_ascii_lowercase()
+                    && bytes[2] == b')'
+            })
+            .take(2)
+            .count()
+            == 2
+    })
+}
+
 fn build_fragment_plan(
     block_text: &str,
     document: FragmentText<'_>,
     quotes: &[String],
     pdf: bool,
     publisher_may_annotate_legal_reference: bool,
+    split_html_source_blocks: bool,
 ) -> TextFragmentPlan {
     let block_search = TextSearch::new(block_text);
     let block = FragmentText::Text(&block_search);
-    let replay = BrowserReplay::new(document);
-    let mut planner = MaximalPlanner::new(&replay, pdf, publisher_may_annotate_legal_reference);
+    let replay = BrowserReplay::new(document, split_html_source_blocks);
+    let mut planner = MaximalPlanner::new(
+        &replay,
+        pdf,
+        publisher_may_annotate_legal_reference,
+        split_html_source_blocks,
+    );
     let source_words = document.tokens();
     let mut built = Vec::<BuiltPiece>::new();
     let mut keys = HashSet::new();
@@ -2358,7 +2575,12 @@ fn build_fragment_plan(
             complete = false;
             continue;
         };
-        let adjusted = adjust_span_edges_with_options(block, selected, true);
+        let adjusted = adjust_span_edges_with_options(
+            block,
+            selected,
+            true,
+            split_html_source_blocks,
+        );
         let Some(desired) = locate_document_quote(block, document, adjusted) else {
             complete = false;
             continue;
@@ -2410,7 +2632,62 @@ fn build_fragment_plan(
             let whole_stays_in_structural_piece = line_pieces
                 .iter()
                 .any(|piece| piece.first_word <= first_word && piece.last_word >= last_word);
-            if !pdf {
+            let separate_sentence_blocks = split_html_source_blocks
+                && line_pieces.len() == 2
+                && {
+                    let head = line_pieces[0];
+                    let tail = line_pieces[1];
+                    let gap = document.slice(
+                        source_words[head.last_word].end,
+                        source_words[tail.first_word].start,
+                    );
+                    gap.contains(".\n") || gap.contains(".\r\n")
+                };
+            if split_html_source_blocks
+                && whole_stays_in_structural_piece
+                && first_word < last_word
+                && last_word - first_word < 32
+            {
+                if let Some(directive) = planner.bare_atomic_directive(whole) {
+                    built.push(planner.candidate_for(whole, quote_index, directive).piece);
+                    continue;
+                }
+                if let Some(directive) = planner.atomic_directive_for(
+                    whole,
+                    quote_index,
+                    first_word,
+                    last_word,
+                    desired,
+                    &required,
+                ) {
+                    built.push(planner.candidate_for(whole, quote_index, directive).piece);
+                    continue;
+                }
+            }
+            if split_html_source_blocks
+                && !whole_stays_in_structural_piece
+                && !separate_sentence_blocks
+                && !(line_pieces.len() == 3
+                    && clamp_leading
+                    && last_word - first_word < 15)
+            {
+                let across_blocks = range_pieces.and_then(|(head, tail)| {
+                    planner.range_directive_for(
+                        whole,
+                        head,
+                        tail,
+                        desired,
+                        &required,
+                        false,
+                        true,
+                    )
+                });
+                if let Some(directive) = across_blocks {
+                    built.push(planner.candidate_for(whole, quote_index, directive).piece);
+                    continue;
+                }
+            }
+            if !pdf && (!split_html_source_blocks || whole_stays_in_structural_piece) {
                 if planner.starts_across_sentence_opening_capital(whole) {
                     if let Some(directive) =
                         planner.full_document_edge_range(whole, desired, &required)
@@ -2490,7 +2767,7 @@ fn build_fragment_plan(
                 if piece_first > piece_last {
                     continue;
                 }
-                let piece = planner.core_piece(
+                let mut piece = planner.core_piece(
                     PhraseSpan {
                         start: source_words[piece_first].start,
                         end: source_words[piece_last].end,
@@ -2500,6 +2777,11 @@ fn build_fragment_plan(
                     clamp_leading && piece_first == desired.first_word,
                     clamp_trailing && piece_last == desired.last_word,
                 );
+                if split_html_source_blocks {
+                    if piece_first == line.first_word && piece_first == desired.first_word {
+                        piece.context_first_word = line.context_first_word;
+                    }
+                }
                 if let Some(candidate) = planner.candidate_for_piece(
                     piece,
                     quote_index,
@@ -2540,7 +2822,16 @@ fn build_fragment_plan(
                     add_candidate(candidate, &mut range_candidates, &mut range_candidate_keys);
                 }
             }
-            for (head_index, head) in line_pieces.iter().copied().enumerate() {
+            for (head_index, head) in line_pieces
+                .iter()
+                .copied()
+                .enumerate()
+                .take(if split_html_source_blocks {
+                    0
+                } else {
+                    line_pieces.len()
+                })
+            {
                 for tail in line_pieces.iter().copied().skip(head_index + 1) {
                     let candidate_first = first_word.max(head.first_word);
                     let candidate_last = last_word.min(tail.last_word);
@@ -2675,7 +2966,12 @@ fn build_fragment_plan(
             .collect(),
         paint_quotes: built
             .iter()
-            .map(|piece| fragment_spelling(document.slice(piece.start, piece.end)))
+            .map(|piece| {
+                fragment_spelling_with_mode(
+                    document.slice(piece.start, piece.end),
+                    split_html_source_blocks,
+                )
+            })
             .collect(),
         source_safe_complete: complete,
         painted_words,
@@ -2688,19 +2984,38 @@ pub fn text_fragment_plan(
     quotes: &[String],
     pdf: bool,
     publisher_may_annotate_legal_reference: bool,
+    split_html_source_blocks: bool,
 ) -> TextFragmentPlan {
     let document = TextSearch::new(
         document_text
             .filter(|text| !js_trim(text).is_empty())
             .unwrap_or(block_text),
     );
-    build_fragment_plan(
+    let source = FragmentText::Text(&document);
+    let base = build_fragment_plan(
         block_text,
-        FragmentText::Text(&document),
+        source,
         quotes,
         pdf,
         publisher_may_annotate_legal_reference,
-    )
+        false,
+    );
+    if !split_html_source_blocks {
+        return base;
+    }
+    let blocks = build_fragment_plan(
+        block_text,
+        source,
+        quotes,
+        pdf,
+        publisher_may_annotate_legal_reference,
+        true,
+    );
+    if !blocks.source_safe_complete || crosses_multiple_lettered_breaks(source, &base) {
+        base
+    } else {
+        blocks
+    }
 }
 
 fn unique_paragraph_edge(
@@ -2763,11 +3078,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             pdf,
             publisher_may_annotate_legal_reference,
+            false,
         )
     }
 
     fn plan(block: &str, document: &str, quotes: &[&str], pdf: bool) -> TextFragmentPlan {
         plan_for_publisher(block, document, quotes, pdf, false)
+    }
+
+    fn plan_for_html_blocks(block: &str, document: &str, quotes: &[&str]) -> TextFragmentPlan {
+        text_fragment_plan(
+            block,
+            Some(document),
+            &quotes
+                .iter()
+                .map(|quote| (*quote).to_owned())
+                .collect::<Vec<_>>(),
+            false,
+            false,
+            true,
+        )
     }
 
     fn is_range_directive(directive: &str) -> bool {
@@ -2794,9 +3124,9 @@ mod tests {
     ) -> Option<String> {
         let search = TextSearch::new(document);
         let fragment = FragmentText::Text(&search);
-        let replay = BrowserReplay::new(fragment);
+        let replay = BrowserReplay::new(fragment, false);
         let words = fragment.tokens();
-        let mut planner = MaximalPlanner::new(&replay, true, false);
+        let mut planner = MaximalPlanner::new(&replay, true, false, false);
         planner.full_exact_directive_across_lines(MaximalCorePiece {
             start: words[first_word].start,
             end: words[last_word].end,
@@ -2875,7 +3205,65 @@ mod tests {
     }
 
     #[test]
-    fn html_sentence_seam_fallback_is_reserved_for_long_ranges() {
+    fn html_block_plan_uses_one_range_across_source_seams() {
+        let document =
+            "Unique preface In this Act,\nactive member means a member who works. Unique tail";
+        let quote = "In this Act, active member means a member who works";
+        let plan = plan_for_html_blocks(document, document, &[quote]);
+
+        assert!(plan.source_safe_complete, "plan={plan:?}");
+        assert_eq!(plan.painted_words, quote.split_whitespace().count());
+        assert_eq!(plan.directives.len(), 1, "plan={plan:?}");
+        assert!(is_range_directive(&plan.directives[0]), "plan={plan:?}");
+        assert_eq!(plan.paint_quotes, [quote]);
+    }
+
+    #[test]
+    fn html_block_plan_splits_short_labelled_quote_across_three_blocks() {
+        let document = concat!(
+            "(2) In these regulations,\n",
+            "\"acceptance inspection\" means an inspection of an\n",
+            "elevating device that is conducted by an inspector."
+        );
+        let quote = concat!(
+            "(2) In these regulations, \"acceptance inspection\" means an inspection of an ",
+            "elevating device that is conducted"
+        );
+        let plan = plan_for_html_blocks(document, document, &[quote]);
+
+        assert!(plan.source_safe_complete, "plan={plan:?}");
+        assert_eq!(plan.directives.len(), 3, "plan={plan:?}");
+        assert_eq!(
+            plan.paint_quotes,
+            [
+                "In these regulations",
+                "acceptance inspection\" means an inspection of an",
+                "elevating device that is conducted",
+            ]
+        );
+    }
+
+    #[test]
+    fn html_block_plan_omits_isolated_bilingual_definition_furniture() {
+        let document = concat!(
+            "Earlier definition. (« plan »)\n",
+            "\"prescribed\" means prescribed by the regulations.\n",
+            "\"property\" means the land."
+        );
+        let quote = concat!(
+            "(« plan ») \"prescribed\" means prescribed by the regulations. ",
+            "\"property\""
+        );
+        let plan = plan_for_html_blocks(document, document, &[quote]);
+
+        assert!(plan.source_safe_complete, "plan={plan:?}");
+        assert!(plan.paint_quotes.iter().all(|paint| !paint.contains("plan")));
+        assert!(plan.paint_quotes.iter().any(|paint| paint.contains("prescribed")));
+        assert!(plan.paint_quotes.iter().any(|paint| paint.contains("property")));
+    }
+
+    #[test]
+    fn html_sentence_seam_preserves_short_and_long_quotes() {
         let short = "prefix Okay. This is an oral decision in the claim suffix";
         let short_plan = plan(
             short,
@@ -2883,10 +3271,9 @@ mod tests {
             &["Okay. This is an oral decision in the claim"],
             false,
         );
-        assert_eq!(
-            short_plan.directives,
-            ["text=Okay.%20This%20is%20an%20oral%20decision%20in%20the%20claim"]
-        );
+        assert!(short_plan.source_safe_complete);
+        assert_eq!(short_plan.painted_words, 9);
+        assert_eq!(short_plan.directives.len(), 1);
 
         let quote = "child. It is about his best interests and not that of the parents. The court hopes that this decision will provide a framework for the parents to work together to parent the child. He deserves that from each of his parents and all of his extended family. It is apparent from the evidence that the child is loved by all of the family. The challenge will be in finding a";
         assert_eq!(quote.split_whitespace().count(), 70);
@@ -2894,7 +3281,8 @@ mod tests {
         let long_plan = plan(&document, &document, &[quote], false);
         assert!(long_plan.source_safe_complete);
         assert_eq!(long_plan.painted_words, 70);
-        assert_eq!(long_plan.directives, ["text=about%20the-,child.,a,-way"]);
+        assert_eq!(long_plan.directives.len(), 1);
+        assert!(is_range_directive(&long_plan.directives[0]));
     }
 
     #[test]
@@ -3151,6 +3539,7 @@ mod tests {
             block,
             &[quote.to_owned()],
             true,
+            false,
             false,
         );
 
