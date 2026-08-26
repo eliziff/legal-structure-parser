@@ -92,10 +92,9 @@ fn ecmascript(pattern: &str, flags: &str) -> CompiledEcmascriptGrammar {
 
 static CITATION_PATTERN: LazyLock<CompiledEcmascriptGrammar> =
     LazyLock::new(|| legal_grammar_tables::compile_ecmascript_table_entry("cite.in-text").unwrap());
-static CASE_NAME: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
-    ecmascript(
-        r"(?:^|[^\p{L}])(?:R\.|[A-Z][\p{L}\p{M}'\u2019.&-]*(?:\s+(?:of|the|and|&|[A-Z][\p{L}\p{M}'\u2019.&-]*)){0,6})\s+v(?:\.|ersus)?\s+[A-Z][\p{L}\p{M}'\u2019.&-]*",
-        "m",
+static CASE_NAME: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)(?:^|[^\p{L}])(?:R\.|[A-Z][\p{L}\p{M}'’.&-]*(?:\s+(?:of|the|and|&|[A-Z][\p{L}\p{M}'’.&-]*)){0,6})\s+v(?:\.|ersus)?\s+[A-Z][\p{L}\p{M}'’.&-]*",
     )
 });
 static ROUTING_PATTERN: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
@@ -519,8 +518,14 @@ fn has_citation(text: &str) -> bool {
     !citation_hits(text, true).is_empty()
 }
 
-pub fn has_citation_in_text(text: &str) -> bool {
-    has_citation(text) || CASE_NAME.is_match(text)
+pub fn has_citation_in_text(text: &str) -> Result<bool, String> {
+    if has_citation(text) {
+        return Ok(true);
+    }
+    CASE_NAME
+        .as_ref()
+        .map(|pattern| pattern.is_match(text))
+        .map_err(ToString::to_string)
 }
 
 pub fn caselaw_citation_lookup_key(text: &str) -> Result<String, &'static str> {
@@ -536,5 +541,17 @@ pub fn caselaw_citation_lookup_key(text: &str) -> Result<String, &'static str> {
         Err("citation is required (no letters or digits survive normalization)")
     } else {
         Ok(key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_citation_in_text;
+
+    #[test]
+    fn citation_presence_accepts_plain_text_and_unicode_case_names() {
+        assert!(!has_citation_in_text("no citation here at all").unwrap());
+        assert!(has_citation_in_text("R. v. Jordan, 2016 SCC 27").unwrap());
+        assert!(has_citation_in_text("Éditions Écosociété Inc. v. Banro Corp.").unwrap());
     }
 }

@@ -1881,6 +1881,80 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         None
     }
 
+    fn full_document_edge_range(
+        &mut self,
+        piece: MaximalCorePiece,
+        desired: PhraseSpan,
+        required: &HashSet<usize>,
+    ) -> Option<String> {
+        if self.pdf || piece.first_word >= piece.last_word {
+            return None;
+        }
+        let words = self.replay.document.tokens();
+        let head = self.atom_at(piece.first_word)?;
+        if head.first_word != piece.first_word || head.last_word != piece.first_word {
+            return None;
+        }
+        let mut tails = Vec::new();
+        for width in 1..=4.min(piece.last_word - piece.first_word) {
+            let first_word = piece.last_word + 1 - width;
+            let text = fragment_spelling(
+                self.replay
+                    .document
+                    .slice(words[first_word].start, words[piece.last_word].end),
+            );
+            if !text.contains(". ") && !text.contains("! ") && !text.contains("? ") {
+                tails.push(text);
+            }
+        }
+        let context = |from: usize, to: usize| LexicalTerm {
+            text: fragment_spelling(self.replay.document.slice(words[from].start, words[to].end)),
+            start: words[from].start,
+            end: words[to].end,
+            first_word: from,
+            last_word: to,
+            form: LexicalForm::Run,
+        };
+        let mut prefixes = Vec::new();
+        for width in 1..=8.min(piece.first_word) {
+            let term = context(piece.first_word - width, piece.first_word - 1);
+            if self.context_allowed(&term, desired, required) {
+                prefixes.push(term.text);
+            }
+        }
+        let mut suffixes = Vec::new();
+        for width in 1..=8.min(words.len() - piece.last_word - 1) {
+            let term = context(piece.last_word + 1, piece.last_word + width);
+            if self.context_allowed(&term, desired, required) {
+                suffixes.push(term.text);
+            }
+        }
+        prefixes.push(String::new());
+        suffixes.push(String::new());
+        let mut shortest = None::<String>;
+        for tail in tails {
+            for prefix in &prefixes {
+                for suffix in &suffixes {
+                    if !selects(
+                        piece,
+                        self.replay_range_text(&head.text, &tail, prefix, suffix),
+                    ) {
+                        continue;
+                    }
+                    let directive =
+                        text_range_directive_with_context(&head.text, &tail, prefix, suffix);
+                    if shortest
+                        .as_ref()
+                        .is_none_or(|current| directive.len() < current.len())
+                    {
+                        shortest = Some(directive);
+                    }
+                }
+            }
+        }
+        shortest
+    }
+
     fn bare_atomic_directive(&mut self, piece: MaximalCorePiece) -> Option<String> {
         self.exact_target_for(piece).and_then(|target| {
             let replay = self.replay_exact_text(&target.text, "", "");
@@ -1972,6 +2046,30 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                 .replay
                 .document
                 .slice(words[piece.last_word].start, words[piece.last_word].end)
+                .chars()
+                .next()
+                .is_some_and(char::is_uppercase)
+    }
+
+    fn starts_across_sentence_opening_capital(&self, piece: MaximalCorePiece) -> bool {
+        // Short selections already have reliable exact/range candidates. This fallback is
+        // specifically for long selections whose first endpoint crosses an invisible HTML seam.
+        if piece.last_word - piece.first_word + 1 < 64 {
+            return false;
+        }
+        let words = self.replay.document.tokens();
+        let gap = self.replay.document.slice(
+            words[piece.first_word].end,
+            words[piece.first_word + 1].start,
+        );
+        gap.contains('.')
+            && self
+                .replay
+                .document
+                .slice(
+                    words[piece.first_word + 1].start,
+                    words[piece.first_word + 1].end,
+                )
                 .chars()
                 .next()
                 .is_some_and(char::is_uppercase)
@@ -2313,6 +2411,14 @@ fn build_fragment_plan(
                 .iter()
                 .any(|piece| piece.first_word <= first_word && piece.last_word >= last_word);
             if !pdf {
+                if planner.starts_across_sentence_opening_capital(whole) {
+                    if let Some(directive) =
+                        planner.full_document_edge_range(whole, desired, &required)
+                    {
+                        built.push(planner.candidate_for(whole, quote_index, directive).piece);
+                        continue;
+                    }
+                }
                 let conservative = range_pieces.and_then(|(head, tail)| {
                     planner.range_directive_for(whole, head, tail, desired, &required, false, false)
                 });
@@ -2766,6 +2872,29 @@ mod tests {
         );
         assert_eq!(split.directives.len(), 1);
         assert!(is_range_directive(&split.directives[0]));
+    }
+
+    #[test]
+    fn html_sentence_seam_fallback_is_reserved_for_long_ranges() {
+        let short = "prefix Okay. This is an oral decision in the claim suffix";
+        let short_plan = plan(
+            short,
+            short,
+            &["Okay. This is an oral decision in the claim"],
+            false,
+        );
+        assert_eq!(
+            short_plan.directives,
+            ["text=Okay.%20This%20is%20an%20oral%20decision%20in%20the%20claim"]
+        );
+
+        let quote = "child. It is about his best interests and not that of the parents. The court hopes that this decision will provide a framework for the parents to work together to parent the child. He deserves that from each of his parents and all of his extended family. It is apparent from the evidence that the child is loved by all of the family. The challenge will be in finding a";
+        assert_eq!(quote.split_whitespace().count(), 70);
+        let document = format!("about the {quote} way to proceed");
+        let long_plan = plan(&document, &document, &[quote], false);
+        assert!(long_plan.source_safe_complete);
+        assert_eq!(long_plan.painted_words, 70);
+        assert_eq!(long_plan.directives, ["text=about%20the-,child.,a,-way"]);
     }
 
     #[test]
