@@ -8,7 +8,7 @@ use crate::{
     },
     javascript_whitespace, node_depths, AuthoritativeTableCell, AuthoritativeTables, Block,
     CoverageState, DefinedTerm, DefinitionOccurrence, DetectionProfile, DocumentInput,
-    DocumentStructure, EngineError, NodeKind, Origin, ScalarRange, ScalarText, Scope,
+    DocumentStructure, EngineError, NodeKind, ScalarRange, ScalarText,
 };
 #[cfg(feature = "structure-inference")]
 use regex::Regex;
@@ -110,7 +110,8 @@ fn instrument_lineation_recoveries(text: &str) -> impl Iterator<Item = String> +
 }
 
 #[cfg(feature = "structure-inference")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub(crate) enum ProvisionReferenceShape {
     Numeric,
     SubOnly,
@@ -118,7 +119,8 @@ pub(crate) enum ProvisionReferenceShape {
 }
 
 #[cfg(feature = "structure-inference")]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ProvisionReference {
     pub(crate) start: usize,
     pub(crate) end: usize,
@@ -130,6 +132,7 @@ pub(crate) struct ProvisionReference {
     pub(crate) locator: String,
     pub(crate) alias_key: String,
     pub(crate) external: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) continuation_of: Option<usize>,
 }
 
@@ -449,28 +452,17 @@ fn derive_instrument_structure(
             Some(text),
         )
     };
-    let input = DocumentInput {
+    let mut input = DocumentInput::new(
         document_id,
-        provider: "internal".to_owned(),
-        url: None,
-        doc_type: None,
-        profile: DetectionProfile::Instrument,
-        report_start_page: None,
-        require_report_start: false,
-        allow_hyphenated_sections: false,
-        text: input_text,
-        text_sha256: selected_original
-            .then(|| original_sha256.to_owned())
-            .unwrap_or_default(),
-        source_sha256: None,
-        scope: Scope::complete(),
-        origins: vec![Origin {
-            id: "provider-adapter".to_owned(),
-        }],
-        native_claims: Vec::new(),
-        coverage: crate::whole_document_coverage(scalar_end, |_| CoverageState::Absent),
-        exclusions: Vec::new(),
-    };
+        "internal",
+        DetectionProfile::Instrument,
+        input_text,
+        "provider-adapter",
+    );
+    if !selected_original {
+        input.text_sha256.clear();
+    }
+    input.coverage = crate::whole_document_coverage(scalar_end, |_| CoverageState::Absent);
     let mut structure = crate::derive::derive_trusted_inferred(input, selected_blocks)?;
     structure.selected_hypothesis = Some(selected);
     let original = original_text.as_deref().unwrap_or(&structure.text);

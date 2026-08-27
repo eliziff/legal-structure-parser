@@ -351,7 +351,7 @@ mod tests {
         masked_text: Option<String>,
     }
 
-    fn semantics(text: &str, values: Vec<BenchNode>) -> Vec<StructureNode> {
+    fn semantics(values: Vec<BenchNode>) -> Vec<StructureNode> {
         values
             .into_iter()
             .map(|value| {
@@ -467,7 +467,7 @@ mod tests {
             }
             let text = row.text.unwrap();
             let facts = row.cells.unwrap();
-            let semantics = semantics(&text, row.provisions.unwrap());
+            let semantics = semantics(row.provisions.unwrap());
             let tables = AuthoritativeTables::new(&ScalarText::new(&text), &facts).unwrap();
             assert_eq!(tables.masked_text(text.clone()), row.masked_text.unwrap());
             assert_eq!(
@@ -491,10 +491,7 @@ mod tests {
         let semantics = rows
             .iter()
             .map(|row| {
-                semantics(
-                    row.text.as_ref().unwrap(),
-                    row.provisions.as_ref().unwrap().clone(),
-                )
+                semantics(row.provisions.as_ref().unwrap().clone())
             })
             .collect::<Vec<_>>();
         let mut runs = Vec::new();

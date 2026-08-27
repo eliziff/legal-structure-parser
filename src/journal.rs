@@ -1,11 +1,10 @@
 use crate::locator::literal_page_marker;
 use crate::{
     CoverageState, DetectionProfile, DocumentInput, DocumentStructure, EngineError, EvidenceKind,
-    NativeClaim, Origin, ScalarRange, ScalarText, Scope,
+    NativeClaim, ScalarRange, ScalarText,
 };
 use serde::Deserialize;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::io::BufRead;
@@ -160,26 +159,17 @@ fn structure(
     }
     let end = text.chars().count();
     let coverage = crate::whole_document_coverage(end, |_| CoverageState::Complete);
-    let text_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
     crate::derive_native_structure_evidence(DocumentInput {
-        document_id: article_id.to_string(),
-        provider: "journal".to_owned(),
         url,
-        doc_type: None,
-        profile: DetectionProfile::Journal,
-        report_start_page: None,
-        require_report_start: false,
-        allow_hyphenated_sections: false,
-        text,
-        text_sha256,
-        source_sha256: None,
-        scope: Scope::complete(),
-        origins: vec![Origin {
-            id: ORIGIN.to_owned(),
-        }],
         native_claims: claims,
         coverage,
-        exclusions: Vec::new(),
+        ..DocumentInput::new(
+            article_id.to_string(),
+            "journal",
+            DetectionProfile::Journal,
+            text,
+            ORIGIN,
+        )
     })
 }
 
