@@ -1133,6 +1133,10 @@ struct PageMarker {
 }
 
 fn page_markers(text: &ScalarText<'_>, report_start: Option<u32>) -> Vec<PageMarker> {
+    let page_word = cached_regex!(PAGE_WORD, r"(?iu)\bpage\b");
+    if !page_word.is_match(text.value) {
+        return Vec::new();
+    }
     let regex = cached_regex!(
         VALUE,
         r"(?imu)\[[ \t]*pages?[ \t]*[.:,;]?[ \t]*(\d{1,4})[ \t]*[.:,;]?[ \t]*[\]\[)}]?[ \t]*[.,;:]?|^[ \t]*\[?[ \t]*page[ \t]*[.:,;]?[ \t]*(\d{1,4})[ \t]*[\])}]?[ \t]*[.,;:]?[ \t]*$"

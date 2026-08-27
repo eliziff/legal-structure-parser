@@ -3,7 +3,7 @@ use crate::text::{
 };
 use crate::{
     derive::derive_trusted, utf16_len, CitedAuthority, CoverageState, DetectionProfile,
-    DocumentInput, DocumentStructure, EngineError, EvidenceKind, Exclusion, NativeClaim, Origin,
+    DocumentInput, DocumentStructure, EngineError, EvidenceKind, Exclusion, NativeClaim,
     ScalarRange, ScalarText, Scope, ScopeKind,
 };
 use regex::Regex;
@@ -1434,30 +1434,27 @@ fn native_markup_evidence(
         _ => return Err(EngineError::source("invalid native-markup scope")),
     };
     let evidence = DocumentInput {
-        document_id: id,
-        provider: provider.as_str().to_owned(),
         url,
         doc_type: Some("cases"),
-        profile: match profile {
-            "case_contiguous_complete" => DetectionProfile::CaseContiguousComplete,
-            _ => DetectionProfile::CaseLossy,
-        },
         report_start_page: report_start(citation.as_deref()),
-        require_report_start: false,
-        allow_hyphenated_sections: false,
-        text_sha256: format!("{:x}", Sha256::digest(text.as_bytes())),
-        text,
         source_sha256: Some(adapter_revision),
         scope: Scope {
             kind: scope_kind,
             excerpt_of: scope.excerpt_of,
         },
-        origins: vec![Origin {
-            id: ORIGIN.to_owned(),
-        }],
         native_claims: claims,
         coverage,
         exclusions,
+        ..DocumentInput::new(
+            id,
+            provider.as_str(),
+            match profile {
+                "case_contiguous_complete" => DetectionProfile::CaseContiguousComplete,
+                _ => DetectionProfile::CaseLossy,
+            },
+            text,
+            ORIGIN,
+        )
     };
     Ok((evidence, cited_authorities))
 }

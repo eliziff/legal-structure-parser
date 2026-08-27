@@ -1,12 +1,11 @@
 use crate::{
     locator::normalize_section_locator, text::equal_fold, utf16_len, Block, CoverageState,
     Derivation, DetectionProfile, DocumentInput, DocumentStructure, EngineError, EvidenceKind,
-    NativeClaim, NodeKind, Origin, ScalarRange, ScalarText, Scope, ScopeKind,
+    NativeClaim, NodeKind, ScalarRange, ScalarText, Scope, ScopeKind,
 };
 use aho_corasick::AhoCorasick;
 use regex::Regex;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -249,10 +248,7 @@ fn evidence(
             })
             .is_match(value)
         });
-    let text_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
     Ok(DocumentInput {
-        document_id: input.id.clone().unwrap_or_else(|| input.citation.clone()),
-        provider: "a2aj".to_owned(),
         url: input.url.clone(),
         doc_type: Some(if input.source_kind == A2ajSourceKind::Cases {
             "cases"
@@ -263,9 +259,6 @@ fn evidence(
         report_start_page,
         require_report_start,
         allow_hyphenated_sections,
-        text,
-        text_sha256,
-        source_sha256: None,
         scope: Scope {
             kind: if input.excerpt_of.is_some() {
                 ScopeKind::Excerpt
@@ -274,12 +267,14 @@ fn evidence(
             },
             excerpt_of: input.excerpt_of.clone(),
         },
-        origins: vec![Origin {
-            id: ORIGIN.to_owned(),
-        }],
         native_claims: claims,
-        coverage: Vec::new(),
-        exclusions: Vec::new(),
+        ..DocumentInput::new(
+            input.id.clone().unwrap_or_else(|| input.citation.clone()),
+            "a2aj",
+            profile,
+            text,
+            ORIGIN,
+        )
     })
 }
 

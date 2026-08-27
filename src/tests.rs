@@ -1,51 +1,11 @@
 #[cfg(feature = "structure-inference")]
 use super::inference::{formal_heading, statute_spine};
 use super::*;
-use sha2::{Digest, Sha256};
 
 fn evidence(text: &str, profile: DetectionProfile) -> DocumentInput {
-    let range = ScalarRange {
-        start: 0,
-        end: text.chars().count(),
-    };
-    DocumentInput {
-        document_id: "test".into(),
-        provider: "test".into(),
-        url: None,
-        doc_type: None,
-        profile,
-        report_start_page: None,
-        require_report_start: false,
-        allow_hyphenated_sections: false,
-        text: text.into(),
-        text_sha256: format!("{:x}", Sha256::digest(text.as_bytes())),
-        source_sha256: None,
-        scope: Scope {
-            kind: ScopeKind::Complete,
-            excerpt_of: None,
-        },
-        origins: vec![Origin {
-            id: "native".into(),
-        }],
-        native_claims: Vec::new(),
-        coverage: [
-            EvidenceKind::Paragraph,
-            EvidenceKind::Prose,
-            EvidenceKind::Page,
-            EvidenceKind::Section,
-            EvidenceKind::Heading,
-            EvidenceKind::Footnote,
-            EvidenceKind::Endnote,
-        ]
-        .into_iter()
-        .map(|kind| Coverage {
-            kind,
-            range,
-            state: CoverageState::Absent,
-        })
-        .collect(),
-        exclusions: Vec::new(),
-    }
+    let mut evidence = DocumentInput::new("test".into(), "test", profile, text.into(), "native");
+    evidence.coverage = whole_document_coverage(text.chars().count(), |_| CoverageState::Absent);
+    evidence
 }
 
 #[cfg(feature = "document-query")]

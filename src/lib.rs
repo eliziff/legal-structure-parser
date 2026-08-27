@@ -1,6 +1,7 @@
 #[cfg(feature = "structure-inference")]
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 #[cfg(feature = "structure-inference")]
@@ -273,6 +274,36 @@ impl EvidenceKind {
 }
 
 impl DocumentInput {
+    fn new(
+        document_id: String,
+        provider: &str,
+        profile: DetectionProfile,
+        text: String,
+        origin_id: &str,
+    ) -> Self {
+        let text_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
+        Self {
+            document_id,
+            provider: provider.to_owned(),
+            url: None,
+            doc_type: None,
+            profile,
+            report_start_page: None,
+            require_report_start: false,
+            allow_hyphenated_sections: false,
+            text,
+            text_sha256,
+            source_sha256: None,
+            scope: Scope::complete(),
+            origins: vec![Origin {
+                id: origin_id.to_owned(),
+            }],
+            native_claims: Vec::new(),
+            coverage: Vec::new(),
+            exclusions: Vec::new(),
+        }
+    }
+
     fn clip_inference(&self, kind: EvidenceKind, range: ScalarRange) -> Option<ScalarRange> {
         let mut end = range.end;
         for value in self
