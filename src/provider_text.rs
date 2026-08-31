@@ -15,35 +15,39 @@ const ORIGIN: &str = "provider-adapter";
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub enum A2ajSourceKind {
+pub enum ProviderTextSourceKind {
     Cases,
     Laws,
 }
 
 /// A section map is ordered provider data, not a generic JSON object.
-pub type A2ajSectionMap = Vec<(String, String)>;
+pub type ProviderSectionMap = Vec<(String, String)>;
 
 #[derive(Deserialize)]
-pub struct A2ajInput {
+pub struct ProviderTextInput {
+    pub provider: Option<String>,
     pub citation: String,
-    pub source_kind: A2ajSourceKind,
+    pub source_kind: ProviderTextSourceKind,
     pub text: String,
     pub id: Option<String>,
     pub url: Option<String>,
     pub dataset: Option<String>,
     pub name: Option<String>,
     pub alternate_citation: Option<String>,
-    pub section_map: Option<A2ajSectionMap>,
+    pub section_map: Option<ProviderSectionMap>,
     pub excerpt_of: Option<String>,
+    #[serde(default)]
+    pub require_report_start: bool,
 }
 
-impl A2ajInput {
+impl ProviderTextInput {
     pub fn new(
         citation: impl Into<String>,
-        source_kind: A2ajSourceKind,
+        source_kind: ProviderTextSourceKind,
         text: impl Into<String>,
     ) -> Self {
         Self {
+            provider: None,
             citation: citation.into(),
             source_kind,
             text: text.into(),
@@ -54,19 +58,20 @@ impl A2ajInput {
             alternate_citation: None,
             section_map: None,
             excerpt_of: None,
+            require_report_start: false,
         }
     }
 }
 
-fn validate_section_map(map: &A2ajSectionMap) -> Result<(), EngineError> {
+fn validate_section_map(map: &ProviderSectionMap) -> Result<(), EngineError> {
     let mut seen = HashSet::new();
     if map.iter().any(|(key, _)| !seen.insert(key)) {
-        return Err(EngineError::source("duplicate A2AJ section-map key"));
+        return Err(EngineError::source("duplicate provider section-map key"));
     }
     Ok(())
 }
 
-fn object_entries(map: &A2ajSectionMap) -> Result<Vec<(usize, &str, &str)>, EngineError> {
+fn object_entries(map: &ProviderSectionMap) -> Result<Vec<(usize, &str, &str)>, EngineError> {
     validate_section_map(map)?;
     let mut entries = map
         .iter()
@@ -84,7 +89,7 @@ fn object_entries(map: &A2ajSectionMap) -> Result<Vec<(usize, &str, &str)>, Engi
     Ok(entries)
 }
 
-fn ordered_sections(map: &A2ajSectionMap) -> Result<Vec<(&str, &str)>, EngineError> {
+fn ordered_sections(map: &ProviderSectionMap) -> Result<Vec<(&str, &str)>, EngineError> {
     let mut entries = object_entries(map)?;
     let order = crate::inference::dotted_order(entries.iter().map(|(_, label, _)| *label));
     entries.sort_by(|left, right| {
@@ -157,7 +162,7 @@ fn provider_source(mut text: String, entries: &[(&str, &str)]) -> (String, Vec<N
     (text, claims)
 }
 
-fn provider_claims(coordinates: &ScalarText<'_>, map: &A2ajSectionMap) -> Vec<NativeClaim> {
+fn provider_claims(coordinates: &ScalarText<'_>, map: &ProviderSectionMap) -> Vec<NativeClaim> {
     static PRINTED: OnceLock<Regex> = OnceLock::new();
     let text = coordinates.value;
     let candidates = map
@@ -225,22 +230,18 @@ fn provider_claims(coordinates: &ScalarText<'_>, map: &A2ajSectionMap) -> Vec<Na
 }
 
 fn evidence(
-    input: &A2ajInput,
+    input: &ProviderTextInput,
     text: String,
     claims: Vec<NativeClaim>,
 ) -> Result<DocumentInput, EngineError> {
-    let profile = if input.source_kind == A2ajSourceKind::Cases {
+    let profile = if input.source_kind == ProviderTextSourceKind::Cases {
         DetectionProfile::CaseRootedComplete
     } else {
         DetectionProfile::Legislation
     };
     let report_start_page = report_start(input);
-    let require_report_start = input.source_kind == A2ajSourceKind::Cases
-        && input
-            .dataset
-            .as_deref()
-            .is_some_and(|value| value.eq_ignore_ascii_case("SCC"));
-    let allow_hyphenated_sections = input.source_kind == A2ajSourceKind::Laws
+    let require_report_start = input.require_report_start;
+    let allow_hyphenated_sections = input.source_kind == ProviderTextSourceKind::Laws
         && input.name.as_deref().is_some_and(|value| {
             static RE: OnceLock<Regex> = OnceLock::new();
             RE.get_or_init(|| {
@@ -250,7 +251,7 @@ fn evidence(
         });
     Ok(DocumentInput {
         url: input.url.clone(),
-        doc_type: Some(if input.source_kind == A2ajSourceKind::Cases {
+        doc_type: Some(if input.source_kind == ProviderTextSourceKind::Cases {
             "cases"
         } else {
             "laws"
@@ -270,7 +271,7 @@ fn evidence(
         native_claims: claims,
         ..DocumentInput::new(
             input.id.clone().unwrap_or_else(|| input.citation.clone()),
-            "a2aj",
+            input.provider.as_deref().unwrap_or("provider-text"),
             profile,
             text,
             ORIGIN,
@@ -278,7 +279,7 @@ fn evidence(
     })
 }
 
-fn report_start(input: &A2ajInput) -> Option<u32> {
+fn report_start(input: &ProviderTextInput) -> Option<u32> {
     std::iter::once(input.citation.as_str())
         .chain(input.alternate_citation.as_deref())
         .find_map(crate::canadian_report_start)
@@ -312,7 +313,7 @@ fn apply_provider_section_evidence(
     coordinates: &ScalarText<'_>,
     blocks: &mut Vec<Block>,
     native_claims: &[NativeClaim],
-    map: &A2ajSectionMap,
+    map: &ProviderSectionMap,
 ) {
     let text = coordinates.value;
     let mut counts = HashMap::new();
@@ -450,7 +451,9 @@ fn apply_provider_section_evidence(
     blocks.sort_by_key(|block| (block.range.start, block.parent_label.is_some()));
 }
 
-pub fn a2aj_document_structure(mut input: A2ajInput) -> Result<DocumentStructure, EngineError> {
+pub fn provider_text_document_structure(
+    mut input: ProviderTextInput,
+) -> Result<DocumentStructure, EngineError> {
     // Scoped keys are user locators; complete maps retain provider labels such as "Schedule 2".
     if input.excerpt_of.is_some() {
         if let Some(map) = &mut input.section_map {
@@ -486,13 +489,13 @@ pub fn a2aj_document_structure(mut input: A2ajInput) -> Result<DocumentStructure
         }
     });
     let mut inferred = crate::inference::inferred_blocks(&evidence, &coordinates);
-    if let (A2ajSourceKind::Laws, true, Some(map)) =
+    if let (ProviderTextSourceKind::Laws, true, Some(map)) =
         (input.source_kind, has_text, input.section_map.as_ref())
     {
         apply_provider_section_evidence(&coordinates, &mut inferred, &evidence.native_claims, map);
     }
     let mut structure = crate::derive::derive_trusted_inferred(evidence, inferred)?;
-    if input.source_kind == A2ajSourceKind::Laws {
+    if input.source_kind == ProviderTextSourceKind::Laws {
         structure.cross_references = Some(crate::instrument::cross_reference_graph(&structure)?);
     }
     Ok(structure)
@@ -505,8 +508,8 @@ mod tests {
     use crate::{DocumentBlock, DocumentKind, DocumentOrigin, DocumentQuery};
 
     #[cfg(feature = "document-query")]
-    fn document_blocks(input: A2ajInput) -> (DocumentStructure, Vec<DocumentBlock>) {
-        let document = a2aj_document_structure(input).unwrap();
+    fn document_blocks(input: ProviderTextInput) -> (DocumentStructure, Vec<DocumentBlock>) {
+        let document = provider_text_document_structure(input).unwrap();
         let blocks = DocumentQuery::new().blocks(&document, None).collect();
         (document, blocks)
     }
@@ -528,8 +531,8 @@ mod tests {
 
     #[test]
     #[cfg(feature = "document-query")]
-    fn map_rendering_and_provider_evidence_match_a2aj() {
-        let mut mapped = A2ajInput::new("fixture", A2ajSourceKind::Laws, "");
+    fn map_rendering_and_provider_evidence_match_provider_text() {
+        let mut mapped = ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, "");
         mapped.section_map = Some(
             ["1", "2", "4", "4.1", "4.2", "5", "Schedule 2", "Schedule 1"]
                 .into_iter()
@@ -556,7 +559,7 @@ mod tests {
         );
 
         let text = "1 First full-text provision.\n2 Second full-text provision.\n3 Third full-text provision.";
-        let mut promoted = A2ajInput::new("fixture", A2ajSourceKind::Laws, text);
+        let mut promoted = ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, text);
         promoted.section_map = Some(vec![("2".into(), "Second full-text provision.".into())]);
         let (_, promoted) = document_blocks(promoted);
         assert_eq!(
@@ -581,7 +584,7 @@ mod tests {
         );
 
         let text = "Preamble.\n99 Provider-only provision.";
-        let mut missing = A2ajInput::new("fixture", A2ajSourceKind::Laws, text);
+        let mut missing = ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, text);
         missing.section_map = Some(vec![("99".into(), "Provider-only provision.".into())]);
         let (_, missing) = document_blocks(missing);
         let added = missing.iter().find(|block| block.label == "sec99").unwrap();
@@ -591,9 +594,12 @@ mod tests {
             utf16_at(text, text.find("99 Provider-only").unwrap())
         );
 
-        let mut sole = A2ajInput::new("fixture", A2ajSourceKind::Laws, "1 Sole provision.");
+        let mut sole =
+            ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, "1 Sole provision.");
+        sole.provider = Some("example-provider".to_owned());
         sole.section_map = Some(vec![("1".into(), "Sole provision.".into())]);
-        let (_, sole) = document_blocks(sole);
+        let (sole_document, sole) = document_blocks(sole);
+        assert_eq!(sole_document.provider, "example-provider");
         assert_eq!(
             sole.iter()
                 .filter(|block| block.kind == DocumentKind::Section && block.parent_label.is_none())
@@ -602,7 +608,7 @@ mod tests {
             [("sec1", 0, DocumentOrigin::Native)]
         );
 
-        let mut printed = A2ajInput::new("fixture", A2ajSourceKind::Laws, "");
+        let mut printed = ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, "");
         printed.section_map = Some(vec![(
             "34".into(),
             "34(1) Parent provision.\n(a) Child paragraph.".into(),
@@ -624,7 +630,7 @@ mod tests {
         );
 
         let text = "1 (1) Parent provision.\n(a) Child.\n\n### Next\n2 Next provision.";
-        let mut bounded = A2ajInput::new("fixture", A2ajSourceKind::Laws, text);
+        let mut bounded = ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, text);
         bounded.section_map = Some(vec![(
             "1".into(),
             "(1) Parent provision.\n(a) Child.".into(),

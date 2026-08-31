@@ -1664,6 +1664,7 @@ mod tests {
         node.label = Some("par1".to_owned());
         let mut document = DocumentStructure::from_scalar_parts(
             "document".to_owned(),
+            "fixture".to_owned(),
             "raw".to_owned(),
             "revision".to_owned(),
             None,

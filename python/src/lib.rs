@@ -1,6 +1,7 @@
 use legal_structure_core::{
-    a2aj_document_structure, pair_numbered_footnotes as pair, utf16_len, A2ajInput, A2ajSourceKind,
-    DocumentBlock, DocumentKind, DocumentOrigin, DocumentQuery, DocumentStructure, ScalarText,
+    pair_numbered_footnotes as pair, provider_text_document_structure, utf16_len, DocumentBlock,
+    DocumentKind, DocumentOrigin, DocumentQuery, DocumentStructure, ProviderTextInput,
+    ProviderTextSourceKind, ScalarText,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -128,7 +129,9 @@ impl Document {
         alternate_citation=None,
         dataset=None,
         name=None,
-        section_map=None
+        section_map=None,
+        provider="provider-text",
+        require_report_start=false
     ))]
     fn new(
         py: Python<'_>,
@@ -139,13 +142,15 @@ impl Document {
         dataset: Option<String>,
         name: Option<String>,
         section_map: Option<Vec<(String, String)>>,
+        provider: &str,
+        require_report_start: bool,
     ) -> PyResult<Self> {
         let source_kind = match doc_type {
-            "cases" => A2ajSourceKind::Cases,
-            "laws" => A2ajSourceKind::Laws,
+            "cases" => ProviderTextSourceKind::Cases,
+            "laws" => ProviderTextSourceKind::Laws,
             _ => return Err(PyValueError::new_err("doc_type must be cases or laws")),
         };
-        let mut input = A2ajInput::new(
+        let mut input = ProviderTextInput::new(
             citation,
             source_kind,
             if section_map.is_some() {
@@ -154,12 +159,14 @@ impl Document {
                 text
             },
         );
+        input.provider = Some(provider.to_owned());
+        input.require_report_start = require_report_start;
         input.dataset = dataset;
         input.name = name;
         input.alternate_citation = alternate_citation;
         input.section_map = section_map;
         let structure = py
-            .detach(|| a2aj_document_structure(input))
+            .detach(|| provider_text_document_structure(input))
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         Ok(Self {
             structure,

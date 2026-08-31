@@ -152,8 +152,12 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
     let source_sha256 = evidence.source_sha256.take();
     let scope = evidence.scope;
     let origins = evidence.origins;
-    let mut structure = DocumentStructure::from_projected_parts(
+    let structure = DocumentStructure::from_projected_parts(
         document_id,
+        provider,
+        url,
+        doc_type,
+        Some(profile),
         text,
         text_sha256,
         source_sha256,
@@ -163,10 +167,6 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
         Vec::new(),
         diagnostics,
     );
-    structure.provider = provider;
-    structure.profile = Some(profile);
-    structure.url = url;
-    structure.doc_type = doc_type;
     structure
 }
 

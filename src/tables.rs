@@ -1,6 +1,9 @@
 use super::*;
 use crate::text::ScalarText;
 
+#[cfg(target_pointer_width = "32")]
+const MAX_SAFE_INTEGER: usize = usize::MAX;
+#[cfg(not(target_pointer_width = "32"))]
 const MAX_SAFE_INTEGER: usize = 9_007_199_254_740_991;
 const MAX_TABLE_CELLS: usize = 500_000;
 
