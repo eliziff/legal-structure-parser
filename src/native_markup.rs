@@ -672,8 +672,8 @@ fn native_identity(
             });
         }
     }
-    static CANLII: OnceLock<Regex> = OnceLock::new();
-    CANLII
+    static SECTION_ID: OnceLock<Regex> = OnceLock::new();
+    SECTION_ID
         .get_or_init(|| {
             Regex::new(r"(?i)^sec(\d{1,8}(?:[.-]\d{1,8}){0,3}(?:\([^)]+\))*)$").unwrap()
         })

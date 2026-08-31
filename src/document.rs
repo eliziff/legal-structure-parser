@@ -311,6 +311,7 @@ impl DocumentStructure {
 
     pub(crate) fn from_scalar_parts(
         document_id: String,
+        provider: String,
         text: String,
         text_sha256: String,
         source_sha256: Option<String>,
@@ -324,6 +325,10 @@ impl DocumentStructure {
         Self::project_scalar_parts(&coordinates, &mut nodes, &mut notes, &mut diagnostics);
         Self::from_projected_parts(
             document_id,
+            provider,
+            None,
+            None,
+            None,
             text,
             text_sha256,
             source_sha256,
@@ -337,6 +342,10 @@ impl DocumentStructure {
 
     pub(crate) fn from_projected_parts(
         document_id: String,
+        provider: String,
+        url: Option<String>,
+        doc_type: Option<String>,
+        profile: Option<DetectionProfile>,
         text: String,
         text_sha256: String,
         source_sha256: Option<String>,
@@ -350,10 +359,10 @@ impl DocumentStructure {
             schema_version: Cow::Borrowed(DOCUMENT_STRUCTURE_SCHEMA),
             document_id,
             offset_unit: Cow::Borrowed("utf16"),
-            provider: "local-pdf".to_owned(),
-            url: None,
-            doc_type: None,
-            profile: None,
+            provider,
+            url,
+            doc_type,
+            profile,
             revision: text_sha256.clone(),
             text,
             rendered_text: None,

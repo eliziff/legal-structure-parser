@@ -249,6 +249,7 @@ pub(crate) fn resolve_structure_candidates<'a>(
 #[cfg(feature = "structure-inference")]
 pub fn resolve_structure_graph(
     document_id: String,
+    provider: String,
     text: &str,
     source_sha256: Option<String>,
     mut nodes: Vec<StructureNode>,
@@ -731,6 +732,7 @@ pub fn resolve_structure_graph(
     origins.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(DocumentStructure::from_scalar_parts(
         document_id,
+        provider,
         text.to_owned(),
         format!("{:x}", Sha256::digest(text.as_bytes())),
         source_sha256,

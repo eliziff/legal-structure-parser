@@ -177,6 +177,7 @@ mod tests {
         );
         let mut document = DocumentStructure::from_scalar_parts(
             "id".into(),
+            "fixture".into(),
             "raw".into(),
             format!("{:x}", Sha256::digest(b"raw")),
             None,

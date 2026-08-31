@@ -378,6 +378,7 @@ fn typed_evidence_resolves_numeric_prose_and_reports_each_run() {
         .collect::<Vec<_>>();
     let graph = resolve_structure_graph(
         "numeric".to_owned(),
+        "fixture".to_owned(),
         text,
         None,
         Vec::new(),
@@ -491,6 +492,7 @@ fn local_candidate_parent_ids_create_honest_list_items() {
     ];
     let graph = resolve_structure_graph(
         "hierarchy".to_owned(),
+        "fixture".to_owned(),
         text,
         None,
         Vec::new(),
@@ -569,6 +571,7 @@ fn paired_note_claim_keeps_note_source_identity() {
     };
     let graph = resolve_structure_graph(
         "notes".to_owned(),
+        "fixture".to_owned(),
         text,
         None,
         Vec::new(),

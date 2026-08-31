@@ -85,6 +85,38 @@ pub struct ProviderCitationMatch<'a> {
     pub page: Option<&'a str>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CitationTextSpan {
+    pub text: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CitationPinpoint {
+    pub text: String,
+    pub start: usize,
+    pub end: usize,
+    pub kind: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CitationOccurrence {
+    pub text: String,
+    pub start: usize,
+    pub end: usize,
+    pub styled_citation: CitationTextSpan,
+    pub core_citation: CitationTextSpan,
+    pub pinpoints: Vec<CitationPinpoint>,
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub short_form: Option<String>,
+    pub reasons: Vec<&'static str>,
+}
+
 fn ecmascript(pattern: &str, flags: &str) -> CompiledEcmascriptGrammar {
     legal_grammar_tables::compile_ecmascript_pattern("citator", pattern, flags)
         .expect("frozen citator regex")
@@ -99,6 +131,44 @@ static CASE_NAME: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
 });
 static ROUTING_PATTERN: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
     legal_grammar_tables::compile_ecmascript_table_entry("cite.provider-routing").unwrap()
+});
+static SIGNAL_PREFIX: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
+    legal_grammar_tables::compile_ecmascript_table_entry("signal.prefix.toa").unwrap()
+});
+static SHORT_FORM_SUFFIX: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
+    legal_grammar_tables::compile_ecmascript_table_entry("shortform.splitter").unwrap()
+});
+static JOURNAL_PATTERN: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
+    legal_grammar_tables::compile_ecmascript_table_entry("cite.journal.toa").unwrap()
+});
+static PINPOINT_PATTERNS: LazyLock<[(&'static str, CompiledEcmascriptGrammar); 3]> =
+    LazyLock::new(|| {
+        [
+            (
+                "paragraph",
+                legal_grammar_tables::compile_ecmascript_table_entry("pinpoint.para.toa").unwrap(),
+            ),
+            (
+                "section",
+                legal_grammar_tables::compile_ecmascript_table_entry("pinpoint.section.toa")
+                    .unwrap(),
+            ),
+            (
+                "page",
+                legal_grammar_tables::compile_ecmascript_table_entry("pinpoint.page.toa").unwrap(),
+            ),
+        ]
+    });
+static PINPOINT_ITEM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\d+(?:\.\d+)*(?:\([A-Za-z0-9]+\))*").unwrap());
+static PINPOINT_BRIDGE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^[\s,]*(?:at\s+)?$").unwrap());
+static CASE_VERSUS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(?:v|c)\.?\s+").unwrap());
+static CASE_LEFT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)(?<left>\p{Lu}[\p{L}\p{M}\p{N}.'\u{2019}&()-]*(?:\s+(?:\p{Lu}[\p{L}\p{M}\p{N}.'\u{2019}&()-]*|of|the|and|de|la|du)){0,12})\s*$",
+    )
+    .unwrap()
 });
 static RESIDUAL_CUE: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
     legal_grammar_tables::compile_ecmascript_table_entry("cite.us.fallback-cue").unwrap()
@@ -262,6 +332,208 @@ fn citation_hits(value: &str, extended_us_fallback: bool) -> Vec<Hit> {
         resolved.push(hit);
     }
     resolved
+}
+
+fn citation_text_span(text: &str, document: &ScalarText<'_>, span: Hit) -> CitationTextSpan {
+    CitationTextSpan {
+        text: text[span.clone()].to_owned(),
+        start: document.utf16_at_byte(span.start).unwrap(),
+        end: document.utf16_at_byte(span.end).unwrap(),
+    }
+}
+
+fn citation_kind(core: &str) -> (&'static str, &'static str) {
+    let is_whole = |span: &Hit| span.start == 0 && span.end == core.len();
+    if JOURNAL_PATTERN
+        .find(core)
+        .is_some_and(|matched| is_whole(&(matched.start()..matched.end())))
+    {
+        return ("journal", "journal_grammar");
+    }
+    if COMMON_US_LAW.find_spans(core).iter().any(is_whole)
+        || EXTENDED_US_CITATION_IDS
+            .iter()
+            .zip(EXTENDED_US_PATTERNS.iter())
+            .any(|(id, pattern)| {
+                id.contains(".law.") && pattern.find_spans(core).iter().any(is_whole)
+            })
+    {
+        return ("statute", "statute_grammar");
+    }
+    if let Some(captures) = ROUTING_PATTERN.captures(core) {
+        let matched = captures.get(0).unwrap();
+        if matched.start() == 0 && matched.end() == core.len() {
+            return if captures.name("ca_statute").is_some() {
+                ("statute", "provider_routing")
+            } else {
+                ("case", "provider_routing")
+            };
+        }
+    }
+    if core.contains("CanLII") {
+        ("case", "citation_grammar")
+    } else {
+        ("other", "citation_grammar")
+    }
+}
+
+fn case_style_start(text: &str, core_start: usize, floor: usize) -> usize {
+    let prefix = text[floor..core_start]
+        .trim_end_matches(|character: char| javascript_whitespace(character) || character == ',');
+    let Some(versus) = CASE_VERSUS.find_iter(prefix).last() else {
+        return core_start;
+    };
+    if !prefix[versus.end()..]
+        .trim_start_matches(javascript_whitespace)
+        .chars()
+        .next()
+        .is_some_and(char::is_uppercase)
+    {
+        return core_start;
+    }
+    let Some(left) = CASE_LEFT
+        .captures(&prefix[..versus.start()])
+        .and_then(|captures| captures.name("left"))
+    else {
+        return core_start;
+    };
+    let mut start = floor + left.start();
+    for _ in 0..4 {
+        let Some(signal) = SIGNAL_PREFIX.find(&text[start..core_start]) else {
+            break;
+        };
+        start += signal.end();
+    }
+    start
+}
+
+fn pinpoint_hits(text: &str, core_end: usize, limit: usize) -> (Vec<(Hit, &'static str)>, usize) {
+    let tail = &text[core_end..limit];
+    let mut selected = None::<(&'static str, usize, usize, usize, usize)>;
+    for (kind, pattern) in PINPOINT_PATTERNS.iter() {
+        let Some(captures) = pattern.captures(tail) else {
+            continue;
+        };
+        let matched = captures.get(0).unwrap();
+        if !PINPOINT_BRIDGE.is_match(&tail[..matched.start()]) {
+            continue;
+        }
+        let sequence = captures.get(1).unwrap();
+        let candidate = (
+            *kind,
+            matched.start(),
+            matched.end(),
+            sequence.start(),
+            sequence.end(),
+        );
+        if selected.is_none_or(|current| candidate.1 < current.1) {
+            selected = Some(candidate);
+        }
+    }
+    let Some((kind, _, matched_end, sequence_start, sequence_end)) = selected else {
+        return (Vec::new(), core_end);
+    };
+    let sequence = core_end + sequence_start..core_end + sequence_end;
+    let pinpoints = PINPOINT_ITEM
+        .find_iter(&text[sequence.clone()])
+        .map(|matched| {
+            (
+                sequence.start + matched.start()..sequence.start + matched.end(),
+                kind,
+            )
+        })
+        .collect();
+    (pinpoints, core_end + matched_end)
+}
+
+fn explicit_short_form(text: &str, start: usize, limit: usize) -> Option<(String, usize)> {
+    let tail = &text[start..limit];
+    let close = tail.find(']')?;
+    let mut end = close + 1;
+    let remainder = &tail[end..];
+    let after_space = remainder.trim_start_matches(javascript_whitespace);
+    if after_space.starts_with('.') {
+        end += remainder.len() - after_space.len() + 1;
+    }
+    let captures = SHORT_FORM_SUFFIX.captures(&tail[..end])?;
+    if captures.get(0).unwrap().start() != 0 {
+        return None;
+    }
+    let short = captures.name("short").unwrap().as_str().trim();
+    if short.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+    Some((short.to_owned(), start + end))
+}
+
+pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
+    let document = ScalarText::new(text);
+    let hits = citation_hits(text, true);
+    let mut occurrences = Vec::with_capacity(hits.len());
+    let mut previous_end = 0;
+    for (index, core) in hits.iter().enumerate() {
+        let limit = hits.get(index + 1).map_or(text.len(), |next| next.start);
+        let core_text = &text[core.clone()];
+        let (kind, kind_reason) = citation_kind(core_text);
+        let styled_start = if kind == "case" {
+            case_style_start(text, core.start, previous_end)
+        } else {
+            core.start
+        };
+        let (pinpoint_hits, pinpoint_end) = pinpoint_hits(text, core.end, limit);
+        let explicit_short = explicit_short_form(text, pinpoint_end, limit);
+        let end = explicit_short
+            .as_ref()
+            .map_or(pinpoint_end, |(_, end)| *end);
+        let styled = styled_start..core.end;
+        let observed_name = text[styled_start..core.start].trim_matches(|character: char| {
+            javascript_whitespace(character) || ",;:.".contains(character)
+        });
+        let short_form = if observed_name.is_empty() {
+            explicit_short.as_ref().map(|(short, _)| short.clone())
+        } else {
+            Some(observed_name.to_owned())
+        };
+        let mut reasons = vec![kind_reason];
+        if styled_start < core.start {
+            reasons.push("same_text_style");
+        }
+        if !pinpoint_hits.is_empty() {
+            reasons.push("pinpoint_grammar");
+        }
+        if explicit_short.is_some() {
+            reasons.push("short_form_suffix");
+        }
+        if kind == "other" {
+            reasons.push("kind_unclassified");
+        }
+        let pinpoints = pinpoint_hits
+            .into_iter()
+            .map(|(span, kind)| {
+                let value = citation_text_span(text, &document, span);
+                CitationPinpoint {
+                    text: value.text,
+                    start: value.start,
+                    end: value.end,
+                    kind,
+                }
+            })
+            .collect();
+        let source = styled_start..end;
+        occurrences.push(CitationOccurrence {
+            text: text[source.clone()].to_owned(),
+            start: document.utf16_at_byte(source.start).unwrap(),
+            end: document.utf16_at_byte(source.end).unwrap(),
+            styled_citation: citation_text_span(text, &document, styled),
+            core_citation: citation_text_span(text, &document, core.clone()),
+            pinpoints,
+            kind,
+            short_form,
+            reasons,
+        });
+        previous_end = end;
+    }
+    occurrences
 }
 
 pub fn provider_citations_in_text(text: &str) -> Vec<ProviderCitationMatch<'_>> {
@@ -546,12 +818,75 @@ pub fn caselaw_citation_lookup_key(text: &str) -> Result<String, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::has_citation_in_text;
+    use super::{citation_occurrences_in_text, has_citation_in_text};
 
     #[test]
     fn citation_presence_accepts_plain_text_and_unicode_case_names() {
         assert!(!has_citation_in_text("no citation here at all").unwrap());
         assert!(has_citation_in_text("R. v. Jordan, 2016 SCC 27").unwrap());
         assert!(has_citation_in_text("Éditions Écosociété Inc. v. Banro Corp.").unwrap());
+    }
+
+    #[test]
+    fn citation_occurrence_separates_style_core_and_multiple_pinpoints() {
+        let text = "See R. v. Jordan, 2016 SCC 27 at paras. 20, 23 and 25.";
+        let occurrences = citation_occurrences_in_text(text);
+        assert_eq!(occurrences.len(), 1);
+        let occurrence = &occurrences[0];
+        assert_eq!(
+            occurrence.text,
+            "R. v. Jordan, 2016 SCC 27 at paras. 20, 23 and 25"
+        );
+        assert_eq!(occurrence.styled_citation.text, "R. v. Jordan, 2016 SCC 27");
+        assert_eq!(occurrence.core_citation.text, "2016 SCC 27");
+        assert_eq!(occurrence.kind, "case");
+        assert_eq!(occurrence.short_form.as_deref(), Some("R. v. Jordan"));
+        assert_eq!(
+            occurrence
+                .pinpoints
+                .iter()
+                .map(|pinpoint| (pinpoint.text.as_str(), pinpoint.kind))
+                .collect::<Vec<_>>(),
+            [
+                ("20", "paragraph"),
+                ("23", "paragraph"),
+                ("25", "paragraph")
+            ]
+        );
+        assert!(occurrence.styled_citation.end <= occurrence.pinpoints[0].start);
+        assert!(occurrence
+            .pinpoints
+            .windows(2)
+            .all(|pair| pair[0].end <= pair[1].start));
+    }
+
+    #[test]
+    fn citation_occurrences_keep_repeated_matches_distinct_and_short_forms_local() {
+        let text = "2023 SCC 14 [Hansman]. Then 2023 SCC 14 at para 9.";
+        let occurrences = citation_occurrences_in_text(text);
+        assert_eq!(occurrences.len(), 2);
+        assert_eq!(occurrences[0].short_form.as_deref(), Some("Hansman"));
+        assert_eq!(occurrences[0].text, "2023 SCC 14 [Hansman].");
+        assert_eq!(occurrences[1].core_citation.text, "2023 SCC 14");
+        assert_eq!(occurrences[1].pinpoints[0].text, "9");
+        assert!(occurrences[0].end <= occurrences[1].start);
+    }
+
+    #[test]
+    fn citation_occurrence_offsets_are_javascript_utf16() {
+        let text = "🦫 Éditions Écosociété Inc. v. Banro Corp., 2012 SCC 18 at para 7";
+        let occurrence = citation_occurrences_in_text(text).pop().unwrap();
+        assert_eq!(occurrence.start, "🦫 ".encode_utf16().count());
+        assert_eq!(
+            occurrence.core_citation.start,
+            "🦫 Éditions Écosociété Inc. v. Banro Corp., "
+                .encode_utf16()
+                .count()
+        );
+        assert_eq!(
+            occurrence.styled_citation.text,
+            "Éditions Écosociété Inc. v. Banro Corp., 2012 SCC 18"
+        );
+        assert_eq!(occurrence.pinpoints[0].text, "7");
     }
 }

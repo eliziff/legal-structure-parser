@@ -7,8 +7,6 @@ use std::fmt::{Display, Formatter};
 #[cfg(feature = "structure-inference")]
 use std::sync::OnceLock;
 
-#[cfg(feature = "a2aj")]
-mod a2aj;
 #[cfg(feature = "citator")]
 mod citator;
 mod definitions;
@@ -33,12 +31,12 @@ mod locator;
 #[cfg(feature = "native-markup")]
 mod native_markup;
 mod numeric_sequence;
+#[cfg(feature = "provider-text")]
+mod provider_text;
 #[cfg(feature = "quote-verification")]
 mod quote_verification;
 mod tables;
 mod text;
-#[cfg(feature = "a2aj")]
-pub use a2aj::{a2aj_document_structure, A2ajInput, A2ajSectionMap, A2ajSourceKind};
 #[cfg(feature = "citator")]
 pub use citator::*;
 pub use definitions::*;
@@ -63,6 +61,10 @@ pub use locator::{normalize_compact_numbered_section_locator, normalize_section_
 #[cfg(feature = "native-markup")]
 pub use native_markup::{analyze_native_markup, NativeMarkupInput};
 pub use numeric_sequence::*;
+#[cfg(feature = "provider-text")]
+pub use provider_text::{
+    provider_text_document_structure, ProviderSectionMap, ProviderTextInput, ProviderTextSourceKind,
+};
 #[cfg(feature = "quote-verification")]
 pub use quote_verification::*;
 pub use tables::AuthoritativeTableCell;

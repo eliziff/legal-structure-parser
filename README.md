@@ -28,7 +28,7 @@ No features are enabled by default. Enable only the public operations needed:
 | --- | --- |
 | `structure-inference` | Instrument analysis and generic candidate resolution |
 | `document-query` | `DocumentQuery` navigation and text lookup |
-| `a2aj` | `a2aj_document_structure` (enables structure inference) |
+| `provider-text` | `provider_text_document_structure` for provider text and ordered section evidence (enables structure inference) |
 | `native-markup` | `analyze_native_markup` (enables structure inference) |
 | `footnote-pairing` | `pair_numbered_footnotes` pairs numbered bodies with in-text references; opt into proposition sentences and preceding passages with `include_context` |
 | `citator` | Citation matching, lookup keys, and excerpt classification |

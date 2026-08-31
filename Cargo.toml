@@ -19,7 +19,7 @@ document-query = []
 citator = ["dep:legal-grammar-tables"]
 quote-verification = ["document-query"]
 native-markup = ["structure-inference"]
-a2aj = ["structure-inference"]
+provider-text = ["structure-inference"]
 footnote-pairing = []
 journal = []
 
