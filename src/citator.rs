@@ -114,7 +114,22 @@ pub struct CitationOccurrence {
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub short_form: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explicit_short_form: Option<String>,
     pub reasons: Vec<&'static str>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthorityReferenceOccurrence {
+    pub text: String,
+    pub start: usize,
+    pub end: usize,
+    pub token: CitationTextSpan,
+    pub pinpoints: Vec<CitationPinpoint>,
+    pub kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_number: Option<usize>,
 }
 
 fn ecmascript(pattern: &str, flags: &str) -> CompiledEcmascriptGrammar {
@@ -137,6 +152,12 @@ static SIGNAL_PREFIX: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
 });
 static SHORT_FORM_SUFFIX: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
     legal_grammar_tables::compile_ecmascript_table_entry("shortform.splitter").unwrap()
+});
+static AUTHORITY_REFERENCE: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
+    legal_grammar_tables::compile_ecmascript_table_entry("ref.inline.toa").unwrap()
+});
+static SUPRA_NOTE: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
+    legal_grammar_tables::compile_ecmascript_table_entry("ref.supra-note.linking").unwrap()
 });
 static JOURNAL_PATTERN: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
     legal_grammar_tables::compile_ecmascript_table_entry("cite.journal.toa").unwrap()
@@ -529,11 +550,76 @@ pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
             pinpoints,
             kind,
             short_form,
+            explicit_short_form: explicit_short.map(|(short, _)| short),
             reasons,
         });
         previous_end = end;
     }
     occurrences
+}
+
+pub fn authority_references_in_text(text: &str) -> Vec<AuthorityReferenceOccurrence> {
+    let document = ScalarText::new(text);
+    let citations = citation_hits(text, true);
+    let references = AUTHORITY_REFERENCE
+        .find_iter(text)
+        .map(|matched| matched.start()..matched.end())
+        .filter(|reference| {
+            !citations
+                .iter()
+                .any(|citation| reference.start < citation.end && citation.start < reference.end)
+        })
+        .collect::<Vec<_>>();
+    references
+        .iter()
+        .enumerate()
+        .map(|(index, token)| {
+            let limit = references
+                .get(index + 1)
+                .map_or(text.len(), |next| next.start)
+                .min(
+                    citations
+                        .iter()
+                        .find(|citation| citation.start >= token.end)
+                        .map_or(text.len(), |citation| citation.start),
+                );
+            let (hits, end) = pinpoint_hits(text, token.end, limit);
+            let token_text = &text[token.clone()];
+            let kind = if token_text
+                .get(..4)
+                .is_some_and(|value| value.eq_ignore_ascii_case("ibid"))
+            {
+                "ibid"
+            } else {
+                "supra"
+            };
+            let note_number = (kind == "supra")
+                .then(|| SUPRA_NOTE.captures(token_text))
+                .flatten()
+                .and_then(|captures| captures.name("note"))
+                .and_then(|value| value.as_str().parse().ok());
+            AuthorityReferenceOccurrence {
+                text: text[token.start..end].to_owned(),
+                start: document.utf16_at_byte(token.start).unwrap(),
+                end: document.utf16_at_byte(end).unwrap(),
+                token: citation_text_span(text, &document, token.clone()),
+                pinpoints: hits
+                    .into_iter()
+                    .map(|(span, kind)| {
+                        let value = citation_text_span(text, &document, span);
+                        CitationPinpoint {
+                            text: value.text,
+                            start: value.start,
+                            end: value.end,
+                            kind,
+                        }
+                    })
+                    .collect(),
+                kind,
+                note_number,
+            }
+        })
+        .collect()
 }
 
 pub fn provider_citations_in_text(text: &str) -> Vec<ProviderCitationMatch<'_>> {
@@ -818,7 +904,7 @@ pub fn caselaw_citation_lookup_key(text: &str) -> Result<String, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{citation_occurrences_in_text, has_citation_in_text};
+    use super::{authority_references_in_text, citation_occurrences_in_text, has_citation_in_text};
 
     #[test]
     fn citation_presence_accepts_plain_text_and_unicode_case_names() {
@@ -862,11 +948,21 @@ mod tests {
 
     #[test]
     fn citation_occurrences_keep_repeated_matches_distinct_and_short_forms_local() {
-        let text = "2023 SCC 14 [Hansman]. Then 2023 SCC 14 at para 9.";
+        let text = "Hansman v Neufeld, 2023 SCC 14 [Hansman]. Then 2023 SCC 14 at para 9.";
         let occurrences = citation_occurrences_in_text(text);
         assert_eq!(occurrences.len(), 2);
-        assert_eq!(occurrences[0].short_form.as_deref(), Some("Hansman"));
-        assert_eq!(occurrences[0].text, "2023 SCC 14 [Hansman].");
+        assert_eq!(
+            occurrences[0].short_form.as_deref(),
+            Some("Hansman v Neufeld")
+        );
+        assert_eq!(
+            occurrences[0].explicit_short_form.as_deref(),
+            Some("Hansman")
+        );
+        assert_eq!(
+            occurrences[0].text,
+            "Hansman v Neufeld, 2023 SCC 14 [Hansman]."
+        );
         assert_eq!(occurrences[1].core_citation.text, "2023 SCC 14");
         assert_eq!(occurrences[1].pinpoints[0].text, "9");
         assert!(occurrences[0].end <= occurrences[1].start);
@@ -888,5 +984,25 @@ mod tests {
             "Éditions Écosociété Inc. v. Banro Corp., 2012 SCC 18"
         );
         assert_eq!(occurrence.pinpoints[0].text, "7");
+    }
+
+    #[test]
+    fn authority_references_reuse_frozen_reference_and_pinpoint_grammars() {
+        let text = "🦫 Ibid at para 7; Smith, supra note 4 at pp. 10-11.";
+        let references = authority_references_in_text(text);
+        assert_eq!(references.len(), 2);
+        assert_eq!(references[0].kind, "ibid");
+        assert_eq!(references[0].start, "🦫 ".encode_utf16().count());
+        assert_eq!(references[0].pinpoints[0].text, "7");
+        assert_eq!(references[1].kind, "supra");
+        assert_eq!(references[1].note_number, Some(4));
+        assert_eq!(
+            references[1]
+                .pinpoints
+                .iter()
+                .map(|pinpoint| pinpoint.text.as_str())
+                .collect::<Vec<_>>(),
+            ["10", "11"]
+        );
     }
 }
