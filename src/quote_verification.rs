@@ -15,7 +15,7 @@ const MIN_COPY_TOKENS: usize = 8;
 const MIN_COPY_CHARS: usize = 51;
 const MIN_COPY_DISTINCT_CONTENT_TOKENS: usize = 4;
 const MAX_MARKED_QUOTE_CHARS: usize = 4_000;
-const MAX_MARKED_QUOTE_EDITS: usize = 4;
+const MAX_MARKED_QUOTE_EDITS: usize = 32;
 const MAX_FUZZY_SOURCE_CHARS: usize = 50_000;
 const COPY_STOP_WORDS: &str = "a an and are as at be but by for from has have if in into is it its of on or that the their there these this to was were will with which would when who whom whose";
 static CONTENT: OnceLock<Regex> = OnceLock::new();
@@ -281,7 +281,6 @@ fn altered_quote_regex(expected: &str) -> Option<Regex> {
     let mut has_content = false;
     for edit in edits {
         let raw_before = &expected[cursor..edit.start()];
-        let before = raw_before.trim_end_matches(javascript_whitespace);
         let after = &expected[edit.end()..];
         // Inspect the original boundary, not the trimmed prefix: otherwise every
         // word before a space-separated [replacement] appears to be adjacent.
@@ -290,6 +289,11 @@ fn altered_quote_regex(expected: &str) -> Option<Regex> {
         }) || after.chars().next().is_some_and(|character| {
             letter_or_number(character) || matches!(character, '\'' | '’')
         });
+        let before = if adjacent && edit.as_str().starts_with('[') {
+            raw_before
+        } else {
+            raw_before.trim_end_matches(javascript_whitespace)
+        };
         pattern.push_str(&flexible_spaces(before));
         has_content |= regex(r"[\p{L}\p{N}]", &CONTENT).is_match(before);
         if edit.as_str().starts_with('[') {
@@ -299,7 +303,20 @@ fn altered_quote_regex(expected: &str) -> Option<Regex> {
             } else {
                 // Bounded, explicitly marked insertion/replacement. Unedited
                 // words outside the brackets must still match in source order.
-                write!(pattern, "{JS_WS}+(?:(?:[^\\r\\n]{{1,512}}?){JS_WS}+)?").unwrap();
+                let left_gap = raw_before
+                    .chars()
+                    .next_back()
+                    .is_some_and(javascript_whitespace);
+                let right_gap = after.chars().next().is_some_and(javascript_whitespace);
+                // Preserve separators without inventing a space at the quote edges
+                // or before punctuation. Only explicitly marked words may change.
+                match (left_gap, right_gap) {
+                    (true, true) => write!(pattern, "{JS_WS}+(?:[^\\r\\n]{{1,512}}?{JS_WS}+)?"),
+                    (true, false) => write!(pattern, "(?:{JS_WS}+[^\\r\\n]{{1,512}}?)?"),
+                    (false, true) => write!(pattern, "(?:[^\\r\\n]{{1,512}}?{JS_WS}+)?"),
+                    (false, false) => write!(pattern, "(?:[^\\r\\n]{{1,512}}?)?"),
+                }
+                .unwrap();
             }
         } else {
             pattern.push_str("(?s:.*?)");
@@ -602,5 +619,66 @@ mod editorial_regressions {
             "the deadline is five business days."
         )
         .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod editorial_boundary_regressions {
+    use super::*;
+    fn supported(authored: &str, source: &str) -> bool {
+        grounded_prose_errors(
+            &format!("“{authored}”"),
+            &["source".into()],
+            &[VisibleEvidenceText {
+                evidence_id: "source".into(),
+                text: source.into(),
+                labels: vec![],
+            }],
+        )
+        .is_empty()
+    }
+    #[test]
+    fn explicit_edits_preserve_start_end_and_word_boundaries() {
+        assert!(supported(
+            "[He] explained the relevant rule.",
+            "The witness explained the relevant rule."
+        ));
+        assert!(supported(
+            "[He] explained the relevant rule.",
+            "He explained the relevant rule."
+        ));
+        assert!(supported(
+            "The court applied the [rule].",
+            "The court applied the statute."
+        ));
+        assert!(supported(
+            "[The court] applied the rule.",
+            "It applied the rule."
+        ));
+        assert!(supported(
+            "The [j]udge applied the rule.",
+            "The Judge applied the rule."
+        ));
+        assert!(supported(
+            "The court [properly] applied the rule.",
+            "The court applied the rule."
+        ));
+        assert!(!supported(
+            "The court [properly] ignored the rule.",
+            "The court applied the rule."
+        ));
+        assert!(!supported(
+            "The [appeal] court applied the rule.",
+            "Thecourt applied the rule."
+        ));
+        assert!(!supported(
+            "[The entire alleged quotation]",
+            "Unrelated source text."
+        ));
+    }
+    #[test]
+    fn several_explicit_edits_are_not_an_unmarked_mismatch() {
+        assert!(supported("[T]he [first] point and [second] point and [third] point and [fourth] point and [fifth] point.",
+            "the one point and two point and three point and four point and five point."));
     }
 }
