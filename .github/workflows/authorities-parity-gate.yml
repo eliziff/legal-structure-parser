@@ -25,10 +25,10 @@ jobs:
           assert hashlib.sha256(p.read_bytes()).hexdigest() == 'd805a22792f5fae00241e8dec58344330fdb988455cf0e73a8a34cf9870357b3'
           s=s.replace('static JOURNAL_PATTERN:', '''// Reporter boundaries use lookaround; preserve the frozen grammar with its
           // bounded, lookaround-capable compiler rather than a second host regex.
-          static REPORTER_PATTERN: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
+          static REPORTER_PATTERN: LazyLock<legal_grammar_tables::CompiledGrammar> = LazyLock::new(|| {
               legal_grammar_tables::compile_table_entry("cite.reporter.splitter").unwrap()
           });
-          static STATUTE_PATTERN: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
+          static STATUTE_PATTERN: LazyLock<legal_grammar_tables::CompiledGrammar> = LazyLock::new(|| {
               legal_grammar_tables::compile_table_entry("cite.statute.toa").unwrap()
           });
           static JOURNAL_PATTERN:''')
