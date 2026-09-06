@@ -276,6 +276,17 @@ fn altered_quote_regex(expected: &str) -> Option<Regex> {
     if edits.is_empty() || edits.len() > MAX_MARKED_QUOTE_EDITS {
         return None;
     }
+    // A single editorial omission is one gap. Repeated ellipses with no
+    // quoted content between them are not additional supported edits.
+    if edits.windows(2).any(|pair| {
+        !pair[0].as_str().starts_with('[')
+            && !pair[1].as_str().starts_with('[')
+            && expected[pair[0].end()..pair[1].start()]
+                .trim_matches(javascript_whitespace)
+                .is_empty()
+    }) {
+        return None;
+    }
     let mut cursor = 0;
     let mut pattern = String::from(r"(?:^|[^\p{L}\p{N}])(?:");
     let mut has_content = false;
@@ -680,5 +691,30 @@ mod editorial_boundary_regressions {
     fn several_explicit_edits_are_not_an_unmarked_mismatch() {
         assert!(supported("[T]he [first] point and [second] point and [third] point and [fourth] point and [fifth] point.",
             "the one point and two point and three point and four point and five point."));
+    }
+}
+
+#[cfg(test)]
+mod repeated_omission_regressions {
+    use super::*;
+    #[test]
+    fn repeated_ellipses_do_not_become_adjacent_wildcards() {
+        let source = "The busybody must decide 12 motions, promptly, before the hearing continues.";
+        for gap in ["… …", "... ...", ". . . . . .", "… … … … …"] {
+            let quote = format!("“The busybody {gap} before the hearing continues.”");
+            assert_eq!(
+                grounded_prose_errors(
+                    &quote,
+                    &["source".into()],
+                    &[VisibleEvidenceText {
+                        evidence_id: "source".into(),
+                        text: source.into(),
+                        labels: vec![]
+                    }]
+                )
+                .len(),
+                1
+            );
+        }
     }
 }
