@@ -145,9 +145,8 @@ fn repair_suggestion(repair: Repair<'_>) -> Option<String> {
 }
 
 fn representation(value: &str) -> String {
-    if value.is_ascii() {
-        return normalize_javascript_whitespace(value);
-    }
+    // Do not erase apostrophes: only a balanced pair of quotation delimiters may
+    // change between single and double when a passage is nested in a quotation.
     let mut normalized = String::with_capacity(value.len());
     let mut separating = false;
     for character in value.nfc().map(|character| match character {
@@ -165,7 +164,29 @@ fn representation(value: &str) -> String {
             separating = false;
         }
     }
-    normalized
+    let mut characters: Vec<char> = normalized.chars().collect();
+    let mut opening = None;
+    for index in 0..characters.len() {
+        if characters[index] != '\'' { continue; }
+        let previous = index.checked_sub(1).map(|at| characters[at]);
+        let next = characters.get(index + 1).copied();
+        // Apostrophes within a word (including contractions) are never delimiters.
+        if previous.is_some_and(letter_or_number) && next.is_some_and(letter_or_number) {
+            continue;
+        }
+        if let Some(start) = opening {
+            if previous.is_some_and(|c| !javascript_whitespace(c)) &&
+                !next.is_some_and(letter_or_number) {
+                characters[start] = '"';
+                characters[index] = '"';
+                opening = None;
+            }
+        } else if !previous.is_some_and(letter_or_number) &&
+            next.is_some_and(|c| !javascript_whitespace(c)) {
+            opening = Some(index);
+        }
+    }
+    characters.into_iter().collect()
 }
 
 fn marked_quotes(text: &str) -> Vec<MarkedQuote> {
@@ -244,7 +265,7 @@ fn flexible_spaces(value: &str) -> String {
 
 fn altered_quote_regex(expected: &str) -> Option<Regex> {
     static EDIT: OnceLock<Regex> = OnceLock::new();
-    let edits = regex(r"\[[^\]\r\n]+\]|…|\.{3}", &EDIT)
+    let edits = regex(r"\[[^\]\r\n]+\]|…|\.{3}|\. \. \.", &EDIT)
         .find_iter(expected)
         .take(MAX_MARKED_QUOTE_EDITS + 1)
         .collect::<Vec<_>>();
@@ -255,9 +276,12 @@ fn altered_quote_regex(expected: &str) -> Option<Regex> {
     let mut pattern = String::from(r"(?:^|[^\p{L}\p{N}])(?:");
     let mut has_content = false;
     for edit in edits {
-        let before = expected[cursor..edit.start()].trim_end_matches(javascript_whitespace);
+        let raw_before = &expected[cursor..edit.start()];
+        let before = raw_before.trim_end_matches(javascript_whitespace);
         let after = &expected[edit.end()..];
-        let adjacent = before.chars().next_back().is_some_and(|character| {
+        // Inspect the original boundary, not the trimmed prefix: otherwise every
+        // word before a space-separated [replacement] appears to be adjacent.
+        let adjacent = raw_before.chars().next_back().is_some_and(|character| {
             letter_or_number(character) || matches!(character, '\'' | '’')
         }) || after.chars().next().is_some_and(|character| {
             letter_or_number(character) || matches!(character, '\'' | '’')
@@ -269,7 +293,9 @@ fn altered_quote_regex(expected: &str) -> Option<Regex> {
                 pattern.push_str(js_non_ws());
                 pattern.push('*');
             } else {
-                write!(pattern, "{JS_WS}+(?:{}+{JS_WS}+)?", js_non_ws()).unwrap();
+                // Bounded, explicitly marked insertion/replacement. Unedited
+                // words outside the brackets must still match in source order.
+                write!(pattern, "{JS_WS}+(?:(?:[^\\r\\n]{{1,512}}?){JS_WS}+)?").unwrap();
             }
         } else {
             pattern.push_str("(?s:.*?)");
@@ -476,7 +502,7 @@ pub fn grounded_prose_errors(
             error.push_str(&format!(
                 "; {} source window: {}",
                 source.evidence_id,
-                serde_json::to_string(&source.text).unwrap()
+                serde_json::to_string(&source.text).unwrap(),
             ));
         }
         if let Some((_, suggestion)) = repaired {
@@ -498,4 +524,37 @@ pub fn grounded_prose_errors(
         ));
     }
     errors
+}
+
+#[cfg(test)]
+mod editorial_regressions {
+    use super::*;
+
+    fn errors(authored: &str, source: &str) -> Vec<String> {
+        grounded_prose_errors(&format!("“{authored}”"), &["source".into()],
+            &[VisibleEvidenceText { evidence_id: "source".into(), text: source.into(), labels: vec![] }])
+    }
+
+    #[test]
+    fn nesting_quotation_marks_is_not_a_word_change() {
+        let authored = "An individual’s reputation should not ‘chill’ freewheeling debate on matters of public interest.";
+        let source = "An individual’s reputation should not “chill” freewheeling debate on matters of public interest.";
+        assert!(errors(authored, source).is_empty());
+        assert!(errors("The court called this a 'serious' error.", "The court called this a \"serious\" error.").is_empty());
+        assert!(!errors("The worker's rights were protected.", "The workers rights were protected.").is_empty());
+        assert!(!errors("The workers' rights were protected.", "The workers rights were protected.").is_empty());
+    }
+
+    #[test]
+    fn marked_edits_can_be_combined_without_hiding_unmarked_changes() {
+        assert!(errors("[T]he deadline is [seven] business days.", "the deadline is five business days.").is_empty());
+        assert!(errors("The [appeal court] decided the case.", "The court of first instance decided the case.").is_empty());
+        for omission in ["...", "…", ". . ."] {
+            assert!(errors(&format!("The deadline is {omission} seven business days."),
+                "The deadline is not less than seven business days.").is_empty());
+        }
+        assert!(!errors("[T]he deadline is seven business days.", "the deadline is five business days.").is_empty());
+        assert!(!errors("The court should not ‘chill’ debate.", "The court should ‘chill’ debate.").is_empty());
+        assert!(!errors("[T]he deadline is [seven] calendar days.", "the deadline is five business days.").is_empty());
+    }
 }
