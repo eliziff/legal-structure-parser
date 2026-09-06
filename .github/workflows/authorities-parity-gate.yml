@@ -23,20 +23,22 @@ jobs:
           import hashlib
           p=Path('src/citator.rs');s=p.read_text()
           assert hashlib.sha256(p.read_bytes()).hexdigest() == 'd805a22792f5fae00241e8dec58344330fdb988455cf0e73a8a34cf9870357b3'
-          s=s.replace('static JOURNAL_PATTERN:', '''static REPORTER_PATTERN: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
-              legal_grammar_tables::compile_ecmascript_table_entry("cite.reporter.splitter").unwrap()
+          s=s.replace('static JOURNAL_PATTERN:', '''// Reporter boundaries use lookaround; preserve the frozen grammar with its
+          // bounded, lookaround-capable compiler rather than a second host regex.
+          static REPORTER_PATTERN: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
+              legal_grammar_tables::compile_table_entry("cite.reporter.splitter").unwrap()
           });
-          static STATUTE_PATTERN: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
-              legal_grammar_tables::compile_ecmascript_table_entry("cite.statute.toa").unwrap()
+          static STATUTE_PATTERN: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
+              legal_grammar_tables::compile_table_entry("cite.statute.toa").unwrap()
           });
           static JOURNAL_PATTERN:''')
           s=s.replace(r'(?<left>\p{Lu}', r'(?<left>[\p{Lu}\p{N}]').replace(r'(?:\p{Lu}[\p{L}\p{M}\p{N}', r'(?:[\p{Lu}\p{N}][\p{L}\p{M}\p{N}').replace('|of|the|and|de|la|du)', '|of|the|and|for|de|la|du)')
-          s=s.replace('    found.extend(standard_us_matches(value, &STANDARD_CANDIDATE));', '''    found.extend(REPORTER_PATTERN.find_iter(value).map(|matched| matched.start()..matched.end()));
-              found.extend(STATUTE_PATTERN.find_iter(value).map(|matched| matched.start()..matched.end()));
+          s=s.replace('    found.extend(standard_us_matches(value, &STANDARD_CANDIDATE));', '''    found.extend(REPORTER_PATTERN.find_iter(value).flatten().map(|matched| matched.start()..matched.end()));
+              found.extend(STATUTE_PATTERN.find_iter(value).flatten().map(|matched| matched.start()..matched.end()));
               found.extend(standard_us_matches(value, &STANDARD_CANDIDATE));''')
-          s=s.replace('    if COMMON_US_LAW.find_spans(core).iter().any(is_whole)', '''    if STATUTE_PATTERN.find(core).is_some_and(|matched| is_whole(&(matched.start()..matched.end())))
+          s=s.replace('    if COMMON_US_LAW.find_spans(core).iter().any(is_whole)', '''    if STATUTE_PATTERN.find(core).ok().flatten().is_some_and(|matched| is_whole(&(matched.start()..matched.end())))
                   || COMMON_US_LAW.find_spans(core).iter().any(is_whole)''')
-          s=s.replace('    if core.contains("CanLII") {', '''    if REPORTER_PATTERN.find(core).is_some_and(|matched| is_whole(&(matched.start()..matched.end()))) {
+          s=s.replace('    if core.contains("CanLII") {', '''    if REPORTER_PATTERN.find(core).ok().flatten().is_some_and(|matched| is_whole(&(matched.start()..matched.end()))) {
                   return ("case", "reporter_grammar");
               }
               if core.contains("CanLII") {''')
@@ -66,7 +68,9 @@ jobs:
           }
           '''
           p.write_text(s)
+          p=Path('src/quote_verification.rs');p.write_text(p.read_text().replace('javascript_whitespace, normalize_javascript_whitespace,', 'javascript_whitespace,'))
           PY
+          rustfmt --edition 2021 src/citator.rs src/quote_verification.rs
       - name: Test native citation and quotation contracts
         run: cargo test --locked --features citator,quote-verification --lib
       - name: Commit only the gated source to the PR branch
@@ -75,7 +79,7 @@ jobs:
         run: |
           git config user.name 'Authorities parity workbench'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/citator.rs
+          git add src/citator.rs src/quote_verification.rs
           git commit -m 'fix: classify reporter authorities and retain complete numbered case names'
           AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" push origin HEAD:refs/heads/fix/authorities-quotation-parity
