@@ -1,0 +1,81 @@
+name: Authorities parity gate
+on:
+  push:
+    branches: [fix/authorities-quotation-parity]
+    paths: [.github/workflows/authorities-parity-gate.yml]
+permissions:
+  contents: write
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out the proposed source
+        run: |
+          git init .
+          git remote add origin https://github.com/eliziff/legal-structure-parser.git
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Apply bounded reporter and style fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p=Path('src/citator.rs');s=p.read_text()
+          assert hashlib.sha256(p.read_bytes()).hexdigest() == 'd805a22792f5fae00241e8dec58344330fdb988455cf0e73a8a34cf9870357b3'
+          s=s.replace('static JOURNAL_PATTERN:', '''static REPORTER_PATTERN: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
+              legal_grammar_tables::compile_ecmascript_table_entry("cite.reporter.splitter").unwrap()
+          });
+          static STATUTE_PATTERN: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
+              legal_grammar_tables::compile_ecmascript_table_entry("cite.statute.toa").unwrap()
+          });
+          static JOURNAL_PATTERN:''')
+          s=s.replace(r'(?<left>\p{Lu}', r'(?<left>[\p{Lu}\p{N}]').replace(r'(?:\p{Lu}[\p{L}\p{M}\p{N}', r'(?:[\p{Lu}\p{N}][\p{L}\p{M}\p{N}').replace('|of|the|and|de|la|du)', '|of|the|and|for|de|la|du)')
+          s=s.replace('    found.extend(standard_us_matches(value, &STANDARD_CANDIDATE));', '''    found.extend(REPORTER_PATTERN.find_iter(value).map(|matched| matched.start()..matched.end()));
+              found.extend(STATUTE_PATTERN.find_iter(value).map(|matched| matched.start()..matched.end()));
+              found.extend(standard_us_matches(value, &STANDARD_CANDIDATE));''')
+          s=s.replace('    if COMMON_US_LAW.find_spans(core).iter().any(is_whole)', '''    if STATUTE_PATTERN.find(core).is_some_and(|matched| is_whole(&(matched.start()..matched.end())))
+                  || COMMON_US_LAW.find_spans(core).iter().any(is_whole)''')
+          s=s.replace('    if core.contains("CanLII") {', '''    if REPORTER_PATTERN.find(core).is_some_and(|matched| is_whole(&(matched.start()..matched.end()))) {
+                  return ("case", "reporter_grammar");
+              }
+              if core.contains("CanLII") {''')
+          s=s.replace('.is_some_and(char::is_uppercase)', '.is_some_and(|character| character.is_uppercase() || character.is_numeric())')
+          s+='''
+          #[cfg(test)]
+          mod authorities_style_regressions {
+              use super::citation_occurrences_in_text;
+              #[test]
+              fn reporter_citations_retain_case_identity_and_full_style() {
+                  for citation in ["[2015] 1 S.C.R. 331", "[2015] 1 SCR 331", "[2015] 1 R.C.S. 331", "(1994) 117 DLR (4th) 577"] {
+                      let text = format!("See Carter v. Canada (Attorney General), {citation} at para 7.");
+                      let occurrences = citation_occurrences_in_text(&text);
+                      let item = &occurrences[0];
+                      assert_eq!(item.kind, "case", "{citation}");
+                      assert_eq!(item.short_form.as_deref(), Some("Carter v. Canada (Attorney General)"));
+                      assert_eq!(item.pinpoints[0].text, "7");
+                  }
+              }
+              #[test]
+              fn numbered_case_names_do_not_lose_their_first_words() {
+                  let text = "See 40 Days for Life v. Dietrich, 2024 ONCA 599 at para 2.";
+                  let occurrences = citation_occurrences_in_text(text);
+                  assert_eq!(occurrences[0].short_form.as_deref(), Some("40 Days for Life v. Dietrich"));
+                  assert_eq!(&text[occurrences[0].start..occurrences[0].end], occurrences[0].text);
+              }
+          }
+          '''
+          p.write_text(s)
+          PY
+      - name: Test native citation and quotation contracts
+        run: cargo test --locked --features citator,quote-verification --lib
+      - name: Commit only the gated source to the PR branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name 'Authorities parity workbench'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/citator.rs
+          git commit -m 'fix: classify reporter authorities and retain complete numbered case names'
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" push origin HEAD:refs/heads/fix/authorities-quotation-parity
