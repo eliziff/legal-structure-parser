@@ -1,0 +1,114 @@
+name: Authorities editorial boundaries
+on:
+  push:
+    branches: [fix/authorities-quotation-parity]
+    paths: [.github/workflows/authorities-editorial-boundaries.yml]
+permissions:
+  contents: write
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out the proposed native source
+        run: |
+          git init .
+          git remote add origin https://github.com/eliziff/legal-structure-parser.git
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+      - name: Fix explicitly marked edits at quote and word boundaries
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p=Path('src/quote_verification.rs');s=p.read_text()
+          assert hashlib.sha256(p.read_bytes()).hexdigest() == '444f83f0fe78bbb6bff06082e7e6161dedaa13db8e88ad0b41e3c0ba0153b404'
+          s=s.replace('const MAX_MARKED_QUOTE_EDITS: usize = 4;', 'const MAX_MARKED_QUOTE_EDITS: usize = 32;')
+          s=s.replace('        let before = raw_before.trim_end_matches(javascript_whitespace);\n', '')
+          s=s.replace('        pattern.push_str(&flexible_spaces(before));', '''        let before = if adjacent && edit.as_str().starts_with('[') {
+                      raw_before
+                  } else {
+                      raw_before.trim_end_matches(javascript_whitespace)
+                  };
+                  pattern.push_str(&flexible_spaces(before));''')
+          old=r'''                write!(pattern, "{JS_WS}+(?:(?:[^\\r\\n]{{1,512}}?){JS_WS}+)?").unwrap();'''
+          new=r'''                let left_gap = raw_before.chars().next_back().is_some_and(javascript_whitespace);
+                          let right_gap = after.chars().next().is_some_and(javascript_whitespace);
+                          // Preserve separators without inventing a space at the quote edges
+                          // or before punctuation. Only explicitly marked words may change.
+                          match (left_gap, right_gap) {
+                              (true, true) => write!(pattern, "{JS_WS}+(?:[^\\r\\n]{{1,512}}?{JS_WS}+)?"),
+                              (true, false) => write!(pattern, "(?:{JS_WS}+[^\\r\\n]{{1,512}}?)?"),
+                              (false, true) => write!(pattern, "(?:[^\\r\\n]{{1,512}}?{JS_WS}+)?"),
+                              (false, false) => write!(pattern, "(?:[^\\r\\n]{{1,512}}?)?"),
+                          }.unwrap();'''
+          assert old in s
+          s=s.replace(old,new)
+          s+='''
+          #[cfg(test)]
+          mod editorial_boundary_regressions {
+              use super::*;
+              fn supported(authored: &str, source: &str) -> bool {
+                  grounded_prose_errors(&format!("“{authored}”"), &["source".into()],
+                      &[VisibleEvidenceText { evidence_id: "source".into(), text: source.into(), labels: vec![] }]).is_empty()
+              }
+              #[test]
+              fn explicit_edits_preserve_start_end_and_word_boundaries() {
+                  assert!(supported("[He] explained the relevant rule.", "The witness explained the relevant rule."));
+                  assert!(supported("[He] explained the relevant rule.", "He explained the relevant rule."));
+                  assert!(supported("The court applied the [rule].", "The court applied the statute."));
+                  assert!(supported("[The court] applied the rule.", "It applied the rule."));
+                  assert!(supported("The [j]udge applied the rule.", "The Judge applied the rule."));
+                  assert!(supported("The court [properly] applied the rule.", "The court applied the rule."));
+                  assert!(!supported("The court [properly] ignored the rule.", "The court applied the rule."));
+                  assert!(!supported("The [appeal] court applied the rule.", "Thecourt applied the rule."));
+                  assert!(!supported("[The entire alleged quotation]", "Unrelated source text."));
+              }
+              #[test]
+              fn several_explicit_edits_are_not_an_unmarked_mismatch() {
+                  assert!(supported("[T]he [first] point and [second] point and [third] point and [fourth] point and [fifth] point.",
+                      "the one point and two point and three point and four point and five point."));
+              }
+          }
+          '''
+          p.write_text(s)
+          PY
+          rustfmt --edition 2021 src/quote_verification.rs
+      - name: Gate the native source
+        run: cargo test --locked --features citator,quote-verification --lib
+      - name: Commit tested source and remove the temporary workbench
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name 'Authorities parity workbench'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/quote_verification.rs
+          git rm .github/workflows/authorities-editorial-boundaries.yml
+          git commit -m 'fix: preserve editorial brackets at quote edges and within words'
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          echo "::add-mask::$AUTH"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" push origin HEAD:refs/heads/fix/authorities-quotation-parity
+      - name: Build the Beaver native integration against this tested source
+        run: |
+          mkdir /tmp/authorities-build
+          cd /tmp/authorities-build
+          git init .
+          git remote add origin https://github.com/eliziff/Beaver.git
+          git fetch --depth=1 origin bd896cb8a06af9f472feefa3875d65d579235263
+          git sparse-checkout set native
+          git checkout --detach FETCH_HEAD
+          rmdir legal-structure 2>/dev/null || true
+          ln -s "$GITHUB_WORKSPACE" legal-structure
+          git init legal-pdf-parser
+          git -C legal-pdf-parser remote add origin https://github.com/eliziff/legal-pdf-parser.git
+          git -C legal-pdf-parser fetch --depth=1 origin ba02df3f77c8301e12a32f0f508e62de74f93cf7
+          git -C legal-pdf-parser checkout --detach FETCH_HEAD
+          cargo build --locked --release --manifest-path native/legal-structure-node/Cargo.toml
+          cp native/legal-structure-node/target/release/liblegal_structure_node.so "$GITHUB_WORKSPACE/"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: authorities-editorial-native
+          path: |
+            liblegal_structure_node.so
+            src/quote_verification.rs
+          retention-days: 1
