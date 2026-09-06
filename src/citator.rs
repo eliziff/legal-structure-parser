@@ -190,8 +190,11 @@ static PINPOINT_BRIDGE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^[\s,]*(?:at\s+)?$").unwrap());
 static CASE_VERSUS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(?:v|c)\.?\s+").unwrap());
 static CASE_LEFT: LazyLock<Regex> = LazyLock::new(|| {
+    // A balanced, uppercase-first parenthetical ("Quebec (Attorney General)")
+    // counts as one party token. Bounded (<=80 chars), non-nested, never
+    // line-spanning, so "(1998)", "(2d)" and "(see below)" stay rejected.
     Regex::new(
-        r"(?m)(?<left>[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*(?:\s+(?:[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*|of|the|and|for|de|la|du)){0,12})\s*$",
+        r"(?m)(?<left>[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*(?:\s+(?:[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*|\([\p{Lu}][^()\n]{0,80}\)|of|the|and|for|de|la|du)){0,12})\s*$",
     )
     .unwrap()
 });
@@ -444,6 +447,22 @@ fn case_style_start(text: &str, core_start: usize, floor: usize) -> usize {
             break;
         };
         start += signal.end();
+    }
+    // A style of cause must have balanced parentheses: the digit-tolerant
+    // name grammar may otherwise start mid-parenthetical ("1998) v. Smith").
+    let mut depth = 0i32;
+    for character in text[start..core_start].chars() {
+        if character == '(' {
+            depth += 1;
+        } else if character == ')' {
+            depth -= 1;
+            if depth < 0 {
+                return core_start;
+            }
+        }
+    }
+    if depth != 0 {
+        return core_start;
     }
     start
 }
@@ -1062,5 +1081,36 @@ mod authorities_style_regressions {
             &text[occurrences[0].start..occurrences[0].end],
             occurrences[0].text
         );
+    }
+
+    #[test]
+    fn citation_occurrence_expands_parenthesized_left_party() {
+        let text = "Quebec (Attorney General) v. Blaikie, [1979] 2 SCR 1016";
+        let occurrence = citation_occurrences_in_text(text).pop().unwrap();
+        assert_eq!(occurrence.kind, "case");
+        assert_eq!(
+            occurrence.styled_citation.text,
+            "Quebec (Attorney General) v. Blaikie, [1979] 2 SCR 1016"
+        );
+        assert_eq!(occurrence.core_citation.text, "[1979] 2 SCR 1016");
+        assert_eq!(
+            occurrence.short_form.as_deref(),
+            Some("Quebec (Attorney General) v. Blaikie")
+        );
+        assert!(occurrence.reasons.contains(&"same_text_style"));
+    }
+
+    #[test]
+    fn citation_occurrence_keeps_non_party_parentheticals_out_of_style() {
+        for text in [
+            "X (1998) v. Smith, 2020 SCC 1",
+            "X (2d) v. Smith, 2012 SCC 1",
+            "X (see below) v. Smith, 2015 SCC 1",
+        ] {
+            let occurrence = citation_occurrences_in_text(text).pop().unwrap();
+            assert_eq!(occurrence.kind, "case");
+            assert_eq!(occurrence.styled_citation.text, occurrence.core_citation.text);
+            assert!(!occurrence.reasons.contains(&"same_text_style"));
+        }
     }
 }
