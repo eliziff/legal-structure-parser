@@ -10,62 +10,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Check out the proposed source
+      - name: Check out proposed source
         run: |
           git init .
           git remote add origin https://github.com/eliziff/legal-structure-parser.git
           git fetch --depth=1 origin "$GITHUB_SHA"
           git checkout --detach FETCH_HEAD
-      - name: Apply classification and style fixes
+          git fetch --depth=1 origin 03342c4cdb8b1c20166509429654c6ac380c6341
+      - name: Apply and test the source candidate
         run: |
           python3 - <<'PY'
+          import subprocess, textwrap
           from pathlib import Path
-          import hashlib
+          previous = subprocess.check_output(['git','show','03342c4cdb8b1c20166509429654c6ac380c6341:.github/workflows/authorities-parity-gate.yml'],text=True)
+          code = previous.split("python3 - <<'PY'\n",1)[1].split('\n          PY',1)[0]
+          exec(compile(textwrap.dedent(code), '<prior-gated-candidate>', 'exec'))
           p=Path('src/citator.rs');s=p.read_text()
-          assert hashlib.sha256(p.read_bytes()).hexdigest() == 'd805a22792f5fae00241e8dec58344330fdb988455cf0e73a8a34cf9870357b3'
-          s=s.replace('static JOURNAL_PATTERN:', '''// Classify spans already found by the citation grammar. The splitter is
-          // intentionally permissive: do not use it to discover new prose spans.
-          static REPORTER_PATTERN: LazyLock<legal_grammar_tables::CompiledGrammar> = LazyLock::new(|| {
-              legal_grammar_tables::compile_table_entry("cite.reporter.splitter").unwrap()
-          });
-          static JOURNAL_PATTERN:''')
-          s=s.replace(r'(?<left>\p{Lu}', r'(?<left>[\p{Lu}\p{N}]').replace(r'(?:\p{Lu}[\p{L}\p{M}\p{N}', r'(?:[\p{Lu}\p{N}][\p{L}\p{M}\p{N}').replace('|of|the|and|de|la|du)', '|of|the|and|for|de|la|du)')
-          s=s.replace('    if core.contains("CanLII") {', '''    if REPORTER_PATTERN.find(core).ok().flatten().is_some_and(|matched| is_whole(&(matched.start()..matched.end()))) {
-                  return ("case", "reporter_grammar");
-              }
-              if core.contains("CanLII") {''')
-          s=s.replace('.is_some_and(char::is_uppercase)', '.is_some_and(|character| character.is_uppercase() || character.is_numeric())')
-          s+='''
-          #[cfg(test)]
-          mod authorities_style_regressions {
-              use super::citation_occurrences_in_text;
-              #[test]
-              fn reporter_citations_retain_case_identity_and_full_style() {
-                  for citation in ["[2015] 1 S.C.R. 331", "[2015] 1 SCR 331", "[2015] 1 R.C.S. 331", "(1994) 117 DLR (4th) 577"] {
-                      let text = format!("See Carter v. Canada (Attorney General), {citation} at para 7.");
-                      let occurrences = citation_occurrences_in_text(&text);
-                      assert_eq!(occurrences.len(), 1, "{citation}");
-                      let item = &occurrences[0];
-                      assert_eq!(item.kind, "case", "{citation}");
-                      assert_eq!(item.short_form.as_deref(), Some("Carter v. Canada (Attorney General)"));
-                      assert_eq!(item.pinpoints[0].text, "7");
+          s=s.replace('    found.extend(standard_us_matches(value, &STANDARD_CANDIDATE));', '''    // Complete recognized report citations (including a series and page) at
+              // their existing start only. The permissive splitter must not turn
+              // a pinpoint such as "23 and 25" into a new authority.
+              for matched in REPORTER_PATTERN.find_iter(value).flatten() {
+                  if let Some(hit) = found.iter_mut().find(|hit| hit.start == matched.start()) {
+                      hit.end = hit.end.max(matched.end());
                   }
               }
-              #[test]
-              fn numbered_case_names_do_not_lose_their_first_words() {
-                  let text = "See 40 Days for Life v. Dietrich, 2024 ONCA 599 at para 2.";
-                  let occurrences = citation_occurrences_in_text(text);
-                  assert_eq!(occurrences[0].short_form.as_deref(), Some("40 Days for Life v. Dietrich"));
-                  assert_eq!(&text[occurrences[0].start..occurrences[0].end], occurrences[0].text);
-              }
-          }
-          '''
+              found.extend(standard_us_matches(value, &STANDARD_CANDIDATE));''')
           p.write_text(s)
-          p=Path('src/quote_verification.rs');p.write_text(p.read_text().replace('javascript_whitespace, normalize_javascript_whitespace,', 'javascript_whitespace,'))
           PY
           rustfmt --edition 2021 src/citator.rs src/quote_verification.rs
-      - name: Test native citation and quotation contracts
-        run: cargo test --locked --features citator,quote-verification --lib
+          cargo test --locked --features citator,quote-verification --lib > /tmp/test.log 2>&1 || { tail -90 /tmp/test.log; exit 1; }
+          tail -5 /tmp/test.log
       - name: Commit gated source and remove temporary workbench
         env:
           GH_TOKEN: ${{ github.token }}
@@ -74,6 +48,6 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src/citator.rs src/quote_verification.rs
           git rm .github/workflows/authorities-parity-gate.yml
-          git commit -m 'fix: classify reporter authorities and retain complete numbered case names'
+          git commit -m 'fix: classify complete reporter authorities and retain full numbered case names'
           AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
           git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" push origin HEAD:refs/heads/fix/authorities-quotation-parity
