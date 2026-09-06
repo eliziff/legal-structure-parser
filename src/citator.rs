@@ -159,6 +159,10 @@ static AUTHORITY_REFERENCE: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(
 static SUPRA_NOTE: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
     legal_grammar_tables::compile_ecmascript_table_entry("ref.supra-note.linking").unwrap()
 });
+// Classify spans already found by the citation grammar. The splitter is
+// intentionally permissive: do not use it to discover new prose spans.
+static REPORTER_PATTERN: LazyLock<legal_grammar_tables::CompiledGrammar> =
+    LazyLock::new(|| legal_grammar_tables::compile_table_entry("cite.reporter.splitter").unwrap());
 static JOURNAL_PATTERN: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
     legal_grammar_tables::compile_ecmascript_table_entry("cite.journal.toa").unwrap()
 });
@@ -187,7 +191,7 @@ static PINPOINT_BRIDGE: LazyLock<Regex> =
 static CASE_VERSUS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(?:v|c)\.?\s+").unwrap());
 static CASE_LEFT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?m)(?<left>\p{Lu}[\p{L}\p{M}\p{N}.'\u{2019}&()-]*(?:\s+(?:\p{Lu}[\p{L}\p{M}\p{N}.'\u{2019}&()-]*|of|the|and|de|la|du)){0,12})\s*$",
+        r"(?m)(?<left>[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*(?:\s+(?:[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*|of|the|and|for|de|la|du)){0,12})\s*$",
     )
     .unwrap()
 });
@@ -311,6 +315,14 @@ fn citation_hits(value: &str, extended_us_fallback: bool) -> Vec<Hit> {
         .find_iter(value)
         .map(|matched| matched.start()..matched.end())
         .collect::<Vec<_>>();
+    // Complete recognized report citations (including a series and page) at
+    // their existing start only. The permissive splitter must not turn
+    // a pinpoint such as "23 and 25" into a new authority.
+    for matched in REPORTER_PATTERN.find_iter(value).flatten() {
+        if let Some(hit) = found.iter_mut().find(|hit| hit.start == matched.start()) {
+            hit.end = hit.end.max(matched.end());
+        }
+    }
     found.extend(standard_us_matches(value, &STANDARD_CANDIDATE));
     found.extend(COMMON_US_LAW.find_spans(value));
     if extended_us_fallback {
@@ -391,6 +403,14 @@ fn citation_kind(core: &str) -> (&'static str, &'static str) {
             };
         }
     }
+    if REPORTER_PATTERN
+        .find(core)
+        .ok()
+        .flatten()
+        .is_some_and(|matched| is_whole(&(matched.start()..matched.end())))
+    {
+        return ("case", "reporter_grammar");
+    }
     if core.contains("CanLII") {
         ("case", "citation_grammar")
     } else {
@@ -408,7 +428,7 @@ fn case_style_start(text: &str, core_start: usize, floor: usize) -> usize {
         .trim_start_matches(javascript_whitespace)
         .chars()
         .next()
-        .is_some_and(char::is_uppercase)
+        .is_some_and(|character| character.is_uppercase() || character.is_numeric())
     {
         return core_start;
     }
@@ -1003,6 +1023,44 @@ mod tests {
                 .map(|pinpoint| pinpoint.text.as_str())
                 .collect::<Vec<_>>(),
             ["10", "11"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod authorities_style_regressions {
+    use super::citation_occurrences_in_text;
+    #[test]
+    fn reporter_citations_retain_case_identity_and_full_style() {
+        for citation in [
+            "[2015] 1 S.C.R. 331",
+            "[2015] 1 SCR 331",
+            "[2015] 1 R.C.S. 331",
+            "(1994) 117 DLR (4th) 577",
+        ] {
+            let text = format!("See Carter v. Canada (Attorney General), {citation} at para 7.");
+            let occurrences = citation_occurrences_in_text(&text);
+            assert_eq!(occurrences.len(), 1, "{citation}");
+            let item = &occurrences[0];
+            assert_eq!(item.kind, "case", "{citation}");
+            assert_eq!(
+                item.short_form.as_deref(),
+                Some("Carter v. Canada (Attorney General)")
+            );
+            assert_eq!(item.pinpoints[0].text, "7");
+        }
+    }
+    #[test]
+    fn numbered_case_names_do_not_lose_their_first_words() {
+        let text = "See 40 Days for Life v. Dietrich, 2024 ONCA 599 at para 2.";
+        let occurrences = citation_occurrences_in_text(text);
+        assert_eq!(
+            occurrences[0].short_form.as_deref(),
+            Some("40 Days for Life v. Dietrich")
+        );
+        assert_eq!(
+            &text[occurrences[0].start..occurrences[0].end],
+            occurrences[0].text
         );
     }
 }
