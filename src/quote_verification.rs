@@ -1,6 +1,6 @@
 use crate::{
     document_query::{tokenize_source_text, DocumentWordSpan},
-    javascript_whitespace, normalize_javascript_whitespace,
+    javascript_whitespace,
     text::JS_WHITESPACE_CLASS as JS_WS,
     utf16_len, ScalarText,
 };
@@ -167,7 +167,9 @@ fn representation(value: &str) -> String {
     let mut characters: Vec<char> = normalized.chars().collect();
     let mut opening = None;
     for index in 0..characters.len() {
-        if characters[index] != '\'' { continue; }
+        if characters[index] != '\'' {
+            continue;
+        }
         let previous = index.checked_sub(1).map(|at| characters[at]);
         let next = characters.get(index + 1).copied();
         // Apostrophes within a word (including contractions) are never delimiters.
@@ -175,14 +177,16 @@ fn representation(value: &str) -> String {
             continue;
         }
         if let Some(start) = opening {
-            if previous.is_some_and(|c| !javascript_whitespace(c)) &&
-                !next.is_some_and(letter_or_number) {
+            if previous.is_some_and(|c| !javascript_whitespace(c))
+                && !next.is_some_and(letter_or_number)
+            {
                 characters[start] = '"';
                 characters[index] = '"';
                 opening = None;
             }
-        } else if !previous.is_some_and(letter_or_number) &&
-            next.is_some_and(|c| !javascript_whitespace(c)) {
+        } else if !previous.is_some_and(letter_or_number)
+            && next.is_some_and(|c| !javascript_whitespace(c))
+        {
             opening = Some(index);
         }
     }
@@ -531,8 +535,15 @@ mod editorial_regressions {
     use super::*;
 
     fn errors(authored: &str, source: &str) -> Vec<String> {
-        grounded_prose_errors(&format!("“{authored}”"), &["source".into()],
-            &[VisibleEvidenceText { evidence_id: "source".into(), text: source.into(), labels: vec![] }])
+        grounded_prose_errors(
+            &format!("“{authored}”"),
+            &["source".into()],
+            &[VisibleEvidenceText {
+                evidence_id: "source".into(),
+                text: source.into(),
+                labels: vec![],
+            }],
+        )
     }
 
     #[test]
@@ -540,21 +551,56 @@ mod editorial_regressions {
         let authored = "An individual’s reputation should not ‘chill’ freewheeling debate on matters of public interest.";
         let source = "An individual’s reputation should not “chill” freewheeling debate on matters of public interest.";
         assert!(errors(authored, source).is_empty());
-        assert!(errors("The court called this a 'serious' error.", "The court called this a \"serious\" error.").is_empty());
-        assert!(!errors("The worker's rights were protected.", "The workers rights were protected.").is_empty());
-        assert!(!errors("The workers' rights were protected.", "The workers rights were protected.").is_empty());
+        assert!(errors(
+            "The court called this a 'serious' error.",
+            "The court called this a \"serious\" error."
+        )
+        .is_empty());
+        assert!(!errors(
+            "The worker's rights were protected.",
+            "The workers rights were protected."
+        )
+        .is_empty());
+        assert!(!errors(
+            "The workers' rights were protected.",
+            "The workers rights were protected."
+        )
+        .is_empty());
     }
 
     #[test]
     fn marked_edits_can_be_combined_without_hiding_unmarked_changes() {
-        assert!(errors("[T]he deadline is [seven] business days.", "the deadline is five business days.").is_empty());
-        assert!(errors("The [appeal court] decided the case.", "The court of first instance decided the case.").is_empty());
+        assert!(errors(
+            "[T]he deadline is [seven] business days.",
+            "the deadline is five business days."
+        )
+        .is_empty());
+        assert!(errors(
+            "The [appeal court] decided the case.",
+            "The court of first instance decided the case."
+        )
+        .is_empty());
         for omission in ["...", "…", ". . ."] {
-            assert!(errors(&format!("The deadline is {omission} seven business days."),
-                "The deadline is not less than seven business days.").is_empty());
+            assert!(errors(
+                &format!("The deadline is {omission} seven business days."),
+                "The deadline is not less than seven business days."
+            )
+            .is_empty());
         }
-        assert!(!errors("[T]he deadline is seven business days.", "the deadline is five business days.").is_empty());
-        assert!(!errors("The court should not ‘chill’ debate.", "The court should ‘chill’ debate.").is_empty());
-        assert!(!errors("[T]he deadline is [seven] calendar days.", "the deadline is five business days.").is_empty());
+        assert!(!errors(
+            "[T]he deadline is seven business days.",
+            "the deadline is five business days."
+        )
+        .is_empty());
+        assert!(!errors(
+            "The court should not ‘chill’ debate.",
+            "The court should ‘chill’ debate."
+        )
+        .is_empty());
+        assert!(!errors(
+            "[T]he deadline is [seven] calendar days.",
+            "the deadline is five business days."
+        )
+        .is_empty());
     }
 }
