@@ -20,7 +20,7 @@
       "entries": [
         {
           "id": "cite.in-text",
-          "pattern": "\\b(?:19|20)\\d{2}\\s+[A-Z]{2,8}\\s+\\d+\\b|\\[\\d{4}\\]\\s+[A-Z](?:\\.[A-Z]){1,4}\\.?\\s+No\\.?\\s+\\d+(?:\\s+\\([A-Z.]+\\))?|\\[\\d{4}\\]\\s+(?:\\d+\\s+)?[A-Z][A-Za-z.]{1,12}(?:\\s+[A-Z][A-Za-z.]{0,12}){0,3}\\s+\\d+|\\b\\d+\\s+[A-Z][A-Za-z.']{1,14}\\s*(?:\\(\\d[a-z]{0,2}\\))?\\s+\\d+\\b|\\bCanLII\\s+\\d+\\b|\\(\\d{4}\\),?\\s+\\d+\\s+[A-Z][A-Za-z.]{1,14}",
+          "pattern": "\\b(?:19|20)\\d{2}\\s+[A-Z]{2,8}\\s+\\d+\\b|\\[\\d{4}\\]\\s+[A-Z](?:\\.[A-Z]){1,4}\\.?\\s+No\\.?\\s+\\d+(?:\\s+\\([A-Z.]+\\))?|\\[\\d{4}\\]\\s+(?:\\d+\\s+)?[A-Z][A-Za-z.]{1,12}(?:\\s+[A-Z][A-Za-z.]{0,12}){0,3}\\s+\\d+|\\b\\d+\\s+[A-Z][A-Za-z.']{1,14}\\s*(?:\\(\\d[a-z]{0,2}\\))?\\s+\\d+\\b|\\bCanLII\\s+\\d+\\b|\\(\\d{4}\\),?\\s+\\d+\\s+[A-Z][A-Za-z.]{1,14}(?:\\s*\\(\\d[a-z]{0,2}\\))?(?:\\s+\\d+)?",
           "flags": "",
           "canonical": {},
           "provenance": "Extracted verbatim from Beaver citationKey.ts CITATION_IN_TEXT_SOURCE before the Rust cutover; broad in-text detection only, with identification remaining a separate operation.",
@@ -524,7 +524,7 @@
         },
         {
           "id": "cite.reporter.splitter",
-          "pattern": "(?<![\\w.])(?:\\[(?:17|18|19|20)\\d{2}\\]\\s+(?:\\d{1,4}\\s+)?{{reporter_words}}(?:\\s+\\(\\d+[A-Za-z]{0,3}\\))?\\s+\\d{1,5}|\\((?:17|18|19|20)\\d{2}\\)\\s+(?:\\d{1,4}\\s+)?{{reporter_words}}(?:\\s+\\(\\d+[A-Za-z]{0,3}\\))?\\s+\\d{1,5}|\\d{1,4}\\s+{{reporter_words}}(?:\\s+\\(\\d+[A-Za-z]{0,3}\\))?\\s+\\d{1,5})(?=\\s*(?:[,;.]|\\bat\\b|\\band\\b|\\bwith\\b|\\(|\\[|$))",
+          "pattern": "(?<![\\w.])(?:\\[(?:17|18|19|20)\\d{2}\\]\\s+(?:\\d{1,4}\\s+)?{{reporter_words}}(?:\\s+\\(\\d+[A-Za-z]{0,3}\\))?\\s+\\d{1,5}|\\((?:17|18|19|20)\\d{2}\\),?\\s+(?:\\d{1,4}\\s+)?{{reporter_words}}(?:\\s+\\(\\d+[A-Za-z]{0,3}\\))?\\s+\\d{1,5}|\\d{1,4}\\s+{{reporter_words}}(?:\\s+\\(\\d+[A-Za-z]{0,3}\\))?\\s+\\d{1,5})(?=\\s*(?:[,;.]|\\bat\\b|\\band\\b|\\bwith\\b|\\(|\\[|$))",
           "flags": "i",
           "canonical": {},
           "provenance": "splitter.py:14-23 (_REPORTER_RE, three-branch: [year] / (year) / bare-volume, built on _REPORTER_WORDS which is the reporter_words def). Trailing lookahead bounds the match at clause edges. Recall-first routing evidence by design.",
