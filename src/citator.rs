@@ -316,6 +316,25 @@ fn us_fallback_ranges(value: &str) -> Vec<(usize, usize)> {
 fn citation_hits(value: &str, extended_us_fallback: bool) -> Vec<Hit> {
     let mut found = CITATION_PATTERN
         .find_iter(value)
+        .filter(|matched| {
+            !matches!(
+                matched.as_str().split_whitespace().nth(1),
+                Some(
+                    "January"
+                        | "February"
+                        | "March"
+                        | "April"
+                        | "May"
+                        | "June"
+                        | "July"
+                        | "August"
+                        | "September"
+                        | "October"
+                        | "November"
+                        | "December"
+                )
+            )
+        })
         .map(|matched| matched.start()..matched.end())
         .collect::<Vec<_>>();
     // Complete recognized report citations (including a series and page) at
@@ -1056,12 +1075,15 @@ mod authorities_style_regressions {
             "[2015] 1 SCR 331",
             "[2015] 1 R.C.S. 331",
             "(1994) 117 DLR (4th) 577",
+            "(2003), 227 DLR (4th) 282",
+            "(1895), 24 SCR 650",
         ] {
             let text = format!("See Carter v. Canada (Attorney General), {citation} at para 7.");
             let occurrences = citation_occurrences_in_text(&text);
             assert_eq!(occurrences.len(), 1, "{citation}");
             let item = &occurrences[0];
             assert_eq!(item.kind, "case", "{citation}");
+            assert_eq!(item.core_citation.text, citation);
             assert_eq!(
                 item.short_form.as_deref(),
                 Some("Carter v. Canada (Attorney General)")
@@ -1069,6 +1091,27 @@ mod authorities_style_regressions {
             assert_eq!(item.pinpoints[0].text, "7");
         }
     }
+    #[test]
+    fn article_dates_are_not_authorities() {
+        for month in [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ] {
+            assert!(citation_occurrences_in_text(&format!("Vice, 21 {month} 2016.")).is_empty());
+        }
+        assert_eq!(citation_occurrences_in_text("123 Mass 456").len(), 1);
+    }
+
     #[test]
     fn numbered_case_names_do_not_lose_their_first_words() {
         let text = "See 40 Days for Life v. Dietrich, 2024 ONCA 599 at para 2.";
@@ -1109,7 +1152,10 @@ mod authorities_style_regressions {
         ] {
             let occurrence = citation_occurrences_in_text(text).pop().unwrap();
             assert_eq!(occurrence.kind, "case");
-            assert_eq!(occurrence.styled_citation.text, occurrence.core_citation.text);
+            assert_eq!(
+                occurrence.styled_citation.text,
+                occurrence.core_citation.text
+            );
             assert!(!occurrence.reasons.contains(&"same_text_style"));
         }
     }
