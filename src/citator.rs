@@ -166,6 +166,34 @@ static REPORTER_PATTERN: LazyLock<legal_grammar_tables::CompiledGrammar> =
 static JOURNAL_PATTERN: LazyLock<CompiledEcmascriptGrammar> = LazyLock::new(|| {
     legal_grammar_tables::compile_ecmascript_table_entry("cite.journal.toa").unwrap()
 });
+// Secondary-source first references. Case law reaches the citation grammar
+// through a reporter, a neutral citation or a docket; every other authority
+// announces itself with a publication block instead, one family per entry.
+// These only ever add anchors: a secondary hit that touches a case-law hit is
+// dropped, so the case lane is byte-identical with and without them.
+static SECONDARY_ECMASCRIPT: LazyLock<[(&'static str, &'static str, CompiledEcmascriptGrammar); 4]> =
+    LazyLock::new(|| {
+        [
+            ("statute", "ca_statute_grammar", "cite.ca.statute.first"),
+            ("statute", "titled_statute_grammar", "cite.statute.titled"),
+            ("book", "book_grammar", "cite.book.imprint"),
+            ("parliamentary", "parliamentary_grammar", "cite.parliamentary.paper"),
+        ]
+        .map(|(kind, reason, id)| {
+            (
+                kind,
+                reason,
+                legal_grammar_tables::compile_ecmascript_table_entry(id).unwrap(),
+            )
+        })
+    });
+// Article without a first page ("… (2020) The Journal of Value Inquiry at 1")
+// needs a lookahead so the pinpoint stays outside the core, which is the
+// backtracking dialect rather than the linear one.
+static JOURNAL_ARTICLE: LazyLock<legal_grammar_tables::CompiledGrammar> =
+    LazyLock::new(|| legal_grammar_tables::compile_table_entry("cite.journal.article").unwrap());
+static ONLINE_SOURCE: LazyLock<CompiledEcmascriptGrammar> =
+    LazyLock::new(|| legal_grammar_tables::compile_ecmascript_table_entry("cite.url").unwrap());
 static PINPOINT_PATTERNS: LazyLock<[(&'static str, CompiledEcmascriptGrammar); 3]> =
     LazyLock::new(|| {
         [
@@ -195,6 +223,50 @@ static CASE_LEFT: LazyLock<Regex> = LazyLock::new(|| {
     // line-spanning, so "(1998)", "(2d)" and "(see below)" stay rejected.
     Regex::new(
         r"(?m)(?<left>[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*(?:\s+(?:[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*|\([\p{Lu}][^()\n]{0,80}\)|of|the|and|for|de|la|du)){0,12})\s*$",
+    )
+    .unwrap()
+});
+// The hard delimiters between two authorities in one footnote: a semicolon,
+// or a sentence period that is not an abbreviation or an initial. No styled
+// span reaches back across one, so widening a span can never swallow the
+// boundary the next authority is split on.
+static STYLED_FLOOR: LazyLock<Regex> =
+    LazyLock::new(|| {
+        Regex::new(
+            "(?s)(?:;|(?:[^\\s.][\\p{L}]{2,}|\\d)[\u{201d}\u{2019}\"')\\]]*[.!?][\u{201d}\u{2019}\"')\\]]*)\\s",
+        )
+        .unwrap()
+    });
+// "Reference re Secession of Quebec" / "Re Residential Tenancies Act": a style
+// of cause with one party instead of two.
+static CASE_RE_STYLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)(?<name>(?:Reference\s+re|Renvoi\s+relatif|In\s+re|In\s+the\s+[Mm]atter\s+of|Re)\s+[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*(?:\s+(?:[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*|\([\p{Lu}][^()\n]{0,80}\)|of|the|and|for|de|la|du|des|aux|en)){0,12})(?:,\s*(?:1[6-9]|20)\d{2})?\s*,?\s*$",
+    )
+    .unwrap()
+});
+// The title a statute citation is styled with, ending in the instrument word
+// and optionally carrying its own regnal year and jurisdiction.
+static STATUTE_TITLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)(?<title>[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*(?:\s+(?:[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*|of|the|and|to|for|in|on|de|la|du|des|et)){0,12}\s+(?:Acts?|Codes?|Rules?|Regulations?|Charter|Convention|Treaty|Protocol|Declaration))(?:,\s*(?:1[6-9]|20)\d{2})?(?:\s*\([\p{Lu}][^()\n]{0,20}\))?\s*,?\s*$",
+    )
+    .unwrap()
+});
+// "Author, \u{201c}Article Title\u{201d}" (and any "in Editor, ed," lead-in):
+// the styled part of a secondary source sitting in front of its publication
+// block.
+static QUOTED_WORK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        "(?s)(?<work>[\\p{Lu}][^\"\u{201c}\u{201d}\n]{0,200}?[\"\u{201c}][^\"\u{201c}\u{201d}\n]{1,300}[\"\u{201d}][^\"\u{201c}\u{201d}\n]{0,120})\\s*$",
+    )
+    .unwrap()
+});
+// The same styled part when the work carries no quoted title: a monograph, a
+// debate record, a dictionary.
+static PLAIN_WORK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?m)(?<work>[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.:'\u{2019}&()-]*(?:,?\s+(?:[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.:'\u{2019}&()-]*|&|of|the|and|to|for|in|on|de|la|du|des|et|al|eds?)){0,24})\s*,?\s*$",
     )
     .unwrap()
 });
@@ -313,6 +385,107 @@ fn us_fallback_ranges(value: &str) -> Vec<(usize, usize)> {
     ranges
 }
 
+/// A discovered authority anchor. `family` is set when the grammar that found
+/// it already names the family; otherwise the span is classified from its own
+/// text by [`citation_kind`].
+struct Anchor {
+    span: Hit,
+    family: Option<(&'static str, &'static str)>,
+}
+
+fn resolve(mut found: Vec<Hit>) -> Vec<Hit> {
+    found.sort_by(|left, right| {
+        left.start
+            .cmp(&right.start)
+            .then_with(|| right.end.cmp(&left.end))
+    });
+    let mut resolved: Vec<Hit> = Vec::new();
+    for hit in found {
+        if resolved
+            .last()
+            .is_some_and(|previous| hit.start < previous.end)
+        {
+            continue;
+        }
+        resolved.push(hit);
+    }
+    resolved
+}
+
+/// First references to the authorities that never carry a reporter: statutes
+/// and regulations, journal articles, monographs and edited collections,
+/// parliamentary papers, and online-only sources.
+fn secondary_hits(value: &str) -> Vec<Anchor> {
+    let mut found = Vec::new();
+    for (kind, reason, pattern) in SECONDARY_ECMASCRIPT.iter() {
+        found.extend(
+            pattern
+                .find_iter(value)
+                .map(|matched| (matched.start()..matched.end(), (*kind, *reason))),
+        );
+    }
+    found.extend(
+        JOURNAL_ARTICLE
+            .find_iter(value)
+            .flatten()
+            .map(|matched| (matched.start()..matched.end(), ("journal", "article_grammar"))),
+    );
+    found.extend(
+        ONLINE_SOURCE
+            .find_iter(value)
+            .map(|matched| (matched.start()..matched.end(), ("other", "online_grammar"))),
+    );
+    found.sort_by(|left, right| {
+        left.0
+            .start
+            .cmp(&right.0.start)
+            .then_with(|| right.0.end.cmp(&left.0.end))
+    });
+    let mut resolved: Vec<Anchor> = Vec::new();
+    for (span, family) in found {
+        if resolved
+            .last()
+            .is_some_and(|previous| span.start < previous.span.end)
+        {
+            continue;
+        }
+        resolved.push(Anchor {
+            span,
+            family: Some(family),
+        });
+    }
+    resolved
+}
+
+fn citation_anchors(value: &str, extended_us_fallback: bool) -> Vec<Anchor> {
+    let primary = citation_hits(value, extended_us_fallback);
+    // A case claims its style of cause, and a style of cause can read as a
+    // statute title ("Re Residential Tenancies Act, 1979, [1981] 1 SCR 714")
+    // or as a work title; nothing inside that prefix is a second authority.
+    let mut claimed = Vec::with_capacity(primary.len());
+    let mut floor = 0;
+    for hit in &primary {
+        let start = if citation_kind(&value[hit.clone()]).0 == "case" {
+            case_style_start(value, hit.start, floor)
+        } else {
+            hit.start
+        };
+        claimed.push(start..hit.end);
+        floor = hit.end;
+    }
+    let mut anchors = secondary_hits(value)
+        .into_iter()
+        .filter(|anchor| {
+            !claimed
+                .iter()
+                .any(|hit| anchor.span.start < hit.end && hit.start < anchor.span.end)
+        })
+        .collect::<Vec<_>>();
+    anchors.extend(primary.into_iter().map(|span| Anchor { span, family: None }));
+    anchors.sort_by_key(|anchor| anchor.span.start);
+    anchors
+}
+
 fn citation_hits(value: &str, extended_us_fallback: bool) -> Vec<Hit> {
     let mut found = CITATION_PATTERN
         .find_iter(value)
@@ -371,22 +544,7 @@ fn citation_hits(value: &str, extended_us_fallback: bool) -> Vec<Hit> {
             }
         }
     }
-    found.sort_by(|left, right| {
-        left.start
-            .cmp(&right.start)
-            .then_with(|| right.end.cmp(&left.end))
-    });
-    let mut resolved: Vec<Hit> = Vec::new();
-    for hit in found {
-        if resolved
-            .last()
-            .is_some_and(|previous| hit.start < previous.end)
-        {
-            continue;
-        }
-        resolved.push(hit);
-    }
-    resolved
+    resolve(found)
 }
 
 fn citation_text_span(text: &str, document: &ScalarText<'_>, span: Hit) -> CitationTextSpan {
@@ -440,27 +598,9 @@ fn citation_kind(core: &str) -> (&'static str, &'static str) {
     }
 }
 
-fn case_style_start(text: &str, core_start: usize, floor: usize) -> usize {
-    let prefix = text[floor..core_start]
-        .trim_end_matches(|character: char| javascript_whitespace(character) || character == ',');
-    let Some(versus) = CASE_VERSUS.find_iter(prefix).last() else {
-        return core_start;
-    };
-    if !prefix[versus.end()..]
-        .trim_start_matches(javascript_whitespace)
-        .chars()
-        .next()
-        .is_some_and(|character| character.is_uppercase() || character.is_numeric())
-    {
-        return core_start;
-    }
-    let Some(left) = CASE_LEFT
-        .captures(&prefix[..versus.start()])
-        .and_then(|captures| captures.name("left"))
-    else {
-        return core_start;
-    };
-    let mut start = floor + left.start();
+/// Trim a candidate styled start: drop any leading signal ("See also", "Cf")
+/// and reject a span that opens inside a parenthetical.
+fn style_span_start(text: &str, mut start: usize, core_start: usize) -> Option<usize> {
     for _ in 0..4 {
         let Some(signal) = SIGNAL_PREFIX.find(&text[start..core_start]) else {
             break;
@@ -476,14 +616,75 @@ fn case_style_start(text: &str, core_start: usize, floor: usize) -> usize {
         } else if character == ')' {
             depth -= 1;
             if depth < 0 {
-                return core_start;
+                return None;
             }
         }
     }
-    if depth != 0 {
+    (depth == 0).then_some(start)
+}
+
+/// Raise `floor` past the last semicolon or sentence end before the anchor, so
+/// a styled span never reaches back over the delimiter that separates it from
+/// the authority in front of it.
+fn styled_floor(text: &str, floor: usize, core_start: usize) -> usize {
+    STYLED_FLOOR
+        .find_iter(&text[floor..core_start])
+        .last()
+        .map_or(floor, |matched| floor + matched.end())
+}
+
+fn matched_style(
+    pattern: &Regex,
+    group: &str,
+    text: &str,
+    core_start: usize,
+    floor: usize,
+) -> usize {
+    let floor = styled_floor(text, floor, core_start);
+    pattern
+        .captures(&text[floor..core_start])
+        .and_then(|captures| captures.name(group))
+        .and_then(|matched| style_span_start(text, floor + matched.start(), core_start))
+        .unwrap_or(core_start)
+}
+
+/// The Act title a statute citation is styled with ("Criminal Code, RSC 1985").
+fn statute_style_start(text: &str, core_start: usize, floor: usize) -> usize {
+    matched_style(&STATUTE_TITLE, "title", text, core_start, floor)
+}
+
+/// The author and work title a secondary source is styled with.
+fn work_style_start(text: &str, core_start: usize, floor: usize) -> usize {
+    let quoted = matched_style(&QUOTED_WORK, "work", text, core_start, floor);
+    if quoted < core_start {
+        return quoted;
+    }
+    matched_style(&PLAIN_WORK, "work", text, core_start, floor)
+}
+
+fn case_style_start(text: &str, core_start: usize, floor: usize) -> usize {
+    let prefix = text[floor..core_start]
+        .trim_end_matches(|character: char| javascript_whitespace(character) || character == ',');
+    let Some(versus) = CASE_VERSUS.find_iter(prefix).last() else {
+        // A style of cause with one party ("Reference re Secession of Quebec")
+        // has no versus token to anchor on.
+        return matched_style(&CASE_RE_STYLE, "name", text, core_start, floor);
+    };
+    if !prefix[versus.end()..]
+        .trim_start_matches(javascript_whitespace)
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_uppercase() || character.is_numeric())
+    {
         return core_start;
     }
-    start
+    let Some(left) = CASE_LEFT
+        .captures(&prefix[..versus.start()])
+        .and_then(|captures| captures.name("left"))
+    else {
+        return core_start;
+    };
+    style_span_start(text, floor + left.start(), core_start).unwrap_or(core_start)
 }
 
 fn pinpoint_hits(text: &str, core_end: usize, limit: usize) -> (Vec<(Hit, &'static str)>, usize) {
@@ -547,17 +748,29 @@ fn explicit_short_form(text: &str, start: usize, limit: usize) -> Option<(String
 
 pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
     let document = ScalarText::new(text);
-    let hits = citation_hits(text, true);
-    let mut occurrences = Vec::with_capacity(hits.len());
+    let anchors = citation_anchors(text, true);
+    let mut occurrences = Vec::with_capacity(anchors.len());
     let mut previous_end = 0;
-    for (index, core) in hits.iter().enumerate() {
-        let limit = hits.get(index + 1).map_or(text.len(), |next| next.start);
+    for (index, anchor) in anchors.iter().enumerate() {
+        let core = &anchor.span;
+        let limit = anchors
+            .get(index + 1)
+            .map_or(text.len(), |next| next.span.start);
         let core_text = &text[core.clone()];
-        let (kind, kind_reason) = citation_kind(core_text);
-        let styled_start = if kind == "case" {
-            case_style_start(text, core.start, previous_end)
-        } else {
-            core.start
+        let (kind, kind_reason) = anchor.family.unwrap_or_else(|| citation_kind(core_text));
+        let styled_start = match kind {
+            "case" => case_style_start(text, core.start, previous_end),
+            "statute" => statute_style_start(text, core.start, previous_end),
+            "journal" | "book" | "parliamentary" => {
+                work_style_start(text, core.start, previous_end)
+            }
+            // An online-only source is styled with the publisher and title in
+            // front of the link; every other "other" span is a citation the
+            // grammar could not classify, and carries no styled prefix.
+            _ if kind_reason == "online_grammar" => {
+                work_style_start(text, core.start, previous_end)
+            }
+            _ => core.start,
         };
         let (pinpoint_hits, pinpoint_end) = pinpoint_hits(text, core.end, limit);
         let explicit_short = explicit_short_form(text, pinpoint_end, limit);
@@ -583,7 +796,7 @@ pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
         if explicit_short.is_some() {
             reasons.push("short_form_suffix");
         }
-        if kind == "other" {
+        if kind == "other" && kind_reason == "citation_grammar" {
             reasons.push("kind_unclassified");
         }
         let pinpoints = pinpoint_hits
@@ -618,7 +831,10 @@ pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
 
 pub fn authority_references_in_text(text: &str) -> Vec<AuthorityReferenceOccurrence> {
     let document = ScalarText::new(text);
-    let citations = citation_hits(text, true);
+    let citations = citation_anchors(text, true)
+        .into_iter()
+        .map(|anchor| anchor.span)
+        .collect::<Vec<_>>();
     let references = AUTHORITY_REFERENCE
         .find_iter(text)
         .map(|matched| matched.start()..matched.end())
