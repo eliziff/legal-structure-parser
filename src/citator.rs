@@ -233,7 +233,10 @@ static CASE_LEFT: LazyLock<Regex> = LazyLock::new(|| {
 static STYLED_FLOOR: LazyLock<Regex> =
     LazyLock::new(|| {
         Regex::new(
-            "(?s)(?:;|(?:[^\\s.][\\p{L}]{2,}|\\d)[\u{201d}\u{2019}\"')\\]]*[.!?][\u{201d}\u{2019}\"')\\]]*)\\s",
+            // A question or exclamation mark closes a sentence only when
+            // nothing follows it: inside a closing quote it is part of an
+            // article title ("What is Speciesism?").
+            "(?s)(?:;|(?:[^\\s.][\\p{L}]{2,}|\\d)(?:[\u{201d}\u{2019}\"')\\]]*\\.[\u{201d}\u{2019}\"')\\]]*|[!?]))\\s",
         )
         .unwrap()
     });
@@ -249,7 +252,9 @@ static CASE_RE_STYLE: LazyLock<Regex> = LazyLock::new(|| {
 // and optionally carrying its own regnal year and jurisdiction.
 static STATUTE_TITLE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?m)(?<title>[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*(?:\s+(?:[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*|of|the|and|to|for|in|on|de|la|du|des|et)){0,12}\s+(?:Acts?|Codes?|Rules?|Regulations?|Charter|Convention|Treaty|Protocol|Declaration))(?:,\s*(?:1[6-9]|20)\d{2})?(?:\s*\([\p{Lu}][^()\n]{0,20}\))?\s*,?\s*$",
+        // The instrument word ends the title ("Criminal Code") or opens it
+        // ("Charter of the French language", "Loi sur la protection").
+        r"(?m)(?<title>[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*(?:\s+(?:[\p{Lu}\p{N}][\p{L}\p{M}\p{N}.'\u{2019}&()-]*|of|the|and|to|for|in|on|de|la|du|des|et)){0,12}\s+(?:Acts?|Codes?|Rules?|Regulations?|Charter|Convention|Treaty|Protocol|Declaration)|(?:Acts?|Codes?|Rules?|Regulations?|Charte?r?|Loi|R\u{e8}glement|Convention|Treaty|Protocol|Declaration)\s+(?:of|on|respecting|concerning|sur|de|du|des|pour)(?:\s+(?:[\p{L}\p{M}\p{N}.'\u{2019}&()-]+)){1,12})(?:,\s*(?:1[6-9]|20)\d{2})?(?:\s*\([\p{Lu}][^()\n]{0,20}\))?\s*,?\s*$",
     )
     .unwrap()
 });
@@ -258,7 +263,9 @@ static STATUTE_TITLE: LazyLock<Regex> = LazyLock::new(|| {
 // block.
 static QUOTED_WORK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        "(?s)(?<work>[\\p{Lu}][^\"\u{201c}\u{201d}\n]{0,200}?[\"\u{201c}][^\"\u{201c}\u{201d}\n]{1,300}[\"\u{201d}][^\"\u{201c}\u{201d}\n]{0,120})\\s*$",
+        // The lead-in is an author list, never arbitrary prose: a sentence
+        // that happens to end in a quoted title is not a styled citation.
+        "(?s)(?<work>[\\p{Lu}][\\p{L}\\p{M}\\p{N}.'\u{2019}&-]*(?:,?\\s+(?:[\\p{Lu}\\p{N}][\\p{L}\\p{M}\\p{N}.'\u{2019}&-]*|&|et|al|eds?|de|la|du|des|van|von|di|le|of|the|and|for|in|on)){0,15},?\\s*[\"\u{201c}][^\"\u{201c}\u{201d}\n]{1,300}[\"\u{201d}][^\"\u{201c}\u{201d}\n]{0,120})\\s*$",
     )
     .unwrap()
 });
