@@ -543,6 +543,32 @@ pub fn grounded_prose_errors(
                         .is_some_and(|pattern| pattern.is_match(&available)));
         }
     }
+    // A quotation the cited passages do not carry may sit in another passage the
+    // model has read; naming that passage makes the fix the evidence id, not
+    // another read.
+    let mut elsewhere: Vec<Option<&str>> = vec![None; quotes.len()];
+    for source in visible_evidence
+        .iter()
+        .filter(|source| !cited_evidence_ids.contains(&source.evidence_id))
+    {
+        let available = representation(&source.text);
+        let fuzzy = utf16_len(&available) <= MAX_FUZZY_SOURCE_CHARS;
+        for (index, (core, expected_fuzzy, altered)) in support.iter().enumerate() {
+            if supported[index] || elsewhere[index].is_some() || core.is_empty() {
+                continue;
+            }
+            if available.contains(core.as_str())
+                || (fuzzy
+                    && *expected_fuzzy
+                    && altered
+                        .get_or_init(|| altered_quote_regex(core))
+                        .as_ref()
+                        .is_some_and(|pattern| pattern.is_match(&available)))
+            {
+                elsewhere[index] = Some(source.evidence_id.as_str());
+            }
+        }
+    }
     drop(support);
     let mut errors = Vec::new();
     for (index, quote) in quotes.iter().enumerate() {
@@ -584,6 +610,11 @@ pub fn grounded_prose_errors(
         if let Some((_, suggestion)) = repaired {
             error.push_str("; ");
             error.push_str(&suggestion);
+        }
+        if let Some(evidence_id) = elsewhere[index] {
+            error.push_str(&format!(
+                "; the quoted words are in {evidence_id}, which this citation does not cite: cite that evidence id"
+            ));
         }
         errors.push(error);
     }
@@ -794,6 +825,30 @@ mod drafting_seam_regressions {
             &format!("The memo says “{authored}” and continues."),
             source,
         )
+    }
+
+    #[test]
+    fn a_quote_from_another_read_passage_names_that_passage() {
+        let sources = [("bhasin_77", BHASIN_77), ("callow_84", CALLOW_84)]
+            .map(|(id, text)| VisibleEvidenceText {
+                evidence_id: id.into(),
+                text: text.into(),
+                labels: vec![],
+            });
+        let errors = grounded_prose_errors(
+            "The memo says “that right cannot be exercised in a manner that transgresses the core expectations of honesty required by good faith in the performance of contracts” [@bhasin_77].",
+            &["bhasin_77".into()],
+            &sources,
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("does not match its cited evidence"), "{}", errors[0]);
+        assert!(errors[0].ends_with("the quoted words are in callow_84, which this citation does not cite: cite that evidence id"), "{}", errors[0]);
+        // Once the right passage is cited the same quotation passes.
+        assert!(grounded_prose_errors(
+            "The memo says “that right cannot be exercised in a manner that transgresses the core expectations of honesty required by good faith in the performance of contracts” [@callow_84].",
+            &["callow_84".into()],
+            &sources,
+        ).is_empty());
     }
 
     #[test]
