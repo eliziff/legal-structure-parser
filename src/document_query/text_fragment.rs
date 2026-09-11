@@ -491,6 +491,7 @@ fn browser_key(value: &str) -> String {
         .collect()
 }
 
+#[derive(Clone)]
 struct BrowserSpelledTerm {
     key: String,
     words: Vec<String>,
@@ -531,6 +532,9 @@ struct BrowserReplay<'a> {
     preserve_punctuation_spacing: bool,
     words: Vec<String>,
     postings: HashMap<u64, Vec<usize>>,
+    /// Spelling a term runs several regexes; a plan asks for the same few hundred
+    /// terms tens of thousands of times, so each is spelled once.
+    spelled: std::cell::RefCell<HashMap<String, Option<BrowserSpelledTerm>>>,
 }
 
 impl<'a> BrowserReplay<'a> {
@@ -552,11 +556,19 @@ impl<'a> BrowserReplay<'a> {
             preserve_punctuation_spacing,
             words,
             postings,
+            spelled: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
     fn spelled_term(&self, value: &str) -> Option<BrowserSpelledTerm> {
-        browser_spelled_term_with_mode(value, self.preserve_punctuation_spacing)
+        if let Some(term) = self.spelled.borrow().get(value) {
+            return term.clone();
+        }
+        let term = browser_spelled_term_with_mode(value, self.preserve_punctuation_spacing);
+        self.spelled
+            .borrow_mut()
+            .insert(value.to_owned(), term.clone());
+        term
     }
 
     fn fragment_spelling(&self, value: &str) -> String {
@@ -2035,6 +2047,17 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     for (prefix, suffix) in contexts {
                         let prefix = prefix.as_ref().map_or("", |term| term.text.as_str());
                         let suffix = suffix.as_ref().map_or("", |term| term.text.as_str());
+                        let directive = text_range_directive_with_context(
+                            &head.text, &tail.text, prefix, suffix,
+                        );
+                        // Only a shorter directive can replace the one already found,
+                        // so a pairing that cannot be shorter is never replayed.
+                        if shortest
+                            .as_ref()
+                            .is_some_and(|current| directive.len() >= current.len())
+                        {
+                            continue;
+                        }
                         if !ordered_start {
                             let head_unique = *unique_heads
                                 .entry((head_index, prefix.to_string()))
@@ -2059,15 +2082,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                         ) {
                             continue;
                         }
-                        let directive = text_range_directive_with_context(
-                            &head.text, &tail.text, prefix, suffix,
-                        );
-                        if shortest
-                            .as_ref()
-                            .is_none_or(|current| directive.len() < current.len())
-                        {
-                            shortest = Some(directive);
-                        }
+                        shortest = Some(directive);
                     }
                 }
             }
