@@ -2004,8 +2004,16 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             two_sided.as_slice(),
         ] {
             let mut shortest = None::<String>;
-            for head in &heads {
-                for tail in &tails {
+            // An endpoint replays the same way for every partner, so its
+            // uniqueness under a context is decided once per endpoint and
+            // context rather than once per head and tail pairing. Measured on
+            // a Bhasin sentence the judgment repeats: 84,000 replays and 10 s
+            // for one plan before this, since every head was re-replayed for
+            // every tail and the reverse.
+            let mut unique_heads = HashMap::<(usize, String), bool>::new();
+            let mut unique_tails = HashMap::<(usize, String), bool>::new();
+            for (head_index, head) in heads.iter().enumerate() {
+                for (tail_index, tail) in tails.iter().enumerate() {
                     if head.last_word >= tail.first_word {
                         continue;
                     }
@@ -2027,11 +2035,23 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     for (prefix, suffix) in contexts {
                         let prefix = prefix.as_ref().map_or("", |term| term.text.as_str());
                         let suffix = suffix.as_ref().map_or("", |term| term.text.as_str());
-                        if !ordered_start
-                            && (self.replay_exact_text(&head.text, prefix, "").count != 1
-                                || self.replay_exact_text(&tail.text, "", suffix).count != 1)
-                        {
-                            continue;
+                        if !ordered_start {
+                            let head_unique = *unique_heads
+                                .entry((head_index, prefix.to_string()))
+                                .or_insert_with(|| {
+                                    self.replay_exact_text(&head.text, prefix, "").count == 1
+                                });
+                            if !head_unique {
+                                continue;
+                            }
+                            let tail_unique = *unique_tails
+                                .entry((tail_index, suffix.to_string()))
+                                .or_insert_with(|| {
+                                    self.replay_exact_text(&tail.text, "", suffix).count == 1
+                                });
+                            if !tail_unique {
+                                continue;
+                            }
                         }
                         if !selects(
                             piece,
