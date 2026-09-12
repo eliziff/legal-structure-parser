@@ -644,6 +644,99 @@ fn heading_and_utf16_edges_match_javascript() {
 
 #[test]
 #[cfg(feature = "structure-inference")]
+fn case_paragraphs_stop_before_trailing_headings() {
+    let prose = "This paragraph contains enough ordinary words to establish substantive reasons for the decision before the court today";
+    let text = format!(
+        "[1] {prose}:\n1. Detention under sections 9 and 10 of the Charter refers to a sufficiently long list item that remains paragraph prose\nB. Factual Background\n[2] {prose}.\nII. Background\n[3] {prose}.\nC. Can the Crown Rely on the NEB's Process to Fulfill the Duty to Consult?\n[4] {prose}.\nDisposition:\n[5] {prose}."
+    );
+    let graph = derive_structure_evidence(evidence(&text, DetectionProfile::CaseRootedComplete))
+        .expect("valid case evidence");
+    let paragraph = |label| {
+        let range = graph
+            .nodes
+            .iter()
+            .find(|node| node.label.as_deref() == Some(label))
+            .unwrap()
+            .range;
+        text.chars()
+            .skip(range.start)
+            .take(range.end - range.start)
+            .collect::<String>()
+    };
+    assert!(paragraph("par1").ends_with("remains paragraph prose\n"));
+    assert!(paragraph("par2").ends_with("court today.\n"));
+    assert!(paragraph("par3").ends_with("court today.\n"));
+    assert!(paragraph("par4").ends_with("court today.\n"));
+}
+
+#[test]
+#[cfg(feature = "structure-inference")]
+fn question_headings_use_context_without_discarding_running_questions() {
+    let prose = "The court considered the evidence and the submissions of all parties before addressing the disputed issue";
+    for (separator, question, expected_heading) in [
+        (".\n", "Was the search reasonable?", false),
+        (".\n\n", "Was the search reasonable?", true),
+        (":\n", "1. Was the search reasonable?", false),
+    ] {
+        let text = format!("[1] {prose}{separator}{question}\n[2] {prose}.\n[3] {prose}.\n[4] {prose}.\n[5] {prose}.");
+        let graph =
+            derive_structure_evidence(evidence(&text, DetectionProfile::CaseRootedComplete))
+                .unwrap();
+        let range = graph
+            .nodes
+            .iter()
+            .find(|node| node.label.as_deref() == Some("par1"))
+            .unwrap()
+            .range;
+        let paragraph: String = text
+            .chars()
+            .skip(range.start)
+            .take(range.end - range.start)
+            .collect();
+        assert_eq!(
+            paragraph.contains("Was the search reasonable?"),
+            !expected_heading
+        );
+    }
+    assert!(formal_heading(
+        "C. Can the Crown Rely on the NEB's Process to Fulfill the Duty to Consult?"
+    ));
+    assert!(formal_heading(
+        "(C) Can the Crown Rely on the NEB's Process to Fulfill the Duty to Consult?"
+    ));
+}
+
+#[test]
+#[cfg(feature = "structure-inference")]
+fn long_judgment_keeps_paragraph_text_and_excludes_intervening_headings() {
+    let prose = "The court considered the parties' evidence and submissions before explaining its reasons for the decision.";
+    let mut text = String::new();
+    for number in 1..=2000 {
+        text.push_str(&format!("[{number}] {prose}\n"));
+        if number % 100 == 0 && number < 2000 {
+            text.push_str("B. Further Reasons\n");
+        }
+    }
+    let graph =
+        derive_structure_evidence(evidence(&text, DetectionProfile::CaseRootedComplete)).unwrap();
+    let paragraphs: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Paragraph)
+        .collect();
+    assert_eq!(paragraphs.len(), 2000);
+    let source = ScalarText::new(&text);
+    for paragraph in paragraphs {
+        let body = source
+            .slice(paragraph.range.start..paragraph.range.end)
+            .unwrap();
+        assert!(body.contains(prose));
+        assert!(!body.contains("Further Reasons"));
+    }
+}
+
+#[test]
+#[cfg(feature = "structure-inference")]
 fn bare_label_alone_extends_substantive_statute_spines() {
     let labels = |text: &str| {
         statute_spine(&ScalarText::new(text), false)
