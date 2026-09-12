@@ -616,7 +616,7 @@ fn anchor_metadata(entry_id: &str) -> Option<(&'static [&'static str], usize)> {
         ),
         "cite.url" => (&["doi:", "http", "perma.cc/", "www."], 147),
         "cite.url.prefix" => (&["http", "www."], 8),
-        "marker.inline-fn" => (&["âŸ¦fn:"], 69),
+        "marker.inline-fn" => (&["\u{27e6}fn:"], 69),
         "pinpoint.para.toa" => (&["para"], 910),
         "ref.cross-reference" => (&["above", "below", "ibid", "note", "supra"], 205),
         "ref.history.toa" => (

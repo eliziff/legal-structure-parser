@@ -20,7 +20,7 @@
       "entries": [
         {
           "id": "cite.in-text",
-          "pattern": "\\b(?:19|20)\\d{2}\\s+[A-Z]{2,8}\\s+\\d+\\b|\\[\\d{4}\\]\\s+[A-Z](?:\\.[A-Z]){1,4}\\.?\\s+No\\.?\\s+\\d+(?:\\s+\\([A-Z.]+\\))?|\\[\\d{4}\\]\\s+(?:\\d+\\s+)?[A-Z][A-Za-z.]{1,12}(?:\\s+[A-Z][A-Za-z.]{0,12}){0,3}\\s+\\d+|\\b\\d+\\s+[A-Z][A-Za-z.']{1,14}\\s*(?:\\(\\d[a-z]{0,2}\\))?\\s+\\d+\\b|\\bCanLII\\s+\\d+\\b|\\(\\d{4}\\),?\\s+\\d+\\s+[A-Z][A-Za-z.]{1,14}",
+          "pattern": "\\b(?:19|20)\\d{2}\\s+[A-Z]{2,8}\\s+\\d+\\b|\\[\\d{4}\\]\\s+[A-Z](?:\\.[A-Z]){1,4}\\.?\\s+No\\.?\\s+\\d+(?:\\s+\\([A-Z.]+\\))?|\\[\\d{4}\\]\\s+(?:\\d+\\s+)?[A-Z][A-Za-z.]{1,12}(?:\\s+[A-Z][A-Za-z.]{0,12}){0,3}\\s+\\d+|\\b\\d+\\s+[A-Z][A-Za-z.']{1,14}\\s*(?:\\(\\d[a-z]{0,2}\\))?\\s+\\d+\\b|\\bCanLII\\s+\\d+\\b|\\(\\d{4}\\),?\\s+\\d+\\s+[A-Z][A-Za-z.]{1,14}(?:\\s*\\(\\d[a-z]{0,2}\\))?(?:\\s+\\d+)?",
           "flags": "",
           "canonical": {},
           "provenance": "Extracted verbatim from Beaver citationKey.ts CITATION_IN_TEXT_SOURCE before the Rust cutover; broad in-text detection only, with identification remaining a separate operation.",
@@ -524,7 +524,7 @@
         },
         {
           "id": "cite.reporter.splitter",
-          "pattern": "(?<![\\w.])(?:\\[(?:17|18|19|20)\\d{2}\\]\\s+(?:\\d{1,4}\\s+)?{{reporter_words}}(?:\\s+\\(\\d+[A-Za-z]{0,3}\\))?\\s+\\d{1,5}|\\((?:17|18|19|20)\\d{2}\\)\\s+(?:\\d{1,4}\\s+)?{{reporter_words}}(?:\\s+\\(\\d+[A-Za-z]{0,3}\\))?\\s+\\d{1,5}|\\d{1,4}\\s+{{reporter_words}}(?:\\s+\\(\\d+[A-Za-z]{0,3}\\))?\\s+\\d{1,5})(?=\\s*(?:[,;.]|\\bat\\b|\\band\\b|\\bwith\\b|\\(|\\[|$))",
+          "pattern": "(?<![\\w.])(?:\\[(?:17|18|19|20)\\d{2}\\]\\s+(?:\\d{1,4}\\s+)?{{reporter_words}}(?:\\s+\\(\\d+[A-Za-z]{0,3}\\))?\\s+\\d{1,5}|\\((?:17|18|19|20)\\d{2}\\),?\\s+(?:\\d{1,4}\\s+)?{{reporter_words}}(?:\\s+\\(\\d+[A-Za-z]{0,3}\\))?\\s+\\d{1,5}|\\d{1,4}\\s+{{reporter_words}}(?:\\s+\\(\\d+[A-Za-z]{0,3}\\))?\\s+\\d{1,5})(?=\\s*(?:[,;.]|\\bat\\b|\\band\\b|\\bwith\\b|\\(|\\[|$))",
           "flags": "i",
           "canonical": {},
           "provenance": "splitter.py:14-23 (_REPORTER_RE, three-branch: [year] / (year) / bare-volume, built on _REPORTER_WORDS which is the reporter_words def). Trailing lookahead bounds the match at clause edges. Recall-first routing evidence by design.",
@@ -1052,6 +1052,300 @@
             },
             {
               "input": "Imaginary Code at 999",
+              "groups": null
+            }
+          ]
+        },
+        {
+          "id": "cite.ca.statute.first",
+          "pattern": "\\b(?<series>{{ca_statute_series}}|{{fr_statute_series}})\\s*,?\\s+\\(?(?<year>(?:1[6-9]|20)\\d{2})\\)?(?:\\s*,?\\s+c\\.?\\s*(?<chapter>[A-Za-z0-9]+(?:[.\\-][A-Za-z0-9]+)*(?:\\s+\\d+(?:\\.\\d+)?)?))?(?:\\s*,?\\s+Sched(?:ule)?\\.?\\s*(?<schedule>[A-Za-z0-9]+))?|\\b(?<compiled_series>C\\.?Q\\.?L\\.?R\\.?|C\\.?C\\.?S\\.?M\\.?|R\\.?L\\.?R\\.?Q\\.?)\\s*,?\\s+c\\.?\\s*(?<compiled_chapter>[A-Za-z0-9]+(?:[.\\-][A-Za-z0-9]+)*)|\\b(?<regnal>\\d{1,2}(?:\\s*&\\s*\\d{1,2})?\\s+(?:Vict|Geo|Eliz|Will|Anne?|Car|Jac|Hen|Edw)\\.?(?:\\s*[IVX]+)?),?\\s+c\\.?\\s*(?<regnal_chapter>\\d{1,4}[A-Za-z]?)|\\b(?<instrument>(?:SOR|SI)/\\d{2,4}[-/]\\d{1,4})|\\bCRC,?\\s*c\\.?\\s*(?<consolidated_chapter>\\d{1,4}(?:\\.\\d+)?)|\\b(?<regulation>(?:[A-Z][A-Za-z]{0,2}\\s+)?(?:Reg|OIC)\\.?\\s*\\d{1,4}[-/]\\d{1,4})",
+          "flags": "",
+          "canonical": {},
+          "provenance": "Beaver-authored first-reference grammar for Canadian legislation, in the footnote (McGill Guide) dialect the judgment-side cite.statute.judgment entry cannot reach: the undotted series forms, the CQLR/CCSM/RLRQ compiled-statute forms that carry no year, the imperial regnal-year form (30 & 31 Vict, c 3), and the regulation instruments (SOR//SI//CRC//provincial Reg//OIC). Member list is the shared ca_statute_series//fr_statute_series defs unchanged, so the judgment and footnote dialects name the same series. Measured against the ALR fast-split field gold: the statute family scored 0 citation hits before this entry existed.",
+          "vectors": [
+            {
+              "input": "Criminal Code, RSC 1985, c C-46, s 718.",
+              "groups": {
+                "series": "RSC",
+                "year": "1985",
+                "chapter": "C-46"
+              }
+            },
+            {
+              "input": "Government Organization Act, RSA 2000, c G-10, Sched 9, s 2(b)",
+              "groups": {
+                "series": "RSA",
+                "year": "2000",
+                "chapter": "G-10",
+                "schedule": "9"
+              }
+            },
+            {
+              "input": "Provincial Offences Act, RSO 1990, c P 33",
+              "groups": {
+                "series": "RSO",
+                "year": "1990",
+                "chapter": "P 33"
+              }
+            },
+            {
+              "input": "Family Law Act, SBC 2011, c 25",
+              "groups": {
+                "series": "SBC",
+                "year": "2011",
+                "chapter": "25"
+              }
+            },
+            {
+              "input": "Charter of human rights, CQLR c C-12, art 10",
+              "groups": {
+                "compiled_series": "CQLR",
+                "compiled_chapter": "C-12"
+              }
+            },
+            {
+              "input": "Constitution Act, 1867 (UK), 30 & 31 Vict, c 3",
+              "groups": {
+                "regnal": "30 & 31 Vict",
+                "regnal_chapter": "3"
+              }
+            },
+            {
+              "input": "Food and Drug Regulations, CRC, c 870 apply",
+              "groups": {
+                "consolidated_chapter": "870"
+              }
+            },
+            {
+              "input": "made under SOR/98-106 in 1998",
+              "groups": {
+                "instrument": "SOR/98-106"
+              }
+            },
+            {
+              "input": "O Reg 213/91, s 1",
+              "groups": {
+                "regulation": "O Reg 213/91"
+              }
+            },
+            {
+              "input": "the parties settled before trial",
+              "groups": null
+            }
+          ]
+        },
+        {
+          "id": "cite.statute.titled",
+          "pattern": "\\b(?<title>(?:[A-Z][A-Za-z'’&.-]*\\s+){1,9}(?:Acts?|Codes?|Regulations?|Rules|Convention|Treaty|Charter|Protocol))(?:,\\s*(?<title_year>(?:1[6-9]|20)\\d{2}))?\\s*\\[(?<short>[A-Z][A-Za-z0-9 '’-]{0,30})\\]|\\b(?<dated_title>(?:[A-Z][A-Za-z'’&.-]*\\s+){1,9}(?:Acts?|Codes?|Regulations?|Rules|Convention|Treaty|Charter|Protocol)),\\s*(?<year>(?:1[6-9]|20)\\d{2})\\b",
+          "flags": "",
+          "canonical": {},
+          "provenance": "Beaver-authored: a statute cited by title alone still anchors when the title carries its own regnal year (Employment Standards Act, 2000) or is immediately given a bracketed short form (Dog Owners' Liability Act ... [DOLA]). Sibling of title.legal.toa, which recognizes the same title shape but is recall-first and therefore fires on every prose mention of a named Act; this entry demands the year or the short form so it can be used to discover authorities, not only to classify spans another grammar already found.",
+          "vectors": [
+            {
+              "input": "the Employment Standards Act, 2000 [ESA], applies",
+              "groups": {
+                "title": "Employment Standards Act",
+                "title_year": "2000",
+                "short": "ESA"
+              }
+            },
+            {
+              "input": "Constitution Act, 1867 (UK), 30 & 31 Vict, c 3",
+              "groups": {
+                "dated_title": "Constitution Act",
+                "year": "1867"
+              }
+            },
+            {
+              "input": "Dog Owners’ Liability Act [DOLA] defines owner",
+              "groups": {
+                "title": "Dog Owners’ Liability Act",
+                "short": "DOLA"
+              }
+            },
+            {
+              "input": "the Act, 2019 was a busy year",
+              "groups": null
+            },
+            {
+              "input": "Criminal Code, RSC 1985, c C-46",
+              "groups": null
+            }
+          ]
+        },
+        {
+          "id": "cite.journal.article",
+          "pattern": "\\((?<year>(?:1[6-9]|20)\\d{2}(?:\\s*[-–]\\s*(?:1[6-9]|20)?\\d{2})?)\\)\\s*[,.]?\\s*(?:(?<volume>\\d{1,4})(?:\\s*[:(]\\s*[0-9A-Za-z]{1,8}(?:[/.–\\-][0-9A-Za-z]{1,8})*\\)?)?(?:\\s*\\([0-9A-Za-z–\\-]{1,8}\\))?\\s+)?(?<journal>[A-Z][A-Za-z&.'’]*(?:,?\\s+(?:[A-Z][A-Za-z&.'’]*|&|of|the|and|in|for|on|de|du|des|la|le|et)){0,30}(?:\\s*\\((?:\\d[a-z]{0,2}|[A-Za-z]{1,20})\\))?)\\s*,?\\s+(?:pp?\\.?\\s*)?(?<page>[a-z]?\\d{1,5})\\b|\\((?<unpaged_year>(?:1[6-9]|20)\\d{2})\\)\\s*[,.]?\\s*(?:(?<unpaged_volume>\\d{1,4})(?:\\s*[:(]\\s*[0-9A-Za-z]{1,8}\\)?)?\\s+)?(?<unpaged_journal>[A-Z][A-Za-z&.'’]*(?:,?\\s+(?:[A-Z][A-Za-z&.'’]*|&|of|the|and|in|for|on)){0,30})(?=\\s*(?:at\\s+\\d|\\[[Ff]orthcoming|\\(no\\s+page))",
+          "flags": "",
+          "canonical": {},
+          "provenance": "Beaver-authored first-reference grammar for the periodical family: the (year) volume(:issue) journal first-page block that follows an author and a quoted article title in McGill footnote style. Sibling of cite.journal.toa, which is the classifier dialect (recall-first, used only to label a span the citation grammar already anchored); this entry adds the separators the corpus actually shows - '(2015). 52:1', '(1986-1987) 29', '(2020) 67(5)', '(1997) 23:1/2', ampersands and commas inside the journal name, lettered first pages (e482) - and a second branch for the unpaginated article, where the lookahead leaves 'at 1' to the pinpoint grammar instead of eating it.",
+          "vectors": [
+            {
+              "input": "Alice Woolley, \"Lawyer Regulation in Canada\" (2017) 95:4 Can Bar Rev 893",
+              "groups": {
+                "year": "2017",
+                "volume": "95",
+                "journal": "Can Bar Rev",
+                "page": "893"
+              }
+            },
+            {
+              "input": "Ian G Scott, \"The Role\" (1986-1987) 29 Crim LQ 187 at 188",
+              "groups": {
+                "year": "1986-1987",
+                "volume": "29",
+                "journal": "Crim LQ",
+                "page": "187"
+              }
+            },
+            {
+              "input": "Bhabha, \"Diversity\" (2015). 52:1 Osgoode Hall LJ 59",
+              "groups": {
+                "year": "2015",
+                "volume": "52",
+                "journal": "Osgoode Hall LJ",
+                "page": "59"
+              }
+            },
+            {
+              "input": "Riley Olstead (2002) 24:5 Sociology of Health & Illness pp. 621–643",
+              "groups": {
+                "year": "2002",
+                "volume": "24",
+                "journal": "Sociology of Health & Illness",
+                "page": "621"
+              }
+            },
+            {
+              "input": "Bonnie Janzen (2017) 108:5 Can J Public Health e482.",
+              "groups": {
+                "year": "2017",
+                "volume": "108",
+                "journal": "Can J Public Health",
+                "page": "e482"
+              }
+            },
+            {
+              "input": "RJ Bauman (1994) 52:4 Advocate (Vancouver) 561 at 563",
+              "groups": {
+                "year": "1994",
+                "volume": "52",
+                "journal": "Advocate (Vancouver)",
+                "page": "561"
+              }
+            },
+            {
+              "input": "Jaquet, \"Speciesism\" (2020) The Journal of Value Inquiry at 1",
+              "groups": {
+                "unpaged_year": "2020",
+                "unpaged_journal": "The Journal of Value Inquiry"
+              }
+            },
+            {
+              "input": "Alcolea (2025) 99 Aus LJ [forthcoming in 2025].",
+              "groups": {
+                "unpaged_year": "2025",
+                "unpaged_volume": "99",
+                "unpaged_journal": "Aus LJ"
+              }
+            },
+            {
+              "input": "the report was published in 2019 without a volume",
+              "groups": null
+            }
+          ]
+        },
+        {
+          "id": "cite.book.imprint",
+          "pattern": "\\b(?<edition>\\d{1,2}(?:st|nd|rd|th)|rev(?:ised)?|2d|3d|new)\\s+ed\\b\\.?,?\\s*\\((?<edition_imprint>[^()\\n]{0,90}(?:1[6-9]|20)\\d{2}[^()\\n]{0,30})\\)|\\((?<place>[A-Z][^()\\n:]{0,60}):\\s*(?<imprint>[^()\\n]{0,90}(?:1[6-9]|20)\\d{2}[^()\\n]{0,30})\\)",
+          "flags": "",
+          "canonical": {},
+          "provenance": "Beaver-authored: the publication frame of a monograph or an edited collection - '(Place: Publisher, Year)', or an edition marker followed by a bare year parenthetical. Supersedes frame.book (splitter dialect, place class limited to [A-Za-z .,'-] and the year forced to sit last inside the parentheses) by admitting the forms the corpus shows: a trailing note inside the frame ('; online edn'), a publisher-first French frame ('(Themis: 2023, Montreal)'), and the edition-only frame ('2nd ed (2022)'). One entry serves both the book and the essay-collection families, which share the frame and differ only in the 'in Editor, ed,' lead-in.",
+          "vectors": [
+            {
+              "input": "Peter Hogg, Liability of the Crown, 4th ed (Toronto: Carswell, 2011) at 364",
+              "groups": {
+                "edition": "4th",
+                "edition_imprint": "Toronto: Carswell, 2011"
+              }
+            },
+            {
+              "input": "Elizabeth Sanderson, Government Lawyering (Toronto: LexisNexis Canada, 2018) at 217",
+              "groups": {
+                "place": "Toronto",
+                "imprint": "LexisNexis Canada, 2018"
+              }
+            },
+            {
+              "input": "Kasperbauer, \"Killing\" in Visak, ed (New York: Oxford Academic Press, 2015; online edn).",
+              "groups": {
+                "place": "New York",
+                "imprint": "Oxford Academic Press, 2015; online edn"
+              }
+            },
+            {
+              "input": "Tremblay, \"Anticiper la collision\" (Themis: 2023, Montreal) at 135",
+              "groups": {
+                "place": "Themis",
+                "imprint": "2023, Montreal"
+              }
+            },
+            {
+              "input": "McInnes, The Canadian Law of Unjust Enrichment, 2nd ed (2022) at 66",
+              "groups": {
+                "edition": "2nd",
+                "edition_imprint": "2022"
+              }
+            },
+            {
+              "input": "(see the discussion below)",
+              "groups": null
+            }
+          ]
+        },
+        {
+          "id": "cite.parliamentary.paper",
+          "pattern": "\\b(?<body>(?:[A-Z][A-Za-z.'’-]*\\s+){0,4})(?<record>Hansard|Debates)\\s*,?\\s*(?<session>\\d{1,3}\\s*[-–]\\s*\\d{1,3}|(?:\\d{1,3}(?:st|nd|rd|th)|First|Second|Third|Fourth|Fifth|Sixth)\\s+(?:Sess(?:ion)?|Parl(?:iament)?))(?:[^()\\n]{0,60}?\\((?<sitting>[^()\\n]{3,60})\\))?|\\b(?<bill>[Bb][Ii][Ll][Ll]\\s+(?:[CS]-)?\\d{1,4},\\s*(?:An?\\s+Act\\b[^,;\\n]{0,140}|[A-Z][A-Za-z'’.-]*(?:\\s+[A-Za-z'’.-]+){0,10}\\s+Act\\b))",
+          "flags": "",
+          "canonical": {},
+          "provenance": "Beaver-authored: the two parliamentary-paper shapes a footnote actually cites - a debate record ('Alberta Hansard, 31-2 (8 December 2025)', 'House of Commons Debates, 42-1 (5 May 2017)') identified by the record word plus a session number or ordinal session/parliament, and a bill by its number followed by its title ('Bill C-25, An Act to amend the National Defence Act'). The record word alone is prose ('the debates were heated'), so the session is required, and a bare bill number is a cross-reference or part of an article title ('Bill C-14: A Step Backwards ...'), so the title is required. The page that follows ('at 797') is deliberately left to the pinpoint grammar.",
+          "vectors": [
+            {
+              "input": "See e.g. Alberta Hansard, 31-2 (8 December 2025) at 797 (Rakhi Pancholi)",
+              "groups": {
+                "body": "Alberta ",
+                "record": "Hansard",
+                "session": "31-2",
+                "sitting": "8 December 2025"
+              }
+            },
+            {
+              "input": "House of Commons Debates, 42-1 (5 May 2017) at 1234",
+              "groups": {
+                "record": "Debates",
+                "session": "42-1",
+                "sitting": "5 May 2017"
+              }
+            },
+            {
+              "input": "Debates, First Session, Thirty-sixth Parliament",
+              "groups": {
+                "record": "Debates",
+                "session": "First Session"
+              }
+            },
+            {
+              "input": "BILL C-25, An Act to amend the National Defence Act, First Session",
+              "groups": {
+                "bill": "BILL C-25, An Act to amend the National Defence Act"
+              }
+            },
+            {
+              "input": "see Bill C-14: A Step Backwards for the Rights of Offenders",
+              "groups": null
+            },
+            {
+              "input": "the debates in the committee were heated",
               "groups": null
             }
           ]
