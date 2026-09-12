@@ -514,56 +514,63 @@ fn next_boundary(boundaries: &[usize], start: usize, end: usize) -> usize {
 
 pub(super) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateRun> {
     let all = paragraph_markers(text, false);
-    let mut boundaries = all.iter().map(|marker| marker.start).collect::<Vec<_>>();
+    // A lone year or number rejected by every sequence cannot terminate prose.
+    let scopes = [MarkerStyle::Bracket, MarkerStyle::Dot, MarkerStyle::Bare]
+        .into_iter()
+        .flat_map(|style| monotone_scopes(all.iter().filter(|marker| marker.style == style), 8))
+        .filter(|scope| scope.len() >= 2)
+        .collect::<Vec<_>>();
+    let mut boundaries = scopes
+        .iter()
+        .flatten()
+        .map(|marker| marker.start)
+        .collect::<Vec<_>>();
     boundaries.push(text.len());
+    boundaries.sort_unstable();
+    boundaries.dedup();
     let mut runs = Vec::new();
-    for style in [MarkerStyle::Bracket, MarkerStyle::Dot, MarkerStyle::Bare] {
-        for scope in monotone_scopes(all.iter().filter(|marker| marker.style == style), 8) {
-            if scope.len() < 2 {
-                continue;
-            }
-            let candidates = scope
-                .iter()
-                .map(|marker| {
-                    let end = next_boundary(&boundaries, marker.start, text.len());
-                    let surface_label = text
-                        .slice(marker.start..marker.content_start)
-                        .expect("numeric marker range is bounded")
-                        .trim()
-                        .to_owned();
-                    StructureMarkerCandidate {
-                        id: String::new(),
-                        range: ScalarRange {
-                            start: marker.start,
-                            end,
-                        },
-                        marker_range: ScalarRange {
-                            start: marker.start,
-                            end: marker.content_start,
-                        },
-                        label: surface_label,
-                        grammar_value: marker.number.to_string(),
-                        parent_candidate_id: None,
-                        level: 0,
-                        content_start: marker.content_start,
-                    }
-                })
-                .collect::<Vec<_>>();
-            let range = ScalarRange {
-                start: candidates[0].range.start,
-                end: candidates.last().unwrap().range.end,
-            };
-            runs.push(StructureCandidateRun {
-                id: String::new(),
-                grammar: CandidateGrammar::Numeric,
-                range,
-                rooted: scope[0].number == 1,
-                consecutive: scope
-                    .windows(2)
-                    .all(|pair| pair[1].number == pair[0].number + 1),
-                markers: candidates,
-            });
-        }
+    for scope in scopes {
+        let candidates = scope
+            .iter()
+            .map(|marker| {
+                let end = next_boundary(&boundaries, marker.start, text.len());
+                let surface_label = text
+                    .slice(marker.start..marker.content_start)
+                    .expect("numeric marker range is bounded")
+                    .trim()
+                    .to_owned();
+                StructureMarkerCandidate {
+                    id: String::new(),
+                    range: ScalarRange {
+                        start: marker.start,
+                        end,
+                    },
+                    marker_range: ScalarRange {
+                        start: marker.start,
+                        end: marker.content_start,
+                    },
+                    label: surface_label,
+                    grammar_value: marker.number.to_string(),
+                    parent_candidate_id: None,
+                    level: 0,
+                    content_start: marker.content_start,
+                }
+            })
+            .collect::<Vec<_>>();
+        let range = ScalarRange {
+            start: candidates[0].range.start,
+            end: candidates.last().unwrap().range.end,
+        };
+        runs.push(StructureCandidateRun {
+            id: String::new(),
+            grammar: CandidateGrammar::Numeric,
+            range,
+            rooted: scope[0].number == 1,
+            consecutive: scope
+                .windows(2)
+                .all(|pair| pair[1].number == pair[0].number + 1),
+            markers: candidates,
+        });
     }
     runs.sort_by_key(|run| (run.range.start, run.range.end));
     for (run_index, run) in runs.iter_mut().enumerate() {
