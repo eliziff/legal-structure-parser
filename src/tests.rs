@@ -776,3 +776,22 @@ fn dotterm_inline_child_preserves_bare_spine_precedence() {
         ["1", "2", "3"]
     );
 }
+
+#[test]
+#[cfg(feature = "structure-inference")]
+fn isolated_year_does_not_cut_a_numbered_paragraph() {
+    let text = "1. The board was formed in March\n2018. Its members provided oversight.\n2. The defendant retained control.";
+    let runs = detect_structure_candidate_runs(text);
+    let first = runs
+        .iter()
+        .filter(|run| run.grammar == CandidateGrammar::Numeric)
+        .flat_map(|run| &run.markers)
+        .find(|marker| marker.grammar_value == "1")
+        .unwrap();
+    assert_eq!(
+        ScalarText::new(text)
+            .slice(first.range.start..first.range.end)
+            .unwrap(),
+        "1. The board was formed in March\n2018. Its members provided oversight.\n"
+    );
+}
