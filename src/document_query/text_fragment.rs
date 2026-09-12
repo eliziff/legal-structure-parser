@@ -58,7 +58,13 @@ impl DocumentQuery {
                 .filter(|position| {
                     projected_kind(&document.nodes[position.node]) == Some(DocumentKind::Paragraph)
                 })
-                .map(|position| document.query_range(&document.nodes[position.node]))
+                .map(|position| {
+                    let node = &document.nodes[position.node];
+                    let mut range = document.query_range(node);
+                    range.start += FragmentText::Document(self, document, &text)
+                        .paragraph_marker_length(range.start);
+                    range
+                })
         };
         let start = resolve(start)?;
         let end = resolve(end)?;
@@ -145,6 +151,48 @@ impl<'a> FragmentText<'a> {
             Self::Document(_, _, text) => text.utf16_len(),
             Self::Text(query) => query.text.utf16_len(),
         }
+    }
+
+    fn paragraph_marker_length(self, start: usize) -> usize {
+        let Self::Document(_, document, _) = self else {
+            return 0;
+        };
+        document
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                // Marker offsets belong to source text, not a separate rendered projection.
+                if projected_kind(node) != Some(DocumentKind::Paragraph)
+                    || document.query_range(node) != node.range
+                {
+                    return None;
+                }
+                let content = node.content_start.or_else(|| {
+                    // Some inferred paragraphs retain the label and range only.
+                    // Match that known label at the node boundary, never an arbitrary number.
+                    let label = node.label.as_deref()?.strip_prefix("par")?;
+                    let tail = self
+                        .slice(node.range.start, node.range.end)
+                        .strip_prefix(label)?;
+                    let spaces = tail
+                        .chars()
+                        .take_while(|c| javascript_whitespace(*c))
+                        .map(char::len_utf16)
+                        .sum::<usize>();
+                    (spaces > 0).then(|| node.range.start + utf16_len(label) + spaces)
+                })?;
+                let marker = node.marker_range.unwrap_or(ScalarRange {
+                    start: node.range.start,
+                    end: content,
+                });
+                (marker.start <= start
+                    && start < marker.end
+                    && marker.end <= content
+                    && content < node.range.end)
+                    .then(|| content - start)
+            })
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -969,7 +1017,8 @@ fn line_start_furniture_last_word(
         .chars()
         .take_while(|character| matches!(character, ' ' | '\t'))
         .count();
-    let marker_length = leading_label_length_with_mode(&line[indent..], markdown_labels);
+    let marker_length = leading_label_length_with_mode(&line[indent..], markdown_labels)
+        .max(document.paragraph_marker_length(line_start + indent));
     if marker_length == 0 {
         return None;
     }
@@ -1276,6 +1325,15 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             .replay
             .document
             .slice(words[left_word].end, words[right_word].start);
+        if gap.contains(['\r', '\n'])
+            && self
+                .replay
+                .document
+                .paragraph_marker_length(words[right_word].start)
+                > 0
+        {
+            return true;
+        }
         if self.split_html_source_blocks
             && gap
                 .chars()
@@ -1455,6 +1513,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         static BILINGUAL: OnceLock<Regex> = OnceLock::new();
         let source = self.replay.document.slice(span.start, span.end);
         let marker_length = leading_label_length_with_mode(source, self.split_html_source_blocks)
+            .max(self.replay.document.paragraph_marker_length(span.start))
             .max(if self.split_html_source_blocks {
                 let markdown = markdown_label_length(source);
                 js_regex(r"(?u)^\(?\s*[^)]*(?:»|Â»)[^)]*\)\s*", &BILINGUAL)
@@ -3076,6 +3135,107 @@ fn unique_paragraph_edge(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "provider-text")]
+    #[test]
+    fn structured_paragraph_markers_are_not_fragment_text() {
+        use crate::{provider_text_document_structure, ProviderTextInput, ProviderTextSourceKind};
+        let paragraphs = [
+            "43 Against this background, consultation must be meaningful.",
+            "44 At the other end of the spectrum lie cases requiring deep consultation.",
+            "45 Between these two extremes, every case must be approached individually.",
+        ];
+        // Independent structure input: these spans identify paragraph markers,
+        // including a UTF-16 shift before the first one.
+        let text = format!("Reasons \u{1f4dc}\n\n{}", paragraphs.join("\n\n"));
+        let nodes = paragraphs
+            .iter()
+            .enumerate()
+            .map(|(index, paragraph)| {
+                let byte = text.find(paragraph).unwrap();
+                let start = text[..byte].chars().count();
+                let mut node = crate::StructureNode::new(
+                    format!("par{}", 43 + index),
+                    NodeKind::Paragraph,
+                    ScalarRange {
+                        start,
+                        end: start + paragraph.chars().count(),
+                    },
+                    "fixture",
+                    Derivation::Native,
+                    None,
+                );
+                node.label = Some(format!("par{}", 43 + index));
+                if index != 2 {
+                    node.marker_range = Some(ScalarRange {
+                        start,
+                        end: start + 3,
+                    });
+                    node.content_start = Some(start + 3);
+                }
+                node
+            })
+            .collect();
+        let document = DocumentStructure::from_scalar_parts(
+            "haida".into(),
+            "fixture".into(),
+            text,
+            "fixture-revision".into(),
+            None,
+            crate::Scope::complete(),
+            vec![],
+            nodes,
+            vec![],
+            vec![],
+        );
+        let query = DocumentQuery::default();
+        let quotes = paragraphs[1..]
+            .iter()
+            .map(|text| text.to_string())
+            .collect::<Vec<_>>();
+        let plan = query.text_fragment_plan(
+            &document,
+            &quotes.join("\n\n"),
+            &quotes,
+            false,
+            false,
+            false,
+        );
+        assert!(plan.source_safe_complete);
+        assert_eq!(
+            plan.paint_quotes,
+            vec![
+                "At the other end of the spectrum lie cases requiring deep consultation",
+                "Between these two extremes, every case must be approached individually",
+            ]
+        );
+        let combined = query.text_fragment_plan(
+            &document,
+            &quotes.join("\n\n"),
+            &[quotes.join("\n\n")],
+            false,
+            false,
+            false,
+        );
+        assert!(combined.source_safe_complete);
+        assert_eq!(combined.paint_quotes, plan.paint_quotes);
+        // A substantive number in an unnumbered passage is not a paragraph marker.
+        let plain = provider_text_document_structure(ProviderTextInput::new(
+            "Fixture",
+            ProviderTextSourceKind::Cases,
+            "44 people attended the hearing.",
+        ))
+        .unwrap();
+        let plan = DocumentQuery::default().text_fragment_plan(
+            &plain,
+            plain.query_text(),
+            &[plain.query_text().to_string()],
+            false,
+            false,
+            false,
+        );
+        assert_eq!(plan.paint_quotes, vec!["44 people attended the hearing"]);
+    }
 
     fn plan_for_publisher(
         block: &str,
