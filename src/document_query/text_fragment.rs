@@ -491,6 +491,7 @@ fn browser_key(value: &str) -> String {
         .collect()
 }
 
+#[derive(Clone)]
 struct BrowserSpelledTerm {
     key: String,
     words: Vec<String>,
@@ -531,6 +532,9 @@ struct BrowserReplay<'a> {
     preserve_punctuation_spacing: bool,
     words: Vec<String>,
     postings: HashMap<u64, Vec<usize>>,
+    /// Spelling a term runs several regexes; a plan asks for the same few hundred
+    /// terms tens of thousands of times, so each is spelled once.
+    spelled: std::cell::RefCell<HashMap<String, Option<BrowserSpelledTerm>>>,
 }
 
 impl<'a> BrowserReplay<'a> {
@@ -552,11 +556,19 @@ impl<'a> BrowserReplay<'a> {
             preserve_punctuation_spacing,
             words,
             postings,
+            spelled: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
     fn spelled_term(&self, value: &str) -> Option<BrowserSpelledTerm> {
-        browser_spelled_term_with_mode(value, self.preserve_punctuation_spacing)
+        if let Some(term) = self.spelled.borrow().get(value) {
+            return term.clone();
+        }
+        let term = browser_spelled_term_with_mode(value, self.preserve_punctuation_spacing);
+        self.spelled
+            .borrow_mut()
+            .insert(value.to_owned(), term.clone());
+        term
     }
 
     fn fragment_spelling(&self, value: &str) -> String {
@@ -2004,8 +2016,16 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             two_sided.as_slice(),
         ] {
             let mut shortest = None::<String>;
-            for head in &heads {
-                for tail in &tails {
+            // An endpoint replays the same way for every partner, so its
+            // uniqueness under a context is decided once per endpoint and
+            // context rather than once per head and tail pairing. Measured on
+            // a Bhasin sentence the judgment repeats: 84,000 replays and 10 s
+            // for one plan before this, since every head was re-replayed for
+            // every tail and the reverse.
+            let mut unique_heads = HashMap::<(usize, String), bool>::new();
+            let mut unique_tails = HashMap::<(usize, String), bool>::new();
+            for (head_index, head) in heads.iter().enumerate() {
+                for (tail_index, tail) in tails.iter().enumerate() {
                     if head.last_word >= tail.first_word {
                         continue;
                     }
@@ -2027,11 +2047,34 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     for (prefix, suffix) in contexts {
                         let prefix = prefix.as_ref().map_or("", |term| term.text.as_str());
                         let suffix = suffix.as_ref().map_or("", |term| term.text.as_str());
-                        if !ordered_start
-                            && (self.replay_exact_text(&head.text, prefix, "").count != 1
-                                || self.replay_exact_text(&tail.text, "", suffix).count != 1)
+                        let directive = text_range_directive_with_context(
+                            &head.text, &tail.text, prefix, suffix,
+                        );
+                        // Only a shorter directive can replace the one already found,
+                        // so a pairing that cannot be shorter is never replayed.
+                        if shortest
+                            .as_ref()
+                            .is_some_and(|current| directive.len() >= current.len())
                         {
                             continue;
+                        }
+                        if !ordered_start {
+                            let head_unique = *unique_heads
+                                .entry((head_index, prefix.to_string()))
+                                .or_insert_with(|| {
+                                    self.replay_exact_text(&head.text, prefix, "").count == 1
+                                });
+                            if !head_unique {
+                                continue;
+                            }
+                            let tail_unique = *unique_tails
+                                .entry((tail_index, suffix.to_string()))
+                                .or_insert_with(|| {
+                                    self.replay_exact_text(&tail.text, "", suffix).count == 1
+                                });
+                            if !tail_unique {
+                                continue;
+                            }
                         }
                         if !selects(
                             piece,
@@ -2039,15 +2082,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                         ) {
                             continue;
                         }
-                        let directive = text_range_directive_with_context(
-                            &head.text, &tail.text, prefix, suffix,
-                        );
-                        if shortest
-                            .as_ref()
-                            .is_none_or(|current| directive.len() < current.len())
-                        {
-                            shortest = Some(directive);
-                        }
+                        shortest = Some(directive);
                     }
                 }
             }

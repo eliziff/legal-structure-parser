@@ -151,9 +151,14 @@ fn representation(value: &str) -> String {
     let mut separating = false;
     for character in value.nfc().map(|character| match character {
         '“' | '”' | '„' | '‟' => '"',
-        '‘' | '’' | '‚' | '‛' => '\'',
+        '‘' | '’' | '‚' | '‛' | '′' => '\'',
+        '\u{2010}'..='\u{2015}' | '−' => '-',
         character => character,
     }) {
+        // Emphasis markup is typography an author adds, not a change of words.
+        if character == '*' {
+            continue;
+        }
         if javascript_whitespace(character) {
             separating = !normalized.is_empty();
         } else {
@@ -191,6 +196,30 @@ fn representation(value: &str) -> String {
         }
     }
     characters.into_iter().collect()
+}
+
+fn quote_seam(character: char) -> bool {
+    javascript_whitespace(character)
+        || matches!(
+            character,
+            '.' | ',' | ';' | ':' | '!' | '?' | '"' | '\'' | '…' | '-'
+        )
+}
+
+/// The quoted words without the punctuation an author adjusts where the
+/// quotation meets the sentence carrying it: a comma standing in for the
+/// source's period or semicolon, a period moved inside the closing quotation
+/// mark, a trailing ellipsis. Only the edges give way; everything between them
+/// must still be a run of the cited passage.
+fn quote_core(expected: &str) -> &str {
+    expected.trim_matches(quote_seam)
+}
+
+fn citation_marker(text: &str) -> Option<&str> {
+    static MARKER: OnceLock<Regex> = OnceLock::new();
+    regex(r"\[@[^\]\r\n]+\]", &MARKER)
+        .find(text)
+        .map(|marker| marker.as_str())
 }
 
 fn marked_quotes(text: &str) -> Vec<MarkedQuote> {
@@ -269,7 +298,10 @@ fn flexible_spaces(value: &str) -> String {
 
 fn altered_quote_regex(expected: &str) -> Option<Regex> {
     static EDIT: OnceLock<Regex> = OnceLock::new();
-    let edits = regex(r"\[[^\]\r\n]+\]|…|\.{3}|\. \. \.", &EDIT)
+    // Omissions are written as an ellipsis character, as three or four dots, or
+    // as dots spaced apart; each form is one gap. Whitespace has already been
+    // collapsed to single spaces by `representation`.
+    let edits = regex(r"\[[^\]\r\n]+\]|…|\.{3,4}|\.(?: \.){2,3}", &EDIT)
         .find_iter(expected)
         .take(MAX_MARKED_QUOTE_EDITS + 1)
         .collect::<Vec<_>>();
@@ -485,30 +517,68 @@ pub fn grounded_prose_errors(
         .iter()
         .map(|quote| {
             let expected = representation(&quote.text);
-            let fuzzy = utf16_len(&expected) <= MAX_MARKED_QUOTE_CHARS;
-            (expected, fuzzy, OnceLock::new())
+            let core = quote_core(&expected).to_owned();
+            let fuzzy = utf16_len(&core) <= MAX_MARKED_QUOTE_CHARS;
+            (core, fuzzy, OnceLock::new())
         })
         .collect::<Vec<_>>();
-    let mut supported = vec![false; quotes.len()];
+    // A quotation carrying no words claims nothing about the evidence.
+    let mut supported = support
+        .iter()
+        .map(|(core, ..)| core.is_empty())
+        .collect::<Vec<_>>();
     for &source in &cited {
         let available = representation(&source.text);
         let fuzzy = utf16_len(&available) <= MAX_FUZZY_SOURCE_CHARS;
-        for (index, (expected, expected_fuzzy, altered)) in support.iter().enumerate() {
-            if supported[index] || expected.is_empty() {
+        for (index, (core, expected_fuzzy, altered)) in support.iter().enumerate() {
+            if supported[index] {
                 continue;
             }
-            supported[index] = available.contains(expected.as_str())
+            supported[index] = available.contains(core.as_str())
                 || (fuzzy
                     && *expected_fuzzy
                     && altered
-                        .get_or_init(|| altered_quote_regex(expected))
+                        .get_or_init(|| altered_quote_regex(core))
                         .as_ref()
                         .is_some_and(|pattern| pattern.is_match(&available)));
+        }
+    }
+    // A quotation the cited passages do not carry may sit in another passage the
+    // model has read; naming that passage makes the fix the evidence id, not
+    // another read.
+    let mut elsewhere: Vec<Option<&str>> = vec![None; quotes.len()];
+    for source in visible_evidence
+        .iter()
+        .filter(|source| !cited_evidence_ids.contains(&source.evidence_id))
+    {
+        let available = representation(&source.text);
+        let fuzzy = utf16_len(&available) <= MAX_FUZZY_SOURCE_CHARS;
+        for (index, (core, expected_fuzzy, altered)) in support.iter().enumerate() {
+            if supported[index] || elsewhere[index].is_some() || core.is_empty() {
+                continue;
+            }
+            if available.contains(core.as_str())
+                || (fuzzy
+                    && *expected_fuzzy
+                    && altered
+                        .get_or_init(|| altered_quote_regex(core))
+                        .as_ref()
+                        .is_some_and(|pattern| pattern.is_match(&available)))
+            {
+                elsewhere[index] = Some(source.evidence_id.as_str());
+            }
         }
     }
     drop(support);
     let mut errors = Vec::new();
     for (index, quote) in quotes.iter().enumerate() {
+        if let Some(marker) = citation_marker(&quote.text) {
+            errors.push(format!(
+                "citation marker inside a quotation; place [@id] after the closing quote: {marker} appears inside quoted text {}",
+                serde_json::to_string(&quote.text).unwrap()
+            ));
+            continue;
+        }
         if supported[index] {
             continue;
         }
@@ -540,6 +610,11 @@ pub fn grounded_prose_errors(
         if let Some((_, suggestion)) = repaired {
             error.push_str("; ");
             error.push_str(&suggestion);
+        }
+        if let Some(evidence_id) = elsewhere[index] {
+            error.push_str(&format!(
+                "; the quoted words are in {evidence_id}, which this citation does not cite: cite that evidence id"
+            ));
         }
         errors.push(error);
     }
@@ -716,5 +791,175 @@ mod repeated_omission_regressions {
                 1
             );
         }
+    }
+}
+
+/// Live drafting rejections from 2026-09-10 (memo on good faith in contractual
+/// termination). Each authored quote below is taken verbatim from the server
+/// log, with the evidence window it was checked against.
+#[cfg(test)]
+mod drafting_seam_regressions {
+    use super::*;
+
+    const BHASIN_73: &str = "[73] In my view, we should. I would hold that there is a general duty of honesty in contractual performance. This means simply that parties must not lie or otherwise knowingly mislead each other about matters directly linked to the performance of the contract. This does not impose a duty of loyalty or of disclosure or require a party to forego advantages flowing from the contract; it is a simple requirement not to lie or mislead the other party about one’s contractual performance.";
+    const BHASIN_77: &str = "[77] That said, I would not rule out any role for the agreement of the parties in influencing the scope of honest performance in a particular context. The precise content of honest performance will vary with context and the parties should be free in some contexts to relax the requirements of the doctrine so long as they respect its minimum core requirements. The approach I outline here is similar in principle to that in § 1-302(b) of the U.C.C. (2012):\nThe obligations of good faith, diligence, reasonableness, and care . . . may not be disclaimed by agreement. The parties, by agreement, may determine the standards by which the performance of those obligations is to be measured if those standards are not manifestly unreasonable.";
+    const CALLOW_84: &str = "[84] That said, I emphasize once again that it is unquestionable that the duty is imposed as a matter of contractual doctrine. Even if the parties, as here, have agreed to a term that provides for an apparently unfettered right to terminate the contract for convenience, that right cannot be exercised in a manner that transgresses the core expectations of honesty required by good faith in the performance of contracts.";
+    const CALLOW_94: &str = "[94] It is true that Baycrest remained silent about its decision to terminate Callow’s contract and that clause 9, on its face, did not impose on it a duty to disclose its intention except for on the 10-day notice requirement. That said, it had to refrain, as the trial judge said, from “deceiv[ing] Callow” through a series of “active communications” (para. 66). When it failed to refrain from doing so in anticipation of exercising its termination right, it deceived Callow into thinking it would leave the existing winter services agreement intact.";
+    const CALLOW_95: &str = "[95] These “active communications”, as I understand the trial judge’s findings of fact, came in two forms. First, Mr. Peixoto made statements to Mr. Callow suggesting that a renewal of the winter maintenance agreement was likely. As the trial judge found, “[a]fter his discussions with Mr. Peixoto and Mr. Campbell, Mr. Callow thought that he was likely to get a two-year renewal of his winter maintenance services contract” (para. 41).";
+    const CALLOW_99: &str = "[99] Considering Baycrest’s conduct as a whole over those few months, it was certainly reasonable for Mr. Callow, who was led to believe that a renewal was likely, to infer that Baycrest had not decided to terminate the ongoing contract. Moreover, Baycrest knew Mr. Callow was under this false impression, as shown by the email sent by Mr. Peixoto on July 17, 2013 and, nonetheless, continued to give him the impression that a renewal was likely even though the decision to terminate him was made (see trial reasons, at para. 48). Upon realizing that Mr. Callow was under this false impression, Baycrest should have corrected the misapprehension; in the circumstances, its conduct misled Callow.";
+
+    fn errors(prose: &str, source: &str) -> Vec<String> {
+        grounded_prose_errors(
+            prose,
+            &["source".into()],
+            &[VisibleEvidenceText {
+                evidence_id: "source".into(),
+                text: source.into(),
+                labels: vec![],
+            }],
+        )
+    }
+
+    fn quoted(authored: &str, source: &str) -> Vec<String> {
+        errors(
+            &format!("The memo says “{authored}” and continues."),
+            source,
+        )
+    }
+
+    #[test]
+    fn a_quote_from_another_read_passage_names_that_passage() {
+        let sources = [("bhasin_77", BHASIN_77), ("callow_84", CALLOW_84)]
+            .map(|(id, text)| VisibleEvidenceText {
+                evidence_id: id.into(),
+                text: text.into(),
+                labels: vec![],
+            });
+        let errors = grounded_prose_errors(
+            "The memo says “that right cannot be exercised in a manner that transgresses the core expectations of honesty required by good faith in the performance of contracts” [@bhasin_77].",
+            &["bhasin_77".into()],
+            &sources,
+        );
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("does not match its cited evidence"), "{}", errors[0]);
+        assert!(errors[0].ends_with("the quoted words are in callow_84, which this citation does not cite: cite that evidence id"), "{}", errors[0]);
+        // Once the right passage is cited the same quotation passes.
+        assert!(grounded_prose_errors(
+            "The memo says “that right cannot be exercised in a manner that transgresses the core expectations of honesty required by good faith in the performance of contracts” [@callow_84].",
+            &["callow_84".into()],
+            &sources,
+        ).is_empty());
+    }
+
+    #[test]
+    fn sentence_seam_punctuation_is_not_a_misquote() {
+        // A period read as a comma, and a semicolon read as a period.
+        assert!(quoted(
+            "there is a general duty of honesty in contractual performance,",
+            BHASIN_73
+        )
+        .is_empty());
+        assert!(quoted(
+            "does not impose a duty of loyalty or of disclosure or require a party to forego advantages flowing from the contract.",
+            BHASIN_73
+        )
+        .is_empty());
+        // A parenthetical trailing the quoted run, dropped at the seam.
+        assert!(quoted(
+            "nonetheless, continued to give him the impression that a renewal was likely even though the decision to terminate him was made.",
+            CALLOW_99
+        )
+        .is_empty());
+        assert!(quoted(
+            "suggesting that a renewal of the winter maintenance agreement was likely,",
+            CALLOW_95
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn recasing_the_opening_letter_still_needs_marking() {
+        // Recasing to fit the carrying sentence is an edit like any other: it
+        // has to be marked, and then it passes.
+        assert!(!quoted(
+            "upon realizing that Mr. Callow was under this false impression, Baycrest should have corrected the misapprehension",
+            CALLOW_99
+        )
+        .is_empty());
+        assert!(quoted(
+            "[u]pon realizing that Mr. Callow was under this false impression, Baycrest should have corrected the misapprehension",
+            CALLOW_99
+        )
+        .is_empty());
+        assert!(quoted(
+            "[t]he obligations of good faith, diligence, reasonableness, and care . . . may not be disclaimed by agreement",
+            BHASIN_77
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn spaced_ellipses_and_emphasis_survive_a_seam_comma() {
+        for omission in [". . .", "...", "…", ". . . ."] {
+            assert!(quoted(
+                &format!("The obligations of good faith, diligence, reasonableness, and care {omission} may not be disclaimed by agreement,"),
+                BHASIN_77
+            )
+            .is_empty(), "omission {omission} should be tolerated");
+        }
+        assert!(quoted("may not be *disclaimed* by agreement.", BHASIN_77).is_empty());
+    }
+
+    #[test]
+    fn bracketed_alteration_with_nested_quotes_and_inside_period() {
+        assert!(quoted(
+            "refrain, as the trial judge said, from 'deceiv[ing] Callow' through a series of 'active communications.'",
+            CALLOW_94
+        )
+        .is_empty());
+        // Same quotation with the intervening clause silently dropped: still a
+        // misquote, because the words are not a contiguous run of the passage.
+        assert!(!quoted(
+            "refrain from 'deceiv[ing] Callow' through a series of 'active communications.'",
+            CALLOW_94
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn silent_elisions_and_wrong_evidence_stay_rejected() {
+        // "Even if the parties, as here, have agreed" — the clause is dropped
+        // without an ellipsis.
+        assert!(!quoted(
+            "even if the parties have agreed to a term that provides for an apparently unfettered right to terminate the contract for convenience",
+            CALLOW_84
+        )
+        .is_empty());
+        // Paragraph 99 text attributed to the paragraph 94 evidence window.
+        assert!(!quoted("should have corrected the misapprehension.", CALLOW_94).is_empty());
+        // Words that appear nowhere in the cited passage.
+        assert!(!quoted("may not disclaim", BHASIN_73).is_empty());
+    }
+
+    #[test]
+    fn citation_markers_inside_quotations_get_their_own_message() {
+        let reported = quoted(
+            " in anticipation of exercising its termination right. [@callow94] Those active communications included statements ",
+            CALLOW_94,
+        );
+        assert_eq!(reported.len(), 1);
+        assert!(
+            reported[0].starts_with(
+                "citation marker inside a quotation; place [@id] after the closing quote"
+            ),
+            "unexpected error: {}",
+            reported[0]
+        );
+        // A marker after the closing quotation mark is exactly right.
+        assert!(errors(
+            "The Court held there is “a general duty of honesty in contractual performance” [@bhasin73].",
+            BHASIN_73
+        )
+        .is_empty());
     }
 }
