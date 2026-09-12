@@ -239,7 +239,7 @@ fn level_opens(value: &str) -> bool {
 }
 
 fn heading_level(words: &[&str], enumerated: bool) -> bool {
-    if words.is_empty() || words.len() > 12 {
+    if words.is_empty() || (!enumerated && words.len() > 12) {
         return false;
     }
     if words.len() == 1 && heading_enumerator(words[0]) {
@@ -252,7 +252,11 @@ fn heading_level(words: &[&str], enumerated: bool) -> bool {
     if last.ends_with(['?', ':']) {
         return true;
     }
-    let title = words.iter().all(|word| {
+    heading_title_case(words) || enumerated || words.len() <= 6
+}
+
+fn heading_title_case(words: &[&str]) -> bool {
+    words.iter().all(|word| {
         let (length, first) = word.chars().filter(|value| value.is_alphabetic()).fold(
             (0, None),
             |(length, first), character| {
@@ -260,8 +264,7 @@ fn heading_level(words: &[&str], enumerated: bool) -> bool {
             },
         );
         length < 4 || first.is_some_and(char::is_uppercase)
-    });
-    title || enumerated || words.len() <= 6
+    })
 }
 
 fn trim_leading_parenthetical(value: &str) -> &str {
@@ -295,7 +298,7 @@ pub(super) fn formal_heading(value: &str) -> bool {
     }
     let words = heading.split_whitespace().collect::<Vec<_>>();
     let mut start = 0;
-    let mut enumerated = false;
+    let mut enumerated = heading != value.trim();
     for (index, word) in words.iter().enumerate() {
         let opener = words
             .get(index + 1)
@@ -843,7 +846,11 @@ fn paragraph_ranges(
     selected
         .into_iter()
         .map(|marker| {
-            let end = next_boundary(&boundaries, marker.start, text.len());
+            let end = paragraph_end_before_trailing_headings(
+                text,
+                marker.start,
+                next_boundary(&boundaries, marker.start, text.len()),
+            );
             Block::labelled(
                 NodeKind::Paragraph,
                 format!("par{}", marker.number),
@@ -852,6 +859,45 @@ fn paragraph_ranges(
             )
         })
         .collect()
+}
+
+fn paragraph_end_before_trailing_headings(
+    text: &ScalarText<'_>,
+    start: usize,
+    end: usize,
+) -> usize {
+    let index = text.lines();
+    let first = index.partition_point(|line| line[2] <= start);
+    let last = index.partition_point(|line| line[2] < end);
+    let mut candidate = end;
+    let mut found = false;
+    for position in (first..last).rev() {
+        let line = index[position];
+        let value = text.value[line[0]..line[1]].trim();
+        let preceding = position
+            .checked_sub(1)
+            .map(|previous| text.value[index[previous][0]..index[previous][1]].trim());
+        let separated = preceding == Some("");
+        let words = value.split_whitespace().collect::<Vec<_>>();
+        let enumerated = words.first().is_some_and(|word| heading_enumerator(word));
+        // A question can be a heading; its wording alone does not establish that role.
+        // An introductory colon instead connects the following line to its paragraph.
+        let heading_context = !preceding.is_some_and(|line| line.ends_with(':'))
+            && (enumerated || separated || (!value.ends_with('?') && heading_title_case(&words)));
+        if value.is_empty() {
+            candidate = line[2];
+        } else if heading_context && formal_heading(value) {
+            candidate = line[2];
+            found = true;
+        } else {
+            break;
+        }
+    }
+    if found {
+        candidate
+    } else {
+        end
+    }
 }
 
 fn detect_paragraphs(
