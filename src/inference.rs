@@ -907,6 +907,44 @@ fn paragraph_end_before_trailing_headings(
     }
 }
 
+/// Statute marginal notes are short sentence-case lines ("Lawyer's right to costs out of property
+/// recovered") without terminal punctuation; structural headings ("PART 2", "Division 3") also
+/// precede the provision they introduce. Enactment-history lines (which carry digits) stay put.
+fn provision_end_before_marginal_notes(text: &ScalarText<'_>, start: usize, end: usize) -> usize {
+    let index = text.lines();
+    let first = index.partition_point(|line| line[2] <= start);
+    let last = index.partition_point(|line| line[2] < end);
+    let mut candidate = end;
+    let mut notes = 0;
+    for position in (first..last).rev() {
+        let line = index[position];
+        let value = text.value[line[0]..line[1]].trim();
+        let words = value.split_whitespace().count();
+        let structural = cached_regex!(
+            VALUE,
+            r"^(?:PART|Part|DIVISION|Division|SUBDIVISION|Subdivision|CHAPTER|Chapter|TITLE|Title|SCHEDULE|Schedule|PARTIE|Partie|SECTION|Section)\s+[0-9IVXLC]+[A-Z]?(?:\.\d+)?\b"
+        )
+        .is_match(value);
+        let note = (1..=16).contains(&words)
+            && value.chars().next().is_some_and(char::is_uppercase)
+            && !value.ends_with(['.', ';', ':', ',', '—', '-'])
+            && !value.chars().any(|character| character.is_ascii_digit());
+        if value.is_empty() {
+            candidate = line[2];
+        } else if (note || structural) && notes < 4 {
+            candidate = line[2];
+            notes += 1;
+        } else {
+            break;
+        }
+    }
+    if notes > 0 {
+        candidate
+    } else {
+        end
+    }
+}
+
 fn detect_paragraphs(
     text: &ScalarText<'_>,
     profile: DetectionProfile,
@@ -1541,6 +1579,19 @@ fn markdown_range_continuation(value: &str) -> bool {
     .is_match(value)
 }
 
+/// Enactment-history notes printed under provisions ("2009 c50 s7", "2003 cP‑6.5 s13;2009 c50 s6",
+/// "2014, c. 28, s. 6") begin with a year followed by a chapter reference; the year is not a
+/// section number.
+fn enactment_history_note(label: &str, after_label: &str) -> bool {
+    label.len() == 4
+        && label.starts_with(['1', '2'])
+        && cached_regex!(
+            VALUE,
+            r"^,?[ \t]*c\.?[ \t]?[A-Za-z]{0,3}[\u{2010}\u{2011}-]?[0-9][0-9A-Za-z.\u{2010}\u{2011}-]*(?:[ \t,;]|$)"
+        )
+        .is_match(after_label)
+}
+
 fn section_mark(
     text: &ScalarText<'_>,
     line: &Line<'_>,
@@ -1601,6 +1652,7 @@ fn section_mark(
         || family == SectionFamily::Bare
             && content.is_empty()
             && previous_nonblank.is_some_and(markdown_range_continuation)
+        || enactment_history_note(label, &value[length..])
     {
         return None;
     }
@@ -1647,7 +1699,7 @@ fn collect_section_families(text: &ScalarText<'_>, source: &[Line<'_>]) -> [Vec<
             previous_nonblank = Some(source_line.text);
         }
     }
-    result
+    result.map(drop_isolated_year_sections)
 }
 
 fn section_key(label: &str) -> impl Iterator<Item = u64> + '_ {
@@ -2229,6 +2281,76 @@ fn selected_sections(text: &ScalarText<'_>, allow_hyphen: bool) -> Vec<SectionMa
         }
     }
     selected
+}
+
+/// A year-shaped section label ("2007 Convention", "1973" in a history or schedule line) that jumps
+/// from a section below 1000 with no neighbouring number is text, not a section; genuine runs such
+/// as 1799, 1800, 1801 keep their neighbours.
+fn drop_isolated_year_sections(marks: Vec<SectionMark>) -> Vec<SectionMark> {
+    let leading = |mark: &SectionMark| {
+        mark.label
+            .split(['.', '-'])
+            .next()
+            .and_then(|value| value.trim_end_matches(|c: char| c.is_ascii_alphabetic()).parse::<u32>().ok())
+    };
+    let values = marks.iter().map(leading).collect::<Vec<_>>();
+    // Nearest candidates with a different label; repeated lines of the same text do not vouch.
+    let neighbour = |index: usize, forward: bool| {
+        let label = &marks[index].label;
+        let mut cursor = index;
+        loop {
+            cursor = if forward { cursor + 1 } else { cursor.checked_sub(1)? };
+            let mark = marks.get(cursor)?;
+            if &mark.label != label {
+                return values[cursor];
+            }
+        }
+    };
+    let keep = (0..marks.len())
+        .map(|index| {
+            let Some(year) = values[index].filter(|_| marks[index].label.len() == 4) else {
+                return true;
+            };
+            let near = |value: Option<u32>| value.is_some_and(|value| value.abs_diff(year) <= 3);
+            let (previous, next) = (neighbour(index, false), neighbour(index, true));
+            !((1800..=2099).contains(&year)
+                && previous.is_some_and(|value| value < 1000)
+                && !near(previous)
+                && !near(next))
+        })
+        .collect::<Vec<_>>();
+    let marks = marks
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(mark, keep)| keep.then_some(mark))
+        .collect::<Vec<_>>();
+    drop_integer_spikes(marks)
+}
+
+/// A lone far jump in a run of plain integer sections ("… 204, 900, 205 …", a wrapped line or
+/// table row) would otherwise strand every later section in a separate run.
+fn drop_integer_spikes(marks: Vec<SectionMark>) -> Vec<SectionMark> {
+    let integer = |mark: &SectionMark| {
+        mark.label
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+            .then(|| mark.label.parse::<u32>().ok())
+            .flatten()
+    };
+    let positions = (0..marks.len()).filter(|&index| integer(&marks[index]).is_some()).collect::<Vec<_>>();
+    let mut spikes = HashSet::new();
+    // The run must visibly continue for two steps after the spike.
+    for window in positions.windows(4) {
+        let [a, x, b, c] = [window[0], window[1], window[2], window[3]].map(|index| integer(&marks[index]).unwrap());
+        if a < b && b <= a + 3 && b < c && c <= b + 3 && x > b.saturating_add(20) {
+            spikes.insert(window[1]);
+        }
+    }
+    marks
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, mark)| (!spikes.contains(&index)).then_some(mark))
+        .collect()
 }
 
 fn roman_value(value: &str) -> Option<u32> {
@@ -3191,11 +3313,22 @@ fn detect_journal(text: &ScalarText<'_>) -> Vec<Block> {
 
 pub(super) fn inferred_blocks(evidence: &DocumentInput, text: &ScalarText<'_>) -> Vec<Block> {
     match evidence.profile {
-        DetectionProfile::Legislation => detect_legislation(
-            text,
-            evidence.allow_hyphenated_sections,
-            &evidence.native_claims,
-        ),
+        DetectionProfile::Legislation => {
+            let mut blocks = detect_legislation(
+                text,
+                evidence.allow_hyphenated_sections,
+                &evidence.native_claims,
+            );
+            // A marginal note or heading printed before the next provision belongs to that
+            // provision, not to the end of the one before it.
+            for block in &mut blocks {
+                if block.kind == NodeKind::Section {
+                    let start = block.content_start.unwrap_or(block.range.start);
+                    block.range.end = provision_end_before_marginal_notes(text, start, block.range.end);
+                }
+            }
+            blocks
+        }
         DetectionProfile::Instrument => detect_instrument(text),
         DetectionProfile::Journal => detect_journal(text),
         _ => {

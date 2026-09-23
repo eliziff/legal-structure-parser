@@ -531,6 +531,80 @@ mod tests {
 
     #[test]
     #[cfg(feature = "document-query")]
+    fn enactment_history_notes_are_not_sections() {
+        let text = "13(1) Thirteen.\n(2) Two.\n2003 cP\u{2011}6.5 s13;2009 c50 s6\n13.1(1) Decimal.\n(4) Four.\n2009 c50 s7\nCollection without consent\n14 Fourteen body:\n(a) alpha;\n(b) beta.\n2014, c. 28, s. 6.\n15 Fifteen body.";
+        let (_, blocks) = document_blocks(ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, text));
+        let labels = blocks
+            .iter()
+            .filter(|block| block.kind == DocumentKind::Section)
+            .map(|block| block.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            ["sec13", "sec13(1)", "sec13(2)", "sec13.1", "sec13.1(1)", "sec13.1(4)", "sec14", "sec14(a)", "sec14(b)", "sec15"]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "document-query")]
+    fn marginal_notes_belong_to_the_following_provision() {
+        let text = [
+            "Definitions", "75 In this Part, a term applies.",
+            "Application", "76 (1) This Part applies.", "(2) Second.",
+            "R.S., c. 3 (2nd Supp.), s. 1",
+            "Order for delivery of records", "78 (1) The court may order delivery.",
+            "(2) The court may", "(a) make the direction conditional, and", "(b) order a review by the registrar.",
+            "Lawyer's right to costs out of property recovered", "79 (1) A lawyer has a charge.", "(2) Second.",
+            "PART 2", "End of part", "80 (1) Final.", "(2) Second.",
+        ]
+        .join("\n");
+        let (document, blocks) = document_blocks(ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, &text));
+        let body = document.query_text();
+        let slice = |label: &str| {
+            let block = blocks.iter().find(|block| block.label == label).unwrap();
+            body[block.start..block.end].to_owned()
+        };
+        assert!(slice("sec78(2)(b)").trim_end().ends_with("registrar."));
+        assert!(slice("sec78").trim_end().ends_with("registrar."));
+        assert!(slice("sec76(2)").contains("R.S., c. 3 (2nd Supp.), s. 1"));
+        assert!(slice("sec79(2)").trim_end().ends_with("Second."));
+    }
+
+    #[test]
+    #[cfg(feature = "document-query")]
+    fn a_stray_high_number_does_not_strand_the_section_run() {
+        let mut lines = Vec::new();
+        for section in 1..=12 {
+            lines.push(format!("{section} Provision {section} applies."));
+            if section == 6 {
+                lines.push("900 dollars is the maximum fine.".to_owned());
+            }
+        }
+        let text = lines.join("\n");
+        let (_, blocks) = document_blocks(ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, &text));
+        let labels = blocks
+            .iter()
+            .filter(|block| block.kind == DocumentKind::Section && block.parent_label.is_none())
+            .map(|block| block.label.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, (1..=12).map(|section| format!("sec{section}")).collect::<Vec<_>>());
+    }
+
+    #[test]
+    #[cfg(feature = "document-query")]
+    fn isolated_year_lines_are_not_sections() {
+        let text = "27 Fees.\n28 The following definitions apply in this section.\n2007 Convention\n2007 Convention means the Convention concluded at The Hague.\n28.1 (1) The 2007 Convention has force of law.\n(2) Second.\n29 Next.";
+        let (_, blocks) = document_blocks(ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, text));
+        let labels = blocks
+            .iter()
+            .filter(|block| block.kind == DocumentKind::Section && block.parent_label.is_none())
+            .map(|block| block.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["sec27", "sec28", "sec28.1", "sec29"]);
+    }
+
+    #[test]
+    #[cfg(feature = "document-query")]
     fn map_rendering_and_provider_evidence_match_provider_text() {
         let mut mapped = ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, "");
         mapped.section_map = Some(
