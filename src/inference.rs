@@ -1669,8 +1669,16 @@ fn section_mark(
 fn collect_section_families(text: &ScalarText<'_>, source: &[Line<'_>]) -> [Vec<SectionMark>; 3] {
     let mut result = std::array::from_fn(|_| Vec::new());
     let mut previous_nonblank = None;
+    // (non-blank line ordinal, index into the bare family) of number-only lines.
+    let mut number_only = Vec::<(usize, usize)>::new();
+    let mut ordinal = 0;
     for source_line in source {
         let line = source_line.text.trim_start_matches([' ', '\t']);
+        if !line.trim().is_empty() {
+            ordinal += 1;
+        }
+        let bare_before = result[0].len();
+        let number_line = !line.trim().is_empty() && line.trim().bytes().all(|byte| byte.is_ascii_digit() || byte == b'.');
         let numeric = line.as_bytes().first().is_some_and(u8::is_ascii_digit)
             || line
                 .strip_prefix("**")
@@ -1695,9 +1703,52 @@ fn collect_section_families(text: &ScalarText<'_>, source: &[Line<'_>]) -> [Vec<
                 result[2].push(mark);
             }
         }
+        if number_line && result[0].len() > bare_before {
+            number_only.push((ordinal, bare_before));
+        }
         if !source_line.text.trim().is_empty() {
             previous_nonblank = Some(source_line.text);
         }
+    }
+    // A table-of-contents column prints "1", "2", "3" … on consecutive lines above the titles. Only a
+    // run of three or more number-only lines counting 1, 2, 3 … is taken for one; repealed sections
+    // printed as bare numbers ("5.3", "5.4") and table columns do not start at 1.
+    let mut contents = HashSet::new();
+    let mut run_start = 0;
+    let counts_from_one = |run: &[(usize, usize)]| {
+        run.iter().enumerate().all(|(offset, (_, mark))| result[0][*mark].label == (offset + 1).to_string())
+    };
+    for index in 1..=number_only.len() {
+        if index < number_only.len() && number_only[index].0 == number_only[index - 1].0 + 1 {
+            continue;
+        }
+        let run = &number_only[run_start..index];
+        if run.len() >= 3 && counts_from_one(run) {
+            contents.extend(run.iter().map(|(_, mark)| *mark));
+        }
+        run_start = index;
+    }
+    if !contents.is_empty() {
+        let bare = std::mem::take(&mut result[0]);
+        result[0] = bare
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, mark)| (!contents.contains(&index)).then_some(mark))
+            .collect();
+    }
+    // The regnal-year running head of printed statutes ("68 ELIZ. 2", "12-13 GEO. VI") is page
+    // furniture, not a section.
+    let regnal = cached_regex!(
+        VALUE,
+        r"^\d{1,2}(?:[-–]\d{1,2})?\s+(?:ELIZ|Eliz|GEO|Geo|EDW|Edw|VICT|Vict|WILL|Will)\.?\s+(?:\d{1,2}|[IVX]{1,5})\.?$"
+    );
+    let running = |mark: &SectionMark| {
+        let start = text.byte(mark.start);
+        let end = text.value[start..].find('\n').map_or(text.value.len(), |at| start + at);
+        regnal.is_match(text.value[start..end].trim())
+    };
+    for marks in &mut result {
+        marks.retain(|mark| !running(mark));
     }
     result.map(drop_isolated_year_sections)
 }
@@ -2084,7 +2135,10 @@ fn statute_spine_from_lines(
     if result.is_empty() || result.iter().any(|value| inline_section(text, value)) {
         result
     } else {
-        statute_spine_over(text, allow_hyphen, true, &families, source)
+        // Prefer sections with text on the number's line, but a statute that prints every number
+        // on its own line (as printed BC Acts do) keeps its own-line run.
+        let inline = statute_spine_over(text, allow_hyphen, true, &families, source);
+        if inline.is_empty() { result } else { inline }
     }
 }
 

@@ -592,6 +592,20 @@ mod tests {
 
     #[test]
     #[cfg(feature = "document-query")]
+    fn a_contents_column_of_numbers_is_not_the_section_run() {
+        let text = "EXAMPLE ACT\n1\n2\n3\n4\nContents\nDefinitions\nApplication\nFees\nCommencement\nDefinitions\n1\nIn this Act: a term.\nApplication\n2\n(1) This Act applies.\n(2) Second.\nFees\n3\nA fee is payable.\nCommencement\n4\nThis Act comes into force.";
+        let (_, blocks) = document_blocks(ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, text));
+        let sections = blocks
+            .iter()
+            .filter(|block| block.kind == DocumentKind::Section && block.parent_label.is_none())
+            .map(|block| (block.label.clone(), block.start))
+            .collect::<Vec<_>>();
+        assert_eq!(sections.iter().map(|(label, _)| label.as_str()).collect::<Vec<_>>(), ["sec1", "sec2", "sec3", "sec4"]);
+        assert!(sections[0].1 > text.find("Contents").unwrap(), "the run must start in the body, not the contents column");
+    }
+
+    #[test]
+    #[cfg(feature = "document-query")]
     fn isolated_year_lines_are_not_sections() {
         let text = "27 Fees.\n28 The following definitions apply in this section.\n2007 Convention\n2007 Convention means the Convention concluded at The Hague.\n28.1 (1) The 2007 Convention has force of law.\n(2) Second.\n29 Next.";
         let (_, blocks) = document_blocks(ProviderTextInput::new("fixture", ProviderTextSourceKind::Laws, text));
