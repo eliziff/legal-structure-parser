@@ -226,6 +226,12 @@ static CASE_LEFT: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
+// What can open a numbered paragraph ahead of its first case: the paragraph's
+// own label ("12.", "[12]", "(a)") and a leading "In". Neither is part of a
+// party name, although the party grammar accepts numbers and capitals.
+static CASE_LEAD_IN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:(?:\d{1,4}\.|\[\d{1,4}\]|\((?:\d{1,4}|\p{Ll}{1,4})\))\s+)?(?:In\s+)?").unwrap()
+});
 // The hard delimiters between two authorities in one footnote: a semicolon,
 // or a sentence period that is not an abbreviation or an initial. No styled
 // span reaches back across one, so widening a span can never swallow the
@@ -691,7 +697,16 @@ fn case_style_start(text: &str, core_start: usize, floor: usize) -> usize {
     else {
         return core_start;
     };
-    style_span_start(text, floor + left.start(), core_start).unwrap_or(core_start)
+    let Some(start) = style_span_start(text, floor + left.start(), core_start) else {
+        return core_start;
+    };
+    let lead = CASE_LEAD_IN.find(&text[start..core_start]).map_or(0, |matched| matched.end());
+    // Only a label or "In" that still leaves a party name ahead of the versus token.
+    if lead > 0 && text[start + lead..].starts_with(|character: char| character.is_uppercase()) {
+        start + lead
+    } else {
+        start
+    }
 }
 
 fn pinpoint_hits(text: &str, core_end: usize, limit: usize) -> (Vec<(Hit, &'static str)>, usize) {
@@ -1364,6 +1379,20 @@ mod authorities_style_regressions {
             Some("Quebec (Attorney General) v. Blaikie")
         );
         assert!(occurrence.reasons.contains(&"same_text_style"));
+    }
+
+    #[test]
+    fn numbered_paragraph_labels_and_lead_in_stay_out_of_style() {
+        for (text, style) in [
+            ("1. In R v Oakes, [1986] 1 SCR 103 at 138, the Court set out the test.", "R v Oakes, [1986] 1 SCR 103"),
+            ("3. R v Jordan, 2016 SCC 27 at para 5.", "R v Jordan, 2016 SCC 27"),
+            ("[14] Haaretz.com v Goldhar, 2018 SCC 28 at para 12.", "Haaretz.com v Goldhar, 2018 SCC 28"),
+            ("(b) In Smith v Jones, 2020 ONCA 11, the court agreed.", "Smith v Jones, 2020 ONCA 11"),
+            ("1985 Sawridge Trust v. Alberta, 2017 ABCA 400", "1985 Sawridge Trust v. Alberta, 2017 ABCA 400"),
+        ] {
+            let occurrence = citation_occurrences_in_text(text).remove(0);
+            assert_eq!(occurrence.styled_citation.text, style, "{text}");
+        }
     }
 
     #[test]
