@@ -163,8 +163,7 @@ dependencies = [
 [[package]]
 name = "diff-match-patch-rs"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1e836eb966678daed8789e698dbdb1016a260c3cdaca6172585e13580c4e4be"
+source = "git+https://github.com/eliziff/diff-match-patch-rs.git?rev=30daa5ab7e4fac48fcb520641e537c89e6fdc40c#30daa5ab7e4fac48fcb520641e537c89e6fdc40c"
 dependencies = [
  "chrono",
  "percent-encoding",
@@ -340,7 +339,7 @@ dependencies = [
 [[package]]
 name = "legal-citations"
 version = "0.1.0"
-source = "git+https://github.com/eliziff/common-law-cite.git?rev=3b16afa0d8e6845b161f77324f1af41138dd8c57#3b16afa0d8e6845b161f77324f1af41138dd8c57"
+source = "git+https://github.com/eliziff/common-law-cite.git?rev=19654811bf0426bed4ae90f2f72c66dbac681d85#19654811bf0426bed4ae90f2f72c66dbac681d85"
 dependencies = [
  "aho-corasick",
  "chrono",
@@ -360,7 +359,7 @@ dependencies = [
 [[package]]
 name = "legal-grammar"
 version = "0.1.0"
-source = "git+https://github.com/eliziff/common-law-cite.git?rev=3b16afa0d8e6845b161f77324f1af41138dd8c57#3b16afa0d8e6845b161f77324f1af41138dd8c57"
+source = "git+https://github.com/eliziff/common-law-cite.git?rev=19654811bf0426bed4ae90f2f72c66dbac681d85#19654811bf0426bed4ae90f2f72c66dbac681d85"
 dependencies = [
  "fancy-regex",
  "regex",
