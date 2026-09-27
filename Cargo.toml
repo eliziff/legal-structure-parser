@@ -6,6 +6,7 @@ license = "MIT"
 description = "Fast deterministic legal-document structure detection and queries"
 repository = "https://github.com/eliziff/legal-structure-parser"
 readme = "README.md"
+exclude = ["data/grammar-corpus.json", "data/manifest.json", "grammar/**", "experiments/**"]
 
 [workspace]
 members = ["grammar", "python"]
@@ -14,9 +15,9 @@ resolver = "2"
 
 [features]
 default = []
-structure-inference = ["dep:legal-grammar-tables"]
+structure-inference = ["dep:legal-citations"]
 document-query = []
-citator = ["dep:legal-grammar-tables"]
+citator = ["dep:legal-citations"]
 quote-verification = ["document-query"]
 native-markup = ["structure-inference"]
 provider-text = ["structure-inference"]
@@ -24,8 +25,8 @@ footnote-pairing = []
 journal = []
 
 [dependencies]
+legal-citations = { git = "https://github.com/eliziff/common-law-cite.git", rev = "540f2c792545b4416d2b38370d888bf486f44b9a", optional = true }
 aho-corasick = "1.1"
-legal-grammar-tables = { path = "grammar", optional = true }
 regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }

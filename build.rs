@@ -20,7 +20,7 @@ fn files(path: &Path, out: &mut Vec<PathBuf>) {
 fn main() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let mut paths = Vec::new();
-    for input in ["Cargo.toml", "Cargo.lock", "build.rs", "data", "src", "grammar"] {
+    for input in ["Cargo.toml", "Cargo.lock", "build.rs", "src"] {
         let input = root.join(input);
         println!("cargo:rerun-if-changed={}", input.display());
         files(&input, &mut paths);

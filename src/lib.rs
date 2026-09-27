@@ -80,13 +80,7 @@ pub const ENGINE_SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_ENGINE_SHA256");
 const ENGINE_ORIGIN: &str = "legalpdf.structure-engine";
 
 #[cfg(feature = "structure-inference")]
-fn canadian_report_start(value: &str) -> Option<u32> {
-    static REPORT: OnceLock<Regex> = OnceLock::new();
-    REPORT
-        .get_or_init(|| Regex::new(r"(?iu)\b(?:S\.?C\.?R\.?|R\.?C\.?S\.?)\s+(\d{1,4})\b").unwrap())
-        .captures(value)
-        .and_then(|capture| capture[1].parse().ok())
-}
+use legal_citations::cues::canadian_report_start;
 
 fn whole_document_coverage(
     end: usize,

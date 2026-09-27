@@ -9,7 +9,7 @@ use crate::{
     text::{trim_javascript_start, ScalarText},
     DocumentStructure, EngineError, NodeKind, ScalarRange,
 };
-use legal_grammar_tables::{
+use legal_citations::grammar::{
     compile_ecmascript_pattern, compile_ecmascript_table_entry, expand_pattern, load_tables,
     CompiledEcmascriptGrammar,
 };

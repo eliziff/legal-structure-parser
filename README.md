@@ -33,8 +33,11 @@ No features are enabled by default. Enable the operations your application needs
 | `journal` | Journal support |
 
 [Cargo.toml](Cargo.toml) defines feature dependencies; [src/](src/) owns the public
-API. Shared grammar tables live in [grammar/](grammar/), and the Python binding
-lives in [python/](python/).
+API. Production citation and provision grammars come from
+[common-law-cite](https://github.com/eliziff/common-law-cite); the Python binding
+lives in [python/](python/). The frozen [grammar/](grammar/) crate remains for its
+existing checks and the amendment-consolidation experiment. Its tables are not
+included in the production package.
 
 ## Working with documents
 
