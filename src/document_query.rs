@@ -36,6 +36,22 @@ fn context(value: usize) -> usize {
     value.min(2)
 }
 
+/// Authorities-lite's bounded numbered-item lookup, using the source's line
+/// starts in the same offset unit as the containing paragraph. A repeated item
+/// is unresolved; the next visible marker bounds a unique item's extent.
+pub fn numbered_item_range(parent: ScalarRange, lines: &[(usize, String)], item: &str) -> Option<ScalarRange> {
+    static MARKER: OnceLock<Regex> = OnceLock::new();
+    let marker = js_regex(r"^\s*(?:\(([0-9]+[a-zA-Z]?)\)|([0-9]+[a-zA-Z]?)[.)])\s+", &MARKER);
+    let markers = lines.iter().filter(|(start, _)| *start >= parent.start && *start < parent.end)
+        .filter_map(|(start, text)| marker.captures(text)
+            .map(|captures| (*start, captures.get(1).or_else(|| captures.get(2)).unwrap().as_str())))
+        .collect::<Vec<_>>();
+    let mut matches = markers.iter().enumerate().filter(|(_, (_, label))| *label == item);
+    let (index, (start, _)) = matches.next()?;
+    if matches.next().is_some() { return None; }
+    Some(ScalarRange { start: *start, end: markers.get(index + 1).map_or(parent.end, |(start, _)| *start) })
+}
+
 const READ_OUTPUT_UTF16_BUDGET: usize = 63_000;
 const READ_LINE_UTF16_LIMIT: usize = READ_OUTPUT_UTF16_BUDGET - 1_000;
 

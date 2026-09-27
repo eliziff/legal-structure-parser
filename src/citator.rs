@@ -43,7 +43,10 @@ pub struct CitationPinpoint {
     pub text: String,
     pub start: usize,
     pub end: usize,
-    pub kind: &'static str,
+    pub kind: PinpointKind,
+    pub first: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -81,22 +84,11 @@ fn span(text: &str, coordinates: &ScalarText<'_>, start: usize, end: usize) -> C
         start: coordinates.utf16_at_byte(start).unwrap(), end: coordinates.utf16_at_byte(end).unwrap() }
 }
 
-fn pinpoint_kind(kind: PinpointKind) -> &'static str {
-    match kind {
-        PinpointKind::Paragraph => "paragraph", PinpointKind::Page => "page",
-        PinpointKind::Section => "section", PinpointKind::Subsection => "subsection",
-        PinpointKind::Rule => "rule", PinpointKind::Article => "article",
-        PinpointKind::Schedule => "schedule", PinpointKind::Footnote => "footnote",
-        PinpointKind::Clause => "clause", _ => "other",
-    }
-}
-
 fn pinpoints(text: &str, coordinates: &ScalarText<'_>, citation: &Citation) -> Vec<CitationPinpoint> {
-    citation.pinpoints.iter().flat_map(|pin| {
-        legal_citations::metadata::pinpoint_tokens(pin).map(move |token| {
-            let mapped = span(text, coordinates, token.start, token.end);
-            CitationPinpoint { text: mapped.text, start: mapped.start, end: mapped.end, kind: pinpoint_kind(pin.kind) }
-        })
+    citation.pinpoints.iter().map(|pin| {
+        let mapped = span(text, coordinates, pin.span.start, pin.span.end);
+        CitationPinpoint { text: mapped.text, start: mapped.start, end: mapped.end,
+            kind: pin.kind, first: pin.first.clone(), last: pin.last.clone() }
     }).collect()
 }
 
