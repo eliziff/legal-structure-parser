@@ -31,6 +31,7 @@ mod locator;
 #[cfg(feature = "native-markup")]
 mod native_markup;
 mod numeric_sequence;
+mod reading_order;
 #[cfg(feature = "provider-text")]
 mod provider_text;
 #[cfg(feature = "quote-verification")]
@@ -61,6 +62,7 @@ pub use locator::{normalize_compact_numbered_section_locator, normalize_section_
 #[cfg(feature = "native-markup")]
 pub use native_markup::{analyze_native_markup, NativeMarkupInput};
 pub use numeric_sequence::*;
+pub use reading_order::{document_reading_order, ReadingOrderUnit};
 #[cfg(feature = "provider-text")]
 pub use provider_text::{
     provider_text_document_structure, ProviderSectionMap, ProviderTextInput, ProviderTextSourceKind,
