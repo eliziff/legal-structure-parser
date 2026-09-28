@@ -1,33 +1,11 @@
 //! Output-shape adapters over the shared citation engine. No parsing lives here.
 use crate::ScalarText;
-use legal_citations::{Authority, Citation, Form, Format, PinpointKind, Options};
+use legal_citations::{Authority, Citation, Form, PinpointKind, Options};
 use serde::Serialize;
 pub use legal_citations::excerpt::{classify_citator_excerpt, ExcerptClassification};
 pub use legal_citations as citations;
 
-#[derive(Serialize)]
-pub struct ProviderCitationMatch {
-    pub text: String,
-    pub start: usize,
-    pub end: usize,
-    pub family: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub jurisdiction: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub year: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub court: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub number: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub volume: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reporter: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
-}
+pub use legal_citations::find::ProviderCitationMatch;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,10 +21,7 @@ pub struct CitationPinpoint {
     pub text: String,
     pub start: usize,
     pub end: usize,
-    pub kind: PinpointKind,
-    pub first: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last: Option<String>,
+    pub kind: &'static str,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -85,33 +60,54 @@ fn span(text: &str, coordinates: &ScalarText<'_>, start: usize, end: usize) -> C
 }
 
 fn pinpoints(text: &str, coordinates: &ScalarText<'_>, citation: &Citation) -> Vec<CitationPinpoint> {
-    citation.pinpoints.iter().map(|pin| {
-        let mapped = span(text, coordinates, pin.span.start, pin.span.end);
-        CitationPinpoint { text: mapped.text, start: mapped.start, end: mapped.end,
-            kind: pin.kind, first: pin.first.clone(), last: pin.last.clone() }
+    citation.fields.pin_cite.iter().zip(citation.fields.pin_cite_kind).flat_map(|(source, kind)| {
+        let kind = match kind {
+            PinpointKind::Paragraph => "paragraph", PinpointKind::Page => "page",
+            PinpointKind::Section | PinpointKind::Rule | PinpointKind::Article => "section",
+            PinpointKind::Subsection => "subsection",
+            PinpointKind::Schedule => "schedule", PinpointKind::Footnote => "footnote",
+            PinpointKind::Clause => "clause", _ => "other",
+        };
+        legal_citations::metadata::pinpoint_tokens(source).map(move |token| {
+            let mapped = span(text, coordinates, token.start, token.end);
+            CitationPinpoint { text: mapped.text, start: mapped.start, end: mapped.end, kind }
+        })
     }).collect()
 }
 
 fn occurrences(text: &str) -> Vec<Citation> {
-    legal_citations::extract(text, &Options { resolve: false, parallel: false, ..Default::default() })
+    legal_citations::find::find_occurrences(text, &Options { resolve: false, parallel: false, ..Default::default() })
 }
 
 pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
     let coordinates = ScalarText::new(text);
-    occurrences(text).into_iter().filter(|cite| cite.form == Form::Full).map(|cite| {
+    occurrences(text).into_iter().filter(|cite| matches!(cite.form, Form::Full | Form::Short)).map(|cite| {
         let start = cite.style.as_ref().map_or(cite.span.start, |style| style.start);
-        let full = span(text, &coordinates, start, cite.full_span.end);
-        let kind = match cite.authority {
-            Authority::Case => "case", Authority::Journal => "journal",
-            Authority::Book | Authority::BookChapter => "book",
-            Authority::ParliamentaryPaper | Authority::Debate => "parliamentary",
-            authority if authority.is_legislation() => "statute", _ => "other",
+        let end = cite.fields.explicit_short_span.as_ref().or(cite.fields.pin_cite.as_ref())
+            .map_or(cite.span.end, |suffix| suffix.end.max(cite.span.end));
+        let full = span(text, &coordinates, start, end);
+        let kind = match cite.reasons.first().map(String::as_str) {
+            Some("journal_grammar" | "article_grammar") => "journal",
+            Some("book_grammar") => "book",
+            Some("parliamentary_grammar") => "parliamentary",
+            Some("ca_statute_grammar" | "titled_statute_grammar" | "statute_grammar" | "provider_statute_routing") => "statute",
+            Some("provider_routing" | "reporter_grammar") => "case",
+            Some("citation_grammar") => if cite.reasons.iter().any(|reason| reason == "kind_unclassified") { "other" } else { "case" },
+            Some("online_grammar") => "other",
+            _ => match cite.authority {
+                Authority::Case => "case", Authority::Journal => "journal",
+                Authority::Book | Authority::BookChapter => "book",
+                Authority::Bill | Authority::ParliamentaryPaper | Authority::Debate => "parliamentary",
+                authority if authority.is_legislation() => "statute", _ => "other",
+            },
         };
         // Keep this adapter's original reason vocabulary and borrowed-string
         // contract. The full engine record exposes its additional diagnostics.
-        let reasons = cite.reasons.iter().filter_map(|reason| {
+        let reasons = cite.reasons.iter().enumerate().filter_map(|(index, reason)| {
+            if index > 0 && !matches!(reason.as_str(), "same_text_style" | "pinpoint_grammar" | "short_form_suffix" | "kind_unclassified") { return None; }
+            if reason == "pinpoint_grammar" && cite.fields.pin_cite_kind.is_none() { return None; }
             let reason = match reason.as_str() {
-                "neutral_grammar" | "canlii_grammar" | "database_grammar" => "provider_routing",
+                "neutral_grammar" | "canlii_grammar" | "database_grammar" | "provider_statute_routing" => "provider_routing",
                 "code_grammar" | "regulation_grammar" => "statute_grammar",
                 reason => reason,
             };
@@ -131,30 +127,28 @@ pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
 
 pub fn authority_references_in_text(text: &str) -> Vec<AuthorityReferenceOccurrence> {
     let coordinates = ScalarText::new(text);
-    occurrences(text).into_iter().filter(|cite| matches!(cite.form, Form::Short | Form::Ibid | Form::Supra)).map(|cite| {
-        let full = span(text, &coordinates, cite.full_span.start, cite.full_span.end);
-        AuthorityReferenceOccurrence { text: full.text, start: full.start, end: full.end,
-            token: span(text, &coordinates, cite.span.start, cite.span.end),
+    legal_citations::find::find_references(text).into_iter().filter_map(|cite| {
+        let reference = cite.fields.inline_reference.as_ref()?;
+        // Original LSP references start at the marker and end at its pinpoint;
+        // the shared citation keeps the name and parentheticals separately.
+        let end = cite.fields.pin_cite.as_ref().map_or(reference.span.end, |pin| pin.end.max(reference.span.end));
+        let full = span(text, &coordinates, reference.span.start, end);
+        Some(AuthorityReferenceOccurrence { text: full.text, start: full.start, end: full.end,
+            token: span(text, &coordinates, reference.span.start, reference.span.end),
             pinpoints: pinpoints(text, &coordinates, &cite), kind: match cite.form {
-                Form::Short => "short", Form::Ibid => "ibid", Form::Supra => "supra",
+                Form::Ibid => "ibid", Form::Supra => "supra",
                 _ => unreachable!(),
             },
-            note_number: cite.fields.note.map(|number| number as usize) }
+            note_number: reference.note })
     }).collect()
 }
 
-pub fn provider_citations_in_text(text: &str) -> Vec<ProviderCitationMatch> {
+pub fn provider_citations_in_text(text: &str) -> Vec<ProviderCitationMatch<'_>> {
     let coordinates = ScalarText::new(text);
-    occurrences(text).into_iter().filter(|cite| cite.form == Form::Full).filter_map(|cite| {
-        let family = match cite.format? {
-            Format::Neutral => "neutral", Format::Reporter => "reporter", Format::CanLii => "canlii", Format::Database => "database",
-            Format::StatuteVolume | Format::RegulationSeries | Format::Code => "statute", _ => return None,
-        };
-        let core = span(text, &coordinates, cite.span.start, cite.span.end);
-        Some(ProviderCitationMatch { text: core.text, start: core.start, end: core.end, family, key: cite.key,
-            jurisdiction: cite.jurisdiction, year: cite.fields.year,
-            court: cite.court.map(|court| court.text), number: cite.fields.number,
-            volume: cite.fields.volume, reporter: cite.fields.reporter, page: cite.fields.page })
+    legal_citations::find::provider_citations(text).into_iter().map(|mut hit| {
+        hit.start = coordinates.utf16_at_byte(hit.start).unwrap();
+        hit.end = coordinates.utf16_at_byte(hit.end).unwrap();
+        hit
     }).collect()
 }
 
