@@ -131,11 +131,14 @@ pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
 
 pub fn authority_references_in_text(text: &str) -> Vec<AuthorityReferenceOccurrence> {
     let coordinates = ScalarText::new(text);
-    occurrences(text).into_iter().filter(|cite| matches!(cite.form, Form::Ibid | Form::Supra)).map(|cite| {
-        let full = span(text, &coordinates, cite.span.start, cite.full_span.end);
+    occurrences(text).into_iter().filter(|cite| matches!(cite.form, Form::Short | Form::Ibid | Form::Supra)).map(|cite| {
+        let full = span(text, &coordinates, cite.full_span.start, cite.full_span.end);
         AuthorityReferenceOccurrence { text: full.text, start: full.start, end: full.end,
             token: span(text, &coordinates, cite.span.start, cite.span.end),
-            pinpoints: pinpoints(text, &coordinates, &cite), kind: if cite.form == Form::Ibid { "ibid" } else { "supra" },
+            pinpoints: pinpoints(text, &coordinates, &cite), kind: match cite.form {
+                Form::Short => "short", Form::Ibid => "ibid", Form::Supra => "supra",
+                _ => unreachable!(),
+            },
             note_number: cite.fields.note.map(|number| number as usize) }
     }).collect()
 }
