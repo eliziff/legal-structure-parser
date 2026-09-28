@@ -1597,6 +1597,7 @@ fn section_mark(
     line: &Line<'_>,
     family: SectionFamily,
     previous_nonblank: Option<&str>,
+    provider_refinements: bool,
 ) -> Option<SectionMark> {
     let lead = leading_ascii_space(line.text);
     let mut value = &line.text[lead..];
@@ -1652,7 +1653,7 @@ fn section_mark(
         || family == SectionFamily::Bare
             && content.is_empty()
             && previous_nonblank.is_some_and(markdown_range_continuation)
-        || enactment_history_note(label, &value[length..])
+        || provider_refinements && enactment_history_note(label, &value[length..])
     {
         return None;
     }
@@ -1666,7 +1667,11 @@ fn section_mark(
     })
 }
 
-fn collect_section_families(text: &ScalarText<'_>, source: &[Line<'_>]) -> [Vec<SectionMark>; 3] {
+fn collect_section_families(
+    text: &ScalarText<'_>,
+    source: &[Line<'_>],
+    provider_refinements: bool,
+) -> [Vec<SectionMark>; 3] {
     let mut result = std::array::from_fn(|_| Vec::new());
     let mut previous_nonblank = None;
     // (non-blank line ordinal, index into the bare family) of number-only lines.
@@ -1689,7 +1694,9 @@ fn collect_section_families(text: &ScalarText<'_>, source: &[Line<'_>]) -> [Vec<
                 .into_iter()
                 .zip(&mut result[..2])
             {
-                if let Some(mark) = section_mark(text, source_line, family, previous_nonblank) {
+                if let Some(mark) = section_mark(
+                    text, source_line, family, previous_nonblank, provider_refinements,
+                ) {
                     marks.push(mark);
                 }
             }
@@ -1699,6 +1706,7 @@ fn collect_section_families(text: &ScalarText<'_>, source: &[Line<'_>]) -> [Vec<
                 source_line,
                 SectionFamily::Markdown,
                 previous_nonblank,
+                provider_refinements,
             ) {
                 result[2].push(mark);
             }
@@ -1709,6 +1717,11 @@ fn collect_section_families(text: &ScalarText<'_>, source: &[Line<'_>]) -> [Vec<
         if !source_line.text.trim().is_empty() {
             previous_nonblank = Some(source_line.text);
         }
+    }
+    // PDF candidate runs retain their original broad observations. Provider
+    // text can reject contents columns, regnal heads and isolated years here.
+    if !provider_refinements {
+        return result;
     }
     // A table-of-contents column prints "1", "2", "3" … on consecutive lines above the titles. Only a
     // run of three or more number-only lines counting 1, 2, 3 … is taken for one; repealed sections
@@ -2129,8 +2142,9 @@ fn statute_spine_from_lines(
     text: &ScalarText<'_>,
     allow_hyphen: bool,
     source: &[Line<'_>],
+    provider_refinements: bool,
 ) -> Vec<SectionMark> {
-    let families = collect_section_families(text, source);
+    let families = collect_section_families(text, source, provider_refinements);
     let result = statute_spine_over(text, allow_hyphen, false, &families, source);
     if result.is_empty() || result.iter().any(|value| inline_section(text, value)) {
         result
@@ -2138,13 +2152,13 @@ fn statute_spine_from_lines(
         // Prefer sections with text on the number's line, but a statute that prints every number
         // on its own line (as printed BC Acts do) keeps its own-line run.
         let inline = statute_spine_over(text, allow_hyphen, true, &families, source);
-        if inline.is_empty() { result } else { inline }
+        if provider_refinements && inline.is_empty() { result } else { inline }
     }
 }
 
 #[cfg(test)]
 pub(super) fn statute_spine(text: &ScalarText<'_>, allow_hyphen: bool) -> Vec<SectionMark> {
-    statute_spine_from_lines(text, allow_hyphen, &lines(text).collect::<Vec<_>>())
+    statute_spine_from_lines(text, allow_hyphen, &lines(text).collect::<Vec<_>>(), true)
 }
 
 pub(crate) fn dotted_order<'a>(labels: impl Iterator<Item = &'a str>) -> Option<bool> {
@@ -2278,7 +2292,7 @@ fn coherent_sections(marks: &[SectionMark]) -> bool {
 fn selected_sections(text: &ScalarText<'_>, allow_hyphen: bool) -> Vec<SectionMark> {
     let source = lines(text).collect::<Vec<_>>();
     let emphasis = emphasis_sections(text, &source);
-    let flat = statute_spine_from_lines(text, allow_hyphen, &source);
+    let flat = statute_spine_from_lines(text, allow_hyphen, &source, true);
     let mut selected = if emphasis.is_empty() {
         flat
     } else if flat.is_empty() {
@@ -3049,9 +3063,12 @@ fn instrument_top(value: &str, direct: bool) -> Option<(String, usize, bool)> {
         .map(|(label, at)| (format!("sec{label}"), at, false))
 }
 
-pub(super) fn detect_instrument_grammar(text: &ScalarText<'_>) -> Vec<GrammarPoint> {
+pub(super) fn detect_instrument_grammar(
+    text: &ScalarText<'_>,
+    provider_refinements: bool,
+) -> Vec<GrammarPoint> {
     let mut lines = lines(text).collect::<Vec<_>>();
-    let mut spine = statute_spine_from_lines(text, false, &lines)
+    let mut spine = statute_spine_from_lines(text, false, &lines, provider_refinements)
         .into_iter()
         .peekable();
     let direct = spine.peek().is_none();
@@ -3137,7 +3154,7 @@ pub(super) fn detect_instrument_grammar(text: &ScalarText<'_>) -> Vec<GrammarPoi
 }
 
 pub(crate) fn detect_instrument(text: &ScalarText<'_>) -> Vec<Block> {
-    detect_instrument_grammar(text)
+    detect_instrument_grammar(text, true)
         .into_iter()
         .map(GrammarPoint::into_section)
         .collect()

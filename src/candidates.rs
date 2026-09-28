@@ -7,7 +7,7 @@ pub fn detect_structure_candidate_runs(value: &str) -> Vec<StructureCandidateRun
     let text = ScalarText::new(value);
     let mut runs = inference::raw_numeric_runs(&text);
     let mut raw_enumerators = inference::raw_enumerator_runs(&text);
-    let points = inference::detect_instrument_grammar(&text);
+    let points = inference::detect_instrument_grammar(&text, false);
     let parent_indexes = points
         .iter()
         .enumerate()
