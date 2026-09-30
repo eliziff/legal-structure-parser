@@ -25,7 +25,7 @@ footnote-pairing = []
 journal = []
 
 [dependencies]
-legal-citations = { git = "https://github.com/eliziff/common-law-cite.git", rev = "b9fa39bfc86d2c0fe190a98da8663d09bfb15050", optional = true }
+legal-citations = { git = "https://github.com/eliziff/common-law-cite.git", rev = "4f94ce800d2abf67105043bf873ab6dafb38721f", optional = true }
 aho-corasick = "1.1"
 regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
