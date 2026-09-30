@@ -1,6 +1,6 @@
 //! Output-shape adapters over the shared citation engine. No parsing lives here.
 use crate::ScalarText;
-use legal_citations::{Authority, Citation, Form, Format, PinpointKind, Options};
+use legal_citations::{Authority, Citation, Form, Format, ParentheticalKind, PinpointKind, Options};
 use serde::Serialize;
 pub use legal_citations::excerpt::{classify_citator_excerpt, ExcerptClassification};
 pub use legal_citations as citations;
@@ -175,9 +175,12 @@ pub fn provider_citations_in_text(text: &str) -> Vec<ProviderCitationMatch> {
             Some(Format::CanLii) => "canlii", Some(Format::Database) => "database",
             _ if cite.authority.is_legislation() => "statute", _ => return None,
         };
-        Some(ProviderCitationMatch { text: cite.span.text,
+        let end = cite.parentheticals.iter().filter(|item| item.kind == ParentheticalKind::Court
+            && item.span.start >= cite.span.end && text[cite.span.end..item.span.start].trim().is_empty())
+            .map(|item| item.span.end).max().unwrap_or(cite.span.end);
+        Some(ProviderCitationMatch { text: text[cite.span.start..end].to_owned(),
             start: coordinates.utf16_at_byte(cite.span.start).unwrap(),
-            end: coordinates.utf16_at_byte(cite.span.end).unwrap(), family,
+            end: coordinates.utf16_at_byte(end).unwrap(), family,
             jurisdiction: cite.jurisdiction, year: cite.fields.year,
             court: cite.court.map(|court| court.text).or(cite.fields.series),
             number: cite.fields.number, volume: cite.fields.volume,
@@ -210,6 +213,9 @@ mod tests {
             [Some("103"), Some("113")]);
         assert_eq!(providers[0].start, 3);
         assert_eq!(providers[0].volume.as_deref(), Some("1"));
+        let tribunal = super::provider_citations_in_text("[2024] UKFTT 943 (GRC)");
+        assert_eq!(tribunal[0].text, "[2024] UKFTT 943 (GRC)");
+        assert_eq!(tribunal[0].end, 22);
         let occurrences = citation_occurrences_in_text("R v Jordan, 2016 SCC 27 at paras 73–75");
         assert_eq!(occurrences[0].pinpoints.len(), 1);
         assert_eq!(occurrences[0].pinpoints[0].first, "73");
