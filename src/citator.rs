@@ -1,11 +1,31 @@
 //! Output-shape adapters over the shared citation engine. No parsing lives here.
 use crate::ScalarText;
-use legal_citations::{Authority, Citation, Form, PinpointKind, Options};
+use legal_citations::{Authority, Citation, Form, Format, PinpointKind, Options};
 use serde::Serialize;
 pub use legal_citations::excerpt::{classify_citator_excerpt, ExcerptClassification};
 pub use legal_citations as citations;
 
-pub use legal_citations::find::ProviderCitationMatch;
+#[derive(Serialize)]
+pub struct ProviderCitationMatch {
+    pub text: String,
+    pub start: usize,
+    pub end: usize,
+    pub family: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jurisdiction: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub court: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reporter: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -22,6 +42,9 @@ pub struct CitationPinpoint {
     pub start: usize,
     pub end: usize,
     pub kind: &'static str,
+    pub first: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -60,23 +83,22 @@ fn span(text: &str, coordinates: &ScalarText<'_>, start: usize, end: usize) -> C
 }
 
 fn pinpoints(text: &str, coordinates: &ScalarText<'_>, citation: &Citation) -> Vec<CitationPinpoint> {
-    citation.fields.pin_cite.iter().zip(citation.fields.pin_cite_kind).flat_map(|(source, kind)| {
-        let kind = match kind {
+    citation.pinpoints.iter().map(|pinpoint| {
+        let kind = match pinpoint.kind {
             PinpointKind::Paragraph => "paragraph", PinpointKind::Page => "page",
             PinpointKind::Section | PinpointKind::Rule | PinpointKind::Article => "section",
             PinpointKind::Subsection => "subsection",
             PinpointKind::Schedule => "schedule", PinpointKind::Footnote => "footnote",
             PinpointKind::Clause => "clause", _ => "other",
         };
-        legal_citations::metadata::pinpoint_tokens(source).map(move |token| {
-            let mapped = span(text, coordinates, token.start, token.end);
-            CitationPinpoint { text: mapped.text, start: mapped.start, end: mapped.end, kind }
-        })
+        let mapped = span(text, coordinates, pinpoint.span.start, pinpoint.span.end);
+        CitationPinpoint { text: mapped.text, start: mapped.start, end: mapped.end, kind,
+            first: pinpoint.first.clone(), last: pinpoint.last.clone() }
     }).collect()
 }
 
 fn occurrences(text: &str) -> Vec<Citation> {
-    legal_citations::find::find_occurrences(text, &Options { resolve: false, parallel: false, ..Default::default() })
+    legal_citations::extract(text, &Options { resolve: false, parallel: false, ..Default::default() })
 }
 
 pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
@@ -143,12 +165,23 @@ pub fn authority_references_in_text(text: &str) -> Vec<AuthorityReferenceOccurre
     }).collect()
 }
 
-pub fn provider_citations_in_text(text: &str) -> Vec<ProviderCitationMatch<'_>> {
+pub fn provider_citations_in_text(text: &str) -> Vec<ProviderCitationMatch> {
     let coordinates = ScalarText::new(text);
-    legal_citations::find::provider_citations(text).into_iter().map(|mut hit| {
-        hit.start = coordinates.utf16_at_byte(hit.start).unwrap();
-        hit.end = coordinates.utf16_at_byte(hit.end).unwrap();
-        hit
+    legal_citations::extract(text, &Options { resolve: false, parallel: false, ..Default::default() })
+        .into_iter().filter_map(|cite| {
+        if cite.form != Form::Full { return None; }
+        let family = match cite.format {
+            Some(Format::Neutral) => "neutral", Some(Format::Reporter) => "reporter",
+            Some(Format::CanLii) => "canlii", Some(Format::Database) => "database",
+            _ if cite.authority.is_legislation() => "statute", _ => return None,
+        };
+        Some(ProviderCitationMatch { text: cite.span.text,
+            start: coordinates.utf16_at_byte(cite.span.start).unwrap(),
+            end: coordinates.utf16_at_byte(cite.span.end).unwrap(), family,
+            jurisdiction: cite.jurisdiction, year: cite.fields.year,
+            court: cite.court.map(|court| court.text).or(cite.fields.series),
+            number: cite.fields.number, volume: cite.fields.volume,
+            reporter: cite.fields.reporter, page: cite.fields.page })
     }).collect()
 }
 
@@ -169,6 +202,19 @@ pub fn has_citation_in_text(text: &str) -> Result<bool, String> { Ok(legal_citat
 #[cfg(test)]
 mod tests {
     use super::{authority_references_in_text, citation_occurrences_in_text, has_citation_in_text};
+
+    #[test]
+    fn host_metadata_preserves_reporter_pages_and_pinpoint_ranges() {
+        let providers = super::provider_citations_in_text("😀 [1986] 1 SCR 103; 410 U.S. 113");
+        assert_eq!(providers.iter().map(|hit| hit.page.as_deref()).collect::<Vec<_>>(),
+            [Some("103"), Some("113")]);
+        assert_eq!(providers[0].start, 3);
+        assert_eq!(providers[0].volume.as_deref(), Some("1"));
+        let occurrences = citation_occurrences_in_text("R v Jordan, 2016 SCC 27 at paras 73–75");
+        assert_eq!(occurrences[0].pinpoints.len(), 1);
+        assert_eq!(occurrences[0].pinpoints[0].first, "73");
+        assert_eq!(occurrences[0].pinpoints[0].last.as_deref(), Some("75"));
+    }
 
     #[test]
     fn citation_presence_accepts_plain_text_and_unicode_case_names() {
@@ -266,8 +312,10 @@ mod tests {
                 .iter()
                 .map(|pinpoint| pinpoint.text.as_str())
                 .collect::<Vec<_>>(),
-            ["10", "11"]
+            ["10-11"]
         );
+        assert_eq!(references[1].pinpoints[0].first, "10");
+        assert_eq!(references[1].pinpoints[0].last.as_deref(), Some("11"));
     }
 }
 
