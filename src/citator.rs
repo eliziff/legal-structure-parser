@@ -289,7 +289,7 @@ mod tests {
         );
         assert_eq!(
             occurrences[0].text,
-            "Hansman v Neufeld, 2023 SCC 14 [Hansman]."
+            "Hansman v Neufeld, 2023 SCC 14 [Hansman]"
         );
         assert_eq!(occurrences[1].core_citation.text, "2023 SCC 14");
         assert_eq!(occurrences[1].pinpoints[0].text, "9");
