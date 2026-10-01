@@ -56,6 +56,9 @@ pub struct CitationOccurrence {
     pub styled_citation: CitationTextSpan,
     pub core_citation: CitationTextSpan,
     pub pinpoints: Vec<CitationPinpoint>,
+    /// The pinpoints as written, with the words that introduce them: "at para 105".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinpoint_phrase: Option<CitationTextSpan>,
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub short_form: Option<String>,
@@ -72,6 +75,8 @@ pub struct AuthorityReferenceOccurrence {
     pub end: usize,
     pub token: CitationTextSpan,
     pub pinpoints: Vec<CitationPinpoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinpoint_phrase: Option<CitationTextSpan>,
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note_number: Option<usize>,
@@ -95,6 +100,11 @@ fn pinpoints(text: &str, coordinates: &ScalarText<'_>, citation: &Citation) -> V
         CitationPinpoint { text: mapped.text, start: mapped.start, end: mapped.end, kind,
             first: pinpoint.first.clone(), last: pinpoint.last.clone() }
     }).collect()
+}
+
+/// The engine's pinpoint phrase: the pinpoints as written, with the words that introduce them.
+fn pinpoint_phrase(text: &str, coordinates: &ScalarText<'_>, citation: &Citation) -> Option<CitationTextSpan> {
+    citation.fields.pin_cite.as_ref().map(|phrase| span(text, coordinates, phrase.start, phrase.end))
 }
 
 fn occurrences(text: &str) -> Vec<Citation> {
@@ -142,7 +152,8 @@ pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
         CitationOccurrence { text: full.text, start: full.start, end: full.end,
             styled_citation: span(text, &coordinates, start, cite.span.end),
             core_citation: span(text, &coordinates, cite.span.start, cite.span.end),
-            pinpoints: pinpoints(text, &coordinates, &cite), kind,
+            pinpoints: pinpoints(text, &coordinates, &cite),
+            pinpoint_phrase: pinpoint_phrase(text, &coordinates, &cite), kind,
             short_form: cite.short_name, explicit_short_form: cite.explicit_short_name, reasons }
     }).collect()
 }
@@ -157,7 +168,8 @@ pub fn authority_references_in_text(text: &str) -> Vec<AuthorityReferenceOccurre
         let full = span(text, &coordinates, reference.span.start, end);
         Some(AuthorityReferenceOccurrence { text: full.text, start: full.start, end: full.end,
             token: span(text, &coordinates, reference.span.start, reference.span.end),
-            pinpoints: pinpoints(text, &coordinates, &cite), kind: match cite.form {
+            pinpoints: pinpoints(text, &coordinates, &cite),
+            pinpoint_phrase: pinpoint_phrase(text, &coordinates, &cite), kind: match cite.form {
                 Form::Ibid => "ibid", Form::Supra => "supra",
                 _ => unreachable!(),
             },
@@ -322,6 +334,21 @@ mod tests {
         );
         assert_eq!(references[1].pinpoints[0].first, "10");
         assert_eq!(references[1].pinpoints[0].last.as_deref(), Some("11"));
+    }
+
+    #[test]
+    fn pinpoint_phrases_keep_their_locator_words() {
+        let phrase = |text: &str| citation_occurrences_in_text(text).pop()
+            .and_then(|item| item.pinpoint_phrase).map(|span| span.text);
+        assert_eq!(phrase("R v Jordan, 2016 SCC 27 at para 105.").as_deref(), Some("at para 105"));
+        assert_eq!(phrase("R v Jordan, 2016 SCC 27 at paras 16–23.").as_deref(), Some("at paras 16–23"));
+        assert_eq!(phrase("R v Morgentaler, [1988] 1 SCR 30 at 103.").as_deref(), Some("at 103"));
+        assert_eq!(phrase("R v Oakes, [1986] 1 SCR 103 at 388–89, 404–06.").as_deref(), Some("at 388–89, 404–06"));
+        assert_eq!(phrase("Criminal Code, RSC 1985, c C-46, s 33.1(2).").as_deref(), Some("s 33.1(2)"));
+        assert_eq!(phrase("R v Jordan, 2016 SCC 27."), None);
+        let references = authority_references_in_text("Ibid at para 7; Smith, supra note 4 at pp 10-11.");
+        assert_eq!(references.iter().map(|item| item.pinpoint_phrase.as_ref().map(|span| span.text.as_str()))
+            .collect::<Vec<_>>(), [Some("at para 7"), Some("at pp 10-11")]);
     }
 }
 
