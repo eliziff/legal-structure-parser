@@ -1512,13 +1512,15 @@ fn numeric_label(value: &str, markdown: bool) -> Option<(&str, usize)> {
         return None;
     }
     for _ in 0..3 {
-        if !bytes
-            .get(end)
-            .is_some_and(|byte| matches!(byte, b'.' | b'-'))
-        {
+        // Saskatchewan prints its part-numbered sections with a non-breaking hyphen ("1‑3").
+        let Some(separator) = value[end..]
+            .chars()
+            .next()
+            .filter(|value| matches!(value, '.' | '-' | '\u{2010}' | '\u{2011}'))
+        else {
             break;
-        }
-        let digits = bytes[end + 1..]
+        };
+        let digits = bytes[end + separator.len_utf8()..]
             .iter()
             .take(8)
             .take_while(|byte| byte.is_ascii_digit())
@@ -1526,7 +1528,7 @@ fn numeric_label(value: &str, markdown: bool) -> Option<(&str, usize)> {
         if digits == 0 {
             break;
         }
-        end += digits + 1;
+        end += digits + separator.len_utf8();
     }
     end += bytes[end..]
         .iter()
@@ -1534,7 +1536,7 @@ fn numeric_label(value: &str, markdown: bool) -> Option<(&str, usize)> {
         .take_while(|byte| byte.is_ascii_uppercase())
         .count();
     let label = &value[..end];
-    (!markdown || label.contains(['.', '-'])).then_some((label, end))
+    (!markdown || label.contains(['.', '-', '\u{2010}', '\u{2011}'])).then_some((label, end))
 }
 
 pub(crate) fn provision_label(value: &str) -> Option<(&str, usize)> {
@@ -1633,7 +1635,11 @@ fn section_mark(
         trailing = true;
     }
     let rest = &value[after..];
-    let spaces = leading_ascii_space(rest);
+    // A printed statute may set its number apart with a wide space (an em space).
+    let spaces = rest.len()
+        - rest
+            .trim_start_matches(|c: char| c.is_whitespace() && !matches!(c, '\n' | '\r'))
+            .len();
     let content = &rest[spaces..];
     let accepted = match family {
         SectionFamily::Bare => {
@@ -1657,11 +1663,12 @@ fn section_mark(
     {
         return None;
     }
+    let label = label.replace(['\u{2010}', '\u{2011}'], "-");
     Some(SectionMark {
-        label: label.to_owned(),
+        style: section_style(&label, trailing),
+        label,
         start: text.scalar(line.byte_start + lead),
         content_start: text.scalar(line.byte_end - content.len()),
-        style: section_style(label, trailing),
         family,
         aliases: Vec::new(),
     })
@@ -1941,8 +1948,25 @@ fn scope_winner<'a>(
             best = Some(scope);
             continue;
         };
+        // The same provisions numbered twice, once as a contents list (each number with its
+        // title alone, no sentence ended before the next) and once with their text: the second
+        // is the body.
+        let listed = |scope: &[&SectionMark]| {
+            scope.windows(2).all(|pair| {
+                let (from, to) = (text.byte(pair[0].content_start), text.byte(pair[1].start));
+                from <= to
+                    && !text.value[from..to]
+                        .lines()
+                        .any(|line| line.trim_end().ends_with(['.', ';', ':']))
+            })
+        };
         let better = scope.len() > current.len()
-            || scope.len() == current.len() && scope[0].start < current[0].start;
+            || scope.len() == current.len()
+                && if same_labels(&scope, current) && listed(current) != listed(&scope) {
+                    listed(current)
+                } else {
+                    scope[0].start < current[0].start
+                };
         let competing = scope.len() == current.len()
             && scope[0].start == current[0].start
             && !same_labels(&scope, current);
@@ -2145,14 +2169,25 @@ fn statute_spine_from_lines(
     provider_refinements: bool,
 ) -> Vec<SectionMark> {
     let families = collect_section_families(text, source, provider_refinements);
-    let result = statute_spine_over(text, allow_hyphen, false, &families, source);
-    if result.is_empty() || result.iter().any(|value| inline_section(text, value)) {
-        result
-    } else {
-        // Prefer sections with text on the number's line, but a statute that prints every number
-        // on its own line (as printed BC Acts do) keeps its own-line run.
-        let inline = statute_spine_over(text, allow_hyphen, true, &families, source);
-        if provider_refinements && inline.is_empty() { result } else { inline }
+    let spine = |allow_hyphen| {
+        let result = statute_spine_over(text, allow_hyphen, false, &families, source);
+        if result.is_empty() || result.iter().any(|value| inline_section(text, value)) {
+            result
+        } else {
+            // Prefer sections with text on the number's line, but a statute that prints every
+            // number on its own line (as printed BC Acts do) keeps its own-line run.
+            let inline = statute_spine_over(text, allow_hyphen, true, &families, source);
+            if provider_refinements && inline.is_empty() {
+                result
+            } else {
+                inline
+            }
+        }
+    };
+    match spine(allow_hyphen) {
+        // A statute numbering every section within its part ("1-1", "2-3") has no other spine.
+        result if result.is_empty() && !allow_hyphen => spine(true),
+        result => result,
     }
 }
 
@@ -2893,6 +2928,21 @@ impl StructureState {
     }
 }
 
+/// What follows a section's number repeated on a subsection: "(2) The ..." or "(2) [Repealed]
+/// ...", not a reference wrapped onto the line ("(1)(c) of the Act").
+fn repeated_subsection(rest: &str) -> bool {
+    rest.strip_prefix('(')
+        .and_then(|value| value.split_once(')'))
+        .is_some_and(|(token, text)| {
+            (1..=6).contains(&token.len())
+                && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '.')
+                && text.starts_with([' ', '\t'])
+                && text
+                    .trim_start()
+                    .starts_with(|c: char| c.is_uppercase() || "[\u{201c}\"\u{ab}".contains(c))
+        })
+}
+
 fn enumerated_children(
     text: &ScalarText<'_>,
     range: std::ops::Range<usize>,
@@ -2942,6 +2992,12 @@ fn enumerated_children(
         let line = raw.strip_suffix('\n').unwrap_or(raw);
         let line = line.strip_suffix('\r').unwrap_or(line);
         let trimmed = line.trim_start_matches(instrument_space);
+        // A subsection may repeat its section's number, as Manitoba prints "33(2) The ...".
+        let trimmed = root
+            .strip_prefix("sec")
+            .and_then(|number| trimmed.strip_prefix(number))
+            .filter(|rest| line_scalar != range.start && repeated_subsection(rest))
+            .unwrap_or(trimmed);
         let newline = line_byte + line.len() < bytes.end;
         if let Some((token, at, _)) = legislation_marker(trimmed, newline) {
             if seeded_start != Some(line_scalar) {
@@ -3130,7 +3186,17 @@ pub(super) fn detect_instrument_grammar(
             Some((_, token, at, dialect)) if dialects[dialect] => Some((token, at)),
             Some(_) => None,
             None if value.starts_with('(') => instrument_marker(value, false, false),
-            None => None,
+            // A subsection may repeat its section's number, as Manitoba prints "33(2) The ...".
+            // A PDF's own lines also hold a parallel column's numbers; its candidate grammar
+            // weighs those itself.
+            None if !provider_refinements => None,
+            None => state.section.as_ref().and_then(|(label, _)| {
+                let number = label.strip_prefix("sec")?;
+                let rest = value
+                    .strip_prefix(number)
+                    .filter(|rest| repeated_subsection(rest))?;
+                instrument_marker(rest, false, false).map(|(token, at)| (token, at + number.len()))
+            }),
         };
         if let Some((token, at)) = marker {
             state.child(token, start, text.scalar(line.byte_start + at));
