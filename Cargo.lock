@@ -163,7 +163,6 @@ dependencies = [
 [[package]]
 name = "diff-match-patch-rs"
 version = "0.5.1"
-source = "git+https://github.com/eliziff/diff-match-patch-rs.git?rev=30daa5ab7e4fac48fcb520641e537c89e6fdc40c#30daa5ab7e4fac48fcb520641e537c89e6fdc40c"
 dependencies = [
  "chrono",
  "percent-encoding",
