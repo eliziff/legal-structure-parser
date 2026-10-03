@@ -11,6 +11,4 @@
 - Use relative paths or runtime input configuration and GitHub noreply attribution.
   Keep private inputs, auth and raw receipts in ignored local storage. Preserve
   third-party licenses and public-source attribution.
-- Before publishing native binaries, archives or embedded HTML, inspect the actual
-  output for personal paths and private inputs. Rust builders should remap source
-  paths with `--remap-path-prefix`; source-only scans do not inspect compiled data.
+- Rust builders should remap source paths with `--remap-path-prefix`.
