@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - run: git clone --branch main --single-branch --depth 1 https://github.com/eliziff/common-law-cite.git ../common-law-cite
       - run: cargo test -p legal-grammar-tables --locked
       - run: cargo check -p legal-structure --locked
       - run: cargo test -p legal-structure --locked --all-features
