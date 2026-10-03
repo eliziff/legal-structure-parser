@@ -55,6 +55,8 @@ pub struct CitationOccurrence {
     pub end: usize,
     pub styled_citation: CitationTextSpan,
     pub core_citation: CitationTextSpan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<Format>,
     pub pinpoints: Vec<CitationPinpoint>,
     /// The pinpoints as written, with the words that introduce them: "at para 105".
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,6 +154,7 @@ pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
         CitationOccurrence { text: full.text, start: full.start, end: full.end,
             styled_citation: span(text, &coordinates, start, cite.span.end),
             core_citation: span(text, &coordinates, cite.span.start, cite.span.end),
+            format: cite.format,
             pinpoints: pinpoints(text, &coordinates, &cite),
             pinpoint_phrase: pinpoint_phrase(text, &coordinates, &cite), kind,
             short_form: cite.short_name, explicit_short_form: cite.explicit_short_name, reasons }
@@ -162,10 +165,7 @@ pub fn authority_references_in_text(text: &str) -> Vec<AuthorityReferenceOccurre
     let coordinates = ScalarText::new(text);
     legal_citations::find::find_references(text).into_iter().filter_map(|cite| {
         let reference = cite.fields.inline_reference.as_ref()?;
-        // Original LSP references start at the marker and end at its pinpoint;
-        // the shared citation keeps the name and parentheticals separately.
-        let end = cite.fields.pin_cite.as_ref().map_or(reference.span.end, |pin| pin.end.max(reference.span.end));
-        let full = span(text, &coordinates, reference.span.start, end);
+        let full = span(text, &coordinates, cite.full_span.start, cite.full_span.end);
         Some(AuthorityReferenceOccurrence { text: full.text, start: full.start, end: full.end,
             token: span(text, &coordinates, reference.span.start, reference.span.end),
             pinpoints: pinpoints(text, &coordinates, &cite),
