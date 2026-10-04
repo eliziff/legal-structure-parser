@@ -385,6 +385,7 @@ pub struct DocumentQuery {
     lines: OnceLock<Vec<[usize; 3]>>,
     blocks: OnceLock<Vec<BlockPosition>>,
     search: OnceLock<search::SearchIndex>,
+    replay: OnceLock<text_fragment::ReplayIndex>,
 }
 
 impl Default for DocumentQuery {
@@ -401,6 +402,7 @@ impl DocumentQuery {
             lines: OnceLock::new(),
             blocks: OnceLock::new(),
             search: OnceLock::new(),
+            replay: OnceLock::new(),
         }
     }
 

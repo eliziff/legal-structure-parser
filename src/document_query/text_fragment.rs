@@ -520,6 +520,11 @@ fn directive_match_count(
 }
 
 fn browser_key(value: &str) -> String {
+    // ASCII lowercases to ASCII, has no special letters or decompositions and no combining
+    // marks, so the general path below returns exactly its ASCII lowercase.
+    if value.is_ascii() {
+        return value.to_ascii_lowercase();
+    }
     let mut expanded = String::new();
     for character in value.chars().flat_map(char::to_lowercase) {
         match character {
@@ -575,18 +580,16 @@ struct ExactDirectiveReplay {
     count: usize,
 }
 
-struct BrowserReplay<'a> {
-    document: FragmentText<'a>,
-    preserve_punctuation_spacing: bool,
+/// The document's words as the browser keys them, and where each occurs. They depend only on
+/// the document's text, so a document's query builds them once for every plan it makes.
+#[derive(Clone)]
+pub(super) struct ReplayIndex {
     words: Vec<String>,
     postings: HashMap<u64, Vec<usize>>,
-    /// Spelling a term runs several regexes; a plan asks for the same few hundred
-    /// terms tens of thousands of times, so each is spelled once.
-    spelled: std::cell::RefCell<HashMap<String, Option<BrowserSpelledTerm>>>,
 }
 
-impl<'a> BrowserReplay<'a> {
-    fn new(document: FragmentText<'a>, preserve_punctuation_spacing: bool) -> Self {
+impl ReplayIndex {
+    fn new(document: FragmentText<'_>) -> Self {
         let tokens = document.tokens();
         let mut postings = HashMap::<u64, Vec<usize>>::new();
         let mut words = Vec::with_capacity(tokens.len());
@@ -599,11 +602,31 @@ impl<'a> BrowserReplay<'a> {
                 .push(index);
             words.push(word);
         }
+        Self { words, postings }
+    }
+}
+
+struct BrowserReplay<'a> {
+    document: FragmentText<'a>,
+    preserve_punctuation_spacing: bool,
+    index: std::borrow::Cow<'a, ReplayIndex>,
+    /// Spelling a term runs several regexes; a plan asks for the same few hundred
+    /// terms tens of thousands of times, so each is spelled once.
+    spelled: std::cell::RefCell<HashMap<String, Option<BrowserSpelledTerm>>>,
+}
+
+impl<'a> BrowserReplay<'a> {
+    fn new(document: FragmentText<'a>, preserve_punctuation_spacing: bool) -> Self {
+        let index = match document {
+            FragmentText::Document(query, _, _) => std::borrow::Cow::Borrowed(
+                query.replay.get_or_init(|| ReplayIndex::new(document)),
+            ),
+            FragmentText::Text(_) => std::borrow::Cow::Owned(ReplayIndex::new(document)),
+        };
         Self {
             document,
             preserve_punctuation_spacing,
-            words,
-            postings,
+            index,
             spelled: std::cell::RefCell::new(HashMap::new()),
         }
     }
@@ -637,10 +660,10 @@ impl<'a> BrowserReplay<'a> {
         first_word: usize,
         allow_across_lines: bool,
     ) -> Option<PhraseSpan> {
-        if wanted.is_empty() || first_word + wanted.len() > self.words.len() {
+        if wanted.is_empty() || first_word + wanted.len() > self.index.words.len() {
             return None;
         }
-        if self.words[first_word..first_word + wanted.len()] != *wanted {
+        if self.index.words[first_word..first_word + wanted.len()] != *wanted {
             return None;
         }
         let last_word = first_word + wanted.len() - 1;
@@ -715,7 +738,7 @@ impl<'a> BrowserReplay<'a> {
         let prefix_term = prefix_term.flatten();
         let suffix_term = suffix_term.flatten();
         let first_term = prefix_term.as_ref().unwrap_or(target_term);
-        let Some(candidates) = self.postings.get(&search::word_hash(&first_term.words[0])) else {
+        let Some(candidates) = self.index.postings.get(&search::word_hash(&first_term.words[0])) else {
             return ExactDirectiveReplay::default();
         };
         let mut replay = ExactDirectiveReplay::default();
@@ -753,7 +776,7 @@ impl<'a> BrowserReplay<'a> {
         from: usize,
         allow_across_lines: bool,
     ) -> Option<PhraseSpan> {
-        self.postings
+        self.index.postings
             .get(&search::word_hash(&term.words[0]))?
             .iter()
             .copied()
@@ -781,7 +804,7 @@ impl<'a> BrowserReplay<'a> {
         let prefix_term = prefix_term.flatten();
         let suffix_term = suffix_term.flatten();
         let mut start_from = 0;
-        while start_from < self.words.len() {
+        while start_from < self.index.words.len() {
             let context = self.first_spelled_term_from(
                 prefix_term.as_ref().unwrap_or(start_term),
                 start_from,
@@ -798,7 +821,7 @@ impl<'a> BrowserReplay<'a> {
             };
 
             let mut end_from = first.last_word + 1;
-            while end_from < self.words.len() {
+            while end_from < self.index.words.len() {
                 let Some(last) =
                     self.first_spelled_term_from(end_term, end_from, allow_across_lines)
                 else {
@@ -2069,11 +2092,48 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     .map(move |suffix| (Some(prefix.clone()), Some(suffix)))
             })
             .collect::<Vec<_>>();
+        // For each tail: None when its spelling has no browser term, otherwise the last word
+        // between the earliest head end and the tail where the tail's term also matches. A
+        // pairing is rejected exactly when that word falls after its head, which is what scanning
+        // every word between each head and tail decided, once per pairing.
+        let earliest = heads.iter().map(|head| head.last_word + 1).min().unwrap_or(0);
+        // Only a position holding the term's first word can match it, so the document's positions
+        // of that word, last first, are the candidates.
+        let tail_earlier = tails
+            .iter()
+            .map(|tail| {
+                let term = self.replay.spelled_term(&tail.text)?;
+                let positions = term
+                    .words
+                    .first()
+                    .and_then(|word| self.replay.index.postings.get(&search::word_hash(word)));
+                Some(positions.and_then(|positions| {
+                    positions
+                        .iter()
+                        .rev()
+                        .copied()
+                        .filter(|&word| word >= earliest && word < tail.first_word)
+                        .find(|&word| self.replay.spelled_term_at(&term, word, false).is_some())
+                }))
+            })
+            .collect::<Vec<_>>();
+        // A directive is "text=" + prefix context + start + "," + end + suffix context, so its
+        // length is the sum of its once-encoded parts; a candidate that cannot be shorter than
+        // the one found is skipped without spelling the directive out.
+        let head_lengths = heads.iter().map(|head| encoded_fragment(&head.text).len()).collect::<Vec<_>>();
+        let tail_lengths = tails.iter().map(|tail| encoded_fragment(&tail.text).len()).collect::<Vec<_>>();
         for contexts in [
             &[(None, None)][..],
             one_sided.as_slice(),
             two_sided.as_slice(),
         ] {
+            let context_lengths = contexts
+                .iter()
+                .map(|(prefix, suffix): &(Option<LexicalTerm>, Option<LexicalTerm>)| {
+                    encoded_context(prefix.as_ref().map_or("", |term| term.text.as_str()), true).len()
+                        + encoded_context(suffix.as_ref().map_or("", |term| term.text.as_str()), false).len()
+                })
+                .collect::<Vec<_>>();
             let mut shortest = None::<String>;
             // An endpoint replays the same way for every partner, so its
             // uniqueness under a context is decided once per endpoint and
@@ -2092,28 +2152,25 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                         && !self.pdf
                         && head.last_word - head.first_word + 1 >= 3;
                     if !ordered_start {
-                        let Some(tail_term) = self.replay.spelled_term(&tail.text) else {
+                        // Chromium would end the range at an earlier copy of the tail between
+                        // the head and this tail; the last such copy is the one that decides it.
+                        let Some(earlier) = &tail_earlier[tail_index] else {
                             continue;
                         };
-                        if (head.last_word + 1..tail.first_word).any(|first_word| {
-                            self.replay
-                                .spelled_term_at(&tail_term, first_word, false)
-                                .is_some()
-                        }) {
+                        if earlier.is_some_and(|word| word > head.last_word) {
                             continue;
                         }
                     }
-                    for (prefix, suffix) in contexts {
+                    for ((prefix, suffix), context_length) in contexts.iter().zip(&context_lengths) {
                         let prefix = prefix.as_ref().map_or("", |term| term.text.as_str());
                         let suffix = suffix.as_ref().map_or("", |term| term.text.as_str());
-                        let directive = text_range_directive_with_context(
-                            &head.text, &tail.text, prefix, suffix,
-                        );
+                        let length = "text=,".len() + context_length
+                            + head_lengths[head_index] + tail_lengths[tail_index];
                         // Only a shorter directive can replace the one already found,
                         // so a pairing that cannot be shorter is never replayed.
                         if shortest
                             .as_ref()
-                            .is_some_and(|current| directive.len() >= current.len())
+                            .is_some_and(|current| length >= current.len())
                         {
                             continue;
                         }
@@ -2141,7 +2198,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                         ) {
                             continue;
                         }
-                        shortest = Some(directive);
+                        shortest = Some(text_range_directive_with_context(
+                            &head.text, &tail.text, prefix, suffix,
+                        ));
                     }
                 }
             }
