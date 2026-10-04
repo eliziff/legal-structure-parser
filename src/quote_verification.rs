@@ -1,9 +1,9 @@
 use crate::{
-    document_query::{tokenize_source_text, DocumentWordSpan},
     javascript_whitespace,
     text::JS_WHITESPACE_CLASS as JS_WS,
     utf16_len, ScalarText,
 };
+use legal_document_query::{tokenize_source_text, DocumentWordSpan};
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};

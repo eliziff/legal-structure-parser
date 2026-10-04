@@ -15,7 +15,7 @@ use std::sync::{atomic::AtomicBool, OnceLock};
 mod search;
 mod text_fragment;
 use search::{quote_text, quote_words, PhraseOptions, PhraseSpan};
-pub(crate) use search::{tokenize_source_text, DocumentWordSpan};
+pub use search::{tokenize_source_text, DocumentWordSpan};
 pub use text_fragment::{text_fragment_plan, TextFragmentPlan, TextFragmentWordInterval};
 
 fn regex(pattern: &'static str, cell: &'static OnceLock<Regex>) -> &'static Regex {

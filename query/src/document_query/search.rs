@@ -19,7 +19,7 @@ pub(super) fn lowercase_words(value: &str) -> Vec<String> {
 }
 
 #[derive(Clone, Serialize)]
-pub(crate) struct DocumentWordSpan {
+pub struct DocumentWordSpan {
     pub word: String,
     pub start: usize,
     pub end: usize,
@@ -140,7 +140,7 @@ pub(super) fn tokenize_with_scalar(text: &str, scalar: &ScalarText<'_>) -> Vec<D
         .collect()
 }
 
-pub(crate) fn tokenize_source_text(text: &str) -> Vec<DocumentWordSpan> {
+pub fn tokenize_source_text(text: &str) -> Vec<DocumentWordSpan> {
     tokenize_with_scalar(text, &ScalarText::new(text))
 }
 

@@ -9,14 +9,14 @@ readme = "README.md"
 exclude = ["data/grammar-corpus.json", "data/manifest.json", "grammar/**", "experiments/**"]
 
 [workspace]
-members = ["grammar", "model", "python"]
+members = ["grammar", "model", "python", "query"]
 default-members = ["."]
 resolver = "2"
 
 [features]
 default = []
 structure-inference = ["dep:legal-citations"]
-document-query = []
+document-query = ["dep:legal-document-query"]
 citator = ["dep:legal-citations"]
 quote-verification = ["document-query"]
 native-markup = ["structure-inference"]
@@ -26,6 +26,7 @@ journal = []
 
 [dependencies]
 legal-structure-model = { path = "model" }
+legal-document-query = { path = "query", optional = true }
 legal-citations = { path = "../common-law-cite/crates/legal-citations", optional = true }
 aho-corasick = "1.1"
 regex = "1.11"

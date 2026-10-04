@@ -11,10 +11,6 @@ mod analysis;
 mod citator;
 mod definitions;
 use legal_structure_model::document;
-#[cfg(feature = "document-query")]
-mod document_block;
-#[cfg(feature = "document-query")]
-mod document_query;
 mod docx_lint;
 mod docx_numbering;
 use legal_structure_model::fingerprint;
@@ -43,15 +39,13 @@ pub use analysis::{EngineAnalysis, STRUCTURE_ANALYSIS};
 #[cfg(feature = "citator")]
 pub use citator::*;
 pub use definitions::*;
-pub(crate) use document::{node_depths, public_structure_label};
+pub(crate) use document::node_depths;
 pub use document::{
     CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, NodeKind, Note, NoteKindV2,
     NoteReference, StructureDiagnostic, StructureNode,
 };
 #[cfg(feature = "document-query")]
-pub use document_block::{DocumentBlock, DocumentKind, DocumentOrigin};
-#[cfg(feature = "document-query")]
-pub use document_query::*;
+pub use legal_document_query::*;
 pub use docx_lint::*;
 pub use docx_numbering::*;
 pub use fingerprint::*;
