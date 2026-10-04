@@ -8,14 +8,15 @@ use std::{borrow::Cow, ops::Range, sync::OnceLock};
 
 pub const JS_WHITESPACE_CLASS: &str = r"[\u{0009}-\u{000d}\u{0020}\u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}]";
 
-pub(crate) struct ScalarCoordinates {
+pub struct ScalarCoordinates {
     offsets: Vec<[usize; 3]>,
     scalar_len: usize,
     utf16_len: usize,
 }
 
 impl ScalarCoordinates {
-    pub(crate) fn new(value: &str) -> Self {
+    #[inline]
+    pub fn new(value: &str) -> Self {
         if value.is_ascii() {
             return Self {
                 offsets: Vec::new(),
@@ -46,7 +47,7 @@ impl ScalarCoordinates {
 }
 
 pub struct ScalarText<'a> {
-    pub(crate) value: &'a str,
+    pub value: &'a str,
     /// Sparse `[scalar, byte, utf16]` checkpoints; ASCII is identity.
     offsets: Cow<'a, [[usize; 3]]>,
     scalar_len: usize,
@@ -55,6 +56,7 @@ pub struct ScalarText<'a> {
 }
 
 impl<'a> ScalarText<'a> {
+    #[inline]
     pub fn new(value: &'a str) -> Self {
         let coordinates = ScalarCoordinates::new(value);
         Self {
@@ -66,7 +68,8 @@ impl<'a> ScalarText<'a> {
         }
     }
 
-    pub(crate) fn with_coordinates(value: &'a str, coordinates: &'a ScalarCoordinates) -> Self {
+    #[inline]
+    pub fn with_coordinates(value: &'a str, coordinates: &'a ScalarCoordinates) -> Self {
         Self {
             value,
             offsets: Cow::Borrowed(&coordinates.offsets),
@@ -76,7 +79,8 @@ impl<'a> ScalarText<'a> {
         }
     }
 
-    pub(crate) fn with_same_coordinates<'b>(&'b self, value: &'b str) -> ScalarText<'b> {
+    #[inline]
+    pub fn with_same_coordinates<'b>(&'b self, value: &'b str) -> ScalarText<'b> {
         debug_assert!(self
             .value
             .char_indices()
@@ -93,19 +97,23 @@ impl<'a> ScalarText<'a> {
         }
     }
 
+    #[inline]
     pub fn len(&self) -> usize {
         self.scalar_len
     }
 
+    #[inline]
     pub fn utf16_len(&self) -> usize {
         self.utf16_len
     }
 
-    pub(crate) fn lines(&self) -> &[[usize; 3]] {
+    #[inline]
+    pub fn lines(&self) -> &[[usize; 3]] {
         self.lines.get_or_init(|| self.line_map())
     }
 
-    pub(crate) fn line_map(&self) -> Vec<[usize; 3]> {
+    #[inline]
+    pub fn line_map(&self) -> Vec<[usize; 3]> {
         let mut lines = Vec::new();
         let (mut byte_start, mut scalar_start) = (0, 0);
         for raw in self.value.split('\n') {
@@ -122,10 +130,12 @@ impl<'a> ScalarText<'a> {
         lines
     }
 
+    #[inline]
     fn checkpoint(&self, value: usize, axis: usize) -> [usize; 3] {
         self.offsets[self.offsets.partition_point(|offset| offset[axis] <= value) - 1]
     }
 
+    #[inline]
     pub fn scalar_at_byte(&self, byte: usize) -> Option<usize> {
         if byte > self.value.len() || !self.value.is_char_boundary(byte) {
             return None;
@@ -137,11 +147,13 @@ impl<'a> ScalarText<'a> {
         Some(offset[0] + self.value[offset[1]..byte].chars().count())
     }
 
-    pub(crate) fn scalar(&self, byte: usize) -> usize {
+    #[inline]
+    pub fn scalar(&self, byte: usize) -> usize {
         self.scalar_at_byte(byte)
             .expect("byte offset must be an in-bounds UTF-8 boundary")
     }
 
+    #[inline]
     pub fn byte_at_scalar(&self, scalar: usize) -> Option<usize> {
         if scalar > self.scalar_len {
             return None;
@@ -159,12 +171,14 @@ impl<'a> ScalarText<'a> {
             .map(|(byte, _)| offset[1] + byte)
     }
 
-    pub(crate) fn byte(&self, scalar: usize) -> usize {
+    #[inline]
+    pub fn byte(&self, scalar: usize) -> usize {
         self.byte_at_scalar(scalar)
             .expect("scalar offset must be in bounds")
     }
 
-    pub(crate) fn utf16_at_scalar(&self, scalar: usize) -> Option<usize> {
+    #[inline]
+    pub fn utf16_at_scalar(&self, scalar: usize) -> Option<usize> {
         if scalar > self.scalar_len {
             return None;
         }
@@ -179,16 +193,19 @@ impl<'a> ScalarText<'a> {
         Some(utf16)
     }
 
-    pub(crate) fn utf16(&self, scalar: usize) -> usize {
+    #[inline]
+    pub fn utf16(&self, scalar: usize) -> usize {
         self.utf16_at_scalar(scalar)
             .expect("scalar offset must be in bounds")
     }
 
+    #[inline]
     pub fn scalar_at_utf16(&self, utf16: usize) -> Option<usize> {
         self.byte_bounds_at_utf16(utf16)
             .and_then(|(_, _, scalar)| scalar)
     }
 
+    #[inline]
     pub fn utf16_at_byte(&self, byte: usize) -> Option<usize> {
         if byte > self.value.len() || !self.value.is_char_boundary(byte) {
             return None;
@@ -200,11 +217,13 @@ impl<'a> ScalarText<'a> {
         Some(offset[2] + self.value[offset[1]..byte].encode_utf16().count())
     }
 
+    #[inline]
     pub fn byte_at_utf16(&self, utf16: usize) -> Option<usize> {
         self.byte_bounds_at_utf16(utf16)
             .and_then(|(floor, ceil, _)| (floor == ceil).then_some(floor))
     }
 
+    #[inline]
     fn byte_bounds_at_utf16(&self, utf16: usize) -> Option<(usize, usize, Option<usize>)> {
         if utf16 > self.utf16_len {
             return None;
@@ -232,19 +251,23 @@ impl<'a> ScalarText<'a> {
         None
     }
 
-    pub(crate) fn byte_at_utf16_floor(&self, utf16: usize) -> Option<usize> {
+    #[inline]
+    pub fn byte_at_utf16_floor(&self, utf16: usize) -> Option<usize> {
         self.byte_bounds_at_utf16(utf16).map(|(floor, _, _)| floor)
     }
 
-    pub(crate) fn byte_at_utf16_ceil(&self, utf16: usize) -> Option<usize> {
+    #[inline]
+    pub fn byte_at_utf16_ceil(&self, utf16: usize) -> Option<usize> {
         self.byte_bounds_at_utf16(utf16).map(|(_, ceil, _)| ceil)
     }
 
+    #[inline]
     pub fn slice(&self, range: Range<usize>) -> Option<&'a str> {
         self.value
             .get(self.byte_at_scalar(range.start)?..self.byte_at_scalar(range.end)?)
     }
 
+    #[inline]
     pub fn slice_utf16(&self, range: Range<usize>) -> Option<&'a str> {
         if range.start > range.end {
             return None;
@@ -254,6 +277,7 @@ impl<'a> ScalarText<'a> {
     }
 }
 
+#[inline]
 pub fn utf16_len(value: &str) -> usize {
     if value.is_ascii() {
         value.len()
@@ -264,6 +288,7 @@ pub fn utf16_len(value: &str) -> usize {
 
 /// Return the shortest valid UTF-8 prefix containing `limit` JavaScript code
 /// units. The final scalar is retained when the limit splits a surrogate pair.
+#[inline]
 pub fn utf16_prefix_ceil(value: &str, limit: usize) -> &str {
     if value.is_ascii() {
         return &value[..value.len().min(limit)];
@@ -279,6 +304,7 @@ pub fn utf16_prefix_ceil(value: &str, limit: usize) -> &str {
 }
 
 /// Return at most the final `limit` Unicode scalars without indexing the prefix.
+#[inline]
 pub fn last_scalars(value: &str, limit: usize) -> &str {
     if limit == 0 || value.is_ascii() {
         return &value[value.len().saturating_sub(limit)..];
@@ -288,7 +314,8 @@ pub fn last_scalars(value: &str, limit: usize) -> &str {
     &value[byte..]
 }
 
-pub(crate) fn equal_fold(left: &str, right: &str) -> bool {
+#[inline]
+pub fn equal_fold(left: &str, right: &str) -> bool {
     if left.is_ascii() && right.is_ascii() {
         left.eq_ignore_ascii_case(right)
     } else {
@@ -296,6 +323,7 @@ pub(crate) fn equal_fold(left: &str, right: &str) -> bool {
     }
 }
 
+#[inline]
 pub fn normalize_decimal_digit(character: char) -> Option<char> {
     Some(match character {
         '\u{2070}' => '0',
@@ -313,6 +341,7 @@ pub fn normalize_decimal_digit(character: char) -> Option<char> {
     })
 }
 
+#[inline]
 pub fn normalize_note_symbol(character: char) -> char {
     match character {
         '\u{2217}' | '\u{f02a}' => '*',
@@ -322,20 +351,24 @@ pub fn normalize_note_symbol(character: char) -> char {
 
 /// The code points matched by ECMAScript `\s`: Unicode WhiteSpace plus line
 /// terminators and BOM, deliberately excluding U+0085.
-pub(crate) fn javascript_whitespace(character: char) -> bool {
+#[inline]
+pub fn javascript_whitespace(character: char) -> bool {
     character == '\u{feff}' || (character != '\u{0085}' && character.is_whitespace())
 }
 
+#[inline]
 pub fn trim_javascript_whitespace(value: &str) -> &str {
     value.trim_matches(javascript_whitespace)
 }
 
-pub(crate) fn trim_javascript_start(value: &str) -> &str {
+#[inline]
+pub fn trim_javascript_start(value: &str) -> &str {
     value.trim_start_matches(javascript_whitespace)
 }
 
 /// Collapse ECMAScript whitespace runs to one ASCII space and trim runs at
 /// both ends. Non-whitespace code points, including U+0085, are unchanged.
+#[inline]
 pub fn normalize_javascript_whitespace(value: &str) -> String {
     let mut normalized = String::with_capacity(value.len());
     let mut separating = false;

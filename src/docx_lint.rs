@@ -3,7 +3,11 @@ use crate::{
     DocxNumberAnchor,
 };
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+pub use legal_structure_model::{
+    DocxAttachmentReference, DocxAttachmentReferenceStatus, DocxCrossReference,
+    DocxCrossReferenceStatus, DocxStructureFacts,
+};
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -76,47 +80,6 @@ pub struct DocxLintReport {
     pub checks: DocxLintChecks,
     pub findings: Vec<DocxLintFinding>,
     pub notes: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum DocxCrossReferenceStatus {
-    Resolved,
-    SkippedExternal,
-    MissingRomanArticle,
-    MissingSibling { parent: String },
-    MissingTopLevel,
-    Abstained,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct DocxCrossReference {
-    pub paragraph_index: usize,
-    pub subject: String,
-    pub value: String,
-    pub status: DocxCrossReferenceStatus,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub enum DocxAttachmentReferenceStatus {
-    Resolved,
-    Missing { included: Vec<String> },
-    AbstainedNoAnchor,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct DocxAttachmentReference {
-    pub paragraph_index: usize,
-    pub label: String,
-    pub id: String,
-    pub subject: String,
-    pub status: DocxAttachmentReferenceStatus,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct DocxStructureFacts {
-    pub numbering: crate::DocxNumberingResult,
-    pub cross_references: Vec<DocxCrossReference>,
-    pub attachments: Vec<DocxAttachmentReference>,
 }
 
 fn reference_pattern() -> &'static Regex {

@@ -9,7 +9,7 @@ readme = "README.md"
 exclude = ["data/grammar-corpus.json", "data/manifest.json", "grammar/**", "experiments/**"]
 
 [workspace]
-members = ["grammar", "python"]
+members = ["grammar", "model", "python"]
 default-members = ["."]
 resolver = "2"
 
@@ -25,6 +25,7 @@ footnote-pairing = []
 journal = []
 
 [dependencies]
+legal-structure-model = { path = "model" }
 legal-citations = { path = "../common-law-cite/crates/legal-citations", optional = true }
 aho-corasick = "1.1"
 regex = "1.11"

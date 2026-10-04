@@ -1,31 +1,13 @@
 use super::*;
 use crate::text::ScalarText;
+#[cfg(test)]
+use serde::Deserialize;
 
 #[cfg(target_pointer_width = "32")]
 const MAX_SAFE_INTEGER: usize = usize::MAX;
 #[cfg(not(target_pointer_width = "32"))]
 const MAX_SAFE_INTEGER: usize = 9_007_199_254_740_991;
 const MAX_TABLE_CELLS: usize = 500_000;
-
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthoritativeTableCell {
-    pub table: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub table_name: Option<String>,
-    pub row: usize,
-    pub column: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub row_span: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub column_span: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub address: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_value: Option<String>,
-    pub start: usize,
-    pub end: usize,
-}
 
 struct Cell<'a> {
     fact: &'a AuthoritativeTableCell,

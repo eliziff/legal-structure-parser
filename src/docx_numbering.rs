@@ -1,35 +1,8 @@
 use crate::{javascript_whitespace, text::trim_javascript_start};
-use serde::{Deserialize, Serialize};
+pub use legal_structure_model::{
+    DocxNumberAnchor, DocxNumberingDuplicate, DocxNumberingGap, DocxNumberingResult,
+};
 use std::collections::HashMap;
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct DocxNumberAnchor {
-    pub number: String,
-    pub paragraph_index: usize,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct DocxNumberingDuplicate {
-    pub number: String,
-    pub previous_paragraph_index: usize,
-    pub paragraph_index: usize,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct DocxNumberingGap {
-    pub previous_number: String,
-    pub number: String,
-    pub paragraph_index: usize,
-    pub missing: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct DocxNumberingResult {
-    pub number_anchors: Vec<DocxNumberAnchor>,
-    pub roman_article_anchors: Vec<DocxNumberAnchor>,
-    pub duplicates: Vec<DocxNumberingDuplicate>,
-    pub gaps: Vec<DocxNumberingGap>,
-}
 
 fn after_prefix<'a>(value: &'a str, prefixes: &[&str]) -> Option<&'a str> {
     prefixes.iter().find_map(|prefix| {

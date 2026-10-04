@@ -27,7 +27,7 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
-    pub(crate) fn evidence(self) -> EvidenceKind {
+    pub fn evidence(self) -> EvidenceKind {
         match self {
             Self::Paragraph => EvidenceKind::Paragraph,
             Self::Prose => EvidenceKind::Prose,
@@ -43,7 +43,7 @@ impl NodeKind {
         }
     }
 
-    pub(crate) fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::ListItem => "list_item",
             _ => self.evidence().name(),
@@ -139,7 +139,7 @@ impl StructureNode {
     }
 }
 
-pub(crate) fn node_depths<'a>(nodes: &'a [StructureNode]) -> HashMap<&'a str, usize> {
+pub fn node_depths<'a>(nodes: &'a [StructureNode]) -> HashMap<&'a str, usize> {
     let parents = nodes
         .iter()
         .map(|node| (node.id.as_str(), node.parent_id.as_deref()))
@@ -159,7 +159,7 @@ pub(crate) fn node_depths<'a>(nodes: &'a [StructureNode]) -> HashMap<&'a str, us
     depths
 }
 
-pub(crate) fn public_structure_label(value: &str) -> Cow<'_, str> {
+pub fn public_structure_label(value: &str) -> Cow<'_, str> {
     if !value.contains('@') {
         return Cow::Borrowed(value);
     }
@@ -270,7 +270,7 @@ pub struct DocumentStructure {
 }
 
 impl DocumentStructure {
-    pub(crate) fn project_scalar_parts(
+    pub fn project_scalar_parts(
         coordinates: &ScalarText<'_>,
         nodes: &mut [StructureNode],
         notes: &mut [Note],
@@ -309,7 +309,7 @@ impl DocumentStructure {
         }
     }
 
-    pub(crate) fn from_scalar_parts(
+    pub fn from_scalar_parts(
         document_id: String,
         provider: String,
         text: String,
@@ -340,7 +340,7 @@ impl DocumentStructure {
         )
     }
 
-    pub(crate) fn from_projected_parts(
+    pub fn from_projected_parts(
         document_id: String,
         provider: String,
         url: Option<String>,
@@ -386,7 +386,7 @@ impl DocumentStructure {
         self.rendered_text.as_deref().unwrap_or(&self.text)
     }
 
-    pub(crate) fn query_range(&self, node: &StructureNode) -> ScalarRange {
+    pub fn query_range(&self, node: &StructureNode) -> ScalarRange {
         node.rendered_range.unwrap_or(node.range)
     }
 }

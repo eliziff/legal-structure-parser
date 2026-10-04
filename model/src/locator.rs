@@ -5,7 +5,7 @@ use crate::{
 use regex::Regex;
 use std::sync::OnceLock;
 
-pub(crate) fn literal_page_marker(line: &str, insensitive: bool) -> Option<&str> {
+pub fn literal_page_marker(line: &str, insensitive: bool) -> Option<&str> {
     let line = line.strip_suffix('\n').unwrap_or(line);
     let line = line.strip_suffix('\r').unwrap_or(line);
     let marker = line.strip_suffix(']')?;
@@ -14,14 +14,14 @@ pub(crate) fn literal_page_marker(line: &str, insensitive: bool) -> Option<&str>
         .then(|| &marker[6..])
 }
 
-pub(crate) fn compact_provision_label(value: &str) -> String {
+pub fn compact_provision_label(value: &str) -> String {
     value
         .chars()
         .filter(|character| !javascript_whitespace(*character))
         .collect()
 }
 
-pub(crate) fn normalize_numbered_section_locator(value: &str) -> String {
+pub fn normalize_numbered_section_locator(value: &str) -> String {
     normalize_compact_numbered_section_locator(&compact_provision_label(value))
 }
 

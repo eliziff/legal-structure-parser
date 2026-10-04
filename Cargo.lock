@@ -503,11 +503,22 @@ version = "0.1.0"
 dependencies = [
  "aho-corasick",
  "legal-citations",
+ "legal-structure-model",
  "regex",
  "serde",
  "serde_json",
  "sha2",
  "unicode-normalization",
+]
+
+[[package]]
+name = "legal-structure-model"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

@@ -1,23 +1,23 @@
 #[cfg(feature = "structure-inference")]
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::fmt::{Display, Formatter};
 #[cfg(feature = "structure-inference")]
 use std::sync::OnceLock;
 
+#[cfg(feature = "structure-inference")]
+mod analysis;
 #[cfg(feature = "citator")]
 mod citator;
 mod definitions;
-mod document;
+use legal_structure_model::document;
 #[cfg(feature = "document-query")]
 mod document_block;
 #[cfg(feature = "document-query")]
 mod document_query;
 mod docx_lint;
 mod docx_numbering;
-mod fingerprint;
+use legal_structure_model::fingerprint;
 #[cfg(feature = "footnote-pairing")]
 mod footnote_pairing;
 mod instrument;
@@ -27,17 +27,19 @@ mod instrument_contents;
 mod instrument_references;
 #[cfg(feature = "journal")]
 mod journal;
-mod locator;
+use legal_structure_model::locator;
 #[cfg(feature = "native-markup")]
 mod native_markup;
-mod numeric_sequence;
+use legal_structure_model::numeric_sequence;
 mod reading_order;
 #[cfg(feature = "provider-text")]
 mod provider_text;
 #[cfg(feature = "quote-verification")]
 mod quote_verification;
 mod tables;
-mod text;
+use legal_structure_model::text;
+#[cfg(feature = "structure-inference")]
+pub use analysis::{EngineAnalysis, STRUCTURE_ANALYSIS};
 #[cfg(feature = "citator")]
 pub use citator::*;
 pub use definitions::*;
@@ -69,7 +71,7 @@ pub use provider_text::{
 };
 #[cfg(feature = "quote-verification")]
 pub use quote_verification::*;
-pub use tables::AuthoritativeTableCell;
+pub use legal_structure_model::AuthoritativeTableCell;
 pub(crate) use tables::AuthoritativeTables;
 pub(crate) use text::javascript_whitespace;
 pub use text::{
@@ -77,7 +79,13 @@ pub use text::{
     trim_javascript_whitespace, utf16_len, utf16_prefix_ceil, ScalarText, JS_WHITESPACE_CLASS,
 };
 
-pub const DOCUMENT_STRUCTURE_SCHEMA: &str = "legalpdf.document-structure.v1";
+pub use legal_structure_model::{
+    CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, DetectionProfile, EngineError,
+    NoteBodyV2, NotePairClaimV2, Origin, ResolutionProofV2, ResolutionRuleV2, ScalarRange, Scope,
+    ScopeKind, StructureAnalysis, StructureCandidateRun, StructureMarkerCandidate, TextAnchorV2,
+    DOCUMENT_STRUCTURE_SCHEMA,
+};
+pub(crate) use legal_structure_model::EvidenceKind;
 pub const ENGINE_SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_ENGINE_SHA256");
 const ENGINE_ORIGIN: &str = "legalpdf.structure-engine";
 
@@ -106,110 +114,11 @@ fn whole_document_coverage(
     .collect()
 }
 
-#[derive(Debug)]
-pub struct EngineError {
-    pub code: &'static str,
-    pub message: String,
-}
-
-impl EngineError {
-    fn invalid(message: impl Into<String>) -> Self {
-        Self {
-            code: "invalid_evidence",
-            message: message.into(),
-        }
-    }
-
-    fn source(message: impl Display) -> Self {
-        Self {
-            code: "invalid_source",
-            message: message.to_string(),
-        }
-    }
-}
-
-impl Display for EngineError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}: {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for EngineError {}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ScalarRange {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl ScalarRange {
-    fn valid(self, length: usize) -> bool {
-        self.start <= self.end && self.end <= length
-    }
-}
-
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) enum EvidenceKind {
-    Paragraph,
-    Prose,
-    Page,
-    Section,
-    Heading,
-    Footnote,
-    Endnote,
-    List,
-    Table,
-    Row,
-    Cell,
-}
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CoverageState {
     Absent,
     Augment,
     Complete,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ScopeKind {
-    Complete,
-    Excerpt,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DetectionProfile {
-    CaseRootedComplete,
-    CaseContiguousComplete,
-    CaseLossy,
-    Legislation,
-    Instrument,
-    Journal,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Scope {
-    pub kind: ScopeKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub excerpt_of: Option<String>,
-}
-
-impl Scope {
-    pub(crate) fn complete() -> Self {
-        Self {
-            kind: ScopeKind::Complete,
-            excerpt_of: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Origin {
-    pub id: String,
 }
 
 struct NativeClaim {
@@ -251,24 +160,6 @@ pub(crate) struct DocumentInput {
     native_claims: Vec<NativeClaim>,
     coverage: Vec<Coverage>,
     exclusions: Vec<Exclusion>,
-}
-
-impl EvidenceKind {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Paragraph => "paragraph",
-            Self::Prose => "prose",
-            Self::Page => "page",
-            Self::Section => "section",
-            Self::Heading => "heading",
-            Self::Footnote => "footnote",
-            Self::Endnote => "endnote",
-            Self::List => "list",
-            Self::Table => "table",
-            Self::Row => "row",
-            Self::Cell => "cell",
-        }
-    }
 }
 
 impl DocumentInput {
@@ -339,105 +230,6 @@ impl DocumentInput {
             .iter()
             .any(|value| value.state != CoverageState::Complete)
     }
-}
-
-#[cfg(feature = "structure-inference")]
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum CandidateGrammar {
-    Numeric,
-    Hierarchy,
-    Enumerator,
-}
-
-#[cfg(feature = "structure-inference")]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StructureMarkerCandidate {
-    pub id: String,
-    pub range: ScalarRange,
-    pub marker_range: ScalarRange,
-    pub label: String,
-    pub grammar_value: String,
-    pub parent_candidate_id: Option<String>,
-    pub level: usize,
-    pub content_start: usize,
-}
-
-#[cfg(feature = "structure-inference")]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct StructureCandidateRun {
-    pub id: String,
-    pub grammar: CandidateGrammar,
-    pub range: ScalarRange,
-    pub rooted: bool,
-    pub consecutive: bool,
-    pub markers: Vec<StructureMarkerCandidate>,
-}
-
-#[cfg(feature = "structure-inference")]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CandidateEvidenceV2 {
-    pub candidate_id: String,
-    pub page_indexes: Vec<usize>,
-    pub line_ids: Vec<String>,
-    pub observations: Vec<CandidateObservationV2>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CandidateObservationV2 {
-    BodyProseFlow,
-    SectionHeading,
-    ListItemLayout,
-    CrossReference,
-    Furniture,
-    TableOrForm,
-    ContentsRow,
-    IndexRow,
-    TranscriptLineNumber,
-}
-
-#[cfg(feature = "structure-inference")]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TextAnchorV2 {
-    pub range: ScalarRange,
-    pub page_index: usize,
-    pub line_id: String,
-}
-
-#[cfg(feature = "structure-inference")]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NoteBodyV2 {
-    pub range: ScalarRange,
-    pub page_indexes: Vec<usize>,
-    pub line_ids: Vec<String>,
-}
-
-#[cfg(feature = "structure-inference")]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NotePairClaimV2 {
-    pub pair_id: String,
-    pub kind: NoteKindV2,
-    pub label: TextAnchorV2,
-    pub body: NoteBodyV2,
-    pub references: Vec<TextAnchorV2>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResolutionRuleV2 {
-    RootedNumericProse,
-    HierarchySection,
-    ListItemLayout,
-    PairedNote,
-    DirectExclusion,
-    ConflictingRoles,
-    InsufficientEvidence,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ResolutionProofV2 {
-    pub rule: ResolutionRuleV2,
-    pub observations: Vec<CandidateObservationV2>,
 }
 
 #[cfg(feature = "structure-inference")]

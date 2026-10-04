@@ -1,34 +1,12 @@
-use crate::{text::ScalarText, utf16_len, ScalarRange, JS_WHITESPACE_CLASS};
+use crate::{text::ScalarText, utf16_len, JS_WHITESPACE_CLASS};
+pub use legal_structure_model::{DefinedTerm, DefinitionOccurrence, DefinitionsResult};
 use aho_corasick::AhoCorasick;
 use regex::Regex as R;
-use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     sync::LazyLock,
 };
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct DefinitionOccurrence {
-    pub range: ScalarRange,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_id: Option<String>,
-    pub source_paragraph_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_artifact_id: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct DefinedTerm {
-    pub term: String,
-    pub definitions: Vec<DefinitionOccurrence>,
-    pub uses: Vec<DefinitionOccurrence>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct DefinitionsResult {
-    pub terms: Vec<DefinedTerm>,
-}
 
 static PAREN: LazyLock<R> = LazyLock::new(|| R::new(r"\(([^()]*)\)").unwrap());
 static QUOTED: LazyLock<R> = LazyLock::new(|| R::new(r#""([A-Z][A-Za-z0-9&' -]{0,79})""#).unwrap());
@@ -43,17 +21,6 @@ static LIST: LazyLock<R> = LazyLock::new(|| {
     )
     .unwrap()
 });
-
-impl DefinitionOccurrence {
-    fn at(&self, document: &ScalarText<'_>, start: usize, end: usize) -> Self {
-        let mut hit = self.clone();
-        (hit.range.start, hit.range.end) = (
-            document.utf16_at_byte(start).unwrap(),
-            document.utf16_at_byte(end).unwrap(),
-        );
-        hit
-    }
-}
 
 #[derive(Clone, Copy)]
 pub(crate) struct DefinitionHit {
