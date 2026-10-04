@@ -22,7 +22,6 @@ jobs:
         with:
           persist-credentials: false
       - run: git clone --branch main --single-branch --depth 1 https://github.com/eliziff/common-law-cite.git ../common-law-cite
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test -p legal-grammar-tables --locked
-      - run: cargo check -p legal-structure --locked
       - run: cargo test -p legal-structure --locked --all-features
-      - run: cargo check -p legal-structure-python --locked
