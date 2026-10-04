@@ -112,6 +112,15 @@ fn enumerated(line: &str) -> Option<(&str, &str)> {
         .then_some((token, rest))
 }
 
+/// What follows a line, read for whether the line heads it: without the number of the paragraph it
+/// opens ("[11] The court ...").
+fn after_marker(following: &str) -> &str {
+    let following = following.trim_start();
+    following.strip_prefix('[').and_then(|rest| rest.split_once(']'))
+        .filter(|(number, _)| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+        .map_or(following, |(_, rest)| rest)
+}
+
 /// Reads a judgment's text, as A2AJ and other providers give it (a line to a paragraph, its
 /// headings on lines of their own or run into the paragraph they open), into its outline. The
 /// paragraphs are the structure layer's; the headings are the lines between them its heading
@@ -187,7 +196,7 @@ pub fn case_outline(text: &str) -> Result<Vec<CaseOutlineEntry>, EngineError> {
                 || slice(end, (end + 200).min(chars.len())),
                 |(_, _, next): &(usize, usize, String)| next.clone(),
             );
-            heading_levels(line).or_else(|| sentence_heading(line, &following).then(|| vec![line.to_owned()]))
+            heading_levels(line).or_else(|| sentence_heading(line, after_marker(&following)).then(|| vec![line.to_owned()]))
         };
         // Before the reasons, only the headings that open them count: the enumerated ones just
         // before the first paragraph, and the line above them ("REASONS FOR JUDGMENT"); the
@@ -208,8 +217,11 @@ pub fn case_outline(text: &str) -> Result<Vec<CaseOutlineEntry>, EngineError> {
             Place::Tail => lines.len(),
         };
         for (index, (from, to, line)) in lines.iter().enumerate() {
-            // A line going on with the list the paragraph above ends in is that list's.
-            if let Some((token, rest)) = enumerated(line).filter(|(token, _)| list.continues(token)) {
+            // A line going on with the list the paragraph above ends in is that list's; before the
+            // reasons (a publication ban quoting its enactment), a line may also open a list.
+            let opens = |token: &str| matches!(place, Place::Front) && index < opening
+                && readings(token).is_some_and(|readings| readings.iter().any(|(_, value)| *value == 1));
+            if let Some((token, rest)) = enumerated(line).filter(|(token, _)| list.continues(token) || opens(token)) {
                 let depth = list.read(token).unwrap_or_default();
                 push(entries, "item", depth + 1, token.to_owned(), *from, *to, rest);
                 continue;
@@ -256,8 +268,27 @@ pub fn case_outline(text: &str) -> Result<Vec<CaseOutlineEntry>, EngineError> {
         let mut at = *marker_end;
         while at < body_end {
             let close = (at..body_end).find(|at| chars[*at] == '\n').unwrap_or(body_end);
-            lines.push((at, close));
+            if !slice(at, close).trim().is_empty() {
+                lines.push((at, close));
+            }
             at = close + 1;
+        }
+        // A heading on the lines a paragraph ends with, after its last sentence, opens what
+        // follows ("... as follows.\nAdmission of the fresh evidence\n[11] The ..."): it is
+        // read with the lines between the paragraphs.
+        let mut body_end = body_end;
+        while lines.len() > 1 {
+            let (from, to) = lines[lines.len() - 1];
+            let (line, above) = (slice(from, to), slice(lines[lines.len() - 2].0, lines[lines.len() - 2].1));
+            let following = slice(body_end, (body_end + 200).min(chars.len()));
+            let ended = above.trim_end().ends_with(['.', ':', ';', '?', '!', '"', '\u{201d}', ')']);
+            let heading = !line.trim_start().starts_with('(') && (heading_levels(&line).is_some()
+                || sentence_heading(&line, after_marker(&following)));
+            if !ended || !heading {
+                break;
+            }
+            body_end = from;
+            lines.pop();
         }
         let (first_start, first_end) = lines.first().copied().unwrap_or((*marker_end, *marker_end));
         push(&mut entries, "paragraph", 0, label.clone(), *start, first_end, &slice(first_start, first_end));
