@@ -154,17 +154,22 @@ impl PrintedStatute {
             .filter_map(|node| Some((*node.page_indexes.first()?, node.range.end))).collect::<Vec<_>>();
         contents.sort_unstable();
         // The list runs page after page from where it opens; a leader row further on is not it.
-        let front = contents.iter().enumerate().take_while(|(at, (page, _))|
-            *at == 0 || *page <= contents[at - 1].0 + 1).map(|(_, (_, end))| *end).max().unwrap_or(0);
+        let listed = contents.iter().enumerate().take_while(|(at, (page, _))|
+            *at == 0 || *page <= contents[at - 1].0 + 1).map(|(_, entry)| *entry).collect::<Vec<_>>();
+        let front = listed.iter().map(|(_, end)| *end).max().unwrap_or(0);
+        // The page the list ends on, where it may run on into the body.
+        let last_listed = listed.iter().map(|(page, _)| *page).max();
         // The nodes read, each as its rows of print and their pages.
         let mut nodes = Vec::new();
         for (index, node) in document.nodes.iter().enumerate() {
             if !matches!(node.kind, NodeKind::Prose | NodeKind::Heading) { continue; }
             // A contents list and a parallel translation repeat the body's sections; the body is
             // read. A list may run on into the body on its last page: what follows its last entry
-            // is read.
+            // there is read. Before that page, what follows an entry is the rest of its title.
             let contents = node.grammar.as_deref() == Some("contents");
-            if node.grammar.as_deref() == Some("translation") || node.range.start < front && !contents { continue; }
+            let before_last = contents && node.range.start < front
+                && node.page_indexes.first().is_some_and(|page| Some(*page) < last_listed);
+            if node.grammar.as_deref() == Some("translation") || node.range.start < front && !contents || before_last { continue; }
             let (mut found, mut found_pages): (Vec<_>, Vec<_>) = rows(node.line_ids.iter().filter_map(|id| lines.get(id.as_str()).copied())
                 .filter(|line| !line.text.trim().is_empty())).into_iter().unzip();
             if contents {

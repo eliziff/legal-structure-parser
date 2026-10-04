@@ -1888,12 +1888,17 @@ fn expand_descendants<'a>(
             cursor += 1;
         }
         let root = section_key(&parent.label).next();
+        // A provision inserted after one whose own number is not printed ("668 and 669
+        // [Repealed]" then "669.1") sits under the parent before it: its number runs from the
+        // parent's up to the next parent's.
+        let next_root = parents.peek().and_then(|value| section_key(&value.label).next());
         let mut descendants = Vec::new();
         let mut counts = HashMap::<&str, usize>::new();
         for &mark in &marks[begin..cursor] {
+            let own = section_key(&mark.label).next();
             if matches!(mark.style, SectionStyle::Dot | SectionStyle::DotTerm)
                 && mark.label.contains('.')
-                && section_key(&mark.label).next() == root
+                && (own == root || own > root && next_root.is_none_or(|next| own < Some(next)))
             {
                 descendants.push(mark);
                 *counts.entry(mark.label.as_str()).or_default() += 1;
@@ -1925,10 +1930,20 @@ fn choose_sections<'a>(
         (None, value) | (value, None) => value,
         (Some(left), Some(right)) if same_labels(&left, &right) => Some(left),
         (Some(left), Some(right)) if left[0].start != right[0].start => {
-            Some(if left[0].start < right[0].start {
-                left
+            let (early, late) = if left[0].start < right[0].start {
+                (left, right)
             } else {
-                right
+                (right, left)
+            };
+            // The reading that starts first wins, unless the other, longer, reads nearly all its
+            // provisions too: then the first is a part of it that a stray number ahead of the
+            // body (a contents entry's leftover) made start sooner.
+            let read = late.iter().map(|mark| mark.label.as_str()).collect::<HashSet<_>>();
+            let shared = early.iter().filter(|mark| read.contains(mark.label.as_str())).count();
+            Some(if late.len() > early.len() && shared * 10 >= early.len() * 9 {
+                late
+            } else {
+                early
             })
         }
         (Some(left), Some(right)) if left.len() != right.len() => {
