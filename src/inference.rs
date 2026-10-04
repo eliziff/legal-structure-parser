@@ -1424,9 +1424,10 @@ struct LabelPart<'a> {
     suffix: u32,
 }
 
+/// A label's letter suffix as a number ("a" 1, "z" 26, "aa" 27); only letters reach it.
 fn suffix_value(value: &str) -> u32 {
-    value.bytes().fold(0, |total, value| {
-        total * 26 + u32::from(value.to_ascii_uppercase() - b'A' + 1)
+    value.bytes().fold(0u32, |total, value| {
+        total.saturating_mul(26).saturating_add(u32::from(value.to_ascii_uppercase() - b'A' + 1))
     })
 }
 
@@ -1452,7 +1453,8 @@ fn label_parts(label: &str) -> impl Iterator<Item = LabelPart<'_>> {
             separator,
             digits: numeric,
             text: body,
-            suffix: suffix_value(&body[digits..]),
+            // A part that is not a number and a letter suffix ("Schedule", "2(a)") orders by its text.
+            suffix: numeric.map_or(0, |_| suffix_value(&body[digits..])),
         };
         separator = next;
         Some(value)
