@@ -227,7 +227,7 @@ fn median(values: &mut [usize]) -> f64 {
     }
 }
 
-fn heading_enumerator(value: &str) -> bool {
+pub(super) fn heading_enumerator(value: &str) -> bool {
     cached_regex!(VALUE, r"^(?:\([\p{L}\p{N}]{1,5}\)|\p{L}[.)]|[IVXLCDM]{1,4}[.)]|[ivxlcdm]{1,4}[.)]|\d{1,3}(?:\.\d{1,3})*[.)])$").is_match(value)
 }
 
@@ -289,32 +289,54 @@ fn trim_leading_parenthetical(value: &str) -> &str {
 }
 
 pub(super) fn formal_heading(value: &str) -> bool {
+    heading_levels(value).is_some()
+}
+
+/// A formal heading's path, a level at a time, each with its enumerator ("IV. Analysis A. The
+/// Right ..." is "IV. Analysis" then "A. The Right ..."), as A2AJ runs a decision's heading path
+/// onto one line; None where the value is no formal heading.
+pub(super) fn heading_levels(value: &str) -> Option<Vec<String>> {
     let heading = trim_leading_parenthetical(value);
     if heading.is_empty()
         || utf16_len(heading) > 120
         || heading.chars().any(|value| ";![]{}".contains(value))
     {
-        return false;
+        return None;
     }
     let words = heading.split_whitespace().collect::<Vec<_>>();
     let mut start = 0;
     let mut enumerated = heading != value.trim();
+    let mut levels = Vec::new();
+    let mut level = 0;
     for (index, word) in words.iter().enumerate() {
         let opener = words
             .get(index + 1)
             .is_some_and(|next| !heading_enumerator(next) && level_opens(next));
         if heading_enumerator(word) && opener {
             if start < index && !heading_level(&words[start..index], enumerated) {
-                return false;
+                return None;
             }
+            if index > level {
+                levels.push(words[level..index].join(" "));
+            }
+            level = index;
             start = index + 1;
             enumerated = true;
         }
     }
-    heading_level(&words[start..], enumerated)
+    if !heading_level(&words[start..], enumerated) {
+        return None;
+    }
+    levels.push(words[level..].join(" "));
+    // A leading parenthesized enumerator ("(2) Remedy") is its first level's.
+    let prefix = value.trim().strip_suffix(heading).unwrap_or_default().trim();
+    if !prefix.is_empty() {
+        levels[0] = format!("{prefix} {}", levels[0]);
+    }
+    Some(levels)
 }
 
-fn sentence_heading(value: &str, following: &str) -> bool {
+pub(super) fn sentence_heading(value: &str, following: &str) -> bool {
     let heading = trim_leading_parenthetical(value);
     let mut words = heading.split_whitespace();
     let word_count = words.clone().count();
@@ -2532,7 +2554,7 @@ struct StructureState {
     used: HashMap<String, usize>,
 }
 
-fn enum_readings(token: &str) -> [Option<(u8, String)>; 2] {
+pub(super) fn enum_readings(token: &str) -> [Option<(u8, String)>; 2] {
     if token
         .split('.')
         .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))

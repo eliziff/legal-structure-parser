@@ -308,6 +308,10 @@ pub use printed_statute::{PrintedLine, PrintedStatute, ProvisionPlacement};
 mod statute_outline;
 #[cfg(feature = "provider-text")]
 pub use statute_outline::{statute_outline, StatuteOutlineEntry};
+#[cfg(feature = "provider-text")]
+mod case_outline;
+#[cfg(feature = "provider-text")]
+pub use case_outline::{case_outline, CaseOutlineEntry};
 
 #[cfg(all(feature = "structure-inference", test))]
 pub(crate) use candidates::resolve_structure_candidates;
