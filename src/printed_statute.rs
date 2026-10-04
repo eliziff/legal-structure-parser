@@ -141,6 +141,55 @@ impl PrintedStatute {
     /// Reads a PDF's body: `document` is the PDF's structure, `lines` its lines of print by id,
     /// and `page_count` its number of pages.
     pub fn read(document: &DocumentStructure, lines: &HashMap<&str, PrintedLine<'_>>, page_count: usize) -> Option<Self> {
+        Self::read_nodes(document, lines, page_count, 0..document.nodes.len())
+    }
+
+    /// Reads one instrument of a PDF that prints several ("The Constitution Acts 1867 to 1982"):
+    /// from the heading that is its title ("CONSTITUTION ACT, 1982", "PART I Canadian Charter of
+    /// Rights and Freedoms", a note's number after it read past) to the next heading that is
+    /// another Act's title in capitals ("CANADA ACT 1982", "LOI CONSTITUTIONNELLE DE 1867"). A
+    /// contents list that names it comes before its body: the last heading that is its title opens
+    /// it. None where no heading is its title, or where the PDF prints one Act.
+    pub fn read_within(document: &DocumentStructure, lines: &HashMap<&str, PrintedLine<'_>>, page_count: usize,
+        instrument: &str) -> Option<Self> {
+        // A heading's words, without a Part's number before them or a note's number after a year.
+        let title = |text: &str| {
+            let mut words = text.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty())
+                .map(str::to_uppercase).collect::<Vec<_>>();
+            if words.first().is_some_and(|word| word == "PART") && words.len() > 2 { words.drain(..2); }
+            let year = |word: &String| word.len() == 4 && word.chars().all(|c| c.is_ascii_digit());
+            if words.len() > 1 && words.last().is_some_and(|note| note.len() <= 3 && note.chars().all(|c| c.is_ascii_digit()))
+                && year(&words[words.len() - 2]) { words.pop(); }
+            words
+        };
+        let wanted = title(instrument);
+        if wanted.is_empty() { return None; }
+        let text_of = |node: &crate::StructureNode| node.line_ids.iter().filter_map(|id| lines.get(id.as_str()))
+            .map(|line| line.text.trim()).collect::<Vec<_>>().join(" ");
+        let heading = |node: &crate::StructureNode| node.kind == NodeKind::Heading;
+        // Another Act's title: a heading in capitals that ends in its year.
+        let act_title = |node: &crate::StructureNode| {
+            let text = text_of(node);
+            let words = title(&text);
+            !text.chars().any(char::is_lowercase) && words.iter().any(|word| word == "ACT" || word == "LOI")
+                && words.last().is_some_and(|year| year.len() == 4 && year.chars().all(|c| c.is_ascii_digit()))
+        };
+        // Only a PDF that prints several Acts is read by one of them.
+        let acts = document.nodes.iter().filter(|node| heading(node) && act_title(node))
+            .map(|node| title(&text_of(node))).collect::<HashSet<_>>();
+        if acts.len() < 2 { return None; }
+        let titled = document.nodes.iter().enumerate()
+            .filter(|(_, node)| heading(node) && title(&text_of(node)) == wanted).map(|(at, _)| at).collect::<Vec<_>>();
+        titled.into_iter().rev().find_map(|start| {
+            let end = document.nodes.iter().enumerate().skip(start + 1)
+                .find(|(_, node)| heading(node) && act_title(node) && title(&text_of(node)) != wanted)
+                .map_or(document.nodes.len(), |(end, _)| end);
+            Self::read_nodes(document, lines, page_count, start..end)
+        })
+    }
+
+    fn read_nodes(document: &DocumentStructure, lines: &HashMap<&str, PrintedLine<'_>>, page_count: usize,
+        scope: std::ops::Range<usize>) -> Option<Self> {
         let (mut text, mut parts, mut offset) = (String::new(), Vec::new(), 0);
         // The page of the last paragraph read while its sentence is still open, and whether
         // that paragraph is a history note.
@@ -162,7 +211,7 @@ impl PrintedStatute {
         // The nodes read, each as its rows of print and their pages.
         let mut nodes = Vec::new();
         for (index, node) in document.nodes.iter().enumerate() {
-            if !matches!(node.kind, NodeKind::Prose | NodeKind::Heading) { continue; }
+            if !scope.contains(&index) || !matches!(node.kind, NodeKind::Prose | NodeKind::Heading) { continue; }
             // A contents list and a parallel translation repeat the body's sections; the body is
             // read. A list may run on into the body on its last page: what follows its last entry
             // there is read. Before that page, what follows an entry is the rest of its title.
