@@ -60,7 +60,7 @@ pub use instrument::*;
 pub use journal::{journal_document_structure, journal_text_document_structure, JournalPageLabel};
 pub use locator::{normalize_compact_numbered_section_locator, normalize_section_locator};
 #[cfg(feature = "native-markup")]
-pub use native_markup::{analyze_native_markup, NativeMarkupInput};
+pub use native_markup::{analyze_native_markup, legisquebec_statute_text, NativeMarkupInput};
 pub use numeric_sequence::*;
 pub use reading_order::{document_reading_order, ReadingOrderUnit};
 #[cfg(feature = "provider-text")]
@@ -504,6 +504,18 @@ mod inference;
 #[cfg(feature = "structure-inference")]
 mod candidates;
 mod derive;
+#[cfg(all(feature = "structure-inference", feature = "document-query"))]
+mod outline;
+#[cfg(all(feature = "structure-inference", feature = "document-query"))]
+mod printed_statute;
+#[cfg(all(feature = "structure-inference", feature = "document-query"))]
+pub use outline::{document_outline, OutlineEntry};
+#[cfg(all(feature = "structure-inference", feature = "document-query"))]
+pub use printed_statute::{PrintedLine, PrintedStatute, ProvisionPlacement};
+#[cfg(feature = "provider-text")]
+mod statute_outline;
+#[cfg(feature = "provider-text")]
+pub use statute_outline::{statute_outline, StatuteOutlineEntry};
 
 #[cfg(all(feature = "structure-inference", test))]
 pub(crate) use candidates::resolve_structure_candidates;

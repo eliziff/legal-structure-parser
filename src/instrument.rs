@@ -61,24 +61,67 @@ fn split_instrument_sentence_joins(text: &str) -> Option<String> {
     static HEAD: OnceLock<Regex> = OnceLock::new();
     let head = HEAD.get_or_init(|| {
         Regex::new(
-            r"^(?:(?:ARTICLE|Article|PART|Part|DIVISION|Division|Section|SECTION|SCHEDULE|Schedule|EXHIBIT|Exhibit|ANNEX|Annex|APPENDIX|Appendix)[\s\u{feff}]+[IVXLCDM0-9]|[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})*[\s\u{feff}]+\S|\([A-Za-z0-9_]{1,3}\)[\s\u{feff}])",
+            r"^(?:(?:ARTICLE|Article|PART|Part|DIVISION|Division|Section|SECTION|SCHEDULE|Schedule|EXHIBIT|Exhibit|ANNEX|Annex|APPENDIX|Appendix|BOOK|Book|TITLE|Title|CHAPTER|Chapter|PARTIE|Partie|LIVRE|Livre|TITRE|Titre|CHAPITRE|Chapitre)[\s\u{feff}]+[IVXLCDM0-9]|[0-9]{1,3}\.[0-9]{1,3}(?:\.[0-9]{1,3})*[\s\u{feff}]+\S|\([A-Za-z0-9_]{1,3}\)[\s\u{feff}])",
         )
         .expect("valid instrument sentence-join grammar")
+    });
+    // A code's article opening its line: its number, a point, and the article's first word
+    // ("49. The courts ...", "9.1. Every ...", "1457. Toute personne ...", "107. (Repealed).").
+    static ARTICLE: OnceLock<Regex> = OnceLock::new();
+    let article = ARTICLE.get_or_init(|| {
+        Regex::new(r#"^[0-9]{1,4}(?:\.[0-9]{1,3})*\.[\s\u{feff}]+["“«(]?\p{Lu}"#)
+            .expect("valid article opening grammar")
     });
     let mut recovered: Option<String> = None;
     let mut previous = None;
     let mut previous_previous = None;
+    // Whether the word before is a heading's, in capitals ("GENERAL POWERS 49. The ..."), and
+    // the word itself: one citing a provision ("article 116. The") opens none.
+    let mut capitals = false;
+    let mut word = (0usize, true);
+    let (mut word_text, mut previous_word) = (String::new(), String::new());
+    // The number of the last article a line was opened for: the next number opens one wherever
+    // it stands ("… s. 11. 0 36. Subject …", "§ 1. — General provisions 116. Service …").
+    let mut last_article = None::<u32>;
     for (byte, character) in text.char_indices() {
+        // A contents list's leader dots ("ADOPTION....... 431.1") end no sentence.
+        let leader = previous == Some('.') && previous_previous == Some('.');
         let preceded_by_terminator = previous.is_some()
+            && !leader
             && (matches!(previous, Some('.' | ';' | ':'))
                 || (matches!(
                     previous,
                     Some(')' | ']' | '"' | '\'' | '\u{201d}' | '\u{2019}' | '\u{00bb}')
                 ) && matches!(previous_previous, Some('.' | ';' | ':'))));
         let after = byte + character.len_utf8();
+        if matches!(character, ' ' | '\t') {
+            if word.0 > 0 {
+                capitals = word.0 >= 2 && word.1;
+            }
+            if !word_text.is_empty() {
+                previous_word = std::mem::take(&mut word_text);
+            }
+            word = (0, true);
+        } else {
+            word_text.push(character);
+            if character.is_alphabetic() {
+                word = (word.0 + 1, word.1 && character.is_uppercase());
+            } else {
+                word = (word.0, false);
+            }
+        }
+        let opens_article = matches!(character, ' ' | '\t') && article.is_match(&text[after..]) && {
+            let number = text[after..].split(['.', ' ']).next().and_then(|value| value.parse::<u32>().ok());
+            let cites = matches!(previous_word.trim_end_matches(['.', ',']).to_lowercase().as_str(),
+                "article" | "articles" | "art" | "arts" | "section" | "sections" | "s" | "ss" | "a" | "aa"
+                | "subsection" | "paragraph" | "alinéa" | "paragraphe");
+            let continues = number.zip(last_article).is_some_and(|(number, last)| number == last || number == last + 1);
+            let opens = !cites && (preceded_by_terminator || capitals || continues);
+            if opens { last_article = number.or(last_article); }
+            opens
+        };
         if matches!(character, ' ' | '\t')
-            && preceded_by_terminator
-            && head.is_match(&text[after..])
+            && (preceded_by_terminator && head.is_match(&text[after..]) || opens_article)
         {
             let recovered = recovered.get_or_insert_with(|| text[..byte].to_owned());
             recovered.push('\n');

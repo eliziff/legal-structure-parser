@@ -2168,7 +2168,18 @@ fn statute_spine_from_lines(
     source: &[Line<'_>],
     provider_refinements: bool,
 ) -> Vec<SectionMark> {
-    let families = collect_section_families(text, source, provider_refinements);
+    let mut families = collect_section_families(text, source, provider_refinements);
+    // A section's number repeated on each of its subsections ("3.02(1) The ...", "3.02(2) A
+    // ...") opens the section once; the later ones are its subsections.
+    for marks in &mut families {
+        let mut last = None::<String>;
+        marks.retain(|mark| {
+            let repeated = last.as_deref() == Some(mark.label.as_str())
+                && repeated_subsection(&text.value[text.byte(mark.content_start)..]);
+            last = Some(mark.label.clone());
+            !repeated
+        });
+    }
     let spine = |allow_hyphen| {
         let result = statute_spine_over(text, allow_hyphen, false, &families, source);
         if result.is_empty() || result.iter().any(|value| inline_section(text, value)) {
@@ -2928,19 +2939,30 @@ impl StructureState {
     }
 }
 
-/// What follows a section's number repeated on a subsection: "(2) The ..." or "(2) [Repealed]
-/// ...", not a reference wrapped onto the line ("(1)(c) of the Act").
+/// What follows a section's number repeated on a subsection: "(2) The ...", "(2) [Repealed]
+/// ...", or a run of repealed subsections ("(7) to (10) [Repealed]", "(1.1) and (1.2)
+/// [Repealed]"), not a reference wrapped onto the line ("(1)(c) of the Act", "(1) and (2) of").
 fn repeated_subsection(rest: &str) -> bool {
-    rest.strip_prefix('(')
-        .and_then(|value| value.split_once(')'))
-        .is_some_and(|(token, text)| {
-            (1..=6).contains(&token.len())
-                && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '.')
-                && text.starts_with([' ', '\t'])
-                && text
-                    .trim_start()
-                    .starts_with(|c: char| c.is_uppercase() || "[\u{201c}\"\u{ab}".contains(c))
-        })
+    fn subsection(value: &str) -> Option<&str> {
+        value
+            .strip_prefix('(')
+            .and_then(|value| value.split_once(')'))
+            .filter(|(token, _)| {
+                (1..=6).contains(&token.len())
+                    && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '.')
+            })
+            .map(|(_, text)| text)
+            .filter(|text| text.starts_with([' ', '\t']))
+    }
+    subsection(rest).is_some_and(|text| {
+        text.trim_start()
+            .starts_with(|c: char| c.is_uppercase() || "[\u{201c}\"\u{ab}".contains(c))
+            || [" to ", " and "]
+                .into_iter()
+                .filter_map(|joint| text.strip_prefix(joint))
+                .filter_map(subsection)
+                .any(|text| text.trim_start().starts_with('['))
+    })
 }
 
 fn enumerated_children(
@@ -2987,6 +3009,11 @@ fn enumerated_children(
         }
     }
     let seeded_start = markers.first().map(|marker| marker.start);
+    // A section that opens without a numbered subsection has none of its own: its number
+    // repeated further on is quoted, as an amendment quotes the text it substitutes.
+    let numbered = markers
+        .first()
+        .is_some_and(|marker| marker.token.starts_with(|c: char| c.is_ascii_digit()));
     let (mut line_byte, mut line_scalar) = (bytes.start, range.start);
     for raw in value.split_inclusive('\n') {
         let line = raw.strip_suffix('\n').unwrap_or(raw);
@@ -2996,7 +3023,7 @@ fn enumerated_children(
         let trimmed = root
             .strip_prefix("sec")
             .and_then(|number| trimmed.strip_prefix(number))
-            .filter(|rest| line_scalar != range.start && repeated_subsection(rest))
+            .filter(|rest| numbered && line_scalar != range.start && repeated_subsection(rest))
             .unwrap_or(trimmed);
         let newline = line_byte + line.len() < bytes.end;
         if let Some((token, at, _)) = legislation_marker(trimmed, newline) {
@@ -3131,6 +3158,9 @@ pub(super) fn detect_instrument_grammar(
     let (dialects, dialect_markers) = admitted_dialects(text, &mut lines);
     let mut dialect_markers = dialect_markers.into_iter().peekable();
     let mut state = StructureState::default();
+    // Whether the open section opened with a numbered subsection; one that did not has none
+    // of its own (see enumerated_children).
+    let mut numbered = false;
     for line in lines.iter().copied() {
         let value = line.text;
         if value.is_empty() {
@@ -3162,6 +3192,7 @@ pub(super) fn detect_instrument_grammar(
                 depth,
             ));
             state.stack.clear();
+            numbered = false;
             if container {
                 state.container = Some(label);
                 state.section = None;
@@ -3174,6 +3205,7 @@ pub(super) fn detect_instrument_grammar(
                     ""
                 };
                 if let Some((token, at)) = instrument_marker(inline, false, false) {
+                    numbered = token.starts_with(|c: char| c.is_ascii_digit());
                     state.child(token, content_start, text.scalar(content_byte + at));
                 }
             }
@@ -3189,7 +3221,7 @@ pub(super) fn detect_instrument_grammar(
             // A subsection may repeat its section's number, as Manitoba prints "33(2) The ...".
             // A PDF's own lines also hold a parallel column's numbers; its candidate grammar
             // weighs those itself.
-            None if !provider_refinements => None,
+            None if !provider_refinements || !numbered => None,
             None => state.section.as_ref().and_then(|(label, _)| {
                 let number = label.strip_prefix("sec")?;
                 let rest = value
