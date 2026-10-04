@@ -1427,7 +1427,7 @@ struct LabelPart<'a> {
 /// A label's letter suffix as a number ("a" 1, "z" 26, "aa" 27); only letters reach it.
 fn suffix_value(value: &str) -> u32 {
     value.bytes().fold(0u32, |total, value| {
-        total.saturating_mul(26).saturating_add(u32::from(value.to_ascii_uppercase() - b'A' + 1))
+        total.saturating_mul(26).saturating_add(u32::from(value.to_ascii_uppercase().wrapping_sub(b'A').wrapping_add(1)))
     })
 }
 
