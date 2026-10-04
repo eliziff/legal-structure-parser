@@ -85,6 +85,44 @@ pub fn document_outline(structure: &DocumentStructure, pdf: bool, printed: Optio
     }
     entries.retain(|entry| entry.kind != "heading" || counts[&entry.title.to_lowercase()] < 3);
     entries.sort_by_key(|entry| entry.start);
+    // The matter before a judgment's reasons (the style of cause, the court, the parties and
+    // counsel, a date) is no heading of the text: the outline opens with the headings that run
+    // straight into its first numbered paragraph, as its case outline reads it ("[1]"), with no
+    // text between them. An enactment's title pages (its title block, assent, a consolidation's
+    // cover) are the pages before its first section.
+    let start = |node: &StructureNode| node.rendered_range.unwrap_or(node.range).start;
+    // Entries start in the query text: the rendered text where the document has one.
+    let text = structure.rendered_text.as_deref().unwrap_or(&structure.text);
+    let paragraph = crate::case_outline(text).ok().and_then(|outline| outline.into_iter()
+        .find(|entry| entry.kind == "paragraph")).map(|entry| {
+            let (mut utf16, mut scalar) = (0, 0);
+            for character in text.chars() {
+                if utf16 >= entry.start { break; }
+                utf16 += character.len_utf16();
+                scalar += 1;
+            }
+            scalar
+        });
+    if paragraph.is_none() {
+        // A judgment's section nodes are a misreading; an enactment's sections are its printed reading's.
+        if let Some(page) = entries.iter().filter(|entry| entry.kind == "section").filter_map(|entry| entry.page_index).min() {
+            entries.retain(|entry| entry.kind != "heading" || entry.page_index.is_none_or(|at| at >= page));
+        }
+    }
+    if let Some(body) = paragraph {
+        let mut opens = body;
+        for entry in entries.iter().rev().filter(|entry| entry.kind == "heading" && entry.start < body) {
+            // Text lying wholly between this heading and what follows it; the paragraph that
+            // opens the body, whatever its parts, is not between.
+            let text_between = structure.nodes.iter().any(|node| matches!(node.kind,
+                NodeKind::Prose | NodeKind::List | NodeKind::Table | NodeKind::Paragraph)
+                && start(node) > entry.start && node.rendered_range.unwrap_or(node.range).end <= opens);
+            // A date alone ("March 31, 2021") dates the reasons; it heads nothing.
+            if text_between || !legal_citations::cues::layout_heading_text_plausible(&entry.title) { break; }
+            opens = entry.start;
+        }
+        entries.retain(|entry| entry.kind != "heading" || entry.start >= opens);
+    }
     let mut heading = None;
     for entry in &mut entries {
         if entry.kind == "heading" { heading = Some(entry.level); }
