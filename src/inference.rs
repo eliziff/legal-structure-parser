@@ -1889,8 +1889,8 @@ fn expand_descendants<'a>(
         }
         let root = section_key(&parent.label).next();
         // A provision inserted after one whose own number is not printed ("668 and 669
-        // [Repealed]" then "669.1") sits under the parent before it: its number runs from the
-        // parent's up to the next parent's.
+        // [Repealed]" then "669.1") sits under the parent before it: its whole number is the one
+        // right after the parent's, and the next parent's is higher still.
         let next_root = parents.peek().and_then(|value| section_key(&value.label).next());
         let mut descendants = Vec::new();
         let mut counts = HashMap::<&str, usize>::new();
@@ -1898,7 +1898,7 @@ fn expand_descendants<'a>(
             let own = section_key(&mark.label).next();
             if matches!(mark.style, SectionStyle::Dot | SectionStyle::DotTerm)
                 && mark.label.contains('.')
-                && (own == root || own > root && next_root.is_none_or(|next| own < Some(next)))
+                && (own == root || own == root.map(|root| root + 1) && next_root.is_some_and(|next| own < Some(next)))
             {
                 descendants.push(mark);
                 *counts.entry(mark.label.as_str()).or_default() += 1;
