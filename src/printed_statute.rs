@@ -60,6 +60,39 @@ fn provision_label(line: &str) -> &str {
     rest
 }
 
+/// A line's text with its provision's number set apart from what follows it: a print that runs a
+/// subsection's number into its marginal note ("50.4(9)Extension of time", as Westlaw prints a
+/// statute) is read as "50.4(9) Extension of time".
+fn spaced(text: &str) -> String {
+    let rest = provision_label(text);
+    let label = &text[..text.len() - rest.len()];
+    if label.ends_with(')') && rest.starts_with(char::is_uppercase) { format!("{label} {rest}") } else { text.to_owned() }
+}
+
+/// A line as the instrument grammar reads it, where the print repeats a section's number before
+/// each of its subsections ("50.4(1) …", "50.4(2) …", as Westlaw prints a statute): the section's
+/// number before its first subsection, set apart ("50.4 (1) …"), and only the subsection's after
+/// it ("(2) …"). `section` is the section the reading is in.
+fn sectioned(text: &str, section: &mut Option<String>) -> String {
+    // A section's number printed alone opens it.
+    if text.starts_with(|c: char| c.is_ascii_digit()) && provision_label(text).trim_end_matches('.').is_empty()
+        && !text.contains('(') {
+        *section = Some(text.trim_end_matches('.').to_owned());
+        return text.to_owned();
+    }
+    if !text.starts_with(|c: char| c.is_ascii_digit()) || !provision_opening(text) { return text.to_owned(); }
+    let end = text.find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '\u{2010}' | '\u{2011}'))).unwrap_or(text.len());
+    let (number, rest) = text.split_at(end);
+    let number = number.trim_end_matches('.');
+    if !rest.starts_with('(') {
+        *section = Some(number.to_owned());
+        return text.to_owned();
+    }
+    if section.as_deref() == Some(number) { return rest.to_owned(); }
+    *section = Some(number.to_owned());
+    format!("{number} {rest}")
+}
+
 /// A line of a provision as the reading takes it: the PDF lines printed on it, in order.
 struct Row {
     text: String,
@@ -89,7 +122,7 @@ fn rows<'a>(lines: impl Iterator<Item = PrintedLine<'a>>) -> Vec<(Row, u32)> {
     let mut rows = Vec::<(Row, u32)>::new();
     let mut lines = lines.into_iter().peekable();
     while let Some(line) = lines.next() {
-        let mut row = Row { text: line.text.trim().to_owned(), rect: line.rect, ids: vec![line.id.to_owned()], labelled: false };
+        let mut row = Row { text: spaced(line.text.trim()), rect: line.rect, ids: vec![line.id.to_owned()], labelled: false };
         if label(&line) {
             if let Some(text) = lines.next_if(|text| text.page == line.page
                 && text.rect[0] >= line.rect[2] && same_row(&text.rect, &line.rect)) {
@@ -242,9 +275,19 @@ impl PrintedStatute {
         let nodes = nodes.into_iter().zip(skip).filter(|(_, skip)| !skip).filter_map(|((index, heading, mut found, pages), _)| {
             if let Some(label) = pending.take() {
                 let first = &mut found[0];
-                first.text = format!("{} {}", label.text, first.text);
-                first.ids.splice(0..0, label.ids);
-                first.labelled = true;
+                // A number alone before a line that opens with its own number ("50.4" over "50.4(1) …")
+                // or with a paragraph's letter ("3" over "(a) …"), or set past the middle of the line
+                // after it (a folio at the page's foot), is no provision's number: a page's folio, or a
+                // section's number its subsections repeat.
+                let opens = first.text.trim();
+                let folio = provision_label(opens).len() < opens.len()
+                    || opens.strip_prefix('(').is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_lowercase()))
+                    || label.rect[0] > (first.rect[0] + first.rect[2]) / 2.0;
+                if !folio {
+                    first.text = format!("{} {}", label.text, first.text);
+                    first.ids.splice(0..0, label.ids);
+                    first.labelled = true;
+                }
             }
             // A number alone is no heading, whatever its type.
             if found.len() == 1 && provision_label(found[0].text.trim()).trim_end_matches('.').is_empty() {
@@ -253,6 +296,7 @@ impl PrintedStatute {
             }
             Some((index, heading, found, pages))
         }).collect::<Vec<_>>();
+        let mut section = None;
         for (index, heading, found, found_pages) in nodes {
             let (left, right) = found.iter().fold((f64::MAX, f64::MIN), |(left, right), line|
                 (left.min(line.rect[0]), right.max(line.rect[2])));
@@ -273,7 +317,7 @@ impl PrintedStatute {
             // Whether the paragraph being read is a history note.
             let mut noted = history_note(first) || carried && open_note;
             for (at, line) in found.iter().enumerate() {
-                let line_text = line.text.trim();
+                let line_text = &sectioned(line.text.trim(), &mut section);
                 let note = history_note(line_text);
                 // A provision's number opening a line starts a new paragraph after one that
                 // ended, or after a marginal note: a line standing alone above it. A history
@@ -304,7 +348,19 @@ impl PrintedStatute {
         }
         // Read as statuteOutline reads text: lines recovered where provisions open run together
         // ("... a. 48. 49. The courts ..."); the recovery only breaks lines, so offsets hold.
-        let structure = analyze_instrument(text, document.document_id.clone(), &[], true).ok()?;
+        // A section's number printed alone over its first subsection ("11.4" / "(1) Critical
+        // supplier …") is read as the grammar reads the two on one line ("11.4  (1) …"): the
+        // paragraph break between them becomes two spaces, so offsets hold here too.
+        let mut joined = String::with_capacity(text.len());
+        let paragraphs = text.split("\n\n").collect::<Vec<_>>();
+        for (at, paragraph) in paragraphs.iter().enumerate() {
+            joined.push_str(paragraph);
+            if at + 1 == paragraphs.len() { break; }
+            let alone = paragraph.starts_with(|c: char| c.is_ascii_digit())
+                && provision_label(paragraph).trim_end_matches('.').is_empty() && !paragraph.contains('(');
+            joined.push_str(if alone && paragraphs[at + 1].starts_with('(') { "  " } else { "\n\n" });
+        }
+        let structure = analyze_instrument(joined, document.document_id.clone(), &[], true).ok()?;
         Some(Self { structure, parts })
     }
 
