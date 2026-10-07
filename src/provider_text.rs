@@ -3,7 +3,7 @@ use crate::{
     Derivation, DetectionProfile, DocumentInput, DocumentStructure, EngineError, EvidenceKind,
     NativeClaim, NodeKind, ScalarRange, ScalarText, Scope, ScopeKind,
 };
-use aho_corasick::AhoCorasick;
+use aho_corasick::{AhoCorasick, AhoCorasickKind};
 use regex::Regex;
 use serde::Deserialize;
 use std::borrow::Cow;
@@ -191,7 +191,13 @@ fn provider_claims(coordinates: &ScalarText<'_>, map: &ProviderSectionMap) -> Ve
     }
     let mut matches = vec![(0, 0, 0); patterns.len()];
     if !patterns.is_empty() {
-        let matcher = AhoCorasick::new(patterns).unwrap();
+        // The patterns are whole section texts, a state per byte of the act: the automaton
+        // that is quickest to build serves the one pass best. Its kind does not change the
+        // matches.
+        let matcher = AhoCorasick::builder()
+            .kind(Some(AhoCorasickKind::NoncontiguousNFA))
+            .build(patterns)
+            .unwrap();
         for found in matcher.find_overlapping_iter(text) {
             let matched = &mut matches[found.pattern().as_usize()];
             if matched.2 < 2 && found.start() >= matched.1 {
