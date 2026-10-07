@@ -22,6 +22,20 @@ pub fn detect_structure_candidate_runs(value: &str) -> Vec<StructureCandidateRun
             })
         })
         .collect::<Vec<_>>();
+    // A section read from nothing but its number, on the line of a number the text counts from
+    // 1, is a numbered paragraph; its sub-items are then read as lists of their own.
+    let counted = runs
+        .iter()
+        .filter(|run| run.rooted && run.consecutive)
+        .flat_map(|run| run.markers.iter().map(|marker| marker.marker_range.start))
+        .collect::<HashSet<_>>();
+    let paragraphs = (0..points.len())
+        .filter(|index| {
+            parent_indexes[*index].is_none()
+                && points[*index].direct
+                && counted.contains(&points[*index].range.start)
+        })
+        .collect::<HashSet<_>>();
     let mut grouped = BTreeMap::<usize, (Vec<StructureMarkerCandidate>, bool)>::new();
     for (index, point) in points.into_iter().enumerate() {
         let grammar_value = point.label;
@@ -30,6 +44,9 @@ pub fn detect_structure_candidate_runs(value: &str) -> Vec<StructureCandidateRun
         while let Some(parent) = parent_indexes[root] {
             root = parent;
             level += 1;
+        }
+        if paragraphs.contains(&root) {
+            continue;
         }
         let content_start = point.content_start;
         let entry = grouped.entry(root).or_insert_with(|| (Vec::new(), true));
@@ -169,7 +186,7 @@ pub(crate) fn resolve_structure_candidates<'a>(
     runs: &'a [StructureCandidateRun],
     evidence: &'a [CandidateEvidenceV2],
 ) -> Result<Vec<ResolvedCandidate<'a>>, EngineError> {
-    let provision_starts = runs
+    let mut provision_starts = runs
         .iter()
         .filter(|run| run.grammar == CandidateGrammar::Hierarchy && run.rooted && run.consecutive)
         .flat_map(|run| {
@@ -216,6 +233,43 @@ pub(crate) fn resolve_structure_candidates<'a>(
             )));
         }
     }
+    // A count from 1 a quarter or more of whose numbers open prose that no section reads is the
+    // text's numbered paragraphs: the sections read on its other numbers yield to it, and
+    // their sub-items are read as lists.
+    let mut yielded = HashSet::new();
+    for run in runs
+        .iter()
+        .filter(|run| run.grammar == CandidateGrammar::Numeric && run.rooted && run.consecutive)
+    {
+        let (read, unread) = run.markers.iter().partition::<Vec<_>, _>(|candidate| {
+            provision_starts.contains(&candidate.marker_range.start)
+        });
+        let prose = unread
+            .iter()
+            .filter(|candidate| {
+                evidence_by_candidate
+                    .get(candidate.id.as_str())
+                    .is_some_and(|item| {
+                        item.observations
+                            .contains(&CandidateObservationV2::BodyProseFlow)
+                    })
+            })
+            .count();
+        if !read.is_empty() && 4 * prose >= run.markers.len() {
+            yielded.extend(read.iter().map(|candidate| candidate.marker_range.start));
+        }
+    }
+    provision_starts.retain(|start| !yielded.contains(start));
+    // A count most of whose numbers open sections is the sections'; the numbers among them
+    // that open none are no paragraphs.
+    let sectioned = |run: &StructureCandidateRun| {
+        4 * run
+            .markers
+            .iter()
+            .filter(|candidate| provision_starts.contains(&candidate.marker_range.start))
+            .count()
+            > 3 * run.markers.len()
+    };
     let mut resolved = Vec::new();
     for run in runs {
         for candidate in &run.markers {
@@ -245,6 +299,7 @@ pub(crate) fn resolve_structure_candidates<'a>(
                 && run.rooted
                 && run.consecutive
                 && !provision_starts.contains(&candidate.marker_range.start)
+                && !sectioned(run)
                 && observations.contains(&CandidateObservationV2::BodyProseFlow)
             {
                 (
@@ -254,6 +309,7 @@ pub(crate) fn resolve_structure_candidates<'a>(
             } else if run.grammar == CandidateGrammar::Hierarchy
                 && run.rooted
                 && run.consecutive
+                && !yielded.contains(&run.markers[0].marker_range.start)
                 && (observations.contains(&CandidateObservationV2::BodyProseFlow)
                     || observations.contains(&CandidateObservationV2::SectionHeading))
             {
@@ -391,6 +447,35 @@ pub fn resolve_structure_graph(
     for node in &nodes {
         *counters.entry(node.kind).or_default() += 1;
     }
+    // A note whose label is a number of a count of paragraphs, most of whose numbers are no
+    // note's, is that paragraph's number read as a note.
+    let paragraph_numbers = runs
+        .iter()
+        .filter(|run| run.grammar == CandidateGrammar::Numeric && run.rooted && run.consecutive)
+        .filter_map(|run| {
+            let labels = run
+                .markers
+                .iter()
+                .filter(|marker| {
+                    note_pairs.iter().any(|pair| {
+                        marker.marker_range.start <= pair.label.range.start
+                            && pair.label.range.end <= marker.marker_range.end
+                    })
+                })
+                .map(|marker| marker.marker_range)
+                .collect::<Vec<_>>();
+            (4 * labels.len() <= run.markers.len()).then_some(labels)
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    let note_pairs = note_pairs
+        .iter()
+        .filter(|pair| {
+            !paragraph_numbers.iter().any(|range| {
+                range.start <= pair.label.range.start && pair.label.range.end <= range.end
+            })
+        })
+        .collect::<Vec<_>>();
     let mut notes = Vec::with_capacity(note_pairs.len());
     let mut pair_ids = HashSet::new();
     for pair in note_pairs {
@@ -603,6 +688,24 @@ pub fn resolve_structure_graph(
         nodes.push(node);
     }
 
+    // A section that yielded to the numbered paragraph on its line stands for that paragraph,
+    // so its sub-items are the paragraph's.
+    let hierarchy = runs
+        .iter()
+        .filter(|run| run.grammar == CandidateGrammar::Hierarchy)
+        .flat_map(|run| run.markers.iter().map(|candidate| candidate.id.as_str()))
+        .collect::<HashSet<_>>();
+    for resolved in &resolved_candidates {
+        let id = resolved.candidate.id.as_str();
+        if resolved.role.is_none() && hierarchy.contains(id) && !candidate_node_ids.contains_key(id)
+        {
+            if let Some(&index) =
+                identities.get(&(NodeKind::Paragraph, resolved.candidate.marker_range.start))
+            {
+                candidate_node_ids.insert(id, index);
+            }
+        }
+    }
     let resolved_by_candidate = resolved_candidates
         .iter()
         .map(|resolved| (resolved.candidate.id.as_str(), resolved))

@@ -551,26 +551,103 @@ fn next_boundary(boundaries: &[usize], start: usize, end: usize) -> usize {
 
 pub(super) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateRun> {
     let all = paragraph_markers(text, false);
+    // Each style's numbering from 1 is read first, as the longest unbroken count: a number
+    // quoted from another judgment, or a list's own count, is left out of it rather than
+    // breaking it. What no count claims is grouped as before. A second count set within an
+    // earlier one is a list quoted in its paragraphs or a parallel column's (a bilingual text's
+    // other language), not paragraphs.
+    let mut chains = Vec::new();
+    let mut scopes = Vec::new();
+    for style in [MarkerStyle::Bracket, MarkerStyle::Dot, MarkerStyle::Bare] {
+        let mut rest = all
+            .iter()
+            .filter(|marker| marker.style == style)
+            .cloned()
+            .collect::<Vec<_>>();
+        let first = chains.len();
+        loop {
+            let (mut chain, _) = rooted_chain(&rest);
+            if chain.len() < 2 {
+                break;
+            }
+            // A count resumes past a few numbers its printer skipped.
+            while let Some(resumed) = chain.last().and_then(|last| {
+                rest.iter()
+                    .filter(|marker| {
+                        marker.start > last.start
+                            && (last.number + 2..=last.number + 8).contains(&marker.number)
+                    })
+                    .min_by_key(|marker| marker.start)
+            }) {
+                let mut tail = vec![resumed.clone()];
+                for marker in rest.iter().filter(|marker| marker.start > resumed.start) {
+                    if marker.number == tail.last().unwrap().number + 1 {
+                        tail.push(marker.clone());
+                    }
+                }
+                if tail.len() < 2 {
+                    break;
+                }
+                chain.extend(tail);
+            }
+            let claimed = chain
+                .iter()
+                .map(|marker| marker.start)
+                .collect::<HashSet<_>>();
+            rest.retain(|marker| !claimed.contains(&marker.start));
+            let within = chains[first..].iter().any(|prior: &Vec<Marker>| {
+                let span = prior[0].start..=prior.last().unwrap().start;
+                2 * chain
+                    .iter()
+                    .filter(|marker| span.contains(&marker.start))
+                    .count()
+                    >= chain.len()
+            });
+            if !within {
+                chains.push(chain);
+            }
+        }
+        scopes.extend(
+            monotone_scopes(&rest, 8)
+                .into_iter()
+                .filter(|scope| scope.len() >= 2),
+        );
+    }
     // A lone year or number rejected by every sequence cannot terminate prose.
-    let scopes = [MarkerStyle::Bracket, MarkerStyle::Dot, MarkerStyle::Bare]
-        .into_iter()
-        .flat_map(|style| monotone_scopes(all.iter().filter(|marker| marker.style == style), 8))
-        .filter(|scope| scope.len() >= 2)
-        .collect::<Vec<_>>();
-    let mut boundaries = scopes
+    let mut boundaries = chains
         .iter()
+        .chain(&scopes)
         .flatten()
         .map(|marker| marker.start)
+        .chain([text.len()])
         .collect::<Vec<_>>();
-    boundaries.push(text.len());
     boundaries.sort_unstable();
     boundaries.dedup();
+    // A count's numbers end only at its own next number, or past its last at another count's.
+    let chain_boundaries = chains
+        .iter()
+        .map(|chain| {
+            let span = chain[0].start..chain.last().unwrap().start;
+            let mut ends = chains
+                .iter()
+                .flatten()
+                .map(|marker| marker.start)
+                .filter(|start| !span.contains(start))
+                .chain(chain.iter().map(|marker| marker.start))
+                .chain([text.len()])
+                .collect::<Vec<_>>();
+            ends.sort_unstable();
+            ends.dedup();
+            ends
+        })
+        .collect::<Vec<_>>();
     let mut runs = Vec::new();
-    for scope in scopes {
+    for (index, scope) in chains.into_iter().chain(scopes).enumerate() {
+        let boundaries = chain_boundaries.get(index).unwrap_or(&boundaries);
         let candidates = scope
             .iter()
             .map(|marker| {
-                let end = next_boundary(&boundaries, marker.start, text.len());
+                let end = next_boundary(boundaries, marker.start, text.len());
                 let surface_label = text
                     .slice(marker.start..marker.content_start)
                     .expect("numeric marker range is bounded")
@@ -603,9 +680,11 @@ pub(super) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
             grammar: CandidateGrammar::Numeric,
             range,
             rooted: scope[0].number == 1,
-            consecutive: scope
-                .windows(2)
-                .all(|pair| pair[1].number == pair[0].number + 1),
+            // A count is unbroken but for the numbers its printer skipped.
+            consecutive: index < chain_boundaries.len()
+                || scope
+                    .windows(2)
+                    .all(|pair| pair[1].number == pair[0].number + 1),
             markers: candidates,
         });
     }
@@ -2647,6 +2726,8 @@ pub(super) struct GrammarPoint {
     pub(super) parent_label: Option<String>,
     pub(super) content_start: usize,
     pub(super) diagnostic: Option<&'static str>,
+    /// A section read from its number alone, in a text with no statute's run of sections.
+    pub(super) direct: bool,
 }
 
 impl GrammarPoint {
@@ -2907,6 +2988,7 @@ impl StructureState {
                 parent_label: Some(parent),
                 content_start,
                 diagnostic: Some(code),
+                direct: false,
             },
             depth,
         ));
@@ -3255,6 +3337,13 @@ fn instrument_top(value: &str, direct: bool) -> Option<(String, usize, bool)> {
     ).captures(value) {
         let container = found.get(1).is_some();
         let (word, token, rest) = if container { (1, 2, 3) } else { (4, 5, 6) };
+        // "Article 40.4.2°" at a line's start is a provision cited by a wrapped sentence.
+        if value[found.get(token)?.end()..]
+            .strip_prefix('.')
+            .is_some_and(|after| after.starts_with(|c: char| c.is_ascii_digit()))
+        {
+            return None;
+        }
         let heading = &found[rest];
         if !container
             && !(heading.is_empty()
@@ -3330,6 +3419,7 @@ pub(super) fn detect_instrument_grammar(
                     parent_label: (!container).then(|| state.container.clone()).flatten(),
                     content_start,
                     diagnostic: None,
+                    direct: direct && !container,
                 },
                 depth,
             ));
