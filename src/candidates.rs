@@ -822,10 +822,13 @@ pub fn resolve_structure_graph(
             && generated_node_ids.contains(&index))
         .then(|| {
             let range = nodes[index].range;
+            // A list holds its items, never a paragraph its extent happens to run over.
             let holds = |candidate: usize| {
                 candidate != index
                     && (nodes[candidate].range.start, nodes[candidate].range.end)
                         != (range.start, range.end)
+                    && !(nodes[index].kind == NodeKind::Paragraph
+                        && nodes[candidate].kind == NodeKind::List)
             };
             // The page a node sits on yields to a section the source itself supplies around it.
             smallest_container(&nodes, &enclosures, range, holds)
