@@ -75,20 +75,23 @@ impl DocumentQuery {
         // on the first one instead of scanning the document first.
         self.searched.store(true, Ordering::Relaxed);
         let document = FragmentText::Document(self, document, &text);
+        let first = js_trim(text.slice_utf16(start.start..start.end).unwrap_or_default());
+        let last = js_trim(text.slice_utf16(end.start..end.end).unwrap_or_default());
         Some(
             match (
-                unique_paragraph_edge(
-                    js_trim(text.slice_utf16(start.start..start.end).unwrap_or_default()),
-                    document,
-                    true,
-                ),
-                unique_paragraph_edge(
-                    js_trim(text.slice_utf16(end.start..end.end).unwrap_or_default()),
-                    document,
-                    false,
-                ),
+                unique_paragraph_edge(first, document, ParagraphEdge::Opening),
+                unique_paragraph_edge(last, document, ParagraphEdge::Closing),
             ) {
-                (Some(start), Some(end)) => text_range_directive(&start, &end),
+                // A browser looks for a range's end after its start: where one paragraph's opening
+                // and closing words overlap, the end is never found, so the paragraph is the target.
+                (Some((_, opening, words)), Some((_, closing, _)))
+                    if start == end && opening + closing > words =>
+                {
+                    unique_paragraph_edge(first, document, ParagraphEdge::Whole)
+                        .map(|(paragraph, _, _)| text_directive(&paragraph, "", ""))
+                        .unwrap_or_default()
+                }
+                (Some((opening, ..)), Some((closing, ..))) => text_range_directive(&opening, &closing),
                 _ => String::new(),
             },
         )
@@ -3151,11 +3154,20 @@ pub fn text_fragment_plan(
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum ParagraphEdge {
+    Opening,
+    Closing,
+    Whole,
+}
+
+/// Words at a paragraph's `edge` that occur once in the document, with how many of the
+/// paragraph's words they take and how many it has.
 fn unique_paragraph_edge(
     text: &str,
     document: FragmentText<'_>,
-    from_start: bool,
-) -> Option<String> {
+    edge: ParagraphEdge,
+) -> Option<(String, usize, usize)> {
     static LEADING_PARAGRAPH_LABEL: OnceLock<Regex> = OnceLock::new();
     let line = text
         .split('\n')
@@ -3170,22 +3182,26 @@ fn unique_paragraph_edge(
     .into_owned();
     let scalar = ScalarText::new(&block);
     let words = search::tokenize_with_scalar(&block, &scalar);
-    for length in [12, 16, 8, 24, 32, 6, 4, 2] {
-        if words.len() < length {
+    let whole = [words.len()];
+    let lengths: &[usize] = match edge {
+        ParagraphEdge::Whole => &whole,
+        _ => &[12, 16, 8, 24, 32, 6, 4, 2],
+    };
+    for &length in lengths {
+        if length == 0 || words.len() < length {
             continue;
         }
-        let edge = if from_start {
-            &words[..length]
-        } else {
-            &words[words.len() - length..]
+        let span = match edge {
+            ParagraphEdge::Closing => &words[words.len() - length..],
+            _ => &words[..length],
         };
         let target = normalize_blank_whitespace(
             scalar
-                .slice_utf16(edge[0].start..edge.last()?.end)
+                .slice_utf16(span[0].start..span.last()?.end)
                 .unwrap_or_default(),
         );
         if directive_match_count(document, &target, "", "") == 1 {
-            return Some(target);
+            return Some((target, length, words.len()));
         }
     }
     None
