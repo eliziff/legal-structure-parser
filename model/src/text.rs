@@ -26,14 +26,38 @@ impl ScalarCoordinates {
         }
         const STRIDE: usize = 256;
         let mut offsets = Vec::new();
-        let mut scalar_len = 0;
-        let mut utf16_len = 0;
-        for (scalar, (byte, character)) in value.char_indices().enumerate() {
-            if scalar % STRIDE == 0 {
-                offsets.push([scalar, byte, utf16_len]);
+        // A run of ASCII advances all three axes together, so its checkpoints are placed
+        // without reading its characters one by one.
+        let bytes = value.as_bytes();
+        let (mut byte, mut scalar_len, mut utf16_len) = (0usize, 0usize, 0usize);
+        while byte < bytes.len() {
+            let run = bytes[byte..]
+                .iter()
+                .position(|value| !value.is_ascii())
+                .unwrap_or(bytes.len() - byte);
+            let mut checkpoint = scalar_len.next_multiple_of(STRIDE);
+            while checkpoint < scalar_len + run {
+                let ahead = checkpoint - scalar_len;
+                offsets.push([checkpoint, byte + ahead, utf16_len + ahead]);
+                checkpoint += STRIDE;
             }
-            scalar_len = scalar + 1;
-            utf16_len += character.len_utf16();
+            byte += run;
+            scalar_len += run;
+            utf16_len += run;
+            if let Some(&lead) = bytes.get(byte) {
+                if scalar_len % STRIDE == 0 {
+                    offsets.push([scalar_len, byte, utf16_len]);
+                }
+                // A lead byte gives its character's length; four bytes are two UTF-16 units.
+                let (width, units) = match lead {
+                    0xF0.. => (4, 2),
+                    0xE0.. => (3, 1),
+                    _ => (2, 1),
+                };
+                byte += width;
+                scalar_len += 1;
+                utf16_len += units;
+            }
         }
         if offsets.last().is_none_or(|offset| offset[0] != scalar_len) {
             offsets.push([scalar_len, value.len(), utf16_len]);
