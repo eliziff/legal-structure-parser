@@ -124,6 +124,45 @@ pub fn detect_structure_candidate_runs(value: &str) -> Vec<StructureCandidateRun
     });
     runs
 }
+
+/// The indexes of the nodes of `kinds`, in the order they open.
+#[cfg(feature = "structure-inference")]
+fn nodes_by_start(nodes: &[StructureNode], kinds: &[NodeKind]) -> Vec<usize> {
+    let mut found = (0..nodes.len())
+        .filter(|index| kinds.contains(&nodes[*index].kind))
+        .collect::<Vec<_>>();
+    found.sort_by_key(|index| nodes[*index].range.start);
+    found
+}
+
+/// The shortest of `containers` (node indexes in the order they open) holding `range` that
+/// `accept` takes, the first in node order among equals: the node a scan of every node finds.
+/// A node opening further back is no shorter than the distance to `range`'s end, so the scan
+/// back from `range` stops once that distance passes the shortest found.
+#[cfg(feature = "structure-inference")]
+fn smallest_container(
+    nodes: &[StructureNode],
+    containers: &[usize],
+    range: ScalarRange,
+    accept: impl Fn(usize) -> bool,
+) -> Option<usize> {
+    let opened = containers.partition_point(|index| nodes[*index].range.start <= range.start);
+    let mut best: Option<(usize, usize)> = None;
+    for &index in containers[..opened].iter().rev() {
+        let candidate = nodes[index].range;
+        if best.is_some_and(|(length, _)| range.end.saturating_sub(candidate.start) > length) {
+            break;
+        }
+        if range.end <= candidate.end && accept(index) {
+            let key = (candidate.end - candidate.start, index);
+            if best.is_none_or(|best| key < best) {
+                best = Some(key);
+            }
+        }
+    }
+    best.map(|(_, index)| index)
+}
+
 #[cfg(feature = "structure-inference")]
 pub(crate) fn resolve_structure_candidates<'a>(
     runs: &'a [StructureCandidateRun],
@@ -640,20 +679,25 @@ pub fn resolve_structure_graph(
         }
     }
 
+    // Kinds and ranges stay as they are while parents are assigned: the nodes that may hold
+    // another are ordered by where they open once.
+    let sections = nodes_by_start(&nodes, &[NodeKind::Section]);
     for index in 0..nodes.len() {
         if nodes[index].kind != NodeKind::Heading || nodes[index].parent_id.is_some() {
             continue;
         }
-        nodes[index].parent_id = nodes
-            .iter()
-            .filter(|section| {
-                section.kind == NodeKind::Section
-                    && section.range.start <= nodes[index].range.start
-                    && nodes[index].range.end <= section.range.end
-            })
-            .min_by_key(|section| section.range.end - section.range.start)
-            .map(|section| section.id.clone());
+        nodes[index].parent_id = smallest_container(&nodes, &sections, nodes[index].range, |_| true)
+            .map(|section| nodes[section].id.clone());
     }
+    let enclosures = nodes_by_start(
+        &nodes,
+        &[
+            NodeKind::Page,
+            NodeKind::Section,
+            NodeKind::Paragraph,
+            NodeKind::List,
+        ],
+    );
 
     for index in 0..nodes.len() {
         if (!generated_node_ids.contains(&index) && !pending_parents.contains_key(&index))
@@ -673,25 +717,13 @@ pub fn resolve_structure_graph(
             && !has_declared_parent
             && generated_node_ids.contains(&index))
         .then(|| {
-            nodes
-                .iter()
-                .enumerate()
-                .filter(|(candidate, node)| {
-                    *candidate != index
-                        && matches!(
-                            node.kind,
-                            NodeKind::Page
-                                | NodeKind::Section
-                                | NodeKind::Paragraph
-                                | NodeKind::List
-                        )
-                        && node.range.start <= nodes[index].range.start
-                        && nodes[index].range.end <= node.range.end
-                        && (node.range.start, node.range.end)
-                            != (nodes[index].range.start, nodes[index].range.end)
-                })
-                .min_by_key(|(_, node)| node.range.end - node.range.start)
-                .map(|(_, node)| node.id.clone())
+            let range = nodes[index].range;
+            smallest_container(&nodes, &enclosures, range, |candidate| {
+                candidate != index
+                    && (nodes[candidate].range.start, nodes[candidate].range.end)
+                        != (range.start, range.end)
+            })
+            .map(|candidate| nodes[candidate].id.clone())
         })
         .flatten();
         nodes[index].parent_id = candidate_parent.or(enclosing);
