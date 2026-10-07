@@ -619,6 +619,78 @@ pub(super) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
     runs
 }
 
+/// Items opened by the same bullet at a line's start, one run for each bullet: a glyph and
+/// its text, or the glyph alone on a line its text follows. Each item runs to the next item.
+pub(super) fn raw_bullet_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateRun> {
+    const BULLETS: &[char] = &[
+        '\u{2022}', '\u{25cf}', '\u{25aa}', '\u{25e6}', '\u{2023}', '\u{2043}', '\u{25a0}',
+        '\u{25a1}', '\u{f0b7}', '\u{f0a7}', '\u{f0d8}', '\u{2013}', '\u{2014}', '-', '*',
+    ];
+    let mut by_glyph = BTreeMap::<char, Vec<(usize, usize)>>::new();
+    for line in lines(text) {
+        let trimmed = line.text.trim_start_matches(instrument_space);
+        let Some(glyph) = trimmed
+            .chars()
+            .next()
+            .filter(|glyph| BULLETS.contains(glyph))
+        else {
+            continue;
+        };
+        let rest = &trimmed[glyph.len_utf8()..];
+        let content = rest.trim_start_matches(instrument_space);
+        let alone = content.is_empty() && line.byte_end < text.value.len();
+        if !alone && (content.len() == rest.len() || content.starts_with(BULLETS)) {
+            continue;
+        }
+        let at = line.byte_start + line.text.len() - trimmed.len();
+        by_glyph.entry(glyph).or_default().push((
+            text.scalar(at),
+            text.scalar(at + trimmed.len() - content.len()),
+        ));
+    }
+    let mut starts = by_glyph
+        .values()
+        .flatten()
+        .map(|(start, _)| *start)
+        .chain([text.len()])
+        .collect::<Vec<_>>();
+    starts.sort_unstable();
+    let mut runs = Vec::new();
+    for (glyph, items) in by_glyph.into_iter().filter(|(_, items)| items.len() >= 2) {
+        let markers = items
+            .iter()
+            .map(|&(start, content_start)| StructureMarkerCandidate {
+                id: String::new(),
+                range: ScalarRange {
+                    start,
+                    end: next_boundary(&starts, start, text.len()),
+                },
+                marker_range: ScalarRange {
+                    start,
+                    end: start + 1,
+                },
+                label: glyph.to_string(),
+                grammar_value: format!("bullet:{glyph}"),
+                parent_candidate_id: None,
+                level: 0,
+                content_start,
+            })
+            .collect::<Vec<_>>();
+        runs.push(StructureCandidateRun {
+            id: String::new(),
+            grammar: CandidateGrammar::Enumerator,
+            range: ScalarRange {
+                start: markers[0].range.start,
+                end: markers.iter().map(|marker| marker.range.end).max().unwrap(),
+            },
+            rooted: true,
+            consecutive: true,
+            markers,
+        });
+    }
+    runs
+}
+
 pub(super) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateRun> {
     struct RawEnumerator {
         value: u32,
