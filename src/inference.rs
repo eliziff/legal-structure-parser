@@ -228,7 +228,9 @@ fn median(values: &mut [usize]) -> f64 {
 }
 
 pub(super) fn heading_enumerator(value: &str) -> bool {
-    cached_regex!(VALUE, r"^(?:\([\p{L}\p{N}]{1,5}\)|\p{L}[.)]|[IVXLCDM]{1,4}[.)]|[ivxlcdm]{1,4}[.)]|\d{1,3}(?:\.\d{1,3})*[.)])$").is_match(value)
+    // Every enumerator the grammar admits ends in a point or a closing parenthesis.
+    value.ends_with(['.', ')'])
+        && cached_regex!(VALUE, r"^(?:\([\p{L}\p{N}]{1,5}\)|\p{L}[.)]|[IVXLCDM]{1,4}[.)]|[ivxlcdm]{1,4}[.)]|\d{1,3}(?:\.\d{1,3})*[.)])$").is_match(value)
 }
 
 fn level_opens(value: &str) -> bool {
@@ -298,7 +300,7 @@ pub(super) fn formal_heading(value: &str) -> bool {
 pub(super) fn heading_levels(value: &str) -> Option<Vec<String>> {
     let heading = trim_leading_parenthetical(value);
     if heading.is_empty()
-        || utf16_len(heading) > 120
+        || utf16_longer(heading, 120)
         || heading.chars().any(|value| ";![]{}".contains(value))
     {
         return None;
@@ -336,12 +338,25 @@ pub(super) fn heading_levels(value: &str) -> Option<Vec<String>> {
     Some(levels)
 }
 
+/// Whether a value runs past `limit` UTF-16 code units, read no further than that: a char
+/// is never fewer UTF-8 bytes than UTF-16 units, so a value no longer in bytes is not read.
+fn utf16_longer(value: &str, limit: usize) -> bool {
+    let mut length = 0;
+    value.len() > limit
+        && value.chars().any(|character| {
+            length += character.len_utf16();
+            length > limit
+        })
+}
+
 pub(super) fn sentence_heading(value: &str, following: &str) -> bool {
     let heading = trim_leading_parenthetical(value);
+    if utf16_longer(heading, 120) {
+        return false;
+    }
     let mut words = heading.split_whitespace();
     let word_count = words.clone().count();
-    utf16_len(heading) <= 120
-        && (4..=18).contains(&word_count)
+    (4..=18).contains(&word_count)
         && heading.chars().next().is_some_and(char::is_uppercase)
         && words.any(|word| word.chars().next().is_some_and(char::is_lowercase))
         && !heading.chars().any(|value| "[].,;:!?".contains(value))
@@ -2341,9 +2356,25 @@ fn status_sections(text: &ScalarText<'_>, allow_hyphen: bool) -> Vec<SectionMark
         VALUE,
         r"(?imu)^[ \t]*(?:\*\*)?(\d{1,4})(?:[ \t]+(?:to|through|and|à|a|et)[ \t]+|[ \t]*([-–—])[ \t]*)(\d{1,4})(?:\*\*)?[ \t]*[,;:]?[ \t]*(?:\[[ \t]*)?(?:repealed|revoked|abrog(?:ated|é|ée|és|ées)|renumbered|spent|not (?:yet )?in force|omitted)\b"
     );
-    regex
-        .captures_iter(text.value)
-        .filter_map(|capture| {
+    // A range is read within its line: the grammar crosses no line break. It opens its line with
+    // its first number, after spaces and emphasis; a number in other digits than ASCII reads as
+    // none, so only a line opening with an ASCII digit is tried.
+    let mut line_start = 0;
+    text.value
+        .split('\n')
+        .filter_map(|line| {
+            let start = line_start;
+            line_start += line.len() + 1;
+            let opening = line.trim_start_matches([' ', '\t']);
+            let opening = opening.strip_prefix("**").unwrap_or(opening);
+            opening
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_digit)
+                .then(|| regex.captures(line).map(|capture| (start, capture)))
+                .flatten()
+        })
+        .filter_map(|(line_start, capture)| {
             if allow_hyphen && capture.get(2).is_some() {
                 return None;
             }
@@ -2355,8 +2386,8 @@ fn status_sections(text: &ScalarText<'_>, allow_hyphen: bool) -> Vec<SectionMark
             let whole = capture.get(0).unwrap();
             Some(SectionMark {
                 label: from.to_string(),
-                start: text.scalar(whole.start() + leading_ascii_space(whole.as_str())),
-                content_start: text.scalar(whole.end()),
+                start: text.scalar(line_start + whole.start() + leading_ascii_space(whole.as_str())),
+                content_start: text.scalar(line_start + whole.end()),
                 style: SectionStyle::Integer,
                 family: SectionFamily::Range,
                 aliases: (from + 1..=to).map(|value| value.to_string()).collect(),

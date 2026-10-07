@@ -192,11 +192,13 @@ pub fn case_outline(text: &str) -> Result<Vec<CaseOutlineEntry>, EngineError> {
         }
         // A heading's path, a level at a time; a sentence heading is one level.
         let heading = |index: usize, line: &str| {
-            let following = lines.get(index + 1).map_or_else(
-                || slice(end, (end + 200).min(chars.len())),
-                |(_, _, next): &(usize, usize, String)| next.clone(),
-            );
-            heading_levels(line).or_else(|| sentence_heading(line, after_marker(&following)).then(|| vec![line.to_owned()]))
+            heading_levels(line).or_else(|| {
+                let sentence = match lines.get(index + 1) {
+                    Some((_, _, next)) => sentence_heading(line, after_marker(next)),
+                    None => sentence_heading(line, after_marker(&slice(end, (end + 200).min(chars.len())))),
+                };
+                sentence.then(|| vec![line.to_owned()])
+            })
         };
         // Before the reasons, only the headings that open them count: the enumerated ones just
         // before the first paragraph, and the line above them ("REASONS FOR JUDGMENT"); the
@@ -226,7 +228,7 @@ pub fn case_outline(text: &str) -> Result<Vec<CaseOutlineEntry>, EngineError> {
                 push(entries, "item", depth + 1, token.to_owned(), *from, *to, rest);
                 continue;
             }
-            let Some(levels) = heading(index, line).filter(|_| index >= opening) else {
+            let Some(levels) = (index >= opening).then(|| heading(index, line)).flatten() else {
                 push(entries, "text", 0, String::new(), *from, *to, line);
                 continue;
             };
@@ -279,12 +281,14 @@ pub fn case_outline(text: &str) -> Result<Vec<CaseOutlineEntry>, EngineError> {
         let mut body_end = body_end;
         while lines.len() > 1 {
             let (from, to) = lines[lines.len() - 1];
-            let (line, above) = (slice(from, to), slice(lines[lines.len() - 2].0, lines[lines.len() - 2].1));
-            let following = slice(body_end, (body_end + 200).min(chars.len()));
+            let above = slice(lines[lines.len() - 2].0, lines[lines.len() - 2].1);
             let ended = above.trim_end().ends_with(['.', ':', ';', '?', '!', '"', '\u{201d}', ')']);
-            let heading = !line.trim_start().starts_with('(') && (heading_levels(&line).is_some()
-                || sentence_heading(&line, after_marker(&following)));
-            if !ended || !heading {
+            let heading = || {
+                let line = slice(from, to);
+                !line.trim_start().starts_with('(') && (heading_levels(&line).is_some()
+                    || sentence_heading(&line, after_marker(&slice(body_end, (body_end + 200).min(chars.len())))))
+            };
+            if !ended || !heading() {
                 break;
             }
             body_end = from;
