@@ -822,12 +822,25 @@ pub fn resolve_structure_graph(
             && generated_node_ids.contains(&index))
         .then(|| {
             let range = nodes[index].range;
-            smallest_container(&nodes, &enclosures, range, |candidate| {
+            let holds = |candidate: usize| {
                 candidate != index
                     && (nodes[candidate].range.start, nodes[candidate].range.end)
                         != (range.start, range.end)
-            })
-            .map(|candidate| nodes[candidate].id.clone())
+            };
+            // The page a node sits on yields to a section the source itself supplies around it.
+            smallest_container(&nodes, &enclosures, range, holds)
+                .and_then(|best| {
+                    if nodes[best].kind != NodeKind::Page {
+                        return Some(best);
+                    }
+                    smallest_container(&nodes, &enclosures, range, |candidate| {
+                        nodes[candidate].kind != NodeKind::Page
+                            && !generated_node_ids.contains(&candidate)
+                            && holds(candidate)
+                    })
+                    .or(Some(best))
+                })
+                .map(|candidate| nodes[candidate].id.clone())
         })
         .flatten();
         nodes[index].parent_id = candidate_parent.or(enclosing);
