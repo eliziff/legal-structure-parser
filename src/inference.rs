@@ -564,6 +564,20 @@ pub(super) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
             .filter(|marker| marker.style == style)
             .cloned()
             .collect::<Vec<_>>();
+        // Of two equal numbers, the count takes the one set as most of its style's are: alone
+        // on its line or followed there by its text (a list quoted in a paragraph is the other).
+        let alone = |marker: &Marker| {
+            text.value[text.byte(marker.content_start)..]
+                .chars()
+                .next()
+                .is_none_or(|next| matches!(next, '\n' | '\r'))
+        };
+        let usual = 2 * rest.iter().filter(|marker| alone(marker)).count() >= rest.len();
+        for marker in &mut rest {
+            if alone(marker) == usual {
+                marker.score += 0.25;
+            }
+        }
         let first = chains.len();
         loop {
             let (mut chain, _) = rooted_chain(&rest);
