@@ -165,6 +165,18 @@ impl DocumentInput {
         origin_id: &str,
     ) -> Self {
         let text_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
+        Self::with_sha256(document_id, provider, profile, text, text_sha256, origin_id)
+    }
+
+    /// `new` for a text whose digest the caller already holds.
+    fn with_sha256(
+        document_id: String,
+        provider: &str,
+        profile: DetectionProfile,
+        text: String,
+        text_sha256: String,
+        origin_id: &str,
+    ) -> Self {
         Self {
             document_id,
             provider: provider.to_owned(),

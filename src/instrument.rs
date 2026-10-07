@@ -105,7 +105,9 @@ fn split_instrument_sentence_joins(text: &str) -> Option<String> {
                 capitals = word.0 >= 2 && word.1;
             }
             if !word_text.is_empty() {
-                previous_word = std::mem::take(&mut word_text);
+                // The word's buffer is kept for the next word.
+                std::mem::swap(&mut previous_word, &mut word_text);
+                word_text.clear();
             }
             word = (0, true);
         } else {
@@ -116,7 +118,13 @@ fn split_instrument_sentence_joins(text: &str) -> Option<String> {
                 word = (word.0, false);
             }
         }
-        let opens_article = matches!(character, ' ' | '\t') && article.is_match(&text[after..]) && {
+        // Both grammars open with a digit or a heading's first character: a word that cannot
+        // open either is not tried.
+        let next = text.as_bytes().get(after).copied();
+        let opens_article = matches!(character, ' ' | '\t')
+            && next.is_some_and(|byte| byte.is_ascii_digit())
+            && article.is_match(&text[after..])
+            && {
             let number = text[after..].split(['.', ' ']).next().and_then(|value| value.parse::<u32>().ok());
             let cites = matches!(previous_word.trim_end_matches(['.', ',']).to_lowercase().as_str(),
                 "article" | "articles" | "art" | "arts" | "section" | "sections" | "s" | "ss" | "a" | "aa"
@@ -127,7 +135,13 @@ fn split_instrument_sentence_joins(text: &str) -> Option<String> {
             opens
         };
         if matches!(character, ' ' | '\t')
-            && (preceded_by_terminator && head.is_match(&text[after..]) || opens_article)
+            && (preceded_by_terminator
+                && next.is_some_and(|byte| {
+                    byte.is_ascii_digit()
+                        || matches!(byte, b'(' | b'A' | b'B' | b'C' | b'D' | b'E' | b'L' | b'P' | b'S' | b'T')
+                })
+                && head.is_match(&text[after..])
+                || opens_article)
         {
             let recovered = recovered.get_or_insert_with(|| text[..byte].to_owned());
             recovered.push('\n');
@@ -405,16 +419,15 @@ fn derive_instrument_structure(
             Some(text),
         )
     };
-    let mut input = DocumentInput::new(
+    // The original text's digest is already known; a recovered text carries none.
+    let mut input = DocumentInput::with_sha256(
         document_id,
         "internal",
         DetectionProfile::Instrument,
         input_text,
+        if selected_original { original_sha256.to_owned() } else { String::new() },
         "provider-adapter",
     );
-    if !selected_original {
-        input.text_sha256.clear();
-    }
     input.coverage = crate::whole_document_coverage(scalar_end, |_| CoverageState::Absent);
     let mut structure = crate::derive::derive_trusted_inferred(input, selected_blocks)?;
     structure.selected_hypothesis = Some(selected);
