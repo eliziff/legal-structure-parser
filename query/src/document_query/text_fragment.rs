@@ -694,6 +694,28 @@ impl<'a> BrowserReplay<'a> {
         first_word: usize,
         allow_across_lines: bool,
     ) -> Option<PhraseSpan> {
+        self.spelled_term_bounds_at(term, first_word, allow_across_lines)
+            .map(|(matched, _, _)| matched)
+    }
+
+    /// Chromium finds a context term only where white space alone parts it from the text it frames.
+    fn adjoins(&self, end: usize, start: usize) -> bool {
+        end <= start
+            && self
+                .document
+                .slice(end, start)
+                .chars()
+                .all(char::is_whitespace)
+    }
+
+    /// A term's words from `first_word`, with the start and end of the text it matches there,
+    /// its opening and closing punctuation included.
+    fn spelled_term_bounds_at(
+        &self,
+        term: &BrowserSpelledTerm,
+        first_word: usize,
+        allow_across_lines: bool,
+    ) -> Option<(PhraseSpan, usize, usize)> {
         let matched = self.term_at(&term.words, first_word, allow_across_lines)?;
         let source = self.document.tokens();
         let word_start = source[first_word].start;
@@ -717,7 +739,7 @@ impl<'a> BrowserReplay<'a> {
             for end in word_end..=last_end {
                 let rendered = self.fragment_spelling(self.document.slice(start, end));
                 if browser_key(&rendered).eq(&term.key) {
-                    return Some(matched);
+                    return Some((matched, start, end));
                 }
             }
         }
@@ -746,22 +768,25 @@ impl<'a> BrowserReplay<'a> {
         };
         let mut replay = ExactDirectiveReplay::default();
         for &first_word in candidates {
-            let prefix_match = prefix_term
-                .as_ref()
-                .and_then(|prefix| self.spelled_term_at(prefix, first_word, allow_across_lines));
+            let prefix_match = prefix_term.as_ref().and_then(|prefix| {
+                self.spelled_term_bounds_at(prefix, first_word, allow_across_lines)
+            });
             if prefix_term.is_some() && prefix_match.is_none() {
                 continue;
             }
-            let target_first = prefix_match.map_or(first_word, |matched| matched.last_word + 1);
-            let Some(target_match) =
-                self.spelled_term_at(target_term, target_first, allow_across_lines)
+            let target_first =
+                prefix_match.map_or(first_word, |(matched, _, _)| matched.last_word + 1);
+            let Some((target_match, target_start, target_end)) =
+                self.spelled_term_bounds_at(target_term, target_first, allow_across_lines)
             else {
                 continue;
             };
-            if suffix_term.as_ref().is_some_and(|suffix| {
-                self.spelled_term_at(suffix, target_match.last_word + 1, allow_across_lines)
-                    .is_none()
-            }) {
+            if prefix_match.is_some_and(|(_, _, end)| !self.adjoins(end, target_start))
+                || suffix_term.as_ref().is_some_and(|suffix| {
+                    self.spelled_term_bounds_at(suffix, target_match.last_word + 1, allow_across_lines)
+                        .is_none_or(|(_, start, _)| !self.adjoins(target_end, start))
+                })
+            {
                 continue;
             }
             replay.first.get_or_insert(target_match);
@@ -813,8 +838,13 @@ impl<'a> BrowserReplay<'a> {
                 start_from,
                 allow_across_lines,
             )?;
-            let first = if prefix_term.is_some() {
-                self.spelled_term_at(start_term, context.last_word + 1, allow_across_lines)
+            let first = if let Some(prefix) = prefix_term.as_ref() {
+                let context_end = self
+                    .spelled_term_bounds_at(prefix, context.first_word, allow_across_lines)
+                    .map_or(context.end, |(_, _, end)| end);
+                self.spelled_term_bounds_at(start_term, context.last_word + 1, allow_across_lines)
+                    .filter(|(_, start, _)| self.adjoins(context_end, *start))
+                    .map(|(matched, _, _)| matched)
             } else {
                 Some(context)
             };
@@ -832,8 +862,11 @@ impl<'a> BrowserReplay<'a> {
                 };
                 end_from = last.first_word + 1;
                 if suffix_term.as_ref().is_some_and(|suffix| {
-                    self.spelled_term_at(suffix, last.last_word + 1, allow_across_lines)
-                        .is_none()
+                    let last_end = self
+                        .spelled_term_bounds_at(end_term, last.first_word, allow_across_lines)
+                        .map_or(last.end, |(_, _, end)| end);
+                    self.spelled_term_bounds_at(suffix, last.last_word + 1, allow_across_lines)
+                        .is_none_or(|(_, start, _)| !self.adjoins(last_end, start))
                 }) {
                     continue;
                 }
