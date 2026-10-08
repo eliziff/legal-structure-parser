@@ -893,13 +893,20 @@ impl DocumentQuery {
         position: &BlockPosition,
         label: &str,
     ) -> bool {
-        equal_fold(&position_label(document, position), label)
+        let matches = equal_fold(&position_label(document, position), label)
             || document.nodes[position.node]
                 .aliases
                 .as_deref()
                 .unwrap_or_default()
                 .iter()
-                .any(|alias| equal_fold(alias, label))
+                .any(|alias| equal_fold(alias, label));
+        matches
+            && (position.prose.is_none()
+                || !self.positions(document).iter().any(|candidate| {
+                    candidate.prose.is_none()
+                        && document.nodes[candidate.node].kind == NodeKind::Paragraph
+                        && self.position_matches(document, candidate, label)
+                }))
     }
 
     fn position_resolves(
