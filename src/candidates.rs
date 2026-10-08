@@ -233,6 +233,23 @@ pub(crate) fn resolve_structure_candidates<'a>(
             )));
         }
     }
+    // A quotation's numbers are the quoted text's: they open none of this text's sections or
+    // paragraphs, and decide nothing about them.
+    let quoted = |candidate: &StructureMarkerCandidate| {
+        evidence_by_candidate
+            .get(candidate.id.as_str())
+            .is_some_and(|item| {
+                item.observations
+                    .contains(&CandidateObservationV2::Quotation)
+            })
+    };
+    let quoted_starts = runs
+        .iter()
+        .flat_map(|run| &run.markers)
+        .filter(|candidate| quoted(candidate))
+        .map(|candidate| candidate.marker_range.start)
+        .collect::<HashSet<_>>();
+    provision_starts.retain(|start| !quoted_starts.contains(start));
     // A count from 1 a quarter or more of whose numbers open prose that no section reads is the
     // text's numbered paragraphs: the sections read on its other numbers yield to it, and
     // their sub-items are read as lists.
@@ -247,12 +264,13 @@ pub(crate) fn resolve_structure_candidates<'a>(
         let prose = unread
             .iter()
             .filter(|candidate| {
-                evidence_by_candidate
-                    .get(candidate.id.as_str())
-                    .is_some_and(|item| {
-                        item.observations
-                            .contains(&CandidateObservationV2::BodyProseFlow)
-                    })
+                !quoted(candidate)
+                    && evidence_by_candidate
+                        .get(candidate.id.as_str())
+                        .is_some_and(|item| {
+                            item.observations
+                                .contains(&CandidateObservationV2::BodyProseFlow)
+                        })
             })
             .count();
         if !read.is_empty() && 4 * prose >= run.markers.len() {
@@ -293,9 +311,11 @@ pub(crate) fn resolve_structure_candidates<'a>(
                         | CandidateObservationV2::TranscriptLineNumber
                 )
             });
+            let quotation = observations.contains(&CandidateObservationV2::Quotation);
             let (role, rule) = if excluded {
                 (None, ResolutionRuleV2::DirectExclusion)
             } else if run.grammar == CandidateGrammar::Numeric
+                && !quotation
                 && run.rooted
                 && run.consecutive
                 && !provision_starts.contains(&candidate.marker_range.start)
@@ -307,6 +327,7 @@ pub(crate) fn resolve_structure_candidates<'a>(
                     ResolutionRuleV2::RootedNumericProse,
                 )
             } else if run.grammar == CandidateGrammar::Hierarchy
+                && !quotation
                 && run.rooted
                 && run.consecutive
                 && !yielded.contains(&run.markers[0].marker_range.start)
@@ -710,15 +731,39 @@ pub fn resolve_structure_graph(
         .iter()
         .map(|resolved| (resolved.candidate.id.as_str(), resolved))
         .collect::<HashMap<_, _>>();
+    // A list lies within one of the text's numbered paragraphs: a run's items on either side of
+    // one are two lists.
+    let mut paragraph_starts = resolved_candidates
+        .iter()
+        .filter(|resolved| resolved.role == Some(ResolvedRole::NumberedParagraph))
+        .map(|resolved| resolved.candidate.range.start)
+        .collect::<Vec<_>>();
+    paragraph_starts.sort_unstable();
+    let mut lists = Vec::<Vec<&ResolvedCandidate>>::new();
     for run in runs {
-        let items = run
-            .markers
-            .iter()
-            .filter_map(|candidate| {
-                let resolved = resolved_by_candidate.get(candidate.id.as_str()).copied()?;
-                (resolved.role == Some(ResolvedRole::ListItem)).then_some(resolved)
-            })
-            .collect::<Vec<_>>();
+        let mut prior: Option<usize> = None;
+        for candidate in &run.markers {
+            let Some(resolved) = resolved_by_candidate
+                .get(candidate.id.as_str())
+                .copied()
+                .filter(|resolved| resolved.role == Some(ResolvedRole::ListItem))
+            else {
+                continue;
+            };
+            let start = candidate.range.start;
+            let parted = prior.is_none_or(|prior| {
+                paragraph_starts
+                    .get(paragraph_starts.partition_point(|at| *at <= prior))
+                    .is_some_and(|at| *at <= start)
+            });
+            if parted {
+                lists.push(Vec::new());
+            }
+            lists.last_mut().expect("a list was opened").push(resolved);
+            prior = Some(start);
+        }
+    }
+    for items in lists {
         if items.len() < 2 {
             continue;
         }

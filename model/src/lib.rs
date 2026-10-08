@@ -215,6 +215,8 @@ pub enum CandidateObservationV2 {
     ContentsRow,
     IndexRow,
     TranscriptLineNumber,
+    /// The marker sits in a passage the document quotes: its numbering is the quoted text's.
+    Quotation,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
