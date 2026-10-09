@@ -510,7 +510,6 @@ pub fn resolve_structure_graph(
             || pair.body.page_indexes.is_empty()
             || pair.body.line_ids.is_empty()
             || pair.body.line_ids.iter().any(String::is_empty)
-            || pair.references.is_empty()
             || pair.references.iter().any(|reference| {
                 !reference.range.valid(scalar_len)
                     || reference.range.start == reference.range.end
