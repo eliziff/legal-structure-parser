@@ -337,6 +337,20 @@ pub(crate) fn resolve_structure_candidates<'a>(
             let quotation = observations.contains(&CandidateObservationV2::Quotation);
             let (role, rule) = if excluded {
                 (None, ResolutionRuleV2::DirectExclusion)
+            // The parser's composed reading of the marker's line decides first where it has one.
+            } else if observations.contains(&CandidateObservationV2::ComposedParagraph)
+                && !quotation
+                && run.grammar != CandidateGrammar::Enumerator
+            {
+                (
+                    Some(ResolvedRole::NumberedParagraph),
+                    ResolutionRuleV2::RootedNumericProse,
+                )
+            } else if observations.contains(&CandidateObservationV2::ComposedListItem) {
+                (
+                    Some(ResolvedRole::ListItem),
+                    ResolutionRuleV2::ListItemLayout,
+                )
             } else if run.grammar == CandidateGrammar::Numeric
                 && !quotation
                 && run.rooted

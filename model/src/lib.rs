@@ -217,6 +217,12 @@ pub enum CandidateObservationV2 {
     TranscriptLineNumber,
     /// The marker sits in a passage the document quotes: its numbering is the quoted text's.
     Quotation,
+    /// The witnesses of the marker's line, composed over its page and document, read it as a list's
+    /// item.
+    ComposedListItem,
+    /// The witnesses of the marker's line, composed over its page and document, read it as a
+    /// numbered paragraph.
+    ComposedParagraph,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
