@@ -9,6 +9,8 @@ use std::sync::OnceLock;
 mod analysis;
 #[cfg(feature = "citator")]
 mod citator;
+#[cfg(feature = "citator")]
+mod canlii;
 mod definitions;
 use legal_structure_model::document;
 mod docx_lint;
@@ -38,6 +40,8 @@ use legal_structure_model::text;
 pub use analysis::{EngineAnalysis, STRUCTURE_ANALYSIS};
 #[cfg(feature = "citator")]
 pub use citator::*;
+#[cfg(feature = "citator")]
+pub use canlii::{canlii_case_url, canlii_court_route, canlii_law_url};
 pub use definitions::*;
 pub(crate) use document::node_depths;
 pub use document::{
