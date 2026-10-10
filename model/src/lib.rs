@@ -166,14 +166,14 @@ pub struct Origin {
     pub id: String,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Deserialize, Serialize)]
 pub enum CandidateGrammar {
     Numeric,
     Hierarchy,
     Enumerator,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct StructureMarkerCandidate {
     pub id: String,
     pub range: ScalarRange,
@@ -185,7 +185,7 @@ pub struct StructureMarkerCandidate {
     pub content_start: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct StructureCandidateRun {
     pub id: String,
     pub grammar: CandidateGrammar,
@@ -195,7 +195,7 @@ pub struct StructureCandidateRun {
     pub markers: Vec<StructureMarkerCandidate>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct CandidateEvidenceV2 {
     pub candidate_id: String,
     pub page_indexes: Vec<usize>,
@@ -219,21 +219,21 @@ pub enum CandidateObservationV2 {
     Quotation,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct TextAnchorV2 {
     pub range: ScalarRange,
     pub page_index: usize,
     pub line_id: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct NoteBodyV2 {
     pub range: ScalarRange,
     pub page_indexes: Vec<usize>,
     pub line_ids: Vec<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct NotePairClaimV2 {
     pub pair_id: String,
     pub kind: NoteKindV2,
