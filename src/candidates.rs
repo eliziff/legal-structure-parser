@@ -915,6 +915,8 @@ pub fn resolve_structure_graph(
         nodes[index].parent_id = candidate_parent.or(enclosing);
     }
 
+    nest_by_numbering(&mut nodes, &scalar_text);
+
     diagnostics.extend(runs.iter().map(|run| {
         let node_ids = run
             .markers
@@ -960,4 +962,152 @@ pub fn resolve_structure_graph(
         notes,
         diagnostics,
     ))
+}
+
+/// How a marker counts: its brackets, and whether it counts in digits, dotted digits, letters or
+/// roman numerals of either case, or is a bullet.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Family {
+    wrap: &'static str,
+    count: &'static str,
+}
+
+fn roman_value(token: &str) -> Option<u32> {
+    let lower = token.to_ascii_lowercase();
+    if lower.is_empty() || !lower.chars().all(|c| "ivxlc".contains(c)) {
+        return None;
+    }
+    let digit = |c: char| match c {
+        'i' => 1,
+        'v' => 5,
+        'x' => 10,
+        'l' => 50,
+        _ => 100,
+    };
+    let values = lower.chars().map(digit).collect::<Vec<u32>>();
+    let mut total = 0;
+    for (index, value) in values.iter().enumerate() {
+        if values.get(index + 1).is_some_and(|next| next > value) {
+            total -= *value as i64;
+        } else {
+            total += *value as i64;
+        }
+    }
+    u32::try_from(total).ok().filter(|value| *value > 0 && *value < 90)
+}
+
+/// A marker's family and the value it counts, read whole: "(a)", "1.", "iv)", "[12]", "2.3", "•".
+/// A single letter that is also a roman numeral reads as a letter when `letter` says the letters
+/// of its brackets stand open at the letter before it.
+fn marker_family(marker: &str, letter: impl Fn(Family, u32) -> bool) -> Option<(Family, u32)> {
+    let text = marker.trim();
+    if text.chars().count() == 1 && "•-–—*▪◦●○■□➢✓·o".contains(text) {
+        return Some((Family { wrap: "•", count: "bullet" }, 1));
+    }
+    let (wrap, inner) = if let Some(inner) = text.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+        ("()", inner)
+    } else if let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+        ("[]", inner)
+    } else if let Some(inner) = text.strip_suffix(')') {
+        (")", inner)
+    } else if let Some(inner) = text.strip_suffix('.') {
+        (".", inner)
+    } else {
+        ("", text)
+    };
+    let inner = inner.trim();
+    if inner.is_empty() || inner.chars().count() > 12 {
+        return None;
+    }
+    if inner.chars().all(|c| c.is_ascii_digit()) {
+        return Some((Family { wrap, count: "1" }, inner.parse().ok()?));
+    }
+    let parts = inner.split('.').collect::<Vec<_>>();
+    if parts.len() > 1 && parts.iter().all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())) {
+        let count = match parts.len() {
+            2 => "1.1",
+            3 => "1.1.1",
+            _ => "1.1.1.1",
+        };
+        return Some((Family { wrap, count }, parts.last()?.parse().ok()?));
+    }
+    let single = inner.chars().count() == 1 && inner.chars().all(|c| c.is_ascii_alphabetic());
+    let letter_value = |c: char| u32::from(c.to_ascii_lowercase()) - u32::from('a') + 1;
+    if let Some(value) = roman_value(inner) {
+        let upper = inner.chars().all(|c| c.is_ascii_uppercase());
+        let lower = inner.chars().all(|c| c.is_ascii_lowercase());
+        if upper || lower {
+            if single {
+                let c = inner.chars().next()?;
+                let alpha = Family { wrap, count: if upper { "A" } else { "a" } };
+                if letter(alpha, letter_value(c)) {
+                    return Some((alpha, letter_value(c)));
+                }
+            }
+            return Some((Family { wrap, count: if upper { "I" } else { "i" } }, value));
+        }
+    }
+    if single {
+        let c = inner.chars().next()?;
+        let count = if c.is_ascii_uppercase() { "A" } else { "a" };
+        return Some((Family { wrap, count }, letter_value(c)));
+    }
+    None
+}
+
+/// Every numbered item placed by the document's numbering, read over the whole document: a marker
+/// whose family stands open is that item's sibling and closes the families opened under it; a
+/// family opening at its first value nests under the item before it ("(a)" under "1.", "(i)" under
+/// "(a)"); one opening anywhere else continues an outer count and starts over at the base. A
+/// heading of the document's own closes every family. Each level of the numbering is a level of the
+/// structure.
+fn nest_by_numbering(nodes: &mut [StructureNode], text: &ScalarText<'_>) {
+    let mut order = (0..nodes.len())
+        .filter(|index| {
+            matches!(
+                nodes[*index].kind,
+                NodeKind::ListItem | NodeKind::Paragraph | NodeKind::Section | NodeKind::Heading
+            )
+        })
+        .collect::<Vec<_>>();
+    order.sort_by_key(|index| (nodes[*index].range.start, std::cmp::Reverse(nodes[*index].range.end)));
+    let mut stack = Vec::<(Family, usize, u32)>::new();
+    for index in order {
+        let node = &nodes[index];
+        let barrier = node.kind == NodeKind::Heading
+            || node.kind == NodeKind::Section && node.grammar.as_deref() == Some("heading_section");
+        if barrier {
+            stack.clear();
+            continue;
+        }
+        let Some(marker) = node
+            .marker_range
+            .and_then(|range| text.slice(range.start..range.end))
+        else {
+            continue;
+        };
+        let open = |family: Family, value: u32| {
+            stack
+                .iter()
+                .any(|(open, _, last)| *open == family && last + 1 == value)
+        };
+        let Some((family, value)) = marker_family(marker, open) else {
+            continue;
+        };
+        if let Some(position) = stack.iter().rposition(|(open, _, _)| *open == family) {
+            stack.truncate(position + 1);
+            stack[position] = (family, index, value);
+            if position > 0 {
+                let parent = nodes[stack[position - 1].1].id.clone();
+                nodes[index].parent_id = Some(parent);
+            }
+        } else if value == 1 && !stack.is_empty() {
+            let parent = nodes[stack.last().expect("open family").1].id.clone();
+            nodes[index].parent_id = Some(parent);
+            stack.push((family, index, value));
+        } else {
+            stack.clear();
+            stack.push((family, index, value));
+        }
+    }
 }
