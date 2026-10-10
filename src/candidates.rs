@@ -233,6 +233,29 @@ pub(crate) fn resolve_structure_candidates<'a>(
             )));
         }
     }
+    // A count of numbers printed with their period ("1.", "2.") that the count from 1 reads is the
+    // text's numbered paragraphs, not its sections: a statute prints its sections' numbers bare.
+    // Their sub-items are then lists.
+    let counted_starts = runs
+        .iter()
+        .filter(|run| run.grammar == CandidateGrammar::Numeric && run.rooted && run.consecutive)
+        .flat_map(|run| run.markers.iter().map(|candidate| candidate.marker_range.start))
+        .collect::<HashSet<_>>();
+    let period_counted = |run: &StructureCandidateRun| {
+        run.grammar == CandidateGrammar::Hierarchy
+            && run.markers.first().is_some_and(|first| {
+                let label = first.label.trim();
+                label.ends_with('.')
+                    && label[..label.len() - 1].chars().all(|c| c.is_ascii_digit())
+                    && counted_starts.contains(&first.marker_range.start)
+            })
+    };
+    let paragraph_runs = runs
+        .iter()
+        .filter(|run| period_counted(run))
+        .flat_map(|run| run.markers.iter().map(|candidate| candidate.marker_range.start))
+        .collect::<HashSet<_>>();
+    provision_starts.retain(|start| !paragraph_runs.contains(start));
     // A quotation's numbers are the quoted text's: they open none of this text's sections or
     // paragraphs, and decide nothing about them.
     let quoted = |candidate: &StructureMarkerCandidate| {
@@ -328,6 +351,7 @@ pub(crate) fn resolve_structure_candidates<'a>(
                 )
             } else if run.grammar == CandidateGrammar::Hierarchy
                 && !quotation
+                && !period_counted(run)
                 && run.rooted
                 && run.consecutive
                 && !yielded.contains(&run.markers[0].marker_range.start)
@@ -860,10 +884,8 @@ pub fn resolve_structure_graph(
             .and_then(|candidate| candidate_node_ids.get(candidate).copied())
             .filter(|parent| *parent != index)
             .map(|parent| nodes[parent].id.clone());
-        let has_declared_parent = pending_parents.get(&index).is_some_and(Option::is_some);
-        let enclosing = (candidate_parent.is_none()
-            && !has_declared_parent
-            && generated_node_ids.contains(&index))
+        // A declared parent that resolved to nothing leaves its item to whatever node holds it.
+        let enclosing = (candidate_parent.is_none() && generated_node_ids.contains(&index))
         .then(|| {
             let range = nodes[index].range;
             // A list holds its items, never a paragraph its extent happens to run over.
