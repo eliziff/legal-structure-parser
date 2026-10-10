@@ -464,6 +464,73 @@ fn rooted_chain(candidates: &[Marker]) -> (Vec<Marker>, f64) {
     )
 }
 
+/// A rooted count's paragraphs whose numbers a provider's flattened text runs into the line before them, a heading
+/// the heading grammar does not read as one ("the background facts The Primary Will [9] In the Primary Will …",
+/// "… by the end of 2018? [34] The Claimant …", "… Decision Under Review.[8]The Board …") or misprints ("{3] At
+/// the hearing"): a bracketed number at a line's start or after a space or a heading's closing punctuation, and
+/// before a capital or a quotation mark, spaced or not. The count is
+/// read again with them, and where it runs longer the labels it takes join the candidates; the rest are dropped, so
+/// a year's "[2003] OJ" never reaches any other reading.
+fn bridge_glued_labels(text: &ScalarText<'_>, candidates: &mut Vec<Marker>, chain: &mut Vec<Marker>, score: &mut f64) {
+    let held = candidates.iter().map(|value| value.start).collect::<HashSet<_>>();
+    // A note's call is never the count's next number where it stands, so endnotes need no pairing here: a decision
+    // numbering its notes as its paragraphs ("I. Introduction [1] The appellant …" beside "[1] 2012 CM 3009.") would
+    // lose its paragraphs to a pairing by number alone.
+    let mut glued = Vec::new();
+    for line in lines(text) {
+        let mut from = 0;
+        while let Some(offset) = line.text[from..].find(['[', '{']) {
+            let at = from + offset;
+            from = at + 1;
+            // At the line's start or after a space or the punctuation that ends a heading ("Decision Under
+            // Review.[8]"), never after a word, as a note's call runs into it ("Ontario[1]").
+            if at > 0 && !line.text[..at].ends_with(|value: char| value.is_whitespace()
+                || ['.', '?', '!', ':', ';', '"', '\u{201d}', '\u{2019}', ')', ']'].contains(&value))
+            {
+                continue;
+            }
+            // A brace typed for a bracket ("{3] At the hearing") is the same number.
+            let digits = &line.text[at + 1..];
+            let length = digits.bytes().take(4).take_while(u8::is_ascii_digit).count();
+            if length == 0 || !matches!(digits.as_bytes().get(length), Some(b']' | b'}')) {
+                continue;
+            }
+            let end = at + length + 2;
+            let following = line.text[end..].trim_start_matches([' ', '\t']);
+            let number = digits[..length].parse::<u32>().unwrap();
+            let start = text.scalar(line.byte_start + at);
+            if !following.chars().next().is_some_and(|value| value.is_uppercase()
+                || ['"', '\u{201c}', '\u{2018}', '\'', '\u{ab}'].contains(&value))
+            {
+                continue;
+            }
+            if !held.contains(&start) {
+                glued.push(Marker {
+                    number,
+                    start,
+                    content_start: text.scalar(line.byte_start + end),
+                    style: MarkerStyle::Bracket,
+                    score: 0.2,
+                    formal: false,
+                    sentence: false,
+                });
+            }
+        }
+    }
+    if glued.is_empty() {
+        return;
+    }
+    let pool = candidates.iter().chain(&glued).cloned().collect::<Vec<_>>();
+    let (longer, longer_score) = rooted_chain(&pool);
+    if longer.len() <= chain.len() {
+        return;
+    }
+    let used = longer.iter().map(|value| value.start).collect::<HashSet<_>>();
+    candidates.extend(glued.into_iter().filter(|value| used.contains(&value.start)));
+    *chain = longer;
+    *score = longer_score;
+}
+
 fn sole_chain(chain: &[Marker], candidates: &[Marker]) -> bool {
     let claimed = chain
         .iter()
@@ -1186,7 +1253,10 @@ fn detect_paragraphs(
             if style != MarkerStyle::Bare {
                 candidates.append(&mut joined[style_index]);
             }
-            let (chain, score) = rooted_chain(&candidates);
+            let (mut chain, mut score) = rooted_chain(&candidates);
+            if style == MarkerStyle::Bracket {
+                bridge_glued_labels(text, &mut candidates, &mut chain, &mut score);
+            }
             if chain.len() < 2 || endnote_shaped(text, &chain) {
                 continue;
             }
