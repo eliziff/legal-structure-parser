@@ -3155,12 +3155,38 @@ pub fn text_fragment_plan(
     publisher_may_annotate_legal_reference: bool,
     split_html_source_blocks: bool,
 ) -> TextFragmentPlan {
-    let document = TextSearch::new(
+    let document = TextFragmentIndex(TextSearch::new(
         document_text
             .filter(|text| !js_trim(text).is_empty())
             .unwrap_or(block_text),
-    );
-    let source = FragmentText::Text(&document);
+    ));
+    text_fragment_plan_in(
+        block_text,
+        &document,
+        quotes,
+        pdf,
+        publisher_may_annotate_legal_reference,
+        split_html_source_blocks,
+    )
+}
+
+/// A text's word index, built once for the plans of many quotations searched in it.
+pub struct TextFragmentIndex<'a>(TextSearch<'a>);
+
+pub fn text_fragment_index(text: &str) -> TextFragmentIndex<'_> {
+    TextFragmentIndex(TextSearch::new(text))
+}
+
+/// text_fragment_plan with its document text's index already built.
+pub fn text_fragment_plan_in(
+    block_text: &str,
+    document: &TextFragmentIndex<'_>,
+    quotes: &[String],
+    pdf: bool,
+    publisher_may_annotate_legal_reference: bool,
+    split_html_source_blocks: bool,
+) -> TextFragmentPlan {
+    let source = FragmentText::Text(&document.0);
     let base = build_fragment_plan(
         block_text,
         source,

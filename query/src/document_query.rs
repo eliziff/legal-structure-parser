@@ -16,7 +16,10 @@ mod search;
 mod text_fragment;
 use search::{quote_text, quote_words, PhraseOptions, PhraseSpan};
 pub use search::{tokenize_source_text, DocumentWordSpan};
-pub use text_fragment::{text_fragment_plan, TextFragmentPlan, TextFragmentWordInterval};
+pub use text_fragment::{
+    text_fragment_index, text_fragment_plan, text_fragment_plan_in, TextFragmentIndex, TextFragmentPlan,
+    TextFragmentWordInterval,
+};
 
 fn regex(pattern: &'static str, cell: &'static OnceLock<Regex>) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("query regex must compile"))

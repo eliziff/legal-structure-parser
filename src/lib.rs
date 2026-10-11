@@ -29,6 +29,8 @@ use legal_structure_model::locator;
 #[cfg(feature = "native-markup")]
 mod native_markup;
 use legal_structure_model::numeric_sequence;
+#[cfg(feature = "document-query")]
+mod quote_location;
 mod reading_order;
 #[cfg(feature = "provider-text")]
 mod provider_text;
@@ -62,6 +64,11 @@ pub use locator::{normalize_compact_numbered_section_locator, normalize_section_
 #[cfg(feature = "native-markup")]
 pub use native_markup::{analyze_native_markup, legisquebec_statute_text, NativeMarkupInput};
 pub use numeric_sequence::*;
+#[cfg(feature = "document-query")]
+pub use quote_location::{
+    corrected_quote, editorial_quote, locate_quotes_in, quote_text_comparison, verbatim_repair, LocatedQuote,
+    QuoteBlockInput, QuoteComparison, QuoteLocation, QuoteToLocate,
+};
 pub use reading_order::{document_reading_order, ReadingOrderUnit};
 #[cfg(feature = "provider-text")]
 pub use provider_text::{
