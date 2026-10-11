@@ -14,7 +14,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{atomic::AtomicBool, OnceLock};
 
 mod search;
+mod source_text;
 mod text_fragment;
+pub use source_text::TextStatistics;
 use search::{quote_text, quote_words, PhraseOptions, PhraseSpan};
 pub use search::{tokenize_source_text, DocumentWordSpan};
 pub use text_fragment::{
@@ -514,6 +516,7 @@ pub struct DocumentQuery {
     source_paragraphs: OnceLock<Vec<SourceParagraphMarkerPosition>>,
     search: OnceLock<search::SearchIndex>,
     replay: OnceLock<text_fragment::ReplayIndex>,
+    normalized_fragment_text: OnceLock<String>,
 }
 
 impl Default for DocumentQuery {
@@ -537,6 +540,7 @@ impl DocumentQuery {
             source_paragraphs: OnceLock::new(),
             search: OnceLock::new(),
             replay: OnceLock::new(),
+            normalized_fragment_text: OnceLock::new(),
         }
     }
 

@@ -45,6 +45,10 @@ included in the production package.
 inferred from text preserves authoritative facts supplied by a format adapter.
 Create a new `DocumentQuery` when the document or its revision changes.
 
+`DocumentQuery::text_statistics` counts normalized phrases and words while keeping
+the source in the query owner. Its source representation is built once per query;
+callers receive only counts for their requested phrases.
+
 Text inference uses legal-document profiles and domain heuristics. Ambiguous
 numbering and boundaries in combined records may require format evidence;
 exact text lookup remains available independently of inferred paragraph labels.
