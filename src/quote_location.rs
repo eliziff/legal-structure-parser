@@ -746,6 +746,9 @@ pub struct QuoteToLocate {
     pub quote: String,
     #[serde(default)]
     pub scopes: QuoteScopes,
+    /// The quotation's id, which a host's checks of it name the evidence by.
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 /// A located quotation's part in the passage it was found in: the region of the passage, the source's words for the
@@ -791,7 +794,8 @@ pub struct QuoteLocation {
 pub struct LocatedQuote {
     #[serde(rename = "match")]
     pub found: QuoteLocation,
-    pub comparison: QuoteComparison,
+    /// None where the caller asked for the location alone.
+    pub comparison: Option<QuoteComparison>,
 }
 
 fn js_number(text: &str) -> f64 {
@@ -1185,9 +1189,9 @@ fn js_display(value: f64) -> String {
     if value.fract() == 0.0 && value.abs() < 1e21 { format!("{}", value as i64) } else { format!("{value}") }
 }
 
-/// Every quotation of `quotes` located in `text`, its blocks given by their UTF-16 offsets, and compared with the
-/// source's words where it was found (the whole text where it was not).
-pub fn locate_quotes_in(text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate]) -> Vec<LocatedQuote> {
+/// Every quotation of `quotes` located in `text`, its blocks given by their UTF-16 offsets, and with `compare`,
+/// compared with the source's words where it was found (the whole text where it was not).
+pub fn locate_quotes_in(text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate], compare: bool) -> Vec<LocatedQuote> {
     let units = text.encode_utf16().collect::<Vec<_>>();
     let blocks: Vec<Block> = blocks.iter().map(|block| Block { kind: block.kind, label: block.label.clone(), start: block.start,
         text: slice16(&units, block.start, block.end) }).collect();
@@ -1201,11 +1205,11 @@ pub fn locate_quotes_in(text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteT
         let found = located.locate(&item.quote, &item.scopes);
         let passage = [found.correction.region.as_str(), found.text.as_str()].into_iter().find(|value| !value.is_empty())
             .unwrap_or(text);
-        let comparison = if passage == text {
+        let comparison = if !compare { None } else if passage == text {
             let (index, words) = whole.get_or_insert_with(|| (legal_document_query::text_fragment_index(text), SourceWords::new(text)));
-            quote_text_comparison_in(&item.quote, text, index, Some(words))
+            Some(quote_text_comparison_in(&item.quote, text, index, Some(words)))
         } else {
-            quote_text_comparison(&item.quote, passage)
+            Some(quote_text_comparison(&item.quote, passage))
         };
         LocatedQuote { comparison, found }
     }).collect::<Vec<_>>();

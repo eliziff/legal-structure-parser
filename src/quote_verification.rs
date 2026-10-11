@@ -144,6 +144,29 @@ fn repair_suggestion(repair: Repair<'_>) -> Option<String> {
     ))
 }
 
+/// An evidence text's representation, kept for the few latest texts: a source's quotations are checked against
+/// the same text one after another.
+fn evidence_representation(value: &str) -> std::rc::Rc<String> {
+    use std::hash::{Hash, Hasher};
+    thread_local!(static KEPT: std::cell::RefCell<Vec<(u64, std::rc::Rc<String>, std::rc::Rc<String>)>> =
+        Default::default());
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    let hash = hasher.finish();
+    KEPT.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if let Some((.., made)) = kept.iter().find(|(h, text, _)| *h == hash && text.as_str() == value) {
+            return made.clone();
+        }
+        let made = std::rc::Rc::new(representation(value));
+        if kept.len() >= 8 {
+            kept.remove(0);
+        }
+        kept.push((hash, std::rc::Rc::new(value.to_owned()), made.clone()));
+        made
+    })
+}
+
 fn representation(value: &str) -> String {
     // Do not erase apostrophes: only a balanced pair of quotation delimiters may
     // change between single and double when a passage is nested in a quotation.
@@ -528,7 +551,7 @@ pub fn grounded_prose_errors(
         .map(|(core, ..)| core.is_empty())
         .collect::<Vec<_>>();
     for &source in &cited {
-        let available = representation(&source.text);
+        let available = evidence_representation(&source.text);
         let fuzzy = utf16_len(&available) <= MAX_FUZZY_SOURCE_CHARS;
         for (index, (core, expected_fuzzy, altered)) in support.iter().enumerate() {
             if supported[index] {
@@ -551,7 +574,7 @@ pub fn grounded_prose_errors(
         .iter()
         .filter(|source| !cited_evidence_ids.contains(&source.evidence_id))
     {
-        let available = representation(&source.text);
+        let available = evidence_representation(&source.text);
         let fuzzy = utf16_len(&available) <= MAX_FUZZY_SOURCE_CHARS;
         for (index, (core, expected_fuzzy, altered)) in support.iter().enumerate() {
             if supported[index] || elsewhere[index].is_some() || core.is_empty() {
