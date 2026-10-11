@@ -6,7 +6,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
 };
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -85,6 +85,12 @@ pub struct StructureNode {
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anchor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub markup_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub markup_start: Option<usize>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub markup_attributes: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_start: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -126,6 +132,9 @@ impl StructureNode {
             aliases: None,
             parent_id,
             anchor: None,
+            markup_tag: None,
+            markup_start: None,
+            markup_attributes: BTreeMap::new(),
             content_start: None,
             marker_range: None,
             row_span: None,
@@ -185,6 +194,8 @@ pub fn public_structure_label(value: &str) -> Cow<'_, str> {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct NoteReference {
     pub range: ScalarRange,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub anchor: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub page_indexes: Vec<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -228,6 +239,27 @@ pub struct StructureDiagnostic {
     pub node_ids: Vec<String>,
 }
 
+/// Source markup without an inferred legal role. Byte offsets address the
+/// exact markup identified by `DocumentStructure::markup_sha256`; ranges
+/// address the rendered UTF-16 text. Parent indexes refer to markup_elements.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MarkupElement {
+    pub markup_start: usize,
+    pub markup_end: usize,
+    pub tag: String,
+    pub attributes: BTreeMap<String, String>,
+    pub parent: Option<usize>,
+    pub range: ScalarRange,
+}
+
+/// Actual enclosing source elements, nearest parent first. They supply context
+/// outside the markup input and have no invented body-text ranges.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MarkupAncestor {
+    pub tag: String,
+    pub attributes: BTreeMap<String, String>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct DocumentStructure {
     pub schema_version: Cow<'static, str>,
@@ -252,6 +284,12 @@ pub struct DocumentStructure {
     pub scope: Scope,
     pub origins: Vec<Origin>,
     pub nodes: Vec<StructureNode>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub markup_elements: Vec<MarkupElement>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub markup_ancestors: Vec<MarkupAncestor>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub markup_sha256: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub notes: Vec<Note>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -371,6 +409,9 @@ impl DocumentStructure {
             scope,
             origins,
             nodes,
+            markup_elements: Vec::new(),
+            markup_ancestors: Vec::new(),
+            markup_sha256: None,
             notes,
             cited_authorities: Vec::new(),
             definitions: Vec::new(),

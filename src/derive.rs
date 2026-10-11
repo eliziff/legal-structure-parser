@@ -64,6 +64,7 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
     let mut counters = HashMap::<NodeKind, usize>::new();
     let mut generated_parents = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut notes = Vec::new();
     for mut block in inferred {
         let Some(range) = evidence.clip_inference(block.kind.evidence(), block.range) else {
             continue;
@@ -110,6 +111,13 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
         node.label = block.label;
         node.aliases = (!block.aliases.is_empty()).then_some(block.aliases);
         node.content_start = block.content_start;
+        node.marker_range = block.marker_range;
+        if let Some(mut note) = block.note {
+            note.id = format!("note-{}", node.id);
+            note.node_id = node.id.clone();
+            note.body_range = block.range;
+            notes.push(note);
+        }
         nodes.push(node);
     }
     if native_parents
@@ -117,10 +125,18 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
         .chain(&generated_parents)
         .any(Option::is_some)
     {
-        let mut labels = HashMap::with_capacity(nodes.len());
+        let identities = nodes
+            .iter()
+            .enumerate()
+            .map(|(position, node)| (node.id.clone(), position))
+            .collect::<HashMap<_, _>>();
+        let mut labels = HashMap::<String, Vec<usize>>::with_capacity(nodes.len());
         for (position, node) in nodes.iter().enumerate() {
             for label in node.label.iter().chain(node.aliases.iter().flatten()) {
-                labels.insert(label.to_ascii_lowercase(), position);
+                let candidates = labels.entry(label.to_ascii_lowercase()).or_default();
+                if candidates.last() != Some(&position) {
+                    candidates.push(position);
+                }
             }
         }
         for (position, parent) in native_parents
@@ -130,17 +146,44 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
             .enumerate()
         {
             nodes[position].parent_id = parent
-                .and_then(|label| match labels.get(label) {
-                    Some(&position) => Some(position),
-                    None if label.bytes().any(|byte| byte.is_ascii_uppercase()) => {
-                        labels.get(&label.to_ascii_lowercase()).copied()
+                .and_then(|label| {
+                    if let Some(&candidate) = identities.get(label.as_str()) {
+                        return (candidate != position).then_some(candidate);
                     }
-                    None => None,
+                    let candidates = labels
+                        .get(label)
+                        .or_else(|| labels.get(&label.to_ascii_lowercase()))?;
+                    if candidates.len() == 1 {
+                        return candidates
+                            .first()
+                            .copied()
+                            .filter(|&candidate| candidate != position);
+                    }
+                    let child = nodes[position].range;
+                    let containing = candidates.iter().copied().filter(|&candidate| {
+                        let range = nodes[candidate].range;
+                        candidate != position
+                            && range.start <= child.start
+                            && range.end >= child.end
+                    });
+                    // Repeated legal labels belong to their containing source
+                    // scope, not whichever same-labelled node was inserted last.
+                    let span = |candidate: usize| {
+                        nodes[candidate].range.end - nodes[candidate].range.start
+                    };
+                    let first = containing
+                        .clone()
+                        .min_by_key(|&candidate| span(candidate))?;
+                    (containing
+                        .filter(|&candidate| span(candidate) == span(first))
+                        .count()
+                        == 1)
+                        .then_some(first)
                 })
                 .map(|parent_position| nodes[parent_position].id.clone());
         }
     }
-    DocumentStructure::project_scalar_parts(&coordinates, &mut nodes, &mut [], &mut diagnostics);
+    DocumentStructure::project_scalar_parts(&coordinates, &mut nodes, &mut notes, &mut diagnostics);
     drop(coordinates);
     let document_id = std::mem::take(&mut evidence.document_id);
     let provider = std::mem::take(&mut evidence.provider);
@@ -164,7 +207,7 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
         scope,
         origins,
         nodes,
-        Vec::new(),
+        notes,
         diagnostics,
     );
     structure

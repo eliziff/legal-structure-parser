@@ -37,13 +37,20 @@ pub(super) struct SearchIndex {
 }
 
 impl SearchIndex {
-    pub(super) fn with_scalar(text: &str, scalar: &ScalarText<'_>) -> Self {
+    pub(super) fn new(text: &str) -> Self {
         let mut tokens = Vec::new();
         let mut postings = HashMap::<u64, Vec<u32>>::new();
+        // The words come in order: each one's UTF-16 offsets count on from the last one's.
+        let (mut byte, mut utf16) = (0usize, 0usize);
+        let mut at = |to: usize| {
+            utf16 += crate::utf16_len(&text[byte..to]);
+            byte = to;
+            utf16
+        };
         for found in word_regex().find_iter(text) {
             tokens.push(WordOffset {
-                start: scalar.utf16_at_byte(found.start()).expect("token boundary"),
-                end: scalar.utf16_at_byte(found.end()).expect("token boundary"),
+                start: at(found.start()),
+                end: at(found.end()),
             });
             postings
                 .entry(normalized_word_hash(found.as_str()))
@@ -101,10 +108,10 @@ impl DocumentQuery {
     pub(super) fn index_with_text(
         &self,
         document: &DocumentStructure,
-        text: &ScalarText<'_>,
+        _text: &ScalarText<'_>,
     ) -> &SearchIndex {
         self.search
-            .get_or_init(|| SearchIndex::with_scalar(document.query_text(), text))
+            .get_or_init(|| SearchIndex::new(document.query_text()))
     }
 
     pub(super) fn phrase_spans_with_text(

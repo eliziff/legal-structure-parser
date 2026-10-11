@@ -29,17 +29,16 @@ use legal_structure_model::locator;
 #[cfg(feature = "native-markup")]
 mod native_markup;
 use legal_structure_model::numeric_sequence;
+#[cfg(feature = "provider-text")]
+mod provider_text;
 #[cfg(all(feature = "citator", feature = "document-query"))]
 mod journal_titles;
 #[cfg(feature = "document-query")]
 mod quote_location;
-mod reading_order;
-#[cfg(feature = "provider-text")]
-mod provider_text;
 #[cfg(feature = "quote-verification")]
 mod quote_verification;
+mod reading_order;
 mod tables;
-use legal_structure_model::text;
 #[cfg(feature = "structure-inference")]
 pub use analysis::{EngineAnalysis, STRUCTURE_ANALYSIS};
 #[cfg(feature = "citator")]
@@ -49,11 +48,9 @@ pub use canlii::{canlii_case_url, canlii_court_route, canlii_law_url};
 pub use definitions::*;
 pub(crate) use document::node_depths;
 pub use document::{
-    CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, NodeKind, Note, NoteKindV2,
-    NoteReference, StructureDiagnostic, StructureNode,
+    CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,
+    MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, StructureDiagnostic, StructureNode,
 };
-#[cfg(feature = "document-query")]
-pub use legal_document_query::*;
 pub use docx_lint::*;
 pub use docx_numbering::*;
 pub use fingerprint::*;
@@ -62,10 +59,22 @@ pub use footnote_pairing::{pair_numbered_footnotes, NumberedFootnotePairing, Pai
 pub use instrument::*;
 #[cfg(feature = "journal")]
 pub use journal::{journal_document_structure, journal_text_document_structure, JournalPageLabel};
+#[cfg(feature = "document-query")]
+pub use legal_document_query::*;
+use legal_structure_model::text;
+pub use legal_structure_model::AuthoritativeTableCell;
 pub use locator::{normalize_compact_numbered_section_locator, normalize_section_locator};
 #[cfg(feature = "native-markup")]
-pub use native_markup::{analyze_native_markup, legisquebec_statute_text, NativeMarkupInput};
+pub use native_markup::{
+    analyze_native_markup, courtlistener_markup_recipe, courtlistener_source_markups,
+    legisquebec_statute_text, restore_courtlistener_markup, CourtListenerMarkupRecipe,
+    CourtListenerSourceMarkup, NativeMarkupInput,
+};
 pub use numeric_sequence::*;
+#[cfg(feature = "provider-text")]
+pub use provider_text::{
+    provider_text_document_structure, ProviderSectionMap, ProviderTextInput, ProviderTextSourceKind,
+};
 #[cfg(all(feature = "citator", feature = "document-query"))]
 pub use journal_titles::{journal_title_choice, journal_title_searches, JournalTitleHit, JournalTitleSearch};
 #[cfg(feature = "document-query")]
@@ -73,14 +82,9 @@ pub use quote_location::{
     corrected_quote, editorial_quote, locate_quotes_in, quote_text_comparison, verbatim_repair, LocatedQuote,
     QuoteBlockInput, QuoteComparison, QuoteLocation, QuoteToLocate,
 };
-pub use reading_order::{document_reading_order, ReadingOrderUnit};
-#[cfg(feature = "provider-text")]
-pub use provider_text::{
-    provider_text_document_structure, ProviderSectionMap, ProviderTextInput, ProviderTextSourceKind,
-};
 #[cfg(feature = "quote-verification")]
 pub use quote_verification::*;
-pub use legal_structure_model::AuthoritativeTableCell;
+pub use reading_order::{document_reading_order, ReadingOrderUnit};
 pub(crate) use tables::AuthoritativeTables;
 pub(crate) use text::javascript_whitespace;
 pub use text::{
@@ -88,13 +92,13 @@ pub use text::{
     trim_javascript_whitespace, utf16_len, utf16_prefix_ceil, ScalarText, JS_WHITESPACE_CLASS,
 };
 
+pub(crate) use legal_structure_model::EvidenceKind;
 pub use legal_structure_model::{
     CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, DetectionProfile, EngineError,
     NoteBodyV2, NotePairClaimV2, Origin, ResolutionProofV2, ResolutionRuleV2, ScalarRange, Scope,
     ScopeKind, StructureAnalysis, StructureCandidateRun, StructureMarkerCandidate, TextAnchorV2,
     DOCUMENT_STRUCTURE_SCHEMA,
 };
-pub(crate) use legal_structure_model::EvidenceKind;
 pub const ENGINE_SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_ENGINE_SHA256");
 const ENGINE_ORIGIN: &str = "legalpdf.structure-engine";
 
@@ -290,6 +294,8 @@ struct Block {
     aliases: Vec<String>,
     parent_label: Option<String>,
     content_start: Option<usize>,
+    marker_range: Option<ScalarRange>,
+    note: Option<Note>,
     diagnostic: Option<&'static str>,
     source: Derivation,
     origin_id: &'static str,
@@ -304,6 +310,8 @@ impl Block {
             aliases: Vec::new(),
             parent_label: None,
             content_start: None,
+            marker_range: None,
+            note: None,
             diagnostic: None,
             source: Derivation::Heuristic,
             origin_id: ENGINE_ORIGIN,

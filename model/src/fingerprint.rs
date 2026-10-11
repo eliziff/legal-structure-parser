@@ -4,10 +4,11 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-const COMPONENTS: [&str; 12] = [
+const COMPONENTS: [&str; 13] = [
     "identity",
     "text",
     "nodes",
+    "markup",
     "document",
     "notes",
     "authorities",
@@ -32,6 +33,7 @@ pub struct DocumentFingerprint {
 #[serde(rename_all = "camelCase")]
 pub struct DocumentFingerprintCounts {
     pub nodes: usize,
+    pub markup_elements: usize,
     pub notes: usize,
     pub authorities: usize,
     pub definitions: usize,
@@ -86,6 +88,9 @@ pub fn document_fingerprint(document: &DocumentStructure) -> DocumentFingerprint
                     &node.aliases,
                     &node.parent_id,
                     &node.anchor,
+                    &node.markup_tag,
+                    &node.markup_start,
+                    &node.markup_attributes,
                 ),
                 (
                     &node.content_start,
@@ -122,6 +127,14 @@ pub fn document_fingerprint(document: &DocumentStructure) -> DocumentFingerprint
         ("text", text_sha256),
         ("nodes", serialization_sha256(&nodes)),
         (
+            "markup",
+            serialization_sha256(&(
+                &document.markup_sha256,
+                &document.markup_elements,
+                &document.markup_ancestors,
+            )),
+        ),
+        (
             "document",
             serialization_sha256(&(query_text_sha256, rendered_ranges)),
         ),
@@ -147,6 +160,7 @@ pub fn document_fingerprint(document: &DocumentStructure) -> DocumentFingerprint
         serialization_sha256(&COMPONENTS.map(|name| (name, components[name].as_str())));
     let counts = DocumentFingerprintCounts {
         nodes: document.nodes.len(),
+        markup_elements: document.markup_elements.len(),
         notes: document.notes.len(),
         authorities: document.cited_authorities.len(),
         definitions: document.definitions.len(),

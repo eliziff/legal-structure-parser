@@ -640,6 +640,7 @@ pub fn resolve_structure_graph(
             .filter(|reference| seen.insert(reference.range))
             .map(|reference| NoteReference {
                 range: reference.range,
+                anchor: None,
                 page_indexes: vec![reference.page_index],
                 line_ids: vec![reference.line_id.clone()],
             })
@@ -657,6 +658,43 @@ pub fn resolve_structure_graph(
 
     let mut candidate_node_ids = paired_candidate_nodes;
     let mut resolved_candidates = resolved_candidates;
+    // A note's label opens no provision: the items a hierarchy hangs from one are lists, not its
+    // subsections.
+    let note_rooted = runs
+        .iter()
+        .filter(|run| run.grammar == CandidateGrammar::Hierarchy)
+        .filter(|run| {
+            run.markers.first().is_some_and(|root| {
+                root.parent_candidate_id.is_none()
+                    && notes.iter().any(|note| {
+                        root.marker_range.start <= note.label_range.start
+                            && note.label_range.end <= root.marker_range.end
+                    })
+            })
+        })
+        .flat_map(|run| run.markers.iter().map(|candidate| candidate.id.as_str()))
+        .collect::<HashSet<_>>();
+    let note_roots = runs
+        .iter()
+        .filter(|run| note_rooted.contains(run.markers[0].id.as_str()))
+        .map(|run| run.markers[0].id.as_str())
+        .collect::<HashSet<_>>();
+    for resolved in &mut resolved_candidates {
+        if resolved.role == Some(ResolvedRole::Section)
+            && note_rooted.contains(resolved.candidate.id.as_str())
+        {
+            let listed = resolved
+                .proof
+                .observations
+                .contains(&CandidateObservationV2::ListItemLayout);
+            resolved.role = listed.then_some(ResolvedRole::ListItem);
+            resolved.proof.rule = if listed {
+                ResolutionRuleV2::ListItemLayout
+            } else {
+                ResolutionRuleV2::InsufficientEvidence
+            };
+        }
+    }
     for resolved in &mut resolved_candidates {
         if candidate_node_ids.contains_key(resolved.candidate.id.as_str()) {
             continue;
@@ -855,13 +893,51 @@ pub fn resolve_structure_graph(
         });
         nodes.push(node);
         generated_node_ids.insert(index);
-        for item in items
-            .iter()
-            .filter(|item| item.candidate.parent_candidate_id.is_none())
-        {
+        for item in items.iter().filter(|item| {
+            item.candidate
+                .parent_candidate_id
+                .as_deref()
+                .is_none_or(|parent| note_roots.contains(parent))
+        }) {
             if let Some(&index) = candidate_node_ids.get(item.candidate.id.as_str()) {
                 nodes[index].parent_id = Some(id.clone());
             }
+        }
+    }
+
+    // A numbered paragraph holds the lists set after its words before the next paragraph or
+    // heading.
+    let mut paragraphs = (0..nodes.len())
+        .filter(|index| {
+            nodes[*index].kind == NodeKind::Paragraph && generated_node_ids.contains(index)
+        })
+        .collect::<Vec<_>>();
+    paragraphs.sort_by_key(|index| nodes[*index].range.start);
+    let mut lists = (0..nodes.len())
+        .filter(|index| nodes[*index].kind == NodeKind::List && generated_node_ids.contains(index))
+        .collect::<Vec<_>>();
+    lists.sort_by_key(|index| nodes[*index].range.start);
+    let heading_starts = nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Heading)
+        .map(|node| node.range.start)
+        .collect::<Vec<_>>();
+    for list in lists {
+        let range = nodes[list].range;
+        let after = paragraphs.partition_point(|index| nodes[*index].range.start < range.start);
+        let Some(&paragraph) = after.checked_sub(1).and_then(|slot| paragraphs.get(slot)) else {
+            continue;
+        };
+        let held = nodes[paragraph].range;
+        if held.end < range.end
+            && paragraphs
+                .get(after)
+                .is_none_or(|next| nodes[*next].range.start >= range.end)
+            && !heading_starts
+                .iter()
+                .any(|start| held.start < *start && *start < range.end)
+        {
+            nodes[paragraph].range.end = range.end;
         }
     }
 
@@ -916,9 +992,11 @@ pub fn resolve_structure_graph(
                     if nodes[best].kind != NodeKind::Page {
                         return Some(best);
                     }
+                    // So does it to a paragraph read around it.
                     smallest_container(&nodes, &enclosures, range, |candidate| {
                         nodes[candidate].kind != NodeKind::Page
-                            && !generated_node_ids.contains(&candidate)
+                            && (!generated_node_ids.contains(&candidate)
+                                || nodes[candidate].kind == NodeKind::Paragraph)
                             && holds(candidate)
                     })
                     .or(Some(best))

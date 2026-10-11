@@ -150,11 +150,16 @@ pub fn case_outline(text: &str) -> Result<Vec<CaseOutlineEntry>, EngineError> {
         .filter_map(|node| {
             let number = node.label.as_deref()?.strip_prefix("par")?;
             let marker = format!("[{number}]").chars().collect::<Vec<_>>();
-            let end = node.range.end.min(chars.len());
-            let start = (node.range.start..end.saturating_sub(marker.len()) + 1)
+            let paragraph_start = utf16
+                .binary_search(&node.range.start)
+                .expect("paragraph start is a scalar boundary");
+            let end = utf16
+                .binary_search(&node.range.end)
+                .expect("paragraph end is a scalar boundary");
+            let start = (paragraph_start..end.saturating_sub(marker.len()) + 1)
                 .find(|at| chars[*at..].starts_with(&marker))
-                .unwrap_or(node.range.start);
-            Some((start, start + marker.len(), end, format!("[{number}]")))
+                .unwrap_or(paragraph_start);
+            Some((start, (start + marker.len()).min(end), end, format!("[{number}]")))
         })
         .collect::<Vec<_>>();
     paragraphs.sort_by_key(|paragraph| paragraph.0);

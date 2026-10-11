@@ -10,8 +10,8 @@ use std::fmt::{Display, Formatter};
 
 mod analysis;
 pub mod definitions;
-pub mod docx;
 pub mod document;
+pub mod docx;
 pub mod fingerprint;
 pub mod instrument;
 pub mod locator;
@@ -20,14 +20,14 @@ pub mod text;
 
 pub use analysis::{CitationSpan, StructureAnalysis};
 pub use definitions::{DefinedTerm, DefinitionOccurrence, DefinitionsResult};
+pub use document::{
+    CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,
+    MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, StructureDiagnostic, StructureNode,
+};
 pub use docx::{
     DocxAttachmentReference, DocxAttachmentReferenceStatus, DocxCrossReference,
     DocxCrossReferenceStatus, DocxNumberAnchor, DocxNumberingDuplicate, DocxNumberingGap,
     DocxNumberingResult, DocxStructureFacts,
-};
-pub use document::{
-    CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, NodeKind, Note, NoteKindV2,
-    NoteReference, StructureDiagnostic, StructureNode,
 };
 pub use fingerprint::{document_fingerprint, DocumentFingerprint, DocumentFingerprintCounts};
 pub use instrument::{

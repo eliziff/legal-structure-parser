@@ -101,14 +101,17 @@ impl DocumentQuery {
 struct TextSearch<'a> {
     text: ScalarText<'a>,
     index: search::SearchIndex,
+    /// Its replay index, built on the first plan that replays the text.
+    replay: OnceLock<ReplayIndex>,
 }
 
 impl<'a> TextSearch<'a> {
     fn new(text: &'a str) -> Self {
         let scalar = ScalarText::new(text);
         Self {
-            index: search::SearchIndex::with_scalar(text, &scalar),
+            index: search::SearchIndex::new(text),
             text: scalar,
+            replay: OnceLock::new(),
         }
     }
 }
@@ -140,6 +143,14 @@ impl<'a> FragmentText<'a> {
 
     fn slice(self, start: usize, end: usize) -> &'a str {
         self.try_slice(start, end).unwrap_or_default()
+    }
+
+    /// The whole text.
+    fn value(self) -> &'a str {
+        match self {
+            Self::Document(_, _, text) => text.value,
+            Self::Text(query) => query.text.value,
+        }
     }
 
     fn try_slice(self, start: usize, end: usize) -> Option<&'a str> {
@@ -583,6 +594,32 @@ struct ExactDirectiveReplay {
     count: usize,
 }
 
+/// What each place an end term can begin (starts[i]) is as a replay's end: unread, no end, or the end it is; and from
+/// each, the next occurrence that may be one (a run of no ends is skipped at once).
+#[derive(Default)]
+struct ValidEnds {
+    starts: Vec<usize>,
+    ends: Vec<Option<Option<PhraseSpan>>>,
+    next: Vec<usize>,
+}
+
+impl ValidEnds {
+    /// The first occurrence from `i` not known to be no end (`i` itself where it is not), shortening the way there.
+    fn next_from(&mut self, mut i: usize) -> usize {
+        let start = i;
+        while self.next[i] != i {
+            i = self.next[i];
+        }
+        let mut at = start;
+        while self.next[at] != at {
+            let following = self.next[at];
+            self.next[at] = i;
+            at = following;
+        }
+        i
+    }
+}
+
 /// The document's words as the browser keys them, and where each occurs. They depend only on
 /// the document's text, so a document's query builds them once for every plan it makes.
 #[derive(Clone)]
@@ -596,8 +633,27 @@ impl ReplayIndex {
         let tokens = document.tokens();
         let mut postings = HashMap::<u64, Vec<usize>>::new();
         let mut words = Vec::with_capacity(tokens.len());
+        // The words come in order: a cursor walks the text from one word's offsets to the next's (UTF-16 to bytes),
+        // giving each the text document.slice gives it, nothing where an offset falls inside a character.
+        let text = document.value();
+        let (mut byte, mut utf16) = (0usize, 0usize);
+        let mut at = |target: usize| -> Option<usize> {
+            if target < utf16 {
+                (byte, utf16) = (0, 0);
+            }
+            while utf16 < target {
+                let character = text[byte..].chars().next()?;
+                utf16 += character.len_utf16();
+                byte += character.len_utf8();
+            }
+            (utf16 == target).then_some(byte)
+        };
         for (index, token) in tokens.iter().enumerate() {
-            let literal = document.slice(token.start, token.end).to_lowercase();
+            let literal = match (at(token.start), at(token.end)) {
+                (Some(start), Some(end)) if start <= end => &text[start..end],
+                _ => "",
+            }
+            .to_lowercase();
             let word = browser_key(&literal);
             postings
                 .entry(search::word_hash(&word))
@@ -616,21 +672,27 @@ struct BrowserReplay<'a> {
     /// Spelling a term runs several regexes; a plan asks for the same few hundred
     /// terms tens of thousands of times, so each is spelled once.
     spelled: std::cell::RefCell<HashMap<String, Option<BrowserSpelledTerm>>>,
+    /// The ends found for an end term and the suffix after it (see first_valid_end), whichever start they follow:
+    /// each occurrence is read once for every replay of the plan.
+    ends: std::cell::RefCell<HashMap<(String, Vec<String>, bool, bool, String, bool), ValidEnds>>,
 }
 
 impl<'a> BrowserReplay<'a> {
     fn new(document: FragmentText<'a>, preserve_punctuation_spacing: bool) -> Self {
         let index = match document {
-            FragmentText::Document(query, _, _) => std::borrow::Cow::Borrowed(
-                query.replay.get_or_init(|| ReplayIndex::new(document)),
-            ),
-            FragmentText::Text(_) => std::borrow::Cow::Owned(ReplayIndex::new(document)),
+            FragmentText::Document(query, _, _) => {
+                std::borrow::Cow::Borrowed(query.replay.get_or_init(|| ReplayIndex::new(document)))
+            }
+            FragmentText::Text(search) => {
+                std::borrow::Cow::Borrowed(search.replay.get_or_init(|| ReplayIndex::new(document)))
+            }
         };
         Self {
             document,
             preserve_punctuation_spacing,
             index,
             spelled: std::cell::RefCell::new(HashMap::new()),
+            ends: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -763,11 +825,22 @@ impl<'a> BrowserReplay<'a> {
         let prefix_term = prefix_term.flatten();
         let suffix_term = suffix_term.flatten();
         let first_term = prefix_term.as_ref().unwrap_or(target_term);
-        let Some(candidates) = self.index.postings.get(&search::word_hash(&first_term.words[0])) else {
-            return ExactDirectiveReplay::default();
+        let candidates = self.term_starts(first_term);
+        // A prefix's occurrences that matter are those the target follows: where the target's first word is rarer,
+        // they are read from the target's occurrences, the prefix's words before each.
+        let starts = match prefix_term.as_ref() {
+            Some(prefix) => {
+                let targets = self.term_starts(target_term);
+                if targets.len() < candidates.len() {
+                    targets.iter().filter_map(|target| target.checked_sub(prefix.words.len())).collect::<Vec<_>>()
+                } else {
+                    candidates
+                }
+            }
+            None => candidates,
         };
         let mut replay = ExactDirectiveReplay::default();
-        for &first_word in candidates {
+        for &first_word in &starts {
             let prefix_match = prefix_term.as_ref().and_then(|prefix| {
                 self.spelled_term_bounds_at(prefix, first_word, allow_across_lines)
             });
@@ -798,18 +871,69 @@ impl<'a> BrowserReplay<'a> {
         replay
     }
 
+    /// Where a term can begin, in order: where its rarest word occurs, less that word's place in the term (a term
+    /// matches only where every one of its words does).
+    fn term_starts(&self, term: &BrowserSpelledTerm) -> Vec<usize> {
+        let (place, occurrences) = term.words.iter().enumerate()
+            .map(|(place, word)| (place, self.index.postings.get(&search::word_hash(word)).map_or(&[][..], Vec::as_slice)))
+            .min_by_key(|(_, occurrences)| occurrences.len())
+            .unwrap_or((0, &[]));
+        occurrences.iter().filter_map(|word| word.checked_sub(place)).collect()
+    }
+
     fn first_spelled_term_from(
         &self,
         term: &BrowserSpelledTerm,
         from: usize,
         allow_across_lines: bool,
     ) -> Option<PhraseSpan> {
-        self.index.postings
-            .get(&search::word_hash(&term.words[0]))?
+        let starts = self.term_starts(term);
+        starts[starts.partition_point(|word| *word < from)..]
             .iter()
             .copied()
-            .skip_while(|word| *word < from)
             .find_map(|word| self.spelled_term_at(term, word, allow_across_lines))
+    }
+
+    /// The first occurrence of `end_term` from word `from` whose suffix (when given) adjoins it: what walking the
+    /// occurrences from `from` finds, each occurrence read once for every replay of a plan (`ends`).
+    fn first_valid_end(
+        &self,
+        ends: &mut ValidEnds,
+        end_term: &BrowserSpelledTerm,
+        suffix_term: Option<&BrowserSpelledTerm>,
+        from: usize,
+        allow_across_lines: bool,
+    ) -> Option<PhraseSpan> {
+        if ends.next.is_empty() {
+            ends.starts = self.term_starts(end_term);
+            ends.ends = vec![None; ends.starts.len()];
+            ends.next = (0..=ends.starts.len()).collect();
+        }
+        let starts = std::mem::take(&mut ends.starts);
+        let mut i = ends.next_from(starts.partition_point(|word| *word < from));
+        let found = loop {
+            if i >= starts.len() {
+                break None;
+            }
+            let end = *ends.ends[i].get_or_insert_with(|| {
+                let last = self.spelled_term_at(end_term, starts[i], allow_across_lines)?;
+                let suffix_adjoins = suffix_term.is_none_or(|suffix| {
+                    let last_end = self
+                        .spelled_term_bounds_at(end_term, last.first_word, allow_across_lines)
+                        .map_or(last.end, |(_, _, end)| end);
+                    self.spelled_term_bounds_at(suffix, last.last_word + 1, allow_across_lines)
+                        .is_some_and(|(_, start, _)| self.adjoins(last_end, start))
+                });
+                suffix_adjoins.then_some(last)
+            });
+            if end.is_some() {
+                break end;
+            }
+            ends.next[i] = i + 1;
+            i = ends.next_from(i + 1);
+        };
+        ends.starts = starts;
+        found
     }
 
     /// Chromium resolves the first start that has a compatible subsequent end.
@@ -831,13 +955,13 @@ impl<'a> BrowserReplay<'a> {
         }
         let prefix_term = prefix_term.flatten();
         let suffix_term = suffix_term.flatten();
-        let mut start_from = 0;
-        while start_from < self.index.words.len() {
-            let context = self.first_spelled_term_from(
-                prefix_term.as_ref().unwrap_or(start_term),
-                start_from,
-                allow_across_lines,
-            )?;
+        let mut kept_ends = self.ends.borrow_mut();
+        let ends = kept_ends.entry((end_term.key.clone(), end_term.words.clone(), end_term.leading_punctuation,
+            end_term.trailing_punctuation, suffix.to_owned(), allow_across_lines))
+            .or_default();
+        // A context (the prefix where there is one, else the start) in the order the browser meets it: Some(the
+        // replay's answer) where it settles the replay, None to read on.
+        let mut consider = |context: PhraseSpan| -> Option<Option<PhraseSpan>> {
             let first = if let Some(prefix) = prefix_term.as_ref() {
                 let context_end = self
                     .spelled_term_bounds_at(prefix, context.first_word, allow_across_lines)
@@ -848,34 +972,55 @@ impl<'a> BrowserReplay<'a> {
             } else {
                 Some(context)
             };
-            start_from = context.first_word + 1;
-            let Some(first) = first else {
-                continue;
-            };
-
-            let mut end_from = first.last_word + 1;
-            while end_from < self.index.words.len() {
-                let Some(last) =
-                    self.first_spelled_term_from(end_term, end_from, allow_across_lines)
-                else {
-                    break;
-                };
-                end_from = last.first_word + 1;
-                if suffix_term.as_ref().is_some_and(|suffix| {
-                    let last_end = self
-                        .spelled_term_bounds_at(end_term, last.first_word, allow_across_lines)
-                        .map_or(last.end, |(_, _, end)| end);
-                    self.spelled_term_bounds_at(suffix, last.last_word + 1, allow_across_lines)
-                        .is_none_or(|(_, start, _)| !self.adjoins(last_end, start))
-                }) {
-                    continue;
+            let first = first?;
+            if first.last_word + 1 >= self.index.words.len() {
+                return None;
+            }
+            // A later start ends later still: where no end follows this one, none follows any.
+            let last = self.first_valid_end(
+                ends,
+                end_term,
+                suffix_term.as_ref(),
+                first.last_word + 1,
+                allow_across_lines,
+            );
+            Some(last.map(|last| PhraseSpan {
+                start: self.document.tokens()[first.first_word].start,
+                end: self.document.tokens()[last.last_word].end,
+                first_word: first.first_word,
+                last_word: last.last_word,
+            }))
+        };
+        // A prefix's contexts that matter are those the start follows: where the start's first word is rarer than
+        // the prefix's, they are read from the start's occurrences, the prefix's words before each.
+        if let Some(prefix) = prefix_term.as_ref() {
+            let starts = self.term_starts(start_term);
+            if starts.len() < self.term_starts(prefix).len() {
+                let length = prefix.words.len();
+                for &start in &starts {
+                    let Some(context) = start
+                        .checked_sub(length)
+                        .and_then(|at| self.spelled_term_at(prefix, at, allow_across_lines))
+                    else {
+                        continue;
+                    };
+                    if let Some(answer) = consider(context) {
+                        return answer;
+                    }
                 }
-                return Some(PhraseSpan {
-                    start: self.document.tokens()[first.first_word].start,
-                    end: self.document.tokens()[last.last_word].end,
-                    first_word: first.first_word,
-                    last_word: last.last_word,
-                });
+                return None;
+            }
+        }
+        let mut start_from = 0;
+        while start_from < self.index.words.len() {
+            let context = self.first_spelled_term_from(
+                prefix_term.as_ref().unwrap_or(start_term),
+                start_from,
+                allow_across_lines,
+            )?;
+            start_from = context.first_word + 1;
+            if let Some(answer) = consider(context) {
+                return answer;
             }
         }
         None
@@ -888,6 +1033,23 @@ fn fragment_spelling_with_mode(value: &str, preserve_punctuation_spacing: bool) 
     static OPENING_BRACKET_SPACE: OnceLock<Regex> = OnceLock::new();
     static CLOSING_SPACE: OnceLock<Regex> = OnceLock::new();
     let normalized = normalize_blank_whitespace(value);
+    // Text with no emphasis marks, no opening quotation mark or bracket and no space before a closing one is
+    // what the replacements below leave it.
+    let mut space_before_closing = false;
+    let mut after_space = false;
+    for character in normalized.chars() {
+        if after_space && matches!(character, '’' | '”' | ']' | ')' | ',' | '.' | ';' | ':' | '!' | '?') {
+            space_before_closing = true;
+            break;
+        }
+        after_space = character == ' ';
+    }
+    if !normalized.contains(['*', '_', '`'])
+        && (preserve_punctuation_spacing
+            || (!normalized.contains(['‘', '“', '[', '(']) && !space_before_closing))
+    {
+        return normalized;
+    }
     let unmarked = js_regex(r"[*_`]", &MARKDOWN)
         .replace_all(&normalized, "")
         .into_owned();
@@ -2132,7 +2294,11 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         // between the earliest head end and the tail where the tail's term also matches. A
         // pairing is rejected exactly when that word falls after its head, which is what scanning
         // every word between each head and tail decided, once per pairing.
-        let earliest = heads.iter().map(|head| head.last_word + 1).min().unwrap_or(0);
+        let earliest = heads
+            .iter()
+            .map(|head| head.last_word + 1)
+            .min()
+            .unwrap_or(0);
         // Only a position holding the term's first word can match it, so the document's positions
         // of that word, last first, are the candidates.
         let tail_earlier = tails
@@ -2156,8 +2322,14 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         // A directive is "text=" + prefix context + start + "," + end + suffix context, so its
         // length is the sum of its once-encoded parts; a candidate that cannot be shorter than
         // the one found is skipped without spelling the directive out.
-        let head_lengths = heads.iter().map(|head| encoded_fragment(&head.text).len()).collect::<Vec<_>>();
-        let tail_lengths = tails.iter().map(|tail| encoded_fragment(&tail.text).len()).collect::<Vec<_>>();
+        let head_lengths = heads
+            .iter()
+            .map(|head| encoded_fragment(&head.text).len())
+            .collect::<Vec<_>>();
+        let tail_lengths = tails
+            .iter()
+            .map(|tail| encoded_fragment(&tail.text).len())
+            .collect::<Vec<_>>();
         for contexts in [
             &[(None, None)][..],
             one_sided.as_slice(),
@@ -2165,10 +2337,17 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         ] {
             let context_lengths = contexts
                 .iter()
-                .map(|(prefix, suffix): &(Option<LexicalTerm>, Option<LexicalTerm>)| {
-                    encoded_context(prefix.as_ref().map_or("", |term| term.text.as_str()), true).len()
-                        + encoded_context(suffix.as_ref().map_or("", |term| term.text.as_str()), false).len()
-                })
+                .map(
+                    |(prefix, suffix): &(Option<LexicalTerm>, Option<LexicalTerm>)| {
+                        encoded_context(prefix.as_ref().map_or("", |term| term.text.as_str()), true)
+                            .len()
+                            + encoded_context(
+                                suffix.as_ref().map_or("", |term| term.text.as_str()),
+                                false,
+                            )
+                            .len()
+                    },
+                )
                 .collect::<Vec<_>>();
             let mut shortest = None::<String>;
             // An endpoint replays the same way for every partner, so its
@@ -2197,11 +2376,14 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                             continue;
                         }
                     }
-                    for ((prefix, suffix), context_length) in contexts.iter().zip(&context_lengths) {
+                    for ((prefix, suffix), context_length) in contexts.iter().zip(&context_lengths)
+                    {
                         let prefix = prefix.as_ref().map_or("", |term| term.text.as_str());
                         let suffix = suffix.as_ref().map_or("", |term| term.text.as_str());
-                        let length = "text=,".len() + context_length
-                            + head_lengths[head_index] + tail_lengths[tail_index];
+                        let length = "text=,".len()
+                            + context_length
+                            + head_lengths[head_index]
+                            + tail_lengths[tail_index];
                         // Only a shorter directive can replace the one already found,
                         // so a pairing that cannot be shorter is never replayed.
                         if shortest
@@ -2735,8 +2917,15 @@ fn build_fragment_plan(
     publisher_may_annotate_legal_reference: bool,
     split_html_source_blocks: bool,
 ) -> TextFragmentPlan {
-    let block_search = TextSearch::new(block_text);
-    let block = FragmentText::Text(&block_search);
+    // A block that is its document's whole text reads the document's index, not one built again.
+    let block_search;
+    let block = match document {
+        FragmentText::Text(search) if search.text.value == block_text => document,
+        _ => {
+            block_search = TextSearch::new(block_text);
+            FragmentText::Text(&block_search)
+        }
+    };
     let replay = BrowserReplay::new(document, split_html_source_blocks);
     let mut planner = MaximalPlanner::new(
         &replay,
