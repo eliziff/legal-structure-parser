@@ -227,22 +227,22 @@ fn find_exact(needle: &str, haystack: &str) -> Option<usize> {
     if SINGLE_WORD.is_match(needle) {
         // A word is searched for at every step of a region search: its pattern is compiled once.
         thread_local!(static WORDS: std::cell::RefCell<HashMap<String, Regex>> = Default::default());
-        let pattern = WORDS.with(|words| {
+        return WORDS.with(|words| {
             let mut words = words.borrow_mut();
             if words.len() >= 4096 { words.clear(); }
-            words.entry(needle.to_owned()).or_insert_with(||
-                Regex::new(&format!("(?i){}", regex::escape(needle))).expect("an escaped word is a pattern")).clone()
-        });
-        let mut from = 0;
-        while let Some(found) = pattern.find_at(haystack, from) {
-            let before = haystack[..found.start()].chars().next_back();
-            let after = haystack[found.end()..].chars().next();
-            if !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char) {
-                return Some(byte_to_utf16(haystack, found.start()));
+            let pattern = words.entry(needle.to_owned()).or_insert_with(||
+                Regex::new(&format!("(?i){}", regex::escape(needle))).expect("an escaped word is a pattern"));
+            let mut from = 0;
+            while let Some(found) = pattern.find_at(haystack, from) {
+                let before = haystack[..found.start()].chars().next_back();
+                let after = haystack[found.end()..].chars().next();
+                if !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char) {
+                    return Some(byte_to_utf16(haystack, found.start()));
+                }
+                from = found.start() + haystack[found.start()..].chars().next().map_or(1, char::len_utf8);
             }
-            from = found.start() + haystack[found.start()..].chars().next().map_or(1, char::len_utf8);
-        }
-        return None;
+            None
+        });
     }
     let lower = haystack.to_lowercase().encode_utf16().collect::<Vec<_>>();
     let needle = needle.to_lowercase().encode_utf16().collect::<Vec<_>>();

@@ -521,6 +521,7 @@ name = "legal-grammar"
 version = "0.1.0"
 dependencies = [
  "fancy-regex",
+ "flate2",
  "regex",
  "regex-syntax",
  "serde",
