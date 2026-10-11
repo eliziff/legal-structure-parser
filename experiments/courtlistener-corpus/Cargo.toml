@@ -1,0 +1,21 @@
+[package]
+name = "courtlistener-corpus"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+legal-structure = { path = "../..", features = ["native-markup", "provider-text", "document-query"] }
+memchr = "2.8.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["raw_value"] }
+sha2 = "0.10"
+regex = "1.11"
+zstd = "0.14"
+scraper = { version = "0.27", default-features = false }
+
+[profile.release]
+debug = 0
+strip = true
