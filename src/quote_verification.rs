@@ -182,10 +182,11 @@ fn representation(value: &str) -> String {
         if character == '*' {
             continue;
         }
+        // Space around a dash is typography too.
         if javascript_whitespace(character) {
-            separating = !normalized.is_empty();
+            separating = !normalized.is_empty() && !normalized.ends_with('-');
         } else {
-            if separating {
+            if separating && character != '-' {
                 normalized.push(' ');
             }
             normalized.push(character);
@@ -526,6 +527,74 @@ fn copied_run<'a>(unmarked: &str, sources: &'a [VisibleEvidenceText]) -> Option<
     None
 }
 
+/// Whether a passage holds a quotation: its words as written, whole, with only
+/// the edits it marks (brackets, ellipses) and the punctuation where it meets
+/// its sentence giving way. A quotation carrying no words claims nothing.
+pub(crate) struct QuoteSupport {
+    core: String,
+    fuzzy: bool,
+    altered: OnceLock<Option<Regex>>,
+    caseless: OnceLock<Box<QuoteSupport>>,
+}
+
+/// How a passage holds a quotation: whether only with its letters' case
+/// changed, and how long a run of the passage the quoted words take.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct QuoteHold {
+    recased: bool,
+    span: usize,
+}
+
+impl QuoteSupport {
+    pub(crate) fn new(quote: &str) -> Self {
+        Self::of_core(quote_core(&representation(quote)).to_owned())
+    }
+
+    fn of_core(core: String) -> Self {
+        QuoteSupport {
+            fuzzy: utf16_len(&core) <= MAX_MARKED_QUOTE_CHARS,
+            core,
+            altered: OnceLock::new(),
+            caseless: OnceLock::new(),
+        }
+    }
+
+    /// How the passage holds the quotation: as written, else case aside.
+    pub(crate) fn hold(&self, passage: &str) -> Option<QuoteHold> {
+        let available = evidence_representation(passage);
+        if let Some(span) = self.held_in(&available) {
+            return Some(QuoteHold { recased: false, span });
+        }
+        let caseless = self
+            .caseless
+            .get_or_init(|| Box::new(Self::of_core(self.core.to_lowercase())));
+        caseless
+            .held_in(&available.to_lowercase())
+            .map(|span| QuoteHold { recased: true, span })
+    }
+
+    fn held_in(&self, available: &str) -> Option<usize> {
+        if contains_whole(available, &self.core) {
+            return Some(self.core.len());
+        }
+        if !self.fuzzy || utf16_len(available) > MAX_FUZZY_SOURCE_CHARS {
+            return None;
+        }
+        let pattern = self.altered.get_or_init(|| altered_quote_regex(&self.core)).as_ref()?;
+        pattern.find(available).map(|found| found.len())
+    }
+}
+
+/// `needle` in `haystack` where it neither begins nor ends inside a word.
+fn contains_whole(haystack: &str, needle: &str) -> bool {
+    let open = needle.chars().next().is_some_and(letter_or_number);
+    let close = needle.chars().next_back().is_some_and(letter_or_number);
+    haystack.match_indices(needle).any(|(at, _)| {
+        !(open && haystack[..at].chars().next_back().is_some_and(letter_or_number))
+            && !(close && haystack[at + needle.len()..].chars().next().is_some_and(letter_or_number))
+    })
+}
+
 pub fn grounded_prose_errors(
     text: &str,
     cited_evidence_ids: &[String],
@@ -538,32 +607,18 @@ pub fn grounded_prose_errors(
         .collect::<Vec<_>>();
     let support = quotes
         .iter()
-        .map(|quote| {
-            let expected = representation(&quote.text);
-            let core = quote_core(&expected).to_owned();
-            let fuzzy = utf16_len(&core) <= MAX_MARKED_QUOTE_CHARS;
-            (core, fuzzy, OnceLock::new())
-        })
+        .map(|quote| QuoteSupport::new(&quote.text))
         .collect::<Vec<_>>();
-    // A quotation carrying no words claims nothing about the evidence.
     let mut supported = support
         .iter()
-        .map(|(core, ..)| core.is_empty())
+        .map(|quote| quote.core.is_empty())
         .collect::<Vec<_>>();
     for &source in &cited {
         let available = evidence_representation(&source.text);
-        let fuzzy = utf16_len(&available) <= MAX_FUZZY_SOURCE_CHARS;
-        for (index, (core, expected_fuzzy, altered)) in support.iter().enumerate() {
-            if supported[index] {
-                continue;
+        for (index, quote) in support.iter().enumerate() {
+            if !supported[index] {
+                supported[index] = quote.held_in(&available).is_some();
             }
-            supported[index] = available.contains(core.as_str())
-                || (fuzzy
-                    && *expected_fuzzy
-                    && altered
-                        .get_or_init(|| altered_quote_regex(core))
-                        .as_ref()
-                        .is_some_and(|pattern| pattern.is_match(&available)));
         }
     }
     // A quotation the cited passages do not carry may sit in another passage the
@@ -575,19 +630,8 @@ pub fn grounded_prose_errors(
         .filter(|source| !cited_evidence_ids.contains(&source.evidence_id))
     {
         let available = evidence_representation(&source.text);
-        let fuzzy = utf16_len(&available) <= MAX_FUZZY_SOURCE_CHARS;
-        for (index, (core, expected_fuzzy, altered)) in support.iter().enumerate() {
-            if supported[index] || elsewhere[index].is_some() || core.is_empty() {
-                continue;
-            }
-            if available.contains(core.as_str())
-                || (fuzzy
-                    && *expected_fuzzy
-                    && altered
-                        .get_or_init(|| altered_quote_regex(core))
-                        .as_ref()
-                        .is_some_and(|pattern| pattern.is_match(&available)))
-            {
+        for (index, quote) in support.iter().enumerate() {
+            if !supported[index] && elsewhere[index].is_none() && quote.held_in(&available).is_some() {
                 elsewhere[index] = Some(source.evidence_id.as_str());
             }
         }
@@ -670,6 +714,15 @@ mod editorial_regressions {
                 labels: vec![],
             }],
         )
+    }
+
+    #[test]
+    fn a_quotation_is_held_by_whole_words_and_dash_spacing_is_typography() {
+        assert!(errors("a new start", "They made a new start.").is_empty());
+        assert!(!errors("new", "The lease was up for renewal.").is_empty());
+        assert!(errors("new", "The lease was new.").is_empty());
+        assert!(errors("we can—and must—act sooner", "Today we can — and must — act sooner.").is_empty());
+        assert!(errors("we can - and must - act sooner", "Today we can—and must—act sooner.").is_empty());
     }
 
     #[test]

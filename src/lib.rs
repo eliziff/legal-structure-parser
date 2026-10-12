@@ -35,7 +35,7 @@ mod provider_text;
 mod journal_titles;
 #[cfg(feature = "document-query")]
 mod quote_location;
-#[cfg(feature = "quote-verification")]
+#[cfg(feature = "document-query")]
 mod quote_verification;
 mod reading_order;
 mod tables;
