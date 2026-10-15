@@ -461,7 +461,7 @@ pub fn assemble_structure_annotations(
                 .iter()
                 .any(|part| part.start <= range.start && range.end <= part.end)
             {
-                return Err("Heading or marker lies outside node membership".into());
+                return Err(format!("Heading or marker lies outside node membership: {}", node.id).into());
             }
         }
     }
