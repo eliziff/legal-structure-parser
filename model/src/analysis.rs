@@ -8,7 +8,17 @@ use std::ops::Range;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CitationSpan {
     pub range: Range<usize>,
+    /// The citation itself, excluding introductory signals and surrounding style.
+    pub core_range: Range<usize>,
     pub text: String,
+}
+
+/// A marker interpreted by the shared numbering grammar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NumberingMarker {
+    pub family: String,
+    pub ordinal: u32,
+    pub prefix: Vec<u32>,
 }
 
 /// The structure engine's detection and the citation grammar, as parsers that build on the
@@ -33,6 +43,28 @@ pub trait StructureAnalysis: Sync {
         note_pairs: &[NotePairClaimV2],
         diagnostics: Vec<StructureDiagnostic>,
     ) -> Result<DocumentStructure, EngineError>;
+
+    /// Resolve source candidates, then invoke the producer's single outline assembler.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_structure_graph_with_assembler(
+        &self,
+        document_id: String,
+        provider: String,
+        text: &str,
+        source_sha256: Option<String>,
+        nodes: Vec<StructureNode>,
+        runs: &[StructureCandidateRun],
+        evidence: &[CandidateEvidenceV2],
+        note_pairs: &[NotePairClaimV2],
+        diagnostics: Vec<StructureDiagnostic>,
+        assembler: &mut dyn FnMut(&mut Vec<StructureNode>, &mut Vec<crate::StructureScopeAnnotation>),
+    ) -> Result<DocumentStructure, EngineError>;
+
+    fn numbering_marker(
+        &self,
+        marker: &str,
+        previous: Option<&NumberingMarker>,
+    ) -> Option<NumberingMarker>;
 
     fn analyze_instrument(
         &self,

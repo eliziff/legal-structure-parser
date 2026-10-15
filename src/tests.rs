@@ -533,6 +533,12 @@ fn paired_note_claim_keeps_note_source_identity() {
     let label_start = text.rfind('1').unwrap();
     let pair = NotePairClaimV2 {
         pair_id: "pair-1".to_owned(),
+        support: NotePairSupportV2 {
+            observed_pair: true,
+            sequence_labels: 1,
+            sequence_observed_pairs: 1,
+            ..Default::default()
+        },
         kind: NoteKindV2::Footnote,
         label: TextAnchorV2 {
             range: ScalarRange {
@@ -895,4 +901,93 @@ fn structured_paragraph_markers_are_not_fragment_text() {
         false,
     );
     assert_eq!(plan.paint_quotes, vec!["44 people attended the hearing"]);
+}
+
+#[test]
+#[cfg(feature = "structure-inference")]
+fn note_pair_support_beats_paragraph_majority_only_with_independent_witnesses() {
+    // Independently invented ambiguity: two numbered passages, one carrying
+    // a note label; the reference occurs earlier in the same document.
+    let text =
+        "An earlier observation carries reference 2.\n1. Opening passage.\n2. Supporting detail.";
+    let run = detect_structure_candidate_runs(text)
+        .into_iter()
+        .find(|run| run.grammar == CandidateGrammar::Numeric && run.rooted && run.consecutive)
+        .unwrap();
+    assert_eq!(run.markers.len(), 2);
+    let evidence = run
+        .markers
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| CandidateEvidenceV2 {
+            candidate_id: candidate.id.clone(),
+            page_indexes: vec![0],
+            line_ids: vec![format!("line-{index}")],
+            observations: vec![CandidateObservationV2::BodyProseFlow],
+        })
+        .collect::<Vec<_>>();
+    let marker = &run.markers[1];
+    for (observed, typography, region, clean, total, expected_note) in [
+        (true, true, false, 1, 1, true),
+        (true, false, false, 1, 1, false), // Visible digits alone may be a citation.
+        (true, false, true, 1, 1, true), // A local note region corroborates a plain reference. // A short document needs no arbitrary minimum run length.
+        (false, false, true, 3, 5, true), // Damaged reference, corroborated within its own run.
+        (false, false, false, 3, 5, false), // A run alone cannot invent the local note region.
+        (false, false, true, 0, 5, false), // Repairs cannot corroborate themselves.
+        (false, false, true, 3, 12, false), // Sparse matches do not establish an apparatus.
+    ] {
+        let pair = NotePairClaimV2 {
+            pair_id: "ambiguous-note".to_owned(),
+            kind: NoteKindV2::Footnote,
+            support: NotePairSupportV2 {
+                sequence_id: 1,
+                sequence_labels: total,
+                sequence_observed_pairs: clean,
+                sequence_note_labels: usize::from(region),
+                observed_pair: observed,
+                typographic_reference: typography,
+                note_region: region,
+            },
+            label: TextAnchorV2 {
+                range: marker.marker_range,
+                page_index: 0,
+                line_id: "line-1".to_owned(),
+            },
+            body: NoteBodyV2 {
+                range: marker.range,
+                page_indexes: vec![0],
+                line_ids: vec!["line-1".to_owned()],
+            },
+            references: vec![TextAnchorV2 {
+                range: ScalarRange { start: 40, end: 41 },
+                page_index: 0,
+                line_id: "opening".to_owned(),
+            }],
+        };
+        let graph = resolve_structure_graph(
+            "conflict".to_owned(),
+            "fixture".to_owned(),
+            text,
+            None,
+            Vec::new(),
+            std::slice::from_ref(&run),
+            &evidence,
+            &[pair],
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            graph.notes.len(),
+            usize::from(expected_note),
+            "observed={observed}, region={region}, clean={clean}/{total}"
+        );
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .filter(|node| node.kind == NodeKind::Paragraph)
+                .count(),
+            if expected_note { 1 } else { 2 }
+        );
+    }
 }

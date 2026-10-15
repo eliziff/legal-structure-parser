@@ -18,11 +18,11 @@ pub mod locator;
 pub mod numeric_sequence;
 pub mod text;
 
-pub use analysis::{CitationSpan, StructureAnalysis};
+pub use analysis::{CitationSpan, NumberingMarker, StructureAnalysis};
 pub use definitions::{DefinedTerm, DefinitionOccurrence, DefinitionsResult};
 pub use document::{
     CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,
-    MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, StructureDiagnostic, StructureNode,
+    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, FieldAnnotation, FieldKind, FieldState, MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, PrimaryRole, NativeNavigationWitness, PdfStructureTagWitness, NavigationEntry, SourceFragment, StructureOwnership, StructureScopeAnnotation, StructureScopeKind, StructureDiagnostic, StructureNode,
 };
 pub use docx::{
     DocxAttachmentReference, DocxAttachmentReferenceStatus, DocxCrossReference,
@@ -35,7 +35,7 @@ pub use instrument::{
     InstrumentContentsRefusal, InstrumentCrossReferenceCounts, InstrumentCrossReferenceEdge,
     InstrumentCrossReferenceGraph, InstrumentCrossReferenceReason, InstrumentCrossReferenceStatus,
 };
-pub use locator::{normalize_compact_numbered_section_locator, normalize_section_locator};
+pub use locator::{normalize_compact_numbered_section_locator, normalize_section_locator, parse_ordinal};
 pub use numeric_sequence::{
     select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy,
     NumericSequenceSelection,
@@ -86,6 +86,21 @@ pub struct ScalarRange {
 }
 
 impl ScalarRange {
+    /// Sort and merge touching or overlapping members without filling gaps.
+    /// All ranges must use the same coordinate plane and offset unit.
+    pub fn normalize_union(ranges: &mut Vec<Self>) {
+        ranges.sort_by_key(|range| (range.start, range.end));
+        let mut result: Vec<Self> = Vec::with_capacity(ranges.len());
+        for range in ranges.drain(..) {
+            if let Some(last) = result.last_mut().filter(|last| range.start <= last.end) {
+                last.end = last.end.max(range.end);
+            } else {
+                result.push(range);
+            }
+        }
+        *ranges = result;
+    }
+
     #[inline]
     pub fn valid(self, length: usize) -> bool {
         self.start <= self.end && self.end <= length
@@ -235,13 +250,37 @@ pub struct TextAnchorV2 {
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct NoteBodyV2 {
     pub range: ScalarRange,
+    /// Exact source membership; `range` is its searchable envelope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ranges: Vec<ScalarRange>,
     pub page_indexes: Vec<usize>,
     pub line_ids: Vec<String>,
+}
+
+/// Evidence from an occurrence-level assignment within one numbering restart.
+/// Counts concern distinct labels, not repeated references to the same note.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+pub struct NotePairSupportV2 {
+    pub sequence_id: usize,
+    pub sequence_labels: usize,
+    pub sequence_observed_pairs: usize,
+    pub sequence_note_labels: usize,
+    pub observed_pair: bool,
+    pub typographic_reference: bool,
+    pub note_region: bool,
+}
+
+impl NotePairSupportV2 {
+    pub fn corroborated_sequence(&self) -> bool {
+        self.sequence_observed_pairs >= 3
+            && 3 * self.sequence_observed_pairs >= self.sequence_labels
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct NotePairClaimV2 {
     pub pair_id: String,
+    pub support: NotePairSupportV2,
     pub kind: NoteKindV2,
     pub label: TextAnchorV2,
     pub body: NoteBodyV2,
@@ -283,6 +322,7 @@ pub struct AuthoritativeTableCell {
     pub address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_value: Option<String>,
+    pub ranges: Vec<ScalarRange>,
     pub start: usize,
     pub end: usize,
 }

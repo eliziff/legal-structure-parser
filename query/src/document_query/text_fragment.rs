@@ -42,60 +42,79 @@ impl DocumentQuery {
         }
     }
 
-    pub fn paragraph_range_directive(
+    pub fn range_fragment_plan(
         &self,
         document: &DocumentStructure,
+        kind: DocumentKind,
         start: &str,
         end: &str,
-    ) -> Option<String> {
-        let text = self.text(document);
+        pdf: bool,
+        publisher_may_annotate_legal_reference: bool,
+        first_block_only: bool,
+    ) -> Option<TextFragmentPlan> {
         let resolve = |locator: &str| {
-            let label = self.requested_label(document, DocumentKind::Paragraph, locator);
-            if label.is_empty() {
-                return None;
-            }
-            self.unique_position(document, &label)
-                .filter(|position| {
-                    projected_kind(&document.nodes[position.node]) == Some(DocumentKind::Paragraph)
-                })
-                .map(|position| {
-                    let node = &document.nodes[position.node];
-                    let mut range = document.query_range(node);
-                    range.start += FragmentText::Document(self, document, &text)
-                        .paragraph_marker_length(range.start);
-                    range
-                })
+            let label = self.requested_label(document, kind, locator);
+            if label.is_empty() { return None; }
+            self.unique_position(document, &label, Some(kind))
         };
-        let start = resolve(start)?;
-        let end = resolve(end)?;
-        if start.start > end.start {
+        let first = resolve(start)?;
+        let last = resolve(end)?;
+        if document.query_range(&document.nodes[first.node]).start
+            > document.query_range(&document.nodes[last.node]).start {
             return None;
         }
-        // This operation performs at least two phrase searches; build the index
-        // on the first one instead of scanning the document first.
-        self.searched.store(true, Ordering::Relaxed);
-        let document = FragmentText::Document(self, document, &text);
-        let first = js_trim(text.slice_utf16(start.start..start.end).unwrap_or_default());
-        let last = js_trim(text.slice_utf16(end.start..end.end).unwrap_or_default());
-        Some(
-            match (
-                unique_paragraph_edge(first, document, ParagraphEdge::Opening),
-                unique_paragraph_edge(last, document, ParagraphEdge::Closing),
-            ) {
-                // A browser looks for a range's end after its start: where one paragraph's opening
-                // and closing words overlap, the end is never found, so the paragraph is the target.
-                (Some((_, opening, words)), Some((_, closing, _)))
-                    if start == end && opening + closing > words =>
-                {
-                    unique_paragraph_edge(first, document, ParagraphEdge::Whole)
-                        .map(|(paragraph, _, _)| text_directive(&paragraph, "", ""))
-                        .unwrap_or_default()
+        let selected = self.read_range(document, kind, start, end, 0)?;
+        let text = self.text(document);
+        let source = FragmentText::Document(self, document, &text);
+        let mut ranges = selected.selected.into_iter()
+            .take(if first_block_only { 1 } else { usize::MAX })
+            .flat_map(|block| block.block.ranges)
+            .map(|mut range| {
+                if kind == DocumentKind::Paragraph {
+                    range.start = (range.start + source.paragraph_marker_length(range.start)).min(range.end);
                 }
-                (Some((opening, ..)), Some((closing, ..))) => text_range_directive(&opening, &closing),
-                _ => String::new(),
-            },
-        )
+                range
+            })
+            .filter(|range| range.start < range.end)
+            .collect::<Vec<_>>();
+        ScalarRange::normalize_union(&mut ranges);
+        let members = ranges;
+        self.searched.store(true, Ordering::Relaxed);
+        let words = source.tokens();
+        let mut complete = true;
+        let mut selections = Vec::new();
+        for (quote_index, range) in members.iter().enumerate() {
+            let first_word = words.partition_point(|word| word.end <= range.start);
+            let after = words.partition_point(|word| word.start < range.end);
+            if first_word == after { continue; }
+            let last_word = after - 1;
+            if words[first_word].start < range.start || words[last_word].end > range.end {
+                complete = false;
+                continue;
+            }
+            selections.push(FragmentSelection {
+                quote_index,
+                desired: PhraseSpan { start: words[first_word].start, end: words[last_word].end,
+                    first_word, last_word },
+                clamp_leading: false,
+                clamp_trailing: false,
+            });
+        }
+        let mut plan = build_selected_fragment_plan(source, &selections, pdf,
+            publisher_may_annotate_legal_reference, false, true, complete);
+        // Replay must select these source coordinates, not merely the same
+        // amount of text. No emitted directive may bridge an unselected member.
+        let required = selections.iter().flat_map(|selection|
+            selection.desired.first_word..=selection.desired.last_word).collect::<HashSet<_>>();
+        let painted = plan.source_word_intervals.iter().flat_map(|span|
+            span.first_word..=span.last_word).collect::<HashSet<_>>();
+        plan.source_safe_complete &= required == painted && plan.source_word_intervals.iter().all(|span|
+            members.iter().any(|member| member.start <= span.start && span.end <= member.end)
+                && words.get(span.first_word).is_some_and(|word| word.start == span.start)
+                && words.get(span.last_word).is_some_and(|word| word.end == span.end));
+        Some(plan)
     }
+
 }
 
 struct TextSearch<'a> {
@@ -499,10 +518,6 @@ fn text_directive(target: &str, prefix: &str, suffix: &str) -> String {
     format!("text={prefix}{target}{suffix}")
 }
 
-fn text_range_directive(start: &str, end: &str) -> String {
-    text_range_directive_with_context(start, end, "", "")
-}
-
 fn text_range_directive_with_context(start: &str, end: &str, prefix: &str, suffix: &str) -> String {
     let prefix = encoded_context(prefix, true);
     let suffix = encoded_context(suffix, false);
@@ -511,26 +526,6 @@ fn text_range_directive_with_context(start: &str, end: &str, prefix: &str, suffi
         encoded_fragment(start),
         encoded_fragment(end)
     )
-}
-
-fn directive_match_count(
-    document: FragmentText<'_>,
-    target: &str,
-    prefix: &str,
-    suffix: &str,
-) -> usize {
-    document
-        .phrase_spans(
-            &[prefix, target, suffix]
-                .into_iter()
-                .flat_map(quote_words)
-                .collect::<Vec<_>>(),
-            PhraseOptions {
-                limit: Some(2),
-                ..Default::default()
-            },
-        )
-        .len()
 }
 
 fn browser_key(value: &str) -> String {
@@ -1821,6 +1816,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         desired: PhraseSpan,
         clamp_leading_context: bool,
         clamp_trailing_context: bool,
+        exact_members: bool,
     ) -> Vec<MaximalCorePiece> {
         static BILINGUAL_OPEN: OnceLock<Regex> = OnceLock::new();
         static BILINGUAL_CLOSE: OnceLock<Regex> = OnceLock::new();
@@ -1862,7 +1858,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                 first_word,
                 last_word,
             };
-            if planner.split_html_source_blocks && first_word > 0 && last_word + 1 < words.len() {
+            if !exact_members && planner.split_html_source_blocks && first_word > 0 && last_word + 1 < words.len() {
                 let left = planner
                     .replay
                     .document
@@ -1877,7 +1873,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     return;
                 }
             }
-            if let Some(trimmed) = planner.trim_leading_furniture(raw) {
+            if let Some(trimmed) = if exact_members { Some(raw) } else { planner.trim_leading_furniture(raw) } {
                 let trimmed_furniture = trimmed.first_word != raw.first_word;
                 let markdown_furniture = trimmed_furniture
                     && planner
@@ -2926,15 +2922,7 @@ fn build_fragment_plan(
             FragmentText::Text(&block_search)
         }
     };
-    let replay = BrowserReplay::new(document, split_html_source_blocks);
-    let mut planner = MaximalPlanner::new(
-        &replay,
-        pdf,
-        publisher_may_annotate_legal_reference,
-        split_html_source_blocks,
-    );
-    let source_words = document.tokens();
-    let mut built = Vec::<BuiltPiece>::new();
+    let mut selections = Vec::new();
     let mut keys = HashSet::new();
     let mut complete = true;
 
@@ -2954,15 +2942,51 @@ fn build_fragment_plan(
             complete = false;
             continue;
         };
-        let clamp_leading = adjusted.start > selected.start;
-        let clamp_trailing = adjusted.end < selected.end;
-        let line_pieces = planner.source_pieces(desired, clamp_leading, clamp_trailing);
+        selections.push(FragmentSelection { quote_index, desired,
+            clamp_leading: adjusted.start > selected.start,
+            clamp_trailing: adjusted.end < selected.end });
+    }
+    build_selected_fragment_plan(document, &selections, pdf,
+        publisher_may_annotate_legal_reference, split_html_source_blocks, false, complete)
+}
+
+struct FragmentSelection {
+    quote_index: usize,
+    desired: PhraseSpan,
+    clamp_leading: bool,
+    clamp_trailing: bool,
+}
+
+fn build_selected_fragment_plan(
+    document: FragmentText<'_>,
+    selections: &[FragmentSelection],
+    pdf: bool,
+    publisher_may_annotate_legal_reference: bool,
+    split_html_source_blocks: bool,
+    exact_members: bool,
+    mut complete: bool,
+) -> TextFragmentPlan {
+    let replay = BrowserReplay::new(document, split_html_source_blocks);
+    let mut planner = MaximalPlanner::new(
+        &replay,
+        pdf,
+        publisher_may_annotate_legal_reference,
+        split_html_source_blocks,
+    );
+    let source_words = document.tokens();
+    let mut built = Vec::<BuiltPiece>::new();
+
+    for selection in selections {
+        let FragmentSelection { quote_index, desired, clamp_leading, clamp_trailing } = *selection;
+        let line_pieces = planner.source_pieces(desired, clamp_leading, clamp_trailing, exact_members);
         let mut required = line_pieces
             .iter()
             .flat_map(|piece| piece.first_word..=piece.last_word)
             .collect::<HashSet<_>>();
-        for word in duplicate_signature_metadata(document, desired) {
-            required.remove(&word);
+        if !exact_members {
+            for word in duplicate_signature_metadata(document, desired) {
+                required.remove(&word);
+            }
         }
 
         for (first_word, last_word) in required_runs(desired, &required) {
@@ -3400,59 +3424,6 @@ pub fn text_fragment_plan_in(
     } else {
         blocks
     }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum ParagraphEdge {
-    Opening,
-    Closing,
-    Whole,
-}
-
-/// Words at a paragraph's `edge` that occur once in the document, with how many of the
-/// paragraph's words they take and how many it has.
-fn unique_paragraph_edge(
-    text: &str,
-    document: FragmentText<'_>,
-    edge: ParagraphEdge,
-) -> Option<(String, usize, usize)> {
-    static LEADING_PARAGRAPH_LABEL: OnceLock<Regex> = OnceLock::new();
-    let line = text
-        .split('\n')
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches('\r');
-    let block = js_regex(
-        r"(?u)^\s*(?:\[[0-9]+\]|[0-9]+[.)])\s*",
-        &LEADING_PARAGRAPH_LABEL,
-    )
-    .replace(line, "")
-    .into_owned();
-    let scalar = ScalarText::new(&block);
-    let words = search::tokenize_with_scalar(&block, &scalar);
-    let whole = [words.len()];
-    let lengths: &[usize] = match edge {
-        ParagraphEdge::Whole => &whole,
-        _ => &[12, 16, 8, 24, 32, 6, 4, 2],
-    };
-    for &length in lengths {
-        if length == 0 || words.len() < length {
-            continue;
-        }
-        let span = match edge {
-            ParagraphEdge::Closing => &words[words.len() - length..],
-            _ => &words[..length],
-        };
-        let target = normalize_blank_whitespace(
-            scalar
-                .slice_utf16(span[0].start..span.last()?.end)
-                .unwrap_or_default(),
-        );
-        if directive_match_count(document, &target, "", "") == 1 {
-            return Some((target, length, words.len()));
-        }
-    }
-    None
 }
 
 #[cfg(test)]

@@ -153,6 +153,15 @@ fn nodes_by_start(nodes: &[StructureNode], kinds: &[NodeKind]) -> Vec<usize> {
     found
 }
 
+#[cfg(feature = "structure-inference")]
+fn own_membership(node: &StructureNode) -> &[ScalarRange] {
+    if node.ranges.is_empty() {
+        std::slice::from_ref(&node.range)
+    } else {
+        &node.ranges
+    }
+}
+
 /// The shortest of `containers` (node indexes in the order they open) holding `range` that
 /// `accept` takes, the first in node order among equals: the node a scan of every node finds.
 /// A node opening further back is no shorter than the distance to `range`'s end, so the scan
@@ -161,9 +170,13 @@ fn nodes_by_start(nodes: &[StructureNode], kinds: &[NodeKind]) -> Vec<usize> {
 fn smallest_container(
     nodes: &[StructureNode],
     containers: &[usize],
-    range: ScalarRange,
+    membership: &[ScalarRange],
     accept: impl Fn(usize) -> bool,
 ) -> Option<usize> {
+    let range = ScalarRange {
+        start: membership.iter().map(|part| part.start).min()?,
+        end: membership.iter().map(|part| part.end).max()?,
+    };
     let opened = containers.partition_point(|index| nodes[*index].range.start <= range.start);
     let mut best: Option<(usize, usize)> = None;
     for &index in containers[..opened].iter().rev() {
@@ -171,7 +184,15 @@ fn smallest_container(
         if best.is_some_and(|(length, _)| range.end.saturating_sub(candidate.start) > length) {
             break;
         }
-        if range.end <= candidate.end && accept(index) {
+        let parts = own_membership(&nodes[index]);
+        if range.end <= candidate.end
+            && membership.iter().all(|part| {
+                parts
+                    .iter()
+                    .any(|outer| outer.start <= part.start && part.end <= outer.end)
+            })
+            && accept(index)
+        {
             let key = (candidate.end - candidate.start, index);
             if best.is_none_or(|best| key < best) {
                 best = Some(key);
@@ -239,7 +260,11 @@ pub(crate) fn resolve_structure_candidates<'a>(
     let counted_starts = runs
         .iter()
         .filter(|run| run.grammar == CandidateGrammar::Numeric && run.rooted && run.consecutive)
-        .flat_map(|run| run.markers.iter().map(|candidate| candidate.marker_range.start))
+        .flat_map(|run| {
+            run.markers
+                .iter()
+                .map(|candidate| candidate.marker_range.start)
+        })
         .collect::<HashSet<_>>();
     let period_counted = |run: &StructureCandidateRun| {
         run.grammar == CandidateGrammar::Hierarchy
@@ -253,7 +278,11 @@ pub(crate) fn resolve_structure_candidates<'a>(
     let paragraph_runs = runs
         .iter()
         .filter(|run| period_counted(run))
-        .flat_map(|run| run.markers.iter().map(|candidate| candidate.marker_range.start))
+        .flat_map(|run| {
+            run.markers
+                .iter()
+                .map(|candidate| candidate.marker_range.start)
+        })
         .collect::<HashSet<_>>();
     provision_starts.retain(|start| !paragraph_runs.contains(start));
     // A quotation's numbers are the quoted text's: they open none of this text's sections or
@@ -407,11 +436,39 @@ pub fn resolve_structure_graph(
     provider: String,
     text: &str,
     source_sha256: Option<String>,
+    nodes: Vec<StructureNode>,
+    runs: &[StructureCandidateRun],
+    evidence: &[CandidateEvidenceV2],
+    note_pairs: &[NotePairClaimV2],
+    diagnostics: Vec<StructureDiagnostic>,
+) -> Result<DocumentStructure, EngineError> {
+    let coordinates = ScalarText::new(text);
+    resolve_structure_graph_with_assembler(
+        document_id,
+        provider,
+        text,
+        source_sha256,
+        nodes,
+        runs,
+        evidence,
+        note_pairs,
+        diagnostics,
+        &mut |nodes, _| nest_by_numbering(nodes, &coordinates),
+    )
+}
+
+#[cfg(feature = "structure-inference")]
+pub fn resolve_structure_graph_with_assembler(
+    document_id: String,
+    provider: String,
+    text: &str,
+    source_sha256: Option<String>,
     mut nodes: Vec<StructureNode>,
     runs: &[StructureCandidateRun],
     evidence: &[CandidateEvidenceV2],
     note_pairs: &[NotePairClaimV2],
     mut diagnostics: Vec<StructureDiagnostic>,
+    assembler: &mut dyn FnMut(&mut Vec<StructureNode>, &mut Vec<crate::StructureScopeAnnotation>),
 ) -> Result<DocumentStructure, EngineError> {
     let scalar_text = ScalarText::new(text);
     let scalar_len = scalar_text.len();
@@ -506,33 +563,28 @@ pub fn resolve_structure_graph(
     for node in &nodes {
         *counters.entry(node.kind).or_default() += 1;
     }
-    // A note whose label is a number of a count of paragraphs, most of whose numbers are no
-    // note's, is that paragraph's number read as a note.
-    let paragraph_numbers = runs
+    // Compare each occurrence against its resolved structural reading. A ratio
+    // of overlapping numbers cannot distinguish notes from provisions or contents.
+    let competing_markers = resolved_candidates
         .iter()
-        .filter(|run| run.grammar == CandidateGrammar::Numeric && run.rooted && run.consecutive)
-        .filter_map(|run| {
-            let labels = run
-                .markers
-                .iter()
-                .filter(|marker| {
-                    note_pairs.iter().any(|pair| {
-                        marker.marker_range.start <= pair.label.range.start
-                            && pair.label.range.end <= marker.marker_range.end
-                    })
-                })
-                .map(|marker| marker.marker_range)
-                .collect::<Vec<_>>();
-            (4 * labels.len() <= run.markers.len()).then_some(labels)
+        .filter(|candidate| {
+            candidate.role.is_some() || candidate.proof.rule == ResolutionRuleV2::DirectExclusion
         })
-        .flatten()
+        .map(|candidate| candidate.candidate.marker_range)
         .collect::<Vec<_>>();
     let note_pairs = note_pairs
         .iter()
         .filter(|pair| {
-            !paragraph_numbers.iter().any(|range| {
-                range.start <= pair.label.range.start && pair.label.range.end <= range.end
-            })
+            // Observed digits alone may still belong to citations or counters.
+            // A pair needs independent typography or a note region to outrank
+            // a paragraph sequence. Repaired pairs need their own note-region witness
+            // and independent observed pairs in the same numbering restart.
+            (pair.support.observed_pair
+                && (pair.support.typographic_reference || pair.support.note_region))
+                || (pair.support.note_region && pair.support.corroborated_sequence())
+                || !competing_markers.iter().any(|range| {
+                    range.start <= pair.label.range.start && pair.label.range.end <= range.end
+                })
         })
         .collect::<Vec<_>>();
     let mut notes = Vec::with_capacity(note_pairs.len());
@@ -545,6 +597,17 @@ pub fn resolve_structure_graph(
             || pair.label.line_id.is_empty()
             || !pair.body.range.valid(scalar_len)
             || pair.body.range.start == pair.body.range.end
+            || pair.body.ranges.iter().any(|range| {
+                !range.valid(scalar_len)
+                    || range.start == range.end
+                    || range.start < pair.body.range.start
+                    || range.end > pair.body.range.end
+            })
+            || (!pair.body.ranges.is_empty()
+                && (pair.body.ranges.iter().map(|range| range.start).min()
+                    != Some(pair.body.range.start)
+                    || pair.body.ranges.iter().map(|range| range.end).max()
+                        != Some(pair.body.range.end)))
             || pair.body.page_indexes.is_empty()
             || pair.body.line_ids.is_empty()
             || pair.body.line_ids.iter().any(String::is_empty)
@@ -562,6 +625,17 @@ pub fn resolve_structure_graph(
         let kind = match pair.kind {
             NoteKindV2::Footnote => NodeKind::Footnote,
             NoteKindV2::Endnote => NodeKind::Endnote,
+            NoteKindV2::Sidenote | NoteKindV2::TableNote | NoteKindV2::AuthorNote => {
+                let mut seen = HashSet::new();
+                let references = pair.references.iter().filter(|reference| seen.insert(reference.range))
+                    .map(|reference| NoteReference { range: reference.range, anchor: None,
+                        page_indexes: vec![reference.page_index], line_ids: vec![reference.line_id.clone()] }).collect::<Vec<_>>();
+                notes.push(Note { id: pair.pair_id.clone(), node_id: None, ownership: None, kind: pair.kind,
+                    label_range: pair.label.range, body_range: pair.body.range, label_ranges: vec![pair.label.range],
+                    body_ranges: if pair.body.ranges.is_empty() { vec![pair.body.range] } else { pair.body.ranges.clone() },
+                    primary_reference: references.first().map(|reference| reference.range), references });
+                continue;
+            }
         };
         let note_node_index = if let Some(&index) = identities.get(&(kind, pair.label.range.start))
         {
@@ -618,6 +692,35 @@ pub fn resolve_structure_graph(
             generated_node_ids.insert(index);
             index
         };
+        // Keep the paired label and body parts, never the intervening text in their envelope.
+        let mut membership = if pair.body.ranges.is_empty() {
+            vec![pair.body.range]
+        } else {
+            pair.body.ranges.clone()
+        };
+        membership.push(pair.label.range);
+        membership.sort_by_key(|range| (range.start, range.end));
+        let node = &mut nodes[note_node_index];
+        node.ranges.clear();
+        for range in membership {
+            if let Some(last) = node
+                .ranges
+                .last_mut()
+                .filter(|last| range.start <= last.end)
+            {
+                last.end = last.end.max(range.end);
+            } else {
+                node.ranges.push(range);
+            }
+        }
+        node.range = ScalarRange {
+            start: node
+                .ranges
+                .first()
+                .expect("validated note membership")
+                .start,
+            end: node.ranges.last().expect("validated note membership").end,
+        };
         for candidate in runs.iter().flat_map(|run| &run.markers) {
             if candidate.marker_range.start <= pair.label.range.start
                 && pair.label.range.end <= candidate.marker_range.end
@@ -647,10 +750,13 @@ pub fn resolve_structure_graph(
             .collect::<Vec<_>>();
         notes.push(Note {
             id: pair.pair_id.clone(),
-            node_id: nodes[note_node_index].id.clone(),
+            node_id: Some(nodes[note_node_index].id.clone()),
+            ownership: None,
             kind: pair.kind,
             label_range: pair.label.range,
             body_range: pair.body.range,
+            label_ranges: vec![pair.label.range],
+            body_ranges: if pair.body.ranges.is_empty() { vec![pair.body.range] } else { pair.body.ranges.clone() },
             primary_reference: references.first().map(|reference| reference.range),
             references,
         });
@@ -695,6 +801,93 @@ pub fn resolve_structure_graph(
             };
         }
     }
+    // Native PDF paragraph grouping is source layout, not a second structural boundary truth.
+    // Expose grammar starts within those groups before attaching locators. Learned exact spans
+    // already own their boundaries and are never split by this source-layout adjustment.
+    let mut starts = resolved_candidates
+        .iter()
+        .filter(|candidate| candidate.role.is_some())
+        .map(|candidate| candidate.candidate.marker_range.start)
+        .collect::<Vec<_>>();
+    starts.sort_unstable();
+    starts.dedup();
+    let mut fragments = Vec::new();
+    for node in &mut nodes {
+        if !matches!(node.kind, NodeKind::Prose | NodeKind::Heading)
+            || !node.origin_id.starts_with("legalpdf.")
+            || node.source == Derivation::Model
+        {
+            continue;
+        }
+        let mut cuts = starts
+            .iter()
+            .copied()
+            .filter(|start| {
+                node.range.start < *start
+                    && *start < node.range.end
+                    && (node.ranges.is_empty()
+                        || node
+                            .ranges
+                            .iter()
+                            .any(|part| part.start <= *start && *start < part.end))
+            })
+            .collect::<Vec<_>>();
+        if cuts.is_empty() {
+            continue;
+        }
+        cuts.insert(0, node.range.start);
+        cuts.push(node.range.end);
+        let original = node.clone();
+        for (position, bounds) in cuts.windows(2).enumerate() {
+            let mut fragment = original.clone();
+            fragment.range = ScalarRange {
+                start: bounds[0],
+                end: bounds[1],
+            };
+            let membership = if original.ranges.is_empty() {
+                std::slice::from_ref(&original.range)
+            } else {
+                &original.ranges
+            };
+            fragment.ranges = membership
+                .iter()
+                .filter_map(|part| {
+                    let start = part.start.max(bounds[0]);
+                    let end = part.end.min(bounds[1]);
+                    (start < end).then_some(ScalarRange { start, end })
+                })
+                .collect();
+            let (Some(first), Some(last)) = (fragment.ranges.first(), fragment.ranges.last())
+            else {
+                continue;
+            };
+            fragment.range = ScalarRange {
+                start: first.start,
+                end: last.end,
+            };
+            if fragment.kind == NodeKind::Heading {
+                fragment.heading_range = (fragment.ranges.len() == 1).then_some(fragment.range);
+                fragment.label = Some(
+                    fragment
+                        .ranges
+                        .iter()
+                        .filter_map(|part| scalar_text.slice(part.start..part.end))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+            }
+            if position == 0 {
+                *node = fragment;
+            } else {
+                fragment.id = format!("{}@{}", original.id, bounds[0]);
+                if !node_ids.insert(fragment.id.clone()) {
+                    return Err(EngineError::invalid("Split source unit ID collides"));
+                }
+                fragments.push(fragment);
+            }
+        }
+    }
+    nodes.extend(fragments);
     for resolved in &mut resolved_candidates {
         if candidate_node_ids.contains_key(resolved.candidate.id.as_str()) {
             continue;
@@ -708,20 +901,52 @@ pub fn resolve_structure_graph(
                 .or_insert(resolved.candidate.parent_candidate_id.as_deref());
             continue;
         }
-        let ordinal = counters.entry(kind).or_default();
-        *ordinal += 1;
-        let id = format!("heuristic-{}-{:06}", kind.name(), *ordinal);
-        if !node_ids.insert(id.clone()) {
-            return Err(EngineError::invalid(format!(
-                "generated node id '{}' collides with input",
-                id
-            )));
+        // A PDF source unit owns its role and exact membership; numbering adds locator facts
+        // to that unit rather than manufacturing a second outline unit at the same start.
+        let source_unit = nodes.iter().position(|node| {
+            matches!(
+                node.kind,
+                NodeKind::Prose
+                    | NodeKind::Heading
+                    | NodeKind::Paragraph
+                    | NodeKind::Section
+                    | NodeKind::ListItem
+            ) && node.origin_id.starts_with("legalpdf.")
+                && node.range.start == resolved.candidate.marker_range.start
+                && resolved.candidate.marker_range.end <= node.range.end
+                && (node.ranges.is_empty()
+                    || node.ranges.iter().any(|part| {
+                        part.start <= resolved.candidate.marker_range.start
+                            && resolved.candidate.marker_range.end <= part.end
+                    }))
+        });
+        if let Some(index) = source_unit.filter(|&index| nodes[index].marker_range.is_some()) {
+            identities.insert((kind, resolved.candidate.marker_range.start), index);
+            candidate_node_ids.insert(resolved.candidate.id.as_str(), index);
+            pending_parents
+                .entry(index)
+                .or_insert(resolved.candidate.parent_candidate_id.as_deref());
+            continue;
         }
-        let index = nodes.len();
+        let index = source_unit.unwrap_or(nodes.len());
+        let id = if let Some(index) = source_unit {
+            nodes[index].id.clone()
+        } else {
+            let ordinal = counters.entry(kind).or_default();
+            *ordinal += 1;
+            let id = format!("heuristic-{}-{:06}", kind.name(), *ordinal);
+            if !node_ids.insert(id.clone()) {
+                return Err(EngineError::invalid(format!(
+                    "generated node id '{}' collides with input",
+                    id
+                )));
+            }
+            generated_node_ids.insert(index);
+            id
+        };
         identities.insert((kind, resolved.candidate.marker_range.start), index);
         candidate_node_ids.insert(resolved.candidate.id.as_str(), index);
         pending_parents.insert(index, resolved.candidate.parent_candidate_id.as_deref());
-        generated_node_ids.insert(index);
         let label = match role {
             ResolvedRole::NumberedParagraph => {
                 format!("par{}", resolved.candidate.grammar_value)
@@ -754,21 +979,39 @@ pub fn resolve_structure_graph(
             }
             .to_owned()
         });
-        let mut node = StructureNode::new(
-            id,
-            kind,
-            resolved.candidate.range,
-            ENGINE_ORIGIN,
-            Derivation::Heuristic,
-            None,
-        );
+        let mut node = if let Some(index) = source_unit {
+            let mut node = nodes[index].clone();
+            if node.role.is_none() {
+                node.role = Some(if node.kind == NodeKind::Heading {
+                    PrimaryRole::Heading
+                } else {
+                    PrimaryRole::Text
+                });
+            }
+            if node.role == Some(PrimaryRole::Heading) && node.heading_range.is_none() {
+                node.heading_range = Some(node.range);
+            }
+            node.kind = kind;
+            node
+        } else {
+            StructureNode::new(
+                id,
+                kind,
+                resolved.candidate.range,
+                ENGINE_ORIGIN,
+                Derivation::Heuristic,
+                None,
+            )
+        };
         node.label = Some(label);
         node.locator_kind = locator_kind;
         node.aliases = aliases;
-        node.content_start = Some(resolved.candidate.content_start);
+        node.content_start = Some(resolved.candidate.content_start.min(node.range.end));
         node.marker_range = Some(resolved.candidate.marker_range);
-        node.page_indexes = resolved.page_indexes.to_vec();
-        node.line_ids = resolved.line_ids.to_vec();
+        if source_unit.is_none() {
+            node.page_indexes = resolved.page_indexes.to_vec();
+            node.line_ids = resolved.line_ids.to_vec();
+        }
         node.grammar = Some(
             match role {
                 ResolvedRole::NumberedParagraph => "numeric",
@@ -781,7 +1024,11 @@ pub fn resolve_structure_graph(
             rule: resolved.proof.rule,
             observations: std::mem::take(&mut resolved.proof.observations),
         });
-        nodes.push(node);
+        if source_unit.is_some() {
+            nodes[index] = node;
+        } else {
+            nodes.push(node);
+        }
     }
 
     // A section that yielded to the numbered paragraph on its line stands for that paragraph,
@@ -886,6 +1133,25 @@ pub fn resolve_structure_graph(
         );
         node.page_indexes = page_indexes;
         node.line_ids = line_ids;
+        let mut membership = items
+            .iter()
+            .filter_map(|item| candidate_node_ids.get(item.candidate.id.as_str()))
+            .flat_map(|&item| own_membership(&nodes[item]).iter().copied())
+            .collect::<Vec<_>>();
+        membership.sort_by_key(|part| (part.start, part.end));
+        for part in membership {
+            if let Some(last) = node.ranges.last_mut().filter(|last| part.start <= last.end) {
+                last.end = last.end.max(part.end);
+            } else {
+                node.ranges.push(part);
+            }
+        }
+        if let (Some(first), Some(last)) = (node.ranges.first(), node.ranges.last()) {
+            node.range = ScalarRange {
+                start: first.start,
+                end: last.end,
+            };
+        }
         node.grammar = Some("enumerator_hierarchy".to_owned());
         node.proof = Some(ResolutionProofV2 {
             rule: ResolutionRuleV2::ListItemLayout,
@@ -937,7 +1203,11 @@ pub fn resolve_structure_graph(
                 .iter()
                 .any(|start| held.start < *start && *start < range.end)
         {
-            nodes[paragraph].range.end = range.end;
+            // The list belongs to the paragraph; its text is not the paragraph's own text.
+            // Literal assembly derives the resulting coverage through this parent edge.
+            if nodes[list].parent_id.is_none() {
+                nodes[list].parent_id = Some(nodes[paragraph].id.clone());
+            }
         }
     }
 
@@ -948,8 +1218,9 @@ pub fn resolve_structure_graph(
         if nodes[index].kind != NodeKind::Heading || nodes[index].parent_id.is_some() {
             continue;
         }
-        nodes[index].parent_id = smallest_container(&nodes, &sections, nodes[index].range, |_| true)
-            .map(|section| nodes[section].id.clone());
+        nodes[index].parent_id =
+            smallest_container(&nodes, &sections, own_membership(&nodes[index]), |_| true)
+                .map(|section| nodes[section].id.clone());
     }
     let enclosures = nodes_by_start(
         &nodes,
@@ -976,47 +1247,66 @@ pub fn resolve_structure_graph(
             .map(|parent| nodes[parent].id.clone());
         // A declared parent that resolved to nothing leaves its item to whatever node holds it.
         let enclosing = (candidate_parent.is_none() && generated_node_ids.contains(&index))
-        .then(|| {
-            let range = nodes[index].range;
-            // A list holds its items, never a paragraph its extent happens to run over.
-            let holds = |candidate: usize| {
-                candidate != index
-                    && (nodes[candidate].range.start, nodes[candidate].range.end)
-                        != (range.start, range.end)
-                    && !(nodes[index].kind == NodeKind::Paragraph
-                        && nodes[candidate].kind == NodeKind::List)
-            };
-            // The page a node sits on yields to a section the source itself supplies around it.
-            smallest_container(&nodes, &enclosures, range, holds)
-                .and_then(|best| {
-                    if nodes[best].kind != NodeKind::Page {
-                        return Some(best);
-                    }
-                    // So does it to a paragraph read around it.
-                    smallest_container(&nodes, &enclosures, range, |candidate| {
-                        nodes[candidate].kind != NodeKind::Page
-                            && (!generated_node_ids.contains(&candidate)
-                                || nodes[candidate].kind == NodeKind::Paragraph)
-                            && holds(candidate)
+            .then(|| {
+                let range = nodes[index].range;
+                // A list holds its items, never a paragraph its extent happens to run over.
+                let holds = |candidate: usize| {
+                    candidate != index
+                        && (nodes[candidate].range.start, nodes[candidate].range.end)
+                            != (range.start, range.end)
+                        && !(nodes[index].kind == NodeKind::Paragraph
+                            && nodes[candidate].kind == NodeKind::List)
+                };
+                // The page a node sits on yields to a section the source itself supplies around it.
+                smallest_container(&nodes, &enclosures, own_membership(&nodes[index]), holds)
+                    .and_then(|best| {
+                        if nodes[best].kind != NodeKind::Page {
+                            return Some(best);
+                        }
+                        // So does it to a paragraph read around it.
+                        smallest_container(
+                            &nodes,
+                            &enclosures,
+                            own_membership(&nodes[index]),
+                            |candidate| {
+                                nodes[candidate].kind != NodeKind::Page
+                                    && (!generated_node_ids.contains(&candidate)
+                                        || nodes[candidate].kind == NodeKind::Paragraph)
+                                    && holds(candidate)
+                            },
+                        )
+                        .or(Some(best))
                     })
-                    .or(Some(best))
-                })
-                .map(|candidate| nodes[candidate].id.clone())
-        })
-        .flatten();
+                    .map(|candidate| nodes[candidate].id.clone())
+            })
+            .flatten();
         nodes[index].parent_id = candidate_parent.or(enclosing);
     }
 
-    nest_by_numbering(&mut nodes, &scalar_text);
+    let mut scope_annotations = Vec::new();
+    let anchors = nodes.iter().map(|node| (node.id.clone(), node.range.start)).collect::<HashMap<_, _>>();
+    let candidate_ids = candidate_node_ids.iter().map(|(candidate, index)| (*candidate, nodes[*index].id.clone())).collect::<HashMap<_, _>>();
+    assembler(&mut nodes, &mut scope_annotations);
+    let retained = nodes.iter().map(|node| node.id.as_str()).collect::<HashSet<_>>();
+    let remapped = anchors.iter().filter(|(id, _)| !retained.contains(id.as_str())).filter_map(|(id, start)| {
+        nodes.iter().filter(|node| node.role.is_some()).find(|node| {
+            let parts = if node.ranges.is_empty() { std::slice::from_ref(&node.range) } else { &node.ranges };
+            parts.iter().any(|part| part.start <= *start && *start < part.end)
+        }).map(|node| (id.clone(), node.id.clone()))
+    }).collect::<HashMap<_, _>>();
+    for diagnostic in &mut diagnostics {
+        for id in &mut diagnostic.node_ids { if let Some(anchor) = remapped.get(id) { *id = anchor.clone(); } }
+        diagnostic.node_ids.sort(); diagnostic.node_ids.dedup();
+    }
 
     diagnostics.extend(runs.iter().map(|run| {
         let node_ids = run
             .markers
             .iter()
             .filter_map(|candidate| {
-                candidate_node_ids
+                candidate_ids
                     .get(candidate.id.as_str())
-                    .map(|index| nodes[*index].id.clone())
+                    .map(|id| remapped.get(id).unwrap_or(id).clone())
             })
             .collect::<Vec<_>>();
         let resolved_count = node_ids.len();
@@ -1042,7 +1332,7 @@ pub fn resolve_structure_graph(
         .map(|id| Origin { id: id.to_owned() })
         .collect::<Vec<_>>();
     origins.sort_by(|left, right| left.id.cmp(&right.id));
-    Ok(DocumentStructure::from_scalar_parts(
+    let mut structure = DocumentStructure::from_scalar_parts(
         document_id,
         provider,
         text.to_owned(),
@@ -1053,7 +1343,21 @@ pub fn resolve_structure_graph(
         nodes,
         notes,
         diagnostics,
-    ))
+    );
+    for scope in &mut scope_annotations {
+        for range in scope
+            .ranges
+            .iter_mut()
+            .chain(scope.owned_ranges.iter_mut())
+            .chain(scope.title_ranges.iter_mut())
+            .chain(scope.attribution_ranges.iter_mut())
+        {
+            range.start = scalar_text.utf16(range.start);
+            range.end = scalar_text.utf16(range.end);
+        }
+    }
+    structure.scope_annotations = scope_annotations;
+    Ok(structure)
 }
 
 /// How a marker counts: its brackets, and whether it counts in digits, dotted digits, letters or
@@ -1085,7 +1389,9 @@ fn roman_value(token: &str) -> Option<u32> {
             total += *value as i64;
         }
     }
-    u32::try_from(total).ok().filter(|value| *value > 0 && *value < 90)
+    u32::try_from(total)
+        .ok()
+        .filter(|value| *value > 0 && *value < 90)
 }
 
 /// A marker's family and the value it counts, read whole: "(a)", "1.", "iv)", "[12]", "2.3", "•".
@@ -1094,19 +1400,26 @@ fn roman_value(token: &str) -> Option<u32> {
 fn marker_family(marker: &str, letter: impl Fn(Family, u32) -> bool) -> Option<(Family, u32)> {
     let text = marker.trim();
     if text.chars().count() == 1 && "•-–—*▪◦●○■□➢✓·o".contains(text) {
-        return Some((Family { wrap: "•", count: "bullet" }, 1));
+        return Some((
+            Family {
+                wrap: "•",
+                count: "bullet",
+            },
+            1,
+        ));
     }
-    let (wrap, inner) = if let Some(inner) = text.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
-        ("()", inner)
-    } else if let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
-        ("[]", inner)
-    } else if let Some(inner) = text.strip_suffix(')') {
-        (")", inner)
-    } else if let Some(inner) = text.strip_suffix('.') {
-        (".", inner)
-    } else {
-        ("", text)
-    };
+    let (wrap, inner) =
+        if let Some(inner) = text.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+            ("()", inner)
+        } else if let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+            ("[]", inner)
+        } else if let Some(inner) = text.strip_suffix(')') {
+            (")", inner)
+        } else if let Some(inner) = text.strip_suffix('.') {
+            (".", inner)
+        } else {
+            ("", text)
+        };
     let inner = inner.trim();
     if inner.is_empty() || inner.chars().count() > 12 {
         return None;
@@ -1115,7 +1428,11 @@ fn marker_family(marker: &str, letter: impl Fn(Family, u32) -> bool) -> Option<(
         return Some((Family { wrap, count: "1" }, inner.parse().ok()?));
     }
     let parts = inner.split('.').collect::<Vec<_>>();
-    if parts.len() > 1 && parts.iter().all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())) {
+    if parts.len() > 1
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+    {
         let count = match parts.len() {
             2 => "1.1",
             3 => "1.1.1",
@@ -1131,12 +1448,21 @@ fn marker_family(marker: &str, letter: impl Fn(Family, u32) -> bool) -> Option<(
         if upper || lower {
             if single {
                 let c = inner.chars().next()?;
-                let alpha = Family { wrap, count: if upper { "A" } else { "a" } };
+                let alpha = Family {
+                    wrap,
+                    count: if upper { "A" } else { "a" },
+                };
                 if letter(alpha, letter_value(c)) {
                     return Some((alpha, letter_value(c)));
                 }
             }
-            return Some((Family { wrap, count: if upper { "I" } else { "i" } }, value));
+            return Some((
+                Family {
+                    wrap,
+                    count: if upper { "I" } else { "i" },
+                },
+                value,
+            ));
         }
     }
     if single {
@@ -1145,6 +1471,31 @@ fn marker_family(marker: &str, letter: impl Fn(Family, u32) -> bool) -> Option<(
         return Some((Family { wrap, count }, letter_value(c)));
     }
     None
+}
+
+pub(crate) fn numbering_marker(
+    marker: &str,
+    previous: Option<&legal_structure_model::NumberingMarker>,
+) -> Option<legal_structure_model::NumberingMarker> {
+    let (family, ordinal) = marker_family(marker, |family, ordinal| {
+        previous.is_some_and(|previous| {
+            previous.family == format!("{}:{}", family.wrap, family.count)
+                && previous.ordinal.checked_add(1) == Some(ordinal)
+        })
+    })?;
+    let mut components = marker
+        .trim()
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+        .split('.')
+        .map(str::parse::<u32>)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap_or_default();
+    components.pop();
+    Some(legal_structure_model::NumberingMarker {
+        family: format!("{}:{}", family.wrap, family.count),
+        ordinal,
+        prefix: components,
+    })
 }
 
 /// Every numbered item placed by the document's numbering, read over the whole document: a marker
@@ -1162,7 +1513,12 @@ fn nest_by_numbering(nodes: &mut [StructureNode], text: &ScalarText<'_>) {
             )
         })
         .collect::<Vec<_>>();
-    order.sort_by_key(|index| (nodes[*index].range.start, std::cmp::Reverse(nodes[*index].range.end)));
+    order.sort_by_key(|index| {
+        (
+            nodes[*index].range.start,
+            std::cmp::Reverse(nodes[*index].range.end),
+        )
+    });
     let mut stack = Vec::<(Family, usize, u32)>::new();
     for index in order {
         let node = &nodes[index];

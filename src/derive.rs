@@ -114,8 +114,9 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
         node.marker_range = block.marker_range;
         if let Some(mut note) = block.note {
             note.id = format!("note-{}", node.id);
-            note.node_id = node.id.clone();
+            note.node_id = Some(node.id.clone());
             note.body_range = block.range;
+            note.body_ranges = vec![block.range];
             notes.push(note);
         }
         nodes.push(node);

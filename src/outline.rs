@@ -1,6 +1,8 @@
 //! A document's own outline: its headings and its top-level sections, in order.
 
-use crate::{Derivation, DocumentStructure, NodeKind, PrintedStatute, ScalarText, StructureNode};
+use crate::{
+    Derivation, DocumentStructure, NodeKind, PrimaryRole, PrintedStatute, ScalarText, StructureNode,
+};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
@@ -35,8 +37,23 @@ fn section_title(label: &str) -> String {
     label.to_owned()
 }
 
-fn outline_entries(structure: &DocumentStructure, sections: bool) -> Vec<OutlineEntry> {
+fn own_start(node: &StructureNode) -> usize {
+    node.rendered_membership
+        .iter()
+        .map(|range| range.start)
+        .min()
+        .or_else(|| node.rendered_range.map(|range| range.start))
+        .or_else(|| node.ranges.iter().map(|range| range.start).min())
+        .unwrap_or(node.range.start)
+}
+
+fn outline_entries(
+    structure: &DocumentStructure,
+    sections: bool,
+    literal: bool,
+) -> Vec<OutlineEntry> {
     let text = ScalarText::new(structure.query_text());
+    let source_text = ScalarText::new(&structure.text);
     let nodes = structure
         .nodes
         .iter()
@@ -44,7 +61,11 @@ fn outline_entries(structure: &DocumentStructure, sections: bool) -> Vec<Outline
         .collect::<HashMap<_, _>>();
     let depth = |node: &StructureNode, counts: &dyn Fn(&StructureNode) -> bool| {
         let (mut level, mut parent) = (0usize, node.parent_id.as_deref());
-        while let Some(found) = parent.and_then(|id| nodes.get(id)).filter(|_| level < 16) {
+        let mut seen = HashSet::new();
+        while let Some(found) = parent
+            .filter(|id| seen.insert(*id))
+            .and_then(|id| nodes.get(id))
+        {
             if counts(found) {
                 level += 1;
             }
@@ -64,36 +85,76 @@ fn outline_entries(structure: &DocumentStructure, sections: bool) -> Vec<Outline
         .nodes
         .iter()
         .filter_map(|node| {
-            let start = node.rendered_range.unwrap_or(node.range).start;
-            let page_index = node.page_indexes.first().copied();
-            let label = if node.kind == NodeKind::Heading
-                && node.source == Derivation::Native
-                && node.markup_tag.is_some()
+            if literal && node.role != Some(PrimaryRole::Heading) {
+                return None;
+            }
+            if node.kind == NodeKind::Heading
+                && node.role.is_some_and(|role| role != PrimaryRole::Heading)
             {
-                let range = structure.query_range(node);
-                node.display_value
-                    .as_deref()
-                    .or_else(|| text.slice_utf16(range.start..range.end))?
+                return None;
+            }
+            let kind = if node.role == Some(PrimaryRole::Heading) {
+                NodeKind::Heading
             } else {
-                node.label.as_deref()?
+                node.kind
+            };
+            let start = own_start(node);
+            let page_index = node.page_indexes.first().copied();
+            let label = if let Some(range) = node.heading_range {
+                source_text.slice_utf16(range.start..range.end)?.to_owned()
+            } else if kind == NodeKind::Heading
+                && (node.role == Some(PrimaryRole::Heading) || node.source == Derivation::Native)
+                && (node.role == Some(PrimaryRole::Heading) || node.markup_tag.is_some())
+            {
+                node.display_value.clone().unwrap_or_else(|| {
+                    if !node.rendered_membership.is_empty() {
+                        node.rendered_membership
+                            .iter()
+                            .filter_map(|range| text.slice_utf16(range.start..range.end))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    } else {
+                        let membership = if node.ranges.is_empty() {
+                            std::slice::from_ref(&node.range)
+                        } else {
+                            &node.ranges
+                        };
+                        membership
+                            .iter()
+                            .filter_map(|range| source_text.slice_utf16(range.start..range.end))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    }
+                })
+            } else {
+                node.label.clone()?
             }
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-            let entry = match node.kind {
-                NodeKind::Heading if !label.is_empty() && label.chars().count() <= 200 => {
+            let entry = match kind {
+                NodeKind::Heading
+                    if !label.is_empty()
+                        && (node.role == Some(PrimaryRole::Heading)
+                            || label.chars().count() <= 200) =>
+                {
                     Some(OutlineEntry {
                         kind: "heading",
                         // The heading and nested sections are source siblings,
                         // so their hierarchy comes from the containing LDML sections.
-                        level: if ldml(node, "section", "ldml-heading") {
+                        level: if literal {
+                            node.level.unwrap_or(0)
+                        } else if ldml(node, "section", "ldml-heading") {
                             depth(node, &|parent| {
                                 parent.kind == NodeKind::Section
                                     && ldml(parent, "div", "ldml-section")
                             })
                             .saturating_sub(1)
                         } else {
-                            depth(node, &|parent| parent.kind == NodeKind::Heading)
+                            depth(node, &|parent| {
+                                parent.role == Some(PrimaryRole::Heading)
+                                    || parent.role.is_none() && parent.kind == NodeKind::Heading
+                            })
                         },
                         title: label,
                         start,
@@ -122,7 +183,14 @@ fn outline_entries(structure: &DocumentStructure, sections: bool) -> Vec<Outline
     for (_, entry) in entries.iter().filter(|(_, entry)| entry.kind == "heading") {
         *counts.entry(entry.title.to_lowercase()).or_default() += 1;
     }
-    entries.retain(|(_, entry)| entry.kind != "heading" || counts[&entry.title.to_lowercase()] < 3);
+    entries.retain(|(node, entry)| {
+        node.role == Some(PrimaryRole::Heading)
+            || entry.kind != "heading"
+            || counts[&entry.title.to_lowercase()] < 3
+    });
+    if literal {
+        return entries.into_iter().map(|(_, entry)| entry).collect();
+    }
     let mut ranked = entries
         .iter()
         .enumerate()
@@ -167,9 +235,38 @@ pub fn document_outline(
     pdf: bool,
     printed: Option<&PrintedStatute>,
 ) -> Vec<OutlineEntry> {
-    let mut entries = outline_entries(structure, !pdf);
+    // Exact PDF source identity and established role/ownership/level facts select
+    // literal projection. Other sources retain their existing markup view rules.
+    let literal = pdf
+        && !structure.source_fragments.is_empty()
+        && structure.nodes.iter().any(|node| node.role.is_some())
+        && structure
+            .nodes
+            .iter()
+            .filter(|node| node.role.is_some())
+            .all(|node| node.ownership.is_some() && node.level.is_some());
+    let mut entries = outline_entries(structure, !pdf, literal);
+    let explicit_headings = structure
+        .nodes
+        .iter()
+        .filter(|node| !literal && node.role == Some(PrimaryRole::Heading))
+        .map(own_start)
+        .collect::<HashSet<_>>();
+    let declared_entries = entries
+        .iter()
+        .filter(|entry| entry.kind == "heading" && explicit_headings.contains(&entry.start))
+        .map(|entry| {
+            (
+                entry.start,
+                entry.level,
+                entry.title.clone(),
+                entry.page_index,
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.retain(|entry| entry.kind != "heading" || !explicit_headings.contains(&entry.start));
     if let Some(instrument) = printed {
-        let sections = outline_entries(instrument.structure(), true)
+        let sections = outline_entries(instrument.structure(), true, false)
             .into_iter()
             .filter(|entry| entry.kind == "section")
             .collect::<Vec<_>>();
@@ -188,7 +285,12 @@ pub fn document_outline(
                 let node =
                     &structure.nodes[instrument.parts(entry.start, entry.start + 1).next()?.0];
                 Some(OutlineEntry {
-                    start: node.rendered_range.unwrap_or(node.range).start,
+                    start: own_start(node),
+                    level: if literal {
+                        node.level.unwrap_or(0)
+                    } else {
+                        entry.level
+                    },
                     page_index: node.page_indexes.first().copied(),
                     ..entry
                 })
@@ -196,6 +298,9 @@ pub fn document_outline(
         }
     }
     entries.sort_by_key(|entry| entry.start);
+    if literal {
+        return entries;
+    }
     // The matter before a judgment's reasons (the style of cause, the court, the parties and
     // counsel, a date) is no heading of the text: the outline opens with the headings that run
     // straight into its first numbered paragraph, as its case outline reads it ("[1]"), with no
@@ -210,17 +315,7 @@ pub fn document_outline(
     let paragraph = crate::case_outline(text)
         .ok()
         .and_then(|outline| outline.into_iter().find(|entry| entry.kind == "paragraph"))
-        .map(|entry| {
-            let (mut utf16, mut scalar) = (0, 0);
-            for character in text.chars() {
-                if utf16 >= entry.start {
-                    break;
-                }
-                utf16 += character.len_utf16();
-                scalar += 1;
-            }
-            scalar
-        });
+        .map(|entry| entry.start);
     if paragraph.is_none() {
         // A judgment's section nodes are a misreading; an enactment's sections are its printed reading's.
         if let Some(page) = entries
@@ -282,5 +377,15 @@ pub fn document_outline(
             entry.level = heading.map_or(0, |level| level + 1);
         }
     }
+    for (start, level, title, page_index) in declared_entries {
+        entries.push(OutlineEntry {
+            kind: "heading",
+            level,
+            title,
+            start,
+            page_index,
+        });
+    }
+    entries.sort_by_key(|entry| entry.start);
     entries
 }

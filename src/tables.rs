@@ -12,7 +12,8 @@ const MAX_TABLE_CELLS: usize = 500_000;
 struct Cell<'a> {
     fact: &'a AuthoritativeTableCell,
     range: ScalarRange,
-    bytes: std::ops::Range<usize>,
+    ranges: Vec<ScalarRange>,
+    bytes: Vec<std::ops::Range<usize>>,
 }
 
 pub(crate) struct AuthoritativeTables<'a> {
@@ -64,20 +65,25 @@ impl<'a> AuthoritativeTables<'a> {
             occupied.extend((fact.row..=last_row).flat_map(|row| {
                 (fact.column..=last_column).map(move |column| (fact.table, row, column, index))
             }));
-            let [Some(start), Some(end)] =
-                [fact.start, fact.end].map(|at| coordinates.byte_at_utf16(at))
-            else {
-                return Err(EngineError::invalid(
-                    "Table-cell text range splits a Unicode scalar",
-                ));
-            };
+            let mut ranges = fact.ranges.clone();
+            ranges.sort_by_key(|range| (range.start, range.end));
+            if ranges.is_empty() || ranges.first().unwrap().start != fact.start
+                || ranges.iter().map(|range| range.end).max() != Some(fact.end)
+                || ranges.iter().any(|range| range.start > range.end || range.end > fact.end)
+                || ranges.windows(2).any(|pair| pair[0].end > pair[1].start)
+            {
+                return Err(invalid());
+            }
+            let bytes = ranges.iter().map(|range| {
+                coordinates.byte_at_utf16(range.start).zip(coordinates.byte_at_utf16(range.end))
+                    .map(|(start, end)| start..end)
+                    .ok_or_else(|| EngineError::invalid("Table-cell text range splits a Unicode scalar"))
+            }).collect::<Result<Vec<_>, _>>()?;
             cells.push(Cell {
                 fact,
-                range: ScalarRange {
-                    start: fact.start,
-                    end: fact.end,
-                },
-                bytes: start..end,
+                range: ScalarRange { start: fact.start, end: fact.end },
+                ranges,
+                bytes,
             });
         }
         occupied.sort_unstable();
@@ -118,15 +124,15 @@ impl<'a> AuthoritativeTables<'a> {
         }
         if text.is_ascii() {
             let mut masked = text.into_bytes();
-            for cell in &self.cells {
-                masked[cell.bytes.clone()]
+            for range in self.cells.iter().flat_map(|cell| &cell.bytes) {
+                masked[range.clone()]
                     .iter_mut()
                     .filter(|byte| **byte != b'\n')
                     .for_each(|byte| *byte = b' ');
             }
             return String::from_utf8(masked).unwrap();
         }
-        let mut ranges: Vec<_> = self.cells.iter().map(|cell| cell.bytes.clone()).collect();
+        let mut ranges: Vec<_> = self.cells.iter().flat_map(|cell| cell.bytes.clone()).collect();
         ranges.sort_unstable_by_key(|range| (range.start, range.end));
         let mut masked = String::with_capacity(text.len());
         let mut at = 0;
@@ -201,6 +207,8 @@ impl<'a> AuthoritativeTables<'a> {
                 range,
                 owner.map(|node| node.id.clone()),
             );
+            table.ranges = cells.iter().flat_map(|cell| cell.ranges.clone()).collect();
+            table.table_number = Some(table_number);
             table.label = Some(table_id.clone());
             table.aliases = table_name.map(|name| vec![name.to_owned()]);
             nodes.push(table);
@@ -214,6 +222,8 @@ impl<'a> AuthoritativeTables<'a> {
                     row_range,
                     Some(table_id.clone()),
                 );
+                row.ranges = cells.iter().flat_map(|cell| cell.ranges.clone()).collect();
+                row.row = Some(row_number);
                 row.label = Some(row_id.clone());
                 nodes.push(row);
                 for cell in cells {
@@ -223,8 +233,11 @@ impl<'a> AuthoritativeTables<'a> {
                         cell.range,
                         Some(row_id.clone()),
                     );
+                    node.ranges = cell.ranges.clone();
                     node.label = Some(node.id.clone());
                     node.anchor.clone_from(&cell.fact.address);
+                    node.row = Some(cell.fact.row);
+                    node.column = Some(cell.fact.column);
                     node.row_span = cell.fact.row_span;
                     node.column_span = cell.fact.column_span;
                     node.display_value.clone_from(&cell.fact.display_value);

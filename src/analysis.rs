@@ -47,6 +47,44 @@ impl StructureAnalysis for EngineAnalysis {
         )
     }
 
+    fn resolve_structure_graph_with_assembler(
+        &self,
+        document_id: String,
+        provider: String,
+        text: &str,
+        source_sha256: Option<String>,
+        nodes: Vec<StructureNode>,
+        runs: &[StructureCandidateRun],
+        evidence: &[CandidateEvidenceV2],
+        note_pairs: &[NotePairClaimV2],
+        diagnostics: Vec<StructureDiagnostic>,
+        assembler: &mut dyn FnMut(&mut Vec<StructureNode>, &mut Vec<crate::StructureScopeAnnotation>),
+    ) -> Result<DocumentStructure, EngineError> {
+        let structure = crate::candidates::resolve_structure_graph_with_assembler(
+            document_id,
+            provider,
+            text,
+            source_sha256,
+            nodes,
+            runs,
+            evidence,
+            note_pairs,
+            diagnostics,
+            assembler,
+        )?;
+        crate::assemble_structure_annotations(structure)
+            .map(|assembled| assembled.structure)
+            .map_err(EngineError::invalid)
+    }
+
+    fn numbering_marker(
+        &self,
+        marker: &str,
+        previous: Option<&legal_structure_model::NumberingMarker>,
+    ) -> Option<legal_structure_model::NumberingMarker> {
+        crate::candidates::numbering_marker(marker, previous)
+    }
+
     fn analyze_instrument(
         &self,
         text: String,
@@ -71,6 +109,7 @@ impl StructureAnalysis for EngineAnalysis {
             .into_iter()
             .map(|citation| CitationSpan {
                 range: citation.full_span.start..citation.full_span.end,
+                core_range: citation.span.start..citation.span.end,
                 text: citation.full_span.text,
             })
             .collect()

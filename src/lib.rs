@@ -11,6 +11,21 @@ mod analysis;
 mod citator;
 #[cfg(feature = "citator")]
 mod canlii;
+mod annotations;
+pub use annotations::*;
+mod composition_seed;
+mod composition_annotation_seed;
+pub use composition_seed::*;
+mod composition;
+pub use composition::*;
+mod composition_annotations;
+pub use composition_annotations::*;
+mod composition_native;
+pub use composition_native::*;
+mod composition_projection;
+pub use composition_projection::*;
+mod corrections;
+pub use corrections::*;
 mod definitions;
 use legal_structure_model::document;
 mod docx_lint;
@@ -49,7 +64,7 @@ pub use definitions::*;
 pub(crate) use document::node_depths;
 pub use document::{
     CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,
-    MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, StructureDiagnostic, StructureNode,
+    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, FieldAnnotation, FieldKind, FieldState, MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, PrimaryRole, NativeNavigationWitness, PdfStructureTagWitness, NavigationEntry, SourceFragment, StructureOwnership, StructureScopeAnnotation, StructureScopeKind, StructureDiagnostic, StructureNode,
 };
 pub use docx_lint::*;
 pub use docx_numbering::*;
@@ -79,7 +94,7 @@ pub use provider_text::{
 pub use journal_titles::{journal_title_choice, journal_title_searches, JournalTitleHit, JournalTitleSearch};
 #[cfg(feature = "document-query")]
 pub use quote_location::{
-    corrected_quote, editorial_quote, locate_quotes_in, quote_text_comparison, verbatim_repair, LocatedQuote,
+    corrected_quote, document_quote_blocks, editorial_quote, locate_quotes_in, quote_text_comparison, verbatim_repair, LocatedQuote,
     QuoteBlockInput, QuoteComparison, QuoteLocation, QuoteToLocate,
 };
 #[cfg(feature = "quote-verification")]
@@ -95,7 +110,7 @@ pub use text::{
 pub(crate) use legal_structure_model::EvidenceKind;
 pub use legal_structure_model::{
     CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, DetectionProfile, EngineError,
-    NoteBodyV2, NotePairClaimV2, Origin, ResolutionProofV2, ResolutionRuleV2, ScalarRange, Scope,
+    NoteBodyV2, NotePairClaimV2, NotePairSupportV2, Origin, ResolutionProofV2, ResolutionRuleV2, ScalarRange, Scope,
     ScopeKind, StructureAnalysis, StructureCandidateRun, StructureMarkerCandidate, TextAnchorV2,
     DOCUMENT_STRUCTURE_SCHEMA,
 };

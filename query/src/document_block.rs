@@ -29,6 +29,12 @@ pub(crate) enum BlockFieldOrder {
 
 #[derive(Clone, Deserialize)]
 pub struct DocumentBlock {
+    #[serde(default, rename = "nodeId")]
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub ranges: Vec<legal_structure_model::ScalarRange>,
+    #[serde(default, rename = "printedLabel")]
+    pub printed_label: bool,
     pub kind: DocumentKind,
     pub label: String,
     pub start: usize,
@@ -56,6 +62,9 @@ impl DocumentBlock {
         origin: DocumentOrigin,
     ) -> Self {
         Self {
+            node_id: None,
+            printed_label: false,
+            ranges: vec![legal_structure_model::ScalarRange { start, end }],
             kind,
             label: label.into(),
             start,
@@ -71,7 +80,9 @@ impl DocumentBlock {
     }
 
     fn fields(&self) -> usize {
-        5 + usize::from(self.anchor.is_some())
+        6 + usize::from(self.node_id.is_some())
+            + usize::from(!self.ranges.is_empty())
+            + usize::from(self.anchor.is_some())
             + usize::from(!self.aliases.is_empty())
             + usize::from(self.parent_label.is_some())
             + usize::from(self.row_span.is_some())
@@ -82,6 +93,13 @@ impl DocumentBlock {
 impl Serialize for DocumentBlock {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut row = serializer.serialize_struct("DocumentBlock", self.fields())?;
+        if let Some(id) = &self.node_id {
+            row.serialize_field("nodeId", id)?;
+        }
+        if !self.ranges.is_empty() {
+            row.serialize_field("ranges", &self.ranges)?;
+        }
+        row.serialize_field("printedLabel", &self.printed_label)?;
         row.serialize_field("kind", &self.kind)?;
         row.serialize_field("label", &self.label)?;
         row.serialize_field("start", &self.start)?;

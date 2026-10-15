@@ -83,3 +83,22 @@ pub fn normalize_compact_numbered_section_locator(compact: &str) -> String {
         String::new()
     }
 }
+
+/// Parse a numeric printed paragraph or page locator using its canonical spelling grammar.
+pub fn parse_ordinal(kind: &str, raw: &str) -> Option<usize> {
+    static PAGE: OnceLock<Regex> = OnceLock::new();
+    static PARAGRAPH: OnceLock<Regex> = OnceLock::new();
+    use unicode_normalization::UnicodeNormalization;
+    let value = raw.nfkc().collect::<String>();
+    let captures = if kind == "page" {
+        PAGE.get_or_init(|| {
+            Regex::new(r"(?i)^#?\s*\[?\s*(?:(?:pages?|pp?\.?)[\s:_=-]*)?0*(\d{1,6})\s*\]?$")
+                .unwrap()
+        })
+        .captures(value.trim())
+    } else {
+        PARAGRAPH.get_or_init(|| Regex::new(r"(?i)^#?\s*(?:(?:paragraphs?|paras?|pars?|¶)\.?\s*)?(?:(?:paragraph|para|par)[\s:_=-]*)?0*(\d{1,6})$" ).unwrap()).captures(value.trim())
+    }?;
+    captures.get(1)?.as_str().parse().ok()
+}
+

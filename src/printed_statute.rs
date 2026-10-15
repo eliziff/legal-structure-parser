@@ -3,7 +3,7 @@
 //! the lines and pages that print a cited provision.
 
 use crate::{
-    analyze_instrument, DocumentLookupStatus, DocumentQuery, DocumentStructure, NodeKind,
+    analyze_instrument, DocumentLookupStatus, DocumentQuery, DocumentStructure, NodeKind, ScalarRange, ScalarText,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -26,13 +26,70 @@ pub struct PrintedStatute {
     /// what precedes. A marginal note and the provision under it can share a node, as can a
     /// provision and its history note; each is its own paragraph.
     parts: Vec<(usize, usize, usize, Vec<String>, bool, bool)>,
+    source_runs: Vec<SourceRun>,
 }
 
 /// Where a cited provision is printed: its lines and pages, or that the body prints its
 /// label twice.
 pub enum ProvisionPlacement {
-    Found { lines: Vec<String>, pages: Vec<u32> },
+    Found { ranges: Vec<ScalarRange>, pages: Vec<u32> },
     Ambiguous,
+}
+
+/// A retained run of printed text at its UTF-16 reading coordinates. A zero-width
+/// reading range retains a repeated printed section prefix removed for the grammar.
+#[derive(Clone)]
+struct SourceRun { reading: ScalarRange, source: ScalarRange }
+
+fn replace_reading(text: &mut String, runs: &mut Vec<SourceRun>, start: usize, end: usize, replacement: &str) {
+    let scalar = ScalarText::new(text);
+    let from = scalar.byte_at_utf16(start).expect("reading edit start");
+    let to = scalar.byte_at_utf16(end).expect("reading edit end");
+    let width = replacement.encode_utf16().count();
+    let shift = |at: usize| at - (end - start) + width;
+    let mut mapped = Vec::new();
+    for run in runs.drain(..) {
+        if run.reading.end <= start { mapped.push(run); continue; }
+        if run.reading.start >= end {
+            mapped.push(SourceRun { reading: ScalarRange { start: shift(run.reading.start), end: shift(run.reading.end) }, ..run });
+            continue;
+        }
+        if run.reading.start < start {
+            mapped.push(SourceRun { reading: ScalarRange { start: run.reading.start, end: start },
+                source: ScalarRange { start: run.source.start, end: run.source.start + start - run.reading.start } });
+        }
+        let low = run.reading.start.max(start);
+        let high = run.reading.end.min(end);
+        if low < high {
+            mapped.push(SourceRun { reading: ScalarRange { start, end: start },
+                source: ScalarRange { start: run.source.start + low - run.reading.start,
+                    end: run.source.start + high - run.reading.start } });
+        }
+        if run.reading.end > end {
+            mapped.push(SourceRun { reading: ScalarRange { start: start + width, end: shift(run.reading.end) },
+                source: ScalarRange { start: run.source.start + end - run.reading.start, end: run.source.end } });
+        }
+    }
+    text.replace_range(from..to, replacement);
+    *runs = mapped;
+}
+
+/// Restrict physical rows to each node's exact own source membership before
+/// reading provisions. Sharing a line never grants ownership of its other text.
+fn source_lines<'a>(node: &crate::StructureNode,
+    lines: &HashMap<&str, PrintedLine<'a>>, fragments: &HashMap<&str, ScalarRange>) -> Vec<(PrintedLine<'a>, ScalarRange)> {
+    let membership = if node.ranges.is_empty() { std::slice::from_ref(&node.range) } else { &node.ranges };
+    node.line_ids.iter().filter_map(|id| Some((*lines.get(id.as_str())?, *fragments.get(id.as_str())?)))
+        .flat_map(|(line, fragment)| {
+            let scalar = ScalarText::new(line.text);
+            membership.iter().filter_map(move |range| {
+                let start = range.start.max(fragment.start);
+                let end = range.end.min(fragment.end);
+                if start >= end { return None; }
+                Some((PrintedLine { text: scalar.slice_utf16(start - fragment.start..end - fragment.start)?, ..line },
+                    ScalarRange { start, end }))
+            })
+        }).collect()
 }
 
 /// A line opening a provision: "(2) ...", "(a) ...", or a section number before its text
@@ -63,10 +120,13 @@ fn provision_label(line: &str) -> &str {
 /// A line's text with its provision's number set apart from what follows it: a print that runs a
 /// subsection's number into its marginal note ("50.4(9)Extension of time", as Westlaw prints a
 /// statute) is read as "50.4(9) Extension of time".
-fn spaced(text: &str) -> String {
+fn spaced(text: &mut String, runs: &mut Vec<SourceRun>) {
     let rest = provision_label(text);
     let label = &text[..text.len() - rest.len()];
-    if label.ends_with(')') && rest.starts_with(char::is_uppercase) { format!("{label} {rest}") } else { text.to_owned() }
+    if label.ends_with(')') && rest.starts_with(char::is_uppercase) {
+        let at = label.encode_utf16().count();
+        replace_reading(text, runs, at, at, " ");
+    }
 }
 
 /// A line as the instrument grammar reads it, where the print repeats a section's number before
@@ -98,6 +158,7 @@ struct Row {
     text: String,
     rect: [f64; 4],
     ids: Vec<String>,
+    source_runs: Vec<SourceRun>,
     /// The row opens with a number printed apart from its text.
     labelled: bool,
 }
@@ -105,7 +166,7 @@ struct Row {
 /// A node's lines as rows of print. A provision's number set apart in the margin, on its own
 /// line beside the text it opens ("33(1)" | "The court shall ..."), is read with that text,
 /// before it even where the PDF writes it after.
-fn rows<'a>(lines: impl Iterator<Item = PrintedLine<'a>>) -> Vec<(Row, u32)> {
+fn rows<'a>(lines: impl Iterator<Item = (PrintedLine<'a>, ScalarRange)>) -> Vec<(Row, u32)> {
     let mut lines = lines.collect::<Vec<_>>();
     let same_row = |a: &[f64; 4], b: &[f64; 4]| a[3].min(b[3]) - a[1].max(b[1])
         >= (a[3] - a[1]).min(b[3] - b[1]) * 0.5;
@@ -114,19 +175,33 @@ fn rows<'a>(lines: impl Iterator<Item = PrintedLine<'a>>) -> Vec<(Row, u32)> {
         !text.is_empty() && provision_label(text).trim_end_matches('.').is_empty()
     };
     for at in 1..lines.len() {
-        let (before, after) = (lines[at - 1], lines[at]);
+        let (before, after) = (lines[at - 1].0, lines[at].0);
         if before.page == after.page && label(&after) && after.rect[2] <= before.rect[0] && same_row(&after.rect, &before.rect) {
             lines.swap(at - 1, at);
         }
     }
+    let make_row = |line: PrintedLine, source: ScalarRange| {
+        let trimmed = line.text.trim();
+        let start = source.start + line.text[..line.text.len() - line.text.trim_start().len()].encode_utf16().count();
+        let width = trimmed.encode_utf16().count();
+        let mut text = trimmed.to_owned();
+        let mut source_runs = vec![SourceRun { reading: ScalarRange { start: 0, end: width },
+            source: ScalarRange { start, end: start + width } }];
+        spaced(&mut text, &mut source_runs);
+        Row { text, rect: line.rect, ids: vec![line.id.to_owned()], source_runs, labelled: false }
+    };
     let mut rows = Vec::<(Row, u32)>::new();
     let mut lines = lines.into_iter().peekable();
-    while let Some(line) = lines.next() {
-        let mut row = Row { text: spaced(line.text.trim()), rect: line.rect, ids: vec![line.id.to_owned()], labelled: false };
+    while let Some((line, source)) = lines.next() {
+        let mut row = make_row(line, source);
         if label(&line) {
-            if let Some(text) = lines.next_if(|text| text.page == line.page
+            if let Some((text, source)) = lines.next_if(|(text, _)| text.page == line.page
                 && text.rect[0] >= line.rect[2] && same_row(&text.rect, &line.rect)) {
-                row.text = format!("{} {}", row.text, text.text.trim());
+                let next = make_row(text, source);
+                let offset = row.text.encode_utf16().count() + 1;
+                row.source_runs.extend(next.source_runs.into_iter().map(|run| SourceRun {
+                    reading: ScalarRange { start: run.reading.start + offset, end: run.reading.end + offset }, ..run }));
+                row.text = format!("{} {}", row.text, next.text);
                 row.rect = [row.rect[0], row.rect[1].min(text.rect[1]), text.rect[2], row.rect[3].max(text.rect[3])];
                 row.ids.push(text.id.to_owned());
                 row.labelled = true;
@@ -197,8 +272,9 @@ impl PrintedStatute {
         };
         let wanted = title(instrument);
         if wanted.is_empty() { return None; }
-        let text_of = |node: &crate::StructureNode| node.line_ids.iter().filter_map(|id| lines.get(id.as_str()))
-            .map(|line| line.text.trim()).collect::<Vec<_>>().join(" ");
+        let fragments = document.source_fragments.iter().map(|fragment| (fragment.id.as_str(), fragment.range)).collect::<HashMap<_, _>>();
+        let text_of = |node: &crate::StructureNode| source_lines(node, lines, &fragments).iter()
+            .map(|(line, _)| line.text.trim()).collect::<Vec<_>>().join(" ");
         let heading = |node: &crate::StructureNode| node.kind == NodeKind::Heading;
         // Another Act's title: a heading in capitals that ends in its year.
         let act_title = |node: &crate::StructureNode| {
@@ -224,6 +300,8 @@ impl PrintedStatute {
     fn read_nodes(document: &DocumentStructure, lines: &HashMap<&str, PrintedLine<'_>>, page_count: usize,
         scope: std::ops::Range<usize>) -> Option<Self> {
         let (mut text, mut parts, mut offset) = (String::new(), Vec::new(), 0);
+        let mut source_runs = Vec::new();
+        let fragments = document.source_fragments.iter().map(|fragment| (fragment.id.as_str(), fragment.range)).collect::<HashMap<_, _>>();
         // The page of the last paragraph read while its sentence is still open, and whether
         // that paragraph is a history note.
         let mut open: Option<u32> = None;
@@ -252,8 +330,8 @@ impl PrintedStatute {
             let before_last = contents && node.range.start < front
                 && node.page_indexes.first().is_some_and(|page| Some(*page) < last_listed);
             if node.grammar.as_deref() == Some("translation") || node.range.start < front && !contents || before_last { continue; }
-            let (mut found, mut found_pages): (Vec<_>, Vec<_>) = rows(node.line_ids.iter().filter_map(|id| lines.get(id.as_str()).copied())
-                .filter(|line| !line.text.trim().is_empty())).into_iter().unzip();
+            let (mut found, mut found_pages): (Vec<_>, Vec<_>) = rows(source_lines(node, lines, &fragments).into_iter()
+                .filter(|(line, _)| !line.text.trim().is_empty())).into_iter().unzip();
             if contents {
                 let last = found.iter().rposition(|row| contents_entry(&row.text)).map_or(found.len(), |last| last + 1);
                 found.drain(..last);
@@ -284,6 +362,9 @@ impl PrintedStatute {
                     || opens.strip_prefix('(').is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_lowercase()))
                     || label.rect[0] > (first.rect[0] + first.rect[2]) / 2.0;
                 if !folio {
+                    let offset = label.text.encode_utf16().count() + 1;
+                    for run in &mut first.source_runs { run.reading.start += offset; run.reading.end += offset; }
+                    first.source_runs.splice(0..0, label.source_runs);
                     first.text = format!("{} {}", label.text, first.text);
                     first.ids.splice(0..0, label.ids);
                     first.labelled = true;
@@ -336,6 +417,24 @@ impl PrintedStatute {
                     text.push(' ');
                     offset += 1;
                 }
+                let mut row_text = line.text.clone();
+                let mut row_runs = line.source_runs.clone();
+                // sectioned removes only a repeated leading section number, or
+                // inserts one space before the first subsection marker.
+                if line_text != &row_text {
+                    if row_text.ends_with(line_text.as_str()) {
+                        let removed = row_text[..row_text.len() - line_text.len()].encode_utf16().count();
+                        replace_reading(&mut row_text, &mut row_runs, 0, removed, "");
+                    } else {
+                        let at = line_text.find(' ').expect("section prefix separator");
+                        let prefix = line_text[..at].encode_utf16().count();
+                        // A trailing dot on the section number is normalized away.
+                        let removed = row_text[..row_text.find('(').expect("subsection marker")].encode_utf16().count();
+                        replace_reading(&mut row_text, &mut row_runs, prefix, removed, " ");
+                    }
+                }
+                source_runs.extend(row_runs.into_iter().map(|run| SourceRun {
+                    reading: ScalarRange { start: run.reading.start + offset, end: run.reading.end + offset }, ..run }));
                 text.push_str(line_text);
                 offset += line_text.encode_utf16().count();
                 part.1.extend(line.ids.iter().cloned());
@@ -361,7 +460,7 @@ impl PrintedStatute {
             joined.push_str(if alone && paragraphs[at + 1].starts_with('(') { "  " } else { "\n\n" });
         }
         let structure = analyze_instrument(joined, document.document_id.clone(), &[], true).ok()?;
-        Some(Self { structure, parts })
+        Some(Self { structure, parts, source_runs })
     }
 
     /// The reading's own structure: its sections as the instrument grammar reads them.
@@ -402,13 +501,13 @@ impl PrintedStatute {
             let mut found = instrument.nodes.iter().filter(|node| node.label.as_deref() == Some(label.as_str()));
             let node = found.next()?;
             if found.next().is_some() { return Some(ProvisionPlacement::Ambiguous); }
-            let lines = self.parts(node.range.start, node.range.end).flat_map(|(_, lines, ..)| lines.iter().cloned()).collect();
-            return self.placed(document, lines);
+            return self.placed(document, self.source_ranges(node.range.start, node.range.end));
         }
         let query = DocumentQuery::new();
         // A provision's span in the reading, or None where it is not read; Err where it is read twice.
         let span = |locator: &str| {
             let found = query.structure_block(instrument, locator, 0);
+            if matches!(found.status, DocumentLookupStatus::Ambiguous) { return Some(Err(())); }
             let block = found.block.filter(|_| matches!(found.status, DocumentLookupStatus::Found))?;
             let repeated = format!("{}@", block.block.label);
             Some(if instrument.nodes.iter().any(|node| node.label.as_deref().is_some_and(|label| label.starts_with(&repeated))) {
@@ -432,33 +531,43 @@ impl PrintedStatute {
             Ok(found) => found,
             Err(()) => return Some(ProvisionPlacement::Ambiguous),
         };
-        let mut parts = self.parts(last, end).collect::<Vec<_>>();
-        // A history note lists a provision's enactments and closes it: neither it nor what
-        // follows it is the provision's text. A heading or marginal note closing the block
-        // opens the next provision.
-        if let Some(note) = parts.iter().skip(1).position(|(.., note)| *note) {
+        let mut parts = self.parts.iter().filter(|(from, to, ..)| *from < end && last < *to).collect::<Vec<_>>();
+        // History notes close a provision; a trailing heading opens the next.
+        if let Some(note) = parts.iter().skip(1).position(|part| part.5) {
             parts.truncate(note + 1);
         }
-        while parts.len() > 1 && parts.last().is_some_and(|(_, _, title, _)| *title) {
+        while parts.len() > 1 && parts.last().is_some_and(|part| part.4) {
             parts.pop();
         }
-        let lines = self.parts(start, last).chain(parts).flat_map(|(_, lines, ..)| lines.iter().cloned()).collect();
-        self.placed(document, lines)
+        let mut ranges = self.source_ranges(start, last);
+        for part in parts {
+            ranges.extend(self.source_ranges(last.max(part.0), end.min(part.1)));
+        }
+        self.placed(document, ranges)
     }
 
-    /// Lines placed, once each, with their pages from the PDF's page nodes.
-    fn placed(&self, document: &DocumentStructure, lines: Vec<String>) -> Option<ProvisionPlacement> {
-        let mut seen = HashSet::new();
-        let lines = lines.into_iter().filter(|line| seen.insert(line.clone())).collect::<Vec<_>>();
-        // Each line's page, from the PDF's page nodes.
-        let page_of = document.nodes.iter().filter(|node| node.kind == NodeKind::Page)
-            .flat_map(|node| node.line_ids.iter().map(move |line| (line.as_str(),
-                node.page_indexes.first().map_or(0, |index| *index as u32 + 1))))
-            .collect::<HashMap<_, _>>();
-        let mut pages = lines.iter().filter_map(|line| page_of.get(line.as_str()).copied()).collect::<Vec<_>>();
+    fn source_ranges(&self, start: usize, end: usize) -> Vec<ScalarRange> {
+        if start >= end { return Vec::new(); }
+        self.source_runs.iter().filter_map(|run| {
+            if run.reading.start == run.reading.end {
+                return (start <= run.reading.start && run.reading.start < end).then_some(run.source);
+            }
+            let low = start.max(run.reading.start);
+            let high = end.min(run.reading.end);
+            (low < high).then(|| ScalarRange { start: run.source.start + low - run.reading.start,
+                end: run.source.start + high - run.reading.start })
+        }).collect()
+    }
+
+    /// Exact source members and their physical pages, without filling line gaps.
+    fn placed(&self, document: &DocumentStructure, mut ranges: Vec<ScalarRange>) -> Option<ProvisionPlacement> {
+        ScalarRange::normalize_union(&mut ranges);
+        let mut pages = document.source_fragments.iter().filter(|fragment| ranges.iter().any(|range|
+                range.start < fragment.range.end && fragment.range.start < range.end))
+            .map(|fragment| fragment.page_index as u32 + 1).collect::<Vec<_>>();
         pages.sort_unstable();
         pages.dedup();
-        (!lines.is_empty()).then_some(ProvisionPlacement::Found { lines, pages })
+        (!ranges.is_empty()).then_some(ProvisionPlacement::Found { ranges, pages })
     }
 }
 

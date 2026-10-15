@@ -913,7 +913,7 @@ fn supplement_courtlistener_declared_note_references(
             .notes
             .iter()
             .enumerate()
-            .map(|(index, note)| (note.node_id.as_str(), index))
+            .filter_map(|(index, note)| note.node_id.as_deref().map(|id| (id, index)))
             .collect::<HashMap<_, _>>();
         let mut identities = HashMap::<&str, Option<usize>>::new();
         let mut direct_targets = HashMap::<&str, Option<usize>>::new();
@@ -1330,7 +1330,7 @@ fn clip_courtlistener_pre_note_bodies(structure: &mut DocumentStructure) {
                 let node = structure
                     .nodes
                     .iter()
-                    .find(|node| node.id == note.node_id)?;
+                    .find(|node| note.node_id.as_deref() == Some(node.id.as_str()))?;
                 if node.kind != NodeKind::Footnote
                     || node.source != Derivation::Heuristic
                     || note.primary_reference.is_none()
@@ -1359,7 +1359,7 @@ fn clip_courtlistener_pre_note_bodies(structure: &mut DocumentStructure) {
                     })
                     .map(|(_, start, _)| *start)
                     .min()?;
-                Some((note.node_id.clone(), end))
+                Some((note.node_id.clone()?, end))
             })
             .collect::<HashMap<_, _>>()
     };
@@ -1372,8 +1372,12 @@ fn clip_courtlistener_pre_note_bodies(structure: &mut DocumentStructure) {
         }
     }
     for note in &mut structure.notes {
-        if let Some(end) = ends.get(&note.node_id) {
+        if let Some(end) = note.node_id.as_ref().and_then(|id| ends.get(id)) {
             note.body_range.end = *end;
+            note.body_ranges.retain_mut(|range| {
+                range.end = range.end.min(*end);
+                range.start < range.end
+            });
         }
     }
 }
@@ -1716,7 +1720,7 @@ fn supplement_courtlistener_bookmarked_notes(structure: &mut DocumentStructure) 
             }
         }
         for (note_index, note) in structure.notes.iter().enumerate() {
-            let Some(&node) = note_nodes.get(note.node_id.as_str()) else {
+            let Some(&node) = note.node_id.as_deref().and_then(|id| note_nodes.get(id)) else {
                 continue;
             };
             if let Some((identity, marker, printed)) = node
@@ -2197,7 +2201,12 @@ fn supplement_courtlistener_bookmarked_notes(structure: &mut DocumentStructure) 
         let note = &mut structure.notes[index];
         if let Some(label_range) = label_range {
             note.label_range = label_range;
+            note.label_ranges = vec![label_range];
             note.body_range.start = label_range.end;
+            note.body_ranges.retain_mut(|range| {
+                range.start = range.start.max(label_range.end);
+                range.start < range.end
+            });
         }
         if let Some((reference_range, reference_name)) = reference {
             note.primary_reference = Some(reference_range);
@@ -2213,7 +2222,8 @@ fn supplement_courtlistener_bookmarked_notes(structure: &mut DocumentStructure) 
     for (index, marker, label, printed, references) in printed_updates {
         let note = &mut structure.notes[index];
         note.label_range = marker;
-        markers.insert(note.node_id.clone(), (marker, label, printed));
+        note.label_ranges = vec![marker];
+        if let Some(id) = &note.node_id { markers.insert(id.clone(), (marker, label, printed)); }
         if !references.is_empty() {
             note.primary_reference = references.first().map(|reference| reference.range);
             note.references = references;
@@ -2760,10 +2770,13 @@ fn supplement_courtlistener_printed_notes(
         node.grammar = Some("courtlistener-notes-sup".to_owned());
         structure.notes.push(Note {
             id: format!("note-{}", node.id),
-            node_id: node.id.clone(),
+            node_id: Some(node.id.clone()),
+            ownership: node.ownership.clone(),
             kind: NoteKindV2::Footnote,
             label_range: marker,
             body_range: node.range,
+            label_ranges: vec![marker],
+            body_ranges: vec![node.range],
             primary_reference: references.first().map(|reference| reference.range),
             references,
         });
@@ -5244,6 +5257,8 @@ fn native_table_coordinates(structure: &mut DocumentStructure) {
     tables.sort_by_key(|&index| structure.nodes[index].markup_start);
     let coordinates = ScalarText::new(structure.query_text());
     let mut replacements = HashMap::<String, String>::new();
+    let mut grids = HashMap::<String, (Option<usize>, Option<usize>, Option<usize>)>::new();
+    let mut table_headers = HashMap::<String, Vec<usize>>::new();
     for (table_index, &table) in tables.iter().enumerate() {
         let table_id = format!("table:{}", table_index + 1);
         let mut rows = structure
@@ -5258,13 +5273,16 @@ fn native_table_coordinates(structure: &mut DocumentStructure) {
             .collect::<Vec<_>>();
         rows.sort_by_key(|&index| structure.nodes[index].markup_start);
         let mut facts = Vec::new();
+        let mut grid = vec![(structure.nodes[table].id.clone(), (Some(table_index + 1), None, None))];
         let mut ids = vec![(structure.nodes[table].id.clone(), table_id.clone())];
         let mut occupied = Vec::<(usize, usize, usize)>::new();
+        let mut header_rows = Vec::new();
         let mut valid = true;
         'rows: for (row_index, &row) in rows.iter().enumerate() {
             let row_number = row_index + 1;
             let row_id = format!("{table_id}/row:{row_number}");
             ids.push((structure.nodes[row].id.clone(), row_id.clone()));
+            grid.push((structure.nodes[row].id.clone(), (None, Some(row_number), None)));
             let mut cells = structure
                 .nodes
                 .iter()
@@ -5276,6 +5294,9 @@ fn native_table_coordinates(structure: &mut DocumentStructure) {
                 .map(|(index, _)| index)
                 .collect::<Vec<_>>();
             cells.sort_by_key(|&index| structure.nodes[index].markup_start);
+            if !cells.is_empty() && cells.iter().all(|&index| structure.nodes[index].markup_tag.as_deref() == Some("th")) {
+                header_rows.push(row_number);
+            }
             let mut column = 1usize;
             for &cell in &cells {
                 let node = &structure.nodes[cell];
@@ -5313,6 +5334,7 @@ fn native_table_coordinates(structure: &mut DocumentStructure) {
                 occupied.push((column, last_column, last_row));
                 let range = structure.query_range(node);
                 facts.push(crate::AuthoritativeTableCell {
+                    ranges: structure.query_ranges(node).into_owned(),
                     table: table_index + 1,
                     table_name: None,
                     row: row_number,
@@ -5325,6 +5347,7 @@ fn native_table_coordinates(structure: &mut DocumentStructure) {
                     end: range.end,
                 });
                 ids.push((node.id.clone(), format!("{row_id}/col:{column}")));
+                grid.push((node.id.clone(), (None, Some(row_number), Some(column))));
                 let Some(next) = last_column.checked_add(1) else {
                     valid = false;
                     break 'rows;
@@ -5335,10 +5358,18 @@ fn native_table_coordinates(structure: &mut DocumentStructure) {
         // The existing table owner validates address/span and text coordinates.
         // Unusable geometry keeps its complete source graph and attributes.
         if valid && crate::tables::AuthoritativeTables::new(&coordinates, &facts).is_ok() {
+            table_headers.insert(structure.nodes[table].id.clone(), header_rows);
             replacements.extend(ids);
+            grids.extend(grid);
         }
     }
     for node in &mut structure.nodes {
+        if let Some(headers) = table_headers.remove(&node.id) { node.header_rows = Some(headers); }
+        if let Some(&(table, row, column)) = grids.get(&node.id) {
+            node.table_number = table;
+            node.row = row;
+            node.column = column;
+        }
         if let Some(id) = replacements.get(&node.id) {
             node.id = id.clone();
             node.label = Some(id.clone());
@@ -5709,7 +5740,7 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         }
         let mut derived_notes = std::mem::take(&mut structure.notes)
             .into_iter()
-            .map(|note| (note.node_id.clone(), note))
+            .filter_map(|note| note.node_id.clone().map(|id| (id, note)))
             .collect::<HashMap<_, _>>();
         structure.notes = structure
             .nodes
@@ -5727,7 +5758,8 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
                     .unwrap_or_default();
                 Note {
                     id: format!("note-{}", node.id),
-                    node_id: node.id.clone(),
+                    node_id: Some(node.id.clone()),
+            ownership: node.ownership.clone(),
                     kind: NoteKindV2::Footnote,
                     // Attribute-only labels have no rendered span; a source
                     // label or sibling number retains its separate range.
@@ -5736,6 +5768,8 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
                         end: node.range.start,
                     }),
                     body_range: node.range,
+                    label_ranges: node.marker_range.into_iter().filter(|range| range.start < range.end).collect(),
+                    body_ranges: if node.ranges.is_empty() { vec![node.range] } else { node.ranges.clone() },
                     primary_reference: references.first().map(|reference| reference.range),
                     references,
                 }

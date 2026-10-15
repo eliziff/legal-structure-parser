@@ -27,6 +27,12 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
+    /// Grid containment identifies physical objects, not a semantic outline attachment.
+    /// Cell contents may carry independent document, quotation or reading-stream ownership.
+    pub fn is_grid_child_of(self, parent: Self) -> bool {
+        matches!((self, parent), (Self::Cell, Self::Row) | (Self::Row, Self::Table))
+    }
+
     pub fn evidence(self) -> EvidenceKind {
         match self {
             Self::Paragraph => EvidenceKind::Paragraph,
@@ -64,15 +70,89 @@ pub enum Derivation {
 pub enum NoteKindV2 {
     Footnote,
     Endnote,
+    Sidenote,
+    TableNote,
+    AuthorNote,
+}
+
+/// Functional roles are independent of locators and structural object kinds.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrimaryRole {
+    Text,
+    Heading,
+    Caption,
+    Instruction,
+    Headnote,
+    MarginalNote,
+    Furniture,
+    PageLabel,
+}
+
+/// Outline relationships may not cross any of these independently owned scopes.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StructureScopeKind { Document, Quotation, ReadingStream }
+
+/// Supplied or inferred scope identity and exact membership; absent metadata stays absent.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StructureScopeAnnotation {
+    pub id: String,
+    pub kind: StructureScopeKind,
+    pub ownership: StructureOwnership,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_scope_id: Option<String>,
+    pub ranges: Vec<ScalarRange>,
+    /// Exact members owned by this document, excluding nested constituent documents.
+    #[serde(default)]
+    pub owned_ranges: Vec<ScalarRange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub title_ranges: Vec<ScalarRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attribution_ranges: Vec<ScalarRange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationship: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StructureOwnership {
+    pub document_id: String,
+    pub quotation_id: Option<String>,
+    pub reading_stream_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StructureNode {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<PrimaryRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<StructureOwnership>,
+    /// Exact physical membership; range remains its envelope for positioning.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ranges: Vec<ScalarRange>,
+    /// Heading text, distinct from the extent of its descendants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heading_range: Option<ScalarRange>,
+    /// Derived from parents, never an independently authored depth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<usize>,
+    /// Derived exact membership of this node and its descendants.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extent: Vec<ScalarRange>,
     pub kind: NodeKind,
     pub range: ScalarRange,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub rendered_range: Option<ScalarRange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rendered_ranges: Vec<ScalarRange>,
+    /// Own logical content, before adding descendant section membership.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rendered_membership: Vec<ScalarRange>,
     pub origin_id: Cow<'static, str>,
     pub source: Derivation,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,7 +161,6 @@ pub struct StructureNode {
     pub locator_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aliases: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anchor: Option<String>,
@@ -95,6 +174,17 @@ pub struct StructureNode {
     pub content_start: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub marker_range: Option<ScalarRange>,
+    /// One-based public table number, assigned by the table producer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_number: Option<usize>,
+    /// One-based header row coordinates; None means the producer has not classified them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_rows: Option<Vec<usize>>,
+    /// One-based grid position; merged cells name their top-left position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub row_span: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -122,9 +212,17 @@ impl StructureNode {
     ) -> Self {
         Self {
             id,
+            role: None,
+            ownership: None,
+            ranges: Vec::new(),
+            heading_range: None,
+            level: None,
+            extent: Vec::new(),
             kind,
             range,
             rendered_range: None,
+            rendered_ranges: Vec::new(),
+            rendered_membership: Vec::new(),
             origin_id: origin_id.into(),
             source,
             label: None,
@@ -137,6 +235,10 @@ impl StructureNode {
             markup_attributes: BTreeMap::new(),
             content_start: None,
             marker_range: None,
+            table_number: None,
+            header_rows: None,
+            row: None,
+            column: None,
             row_span: None,
             column_span: None,
             display_value: None,
@@ -205,10 +307,18 @@ pub struct NoteReference {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Note {
     pub id: String,
-    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<StructureOwnership>,
     pub kind: NoteKindV2,
     pub label_range: ScalarRange,
     pub body_range: ScalarRange,
+    /// Exact source membership; the singular ranges are positioning envelopes.
+    #[serde(default)]
+    pub label_ranges: Vec<ScalarRange>,
+    #[serde(default)]
+    pub body_ranges: Vec<ScalarRange>,
     pub references: Vec<NoteReference>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_reference: Option<ScalarRange>,
@@ -260,6 +370,97 @@ pub struct MarkupAncestor {
     pub attributes: BTreeMap<String, String>,
 }
 
+/// Actual PDF marked-content role; empty membership means the native tag remains unaligned.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct PdfStructureTagWitness {
+    pub page_index: usize,
+    pub mcid: i64,
+    pub role: String,
+    pub ranges: Vec<ScalarRange>,
+    pub line_ids: Vec<String>,
+}
+
+/// Physical text fragment in this identified source representation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceFragment {
+    pub id: String,
+    pub page_index: usize,
+    pub range: ScalarRange,
+}
+
+
+/// An explicit logical object link between physical source starts (UTF-16).
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinuationKind { Paragraph, Heading, Note, Table, Quotation, List }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SourceContinuation {
+    pub kind: ContinuationKind,
+    pub from: usize,
+    pub to: usize,
+    pub separator: Option<String>,
+}
+
+/// Line-local Unicode scalar edits for the logical view; printed source stays unchanged.
+pub type ManuscriptEdits = BTreeMap<String, Vec<(usize, usize, String)>>;
+
+/// A manuscript join is distinct from logical object identity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SourceJoin {
+    pub from: usize,
+    pub to: usize,
+    pub separator: String,
+}
+
+/// A source-backed form field, independent of the enclosing text/table structure.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldKind { Text, Signature, Checkbox, Choice }
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FieldState { Checked, Unchecked }
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FieldAnnotation {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: FieldKind,
+    pub ranges: Vec<ScalarRange>,
+    pub label_ranges: Vec<ScalarRange>,
+    pub value_ranges: Vec<ScalarRange>,
+    pub placeholder_ranges: Vec<ScalarRange>,
+    pub state: Option<FieldState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<StructureOwnership>,
+}
+
+/// Original PDF navigation metadata; its destination does not assert a visible heading.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NativeNavigationWitness {
+    pub id: String,
+    pub title: String,
+    pub parent_id: Option<String>,
+    pub page_index: usize,
+}
+
+/// Recorded navigation targets. An empty target remains unresolved.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct NavigationEntry {
+    pub id: String,
+    pub kind: String,
+    pub source_ranges: Vec<ScalarRange>,
+    #[serde(default)]
+    pub title_ranges: Vec<ScalarRange>,
+    pub source_line_ids: Vec<String>,
+    pub target_ranges: Vec<ScalarRange>,
+    pub target_line_ids: Vec<String>,
+    pub parent_id: Option<String>,
+    pub witness_id: Option<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct DocumentStructure {
     pub schema_version: Cow<'static, str>,
@@ -284,6 +485,25 @@ pub struct DocumentStructure {
     pub scope: Scope,
     pub origins: Vec<Origin>,
     pub nodes: Vec<StructureNode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_fragments: Vec<SourceFragment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scope_annotations: Vec<StructureScopeAnnotation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub structure_tags: Vec<PdfStructureTagWitness>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_navigation: Vec<NativeNavigationWitness>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub navigation: Vec<NavigationEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<FieldAnnotation>,
+    /// None means no explicit source links were supplied, not an empty authored decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuations: Option<Vec<SourceContinuation>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub joins: Vec<SourceJoin>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub manuscript_edits: ManuscriptEdits,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub markup_elements: Vec<MarkupElement>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -323,6 +543,15 @@ impl DocumentStructure {
         };
         for node in nodes {
             utf16_range(&mut node.range);
+            for range in &mut node.extent {
+                utf16_range(range);
+            }
+            for range in &mut node.ranges {
+                utf16_range(range);
+            }
+            if let Some(range) = &mut node.heading_range {
+                utf16_range(range);
+            }
             if let Some(start) = &mut node.content_start {
                 *start = coordinates.utf16(*start);
             }
@@ -333,6 +562,9 @@ impl DocumentStructure {
         for note in notes {
             utf16_range(&mut note.label_range);
             utf16_range(&mut note.body_range);
+            for range in note.label_ranges.iter_mut().chain(&mut note.body_ranges) {
+                utf16_range(range);
+            }
             for reference in &mut note.references {
                 utf16_range(&mut reference.range);
             }
@@ -393,7 +625,7 @@ impl DocumentStructure {
         notes: Vec<Note>,
         diagnostics: Vec<StructureDiagnostic>,
     ) -> Self {
-        Self {
+        let mut structure = Self {
             schema_version: Cow::Borrowed(DOCUMENT_STRUCTURE_SCHEMA),
             document_id,
             offset_unit: Cow::Borrowed("utf16"),
@@ -409,6 +641,15 @@ impl DocumentStructure {
             scope,
             origins,
             nodes,
+            source_fragments: Vec::new(),
+            scope_annotations: Vec::new(),
+            structure_tags: Vec::new(),
+            native_navigation: Vec::new(),
+            navigation: Vec::new(),
+            fields: Vec::new(),
+            continuations: None,
+            joins: Vec::new(),
+            manuscript_edits: BTreeMap::new(),
             markup_elements: Vec::new(),
             markup_ancestors: Vec::new(),
             markup_sha256: None,
@@ -420,14 +661,55 @@ impl DocumentStructure {
             contents: None,
             cross_references: None,
             diagnostics,
-        }
+        };
+        structure.refresh_revision().expect("Typed document structure is serializable");
+        structure
+    }
+
+    /// Identity of the complete queryable representation, excluding the prior digest itself.
+    pub fn refresh_revision(&mut self) -> Result<(), serde_json::Error> {
+        use sha2::{Digest, Sha256};
+        let mut representation = serde_json::to_value(&*self)?;
+        representation.as_object_mut().unwrap().remove("revision");
+        self.revision = format!("{:x}", Sha256::digest(serde_json::to_vec(&representation)?));
+        Ok(())
     }
 
     pub fn query_text(&self) -> &str {
         self.rendered_text.as_deref().unwrap_or(&self.text)
     }
 
+    /// Exact readable parts, kept separate from the envelope used to position a node.
+    pub fn query_ranges<'a>(&self, node: &'a StructureNode) -> Cow<'a, [ScalarRange]> {
+        if !node.rendered_ranges.is_empty() {
+            return Cow::Borrowed(&node.rendered_ranges);
+        }
+        if let Some(range) = node.rendered_range {
+            return Cow::Owned(vec![range]);
+        }
+        if (matches!(node.kind, NodeKind::Heading | NodeKind::Section)
+            || node.role == Some(PrimaryRole::Heading)) && !node.extent.is_empty() {
+            return Cow::Borrowed(&node.extent);
+        }
+        if !node.ranges.is_empty() {
+            return Cow::Borrowed(&node.ranges);
+        }
+        Cow::Owned(vec![node.range])
+    }
+
     pub fn query_range(&self, node: &StructureNode) -> ScalarRange {
-        node.rendered_range.unwrap_or(node.range)
+        let ranges = self.query_ranges(node);
+        ScalarRange {
+            start: ranges
+                .iter()
+                .map(|range| range.start)
+                .min()
+                .unwrap_or(node.range.start),
+            end: ranges
+                .iter()
+                .map(|range| range.end)
+                .max()
+                .unwrap_or(node.range.end),
+        }
     }
 }

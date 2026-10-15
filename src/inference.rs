@@ -2055,8 +2055,8 @@ fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>) -> CaseSo
         let mut block = Block::labelled(NodeKind::Footnote, format!("fn{number}"), body_start, body_end);
         block.marker_range = Some(label_range);
         block.note = Some(Note {
-            id: String::new(), node_id: String::new(), kind: NoteKindV2::Footnote,
-            label_range, body_range,
+            id: String::new(), node_id: None, ownership: None, kind: NoteKindV2::Footnote,
+            label_range, body_range, label_ranges: vec![label_range], body_ranges: vec![body_range],
             references: vec![NoteReference { range: reference, anchor: None, page_indexes: Vec::new(), line_ids: Vec::new() }],
             primary_reference: Some(reference),
         });
@@ -4693,8 +4693,8 @@ pub(super) fn supplement_source_formatted_headings(
     };
     let notes = structure.nodes.iter()
         .filter(|node| matches!(node.kind, NodeKind::Footnote | NodeKind::Endnote))
-        .map(|node| structure.query_range(node))
-        .chain(structure.notes.iter().flat_map(|note| [note.label_range, note.body_range]))
+        .flat_map(|node| structure.query_ranges(node).into_owned())
+        .chain(structure.notes.iter().flat_map(|note| note.label_ranges.iter().chain(&note.body_ranges).copied()))
         .collect::<Vec<_>>();
     let blocked_headings = merge_ranges(heading_exclusions.iter().copied()
         .chain(notes.iter().copied()).collect());

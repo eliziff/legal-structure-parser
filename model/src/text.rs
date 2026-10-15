@@ -299,6 +299,31 @@ impl<'a> ScalarText<'a> {
         self.value
             .get(self.byte_at_utf16(range.start)?..self.byte_at_utf16(range.end)?)
     }
+
+    /// Read an exact UTF-16 membership union in this string's order. Touching
+    /// and overlapping members are read once; real whitespace between members
+    /// is retained. Substantive omitted text is replaced by a newline, keeping
+    /// the remaining components separate. Component edges are trimmed using
+    /// ECMAScript whitespace, as with ordinary readable document blocks.
+    pub fn membership_text_utf16(&self, ranges: &[crate::ScalarRange]) -> String {
+        let mut ranges = ranges.to_vec();
+        crate::ScalarRange::normalize_union(&mut ranges);
+        let mut parts = Vec::<crate::ScalarRange>::new();
+        for range in ranges {
+            if range.start == range.end { continue; }
+            if let Some(previous) = parts.last_mut().filter(|previous|
+                self.slice_utf16(previous.end..range.start)
+                    .is_some_and(|gap| trim_javascript_whitespace(gap).is_empty())) {
+                previous.end = range.end;
+            } else {
+                parts.push(range);
+            }
+        }
+        parts.iter().filter_map(|range| self.slice_utf16(range.start..range.end))
+            .map(trim_javascript_whitespace).filter(|part| !part.is_empty())
+            .collect::<Vec<_>>().join("\n")
+    }
+
 }
 
 #[inline]

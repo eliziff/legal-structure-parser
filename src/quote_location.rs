@@ -5,6 +5,7 @@
 //! and lower-casing are ECMAScript's. A source's quotations are located in one call, the source's text read once.
 
 use crate::quote_verification::QuoteSupport;
+use legal_structure_model::{ScalarRange, ScalarText};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -755,14 +756,93 @@ pub enum QuoteBlockKind {
 /// A source's paragraph, page or provision, by its offsets (UTF-16) in the source's text.
 #[derive(Clone, Deserialize)]
 pub struct QuoteBlockInput {
+    /// Actual reflected identity, absent for raw membership-only inputs.
+    pub node_id: Option<String>,
+    #[serde(default)]
+    pub ancestor_ids: Vec<String>,
+    pub ranges: Vec<legal_structure_model::ScalarRange>,
     pub kind: QuoteBlockKind,
     pub label: String,
     pub start: usize,
     pub end: usize,
 }
 
+
+/// Prepare quotation locators from the document's own reflected structure. A judgment PDF
+/// uses actual printed paragraph numbers, or page/provision locators when absent.
+/// Repeated locators retain their source candidates but do not resolve unqualified citations.
+pub fn document_quote_blocks(
+    document: &legal_structure_model::DocumentStructure,
+    query: &legal_document_query::DocumentQuery,
+    judgment: bool,
+) -> Vec<QuoteBlockInput> {
+    use legal_document_query::DocumentKind;
+    use legal_structure_model::{parse_ordinal, NodeKind};
+    let blocks = query.blocks(document, None).collect::<Vec<_>>();
+    let nodes = document.nodes.iter().map(|node| (node.id.as_str(), node)).collect::<HashMap<_, _>>();
+    let ancestors = |id: Option<&str>| {
+        let mut current = id.and_then(|id| nodes.get(id)).and_then(|node| node.parent_id.as_deref());
+        let mut seen = id.into_iter().collect::<HashSet<_>>();
+        let mut ancestors = Vec::new();
+        while let Some(id) = current {
+            if !seen.insert(id) { break; }
+            ancestors.push(id.to_owned());
+            current = nodes.get(id).and_then(|node| node.parent_id.as_deref());
+        }
+        ancestors
+    };
+    let mut printed = Vec::new();
+    if judgment {
+        let mut counts = HashMap::new();
+        let numbered = blocks.iter().filter_map(|block| {
+            let node = nodes.get(block.node_id.as_deref()?)?;
+            if node.kind != NodeKind::Paragraph { return None; }
+            let number = parse_ordinal("paragraph", node.label.as_deref()?)?;
+            *counts.entry(number).or_insert(0usize) += 1;
+            Some((number, block))
+        }).collect::<Vec<_>>();
+        let has_unique = counts.values().any(|count| *count == 1);
+        printed = numbered.into_iter()
+            .map(|(number, block)| QuoteBlockInput { node_id: block.node_id.clone(),
+                ancestor_ids: ancestors(block.node_id.as_deref()), kind: QuoteBlockKind::Paragraph,
+                label: format!("par{number}"), start: block.start, end: block.end, ranges: block.ranges.clone() })
+            .collect::<Vec<_>>();
+        printed.sort_by_key(|block| (block.start, block.end));
+        if has_unique { return printed; }
+    }
+    static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:paras?\.?|par|¶)[{JS_SPACE}]*([0-9])")).unwrap());
+    static PAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:pages?|pp?\.?)[{JS_SPACE}]*([0-9])")).unwrap());
+    static SECTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:sections?|ss?\.|sec)[{JS_SPACE}]*([0-9])")).unwrap());
+    printed.extend(blocks.into_iter().filter_map(|block| {
+        let (kind, prefix) = match block.kind {
+            DocumentKind::Paragraph if !judgment => (QuoteBlockKind::Paragraph, &*PARAGRAPH),
+            DocumentKind::Page => (QuoteBlockKind::Page, &*PAGE),
+            DocumentKind::Section => (QuoteBlockKind::Section, &*SECTION),
+            _ => return None,
+        };
+        let normalized = prefix.replace(js_trim(&block.label), "$1");
+        let mut value = normalized.as_ref();
+        if value.starts_with('[') && value.ends_with(']') { value = &value[1..value.len()-1]; }
+        if kind == QuoteBlockKind::Section && value.strip_prefix("sec")
+            .and_then(|rest| rest.chars().next()).is_some_and(|c| c.is_ascii_uppercase()) {
+            value = &value[3..];
+        }
+        let label = match kind {
+            QuoteBlockKind::Paragraph => format!("par{value}"),
+            QuoteBlockKind::Page => format!("page {value}"),
+            QuoteBlockKind::Section => format!("sec{value}"),
+        };
+        Some(QuoteBlockInput { ancestor_ids: ancestors(block.node_id.as_deref()), node_id: block.node_id,
+            kind, label, start: block.start, end: block.end, ranges: block.ranges })
+    }));
+    printed
+}
+
 #[derive(Clone)]
 struct Block {
+    node_id: Option<String>,
+    ancestor_ids: Vec<String>,
+    ranges: Vec<legal_structure_model::ScalarRange>,
     kind: QuoteBlockKind,
     label: String,
     start: usize,
@@ -877,8 +957,13 @@ fn pinpoint_summary(pinpoints: &[String], limit: usize) -> String {
 
 /// Whether `inner` is a smaller block of the same kind inside `outer`.
 fn within(outer: &Block, inner: &Block) -> bool {
-    inner.kind == outer.kind && outer.start <= inner.start && inner.end <= outer.end
-        && outer.end - outer.start > inner.end - inner.start
+    inner.kind == outer.kind
+        && inner.ranges.iter().all(|part| outer.ranges.iter().any(|range| range.start <= part.start && part.end <= range.end))
+        && match outer.node_id.as_ref().zip(inner.node_id.as_ref()) {
+            Some((outer_id, _)) => inner.ancestor_ids.contains(outer_id),
+            None => outer.ranges.iter().map(|range| range.end - range.start).sum::<usize>()
+                > inner.ranges.iter().map(|range| range.end - range.start).sum::<usize>(),
+        }
 }
 
 /// A block a quotation is scored against: one of the source's, or the cited range of them joined.
@@ -891,6 +976,7 @@ enum Candidate {
 struct Located<'a> {
     reader: Reader,
     text: &'a str,
+    source_text: ScalarText<'a>,
     blocks: Vec<Block>,
     /// Each block's readings, and the whole text's, prepared once for every quotation.
     prepared: Vec<Option<std::rc::Rc<Prepared>>>,
@@ -974,6 +1060,7 @@ fn prepared_exact(quoted: &Quoted, source: &Prepared) -> bool {
 }
 
 struct Resolution {
+    scope_ambiguous: bool,
     location: &'static str,
     score: f64,
     labels: Vec<String>,
@@ -986,32 +1073,63 @@ impl Located<'_> {
         match candidate { Candidate::Block(index) => &self.blocks[index], Candidate::Range(index) => &ranges[index] }
     }
 
-    fn cited_selection(&self, scopes: &QuoteScopes) -> Vec<(usize, bool)> {
+    fn label_is_unique(&self, block: &Block) -> bool {
+        let label = block.label.to_lowercase();
+        let number = (block.kind != QuoteBlockKind::Section).then(|| block_number(block));
+        self.blocks.iter().filter(|other| other.kind == block.kind
+            && (other.label.to_lowercase() == label
+                || number.is_some_and(|number| number.is_finite() && block_number(other) == number)))
+            .take(2).count() <= 1
+    }
+
+    fn cited_selection(&self, scopes: &QuoteScopes) -> (Vec<(usize, bool)>, bool) {
         let mut selected: Vec<(usize, bool)> = Vec::new();
+        let mut ambiguous = false;
         let set = |index: usize, value: bool, selected: &mut Vec<(usize, bool)>| {
             match selected.iter_mut().find(|(at, _)| *at == index) {
                 Some(entry) => entry.1 = value,
                 None => selected.push((index, value)),
             }
         };
-        for (index, block) in self.blocks.iter().enumerate() {
-            if block.kind == QuoteBlockKind::Paragraph && in_ranges(block_number(block), &scopes.paragraphs) { set(index, true, &mut selected); }
-            if block.kind == QuoteBlockKind::Page && in_ranges(block_number(block), &scopes.pages) { set(index, true, &mut selected); }
+        for (kind, requested) in [(QuoteBlockKind::Paragraph, &scopes.paragraphs),
+            (QuoteBlockKind::Page, &scopes.pages)] {
+            for &(start, end) in requested {
+                let members = self.blocks.iter().enumerate().filter(|(_, block)|
+                    block.kind == kind && in_ranges(block_number(block), &[(start, end)]))
+                    .collect::<Vec<_>>();
+                let mut numbers = HashSet::new();
+                if members.iter().any(|(_, block)| !numbers.insert(js_display(block_number(block)))) {
+                    ambiguous = true;
+                    // A partially ambiguous requested range is not a resolved
+                    // citation to the remaining unique members. All candidates
+                    // remain available to the full-document quotation search.
+                    continue;
+                }
+                for (index, _) in members { set(index, true, &mut selected); }
+            }
         }
-        let mut sections = HashMap::new();
+        let mut sections = HashMap::<String, Option<usize>>::new();
         for (index, block) in self.blocks.iter().enumerate() {
-            if block.kind == QuoteBlockKind::Section { sections.insert(block.label.to_lowercase(), index); }
+            if block.kind == QuoteBlockKind::Section {
+                sections.entry(block.label.to_lowercase()).and_modify(|owner| *owner = None)
+                    .or_insert(Some(index));
+            }
         }
         for section in &scopes.sections {
             for candidate in section_ancestors(section) {
-                if let Some(&index) = sections.get(&candidate.to_lowercase()) {
-                    let before = selected.iter().find(|(at, _)| *at == index).is_some_and(|(_, value)| *value);
-                    set(index, before || candidate.to_lowercase() == section.to_lowercase(), &mut selected);
+                if let Some(owner) = sections.get(&candidate.to_lowercase()) {
+                    // A declared ambiguous locator cannot be rescued by a
+                    // broader locator. Only an absent child permits fallback.
+                    ambiguous |= owner.is_none();
+                    if let Some(&index) = owner.as_ref() {
+                        let before = selected.iter().find(|(at, _)| *at == index).is_some_and(|(_, value)| *value);
+                        set(index, before || candidate.to_lowercase() == section.to_lowercase(), &mut selected);
+                    }
                     break;
                 }
             }
         }
-        selected
+        (selected, ambiguous)
     }
 
     fn range_blocks(&self, scopes: &QuoteScopes) -> Vec<Block> {
@@ -1030,8 +1148,12 @@ impl Located<'_> {
                     QuoteBlockKind::Paragraph => format!("par{}\u{2013}{}", js_display(start), js_display(end)),
                     _ => format!("pages {}\u{2013}{}", js_display(start), js_display(end)),
                 };
-                combined.push(Block { kind, label, start: members[0].start, end: members[members.len() - 1].end,
-                    text: members.iter().map(|block| block.text.as_str()).collect::<Vec<_>>().join("\n") });
+                let mut ranges = members.iter().flat_map(|block| block.ranges.iter().copied()).collect();
+                ScalarRange::normalize_union(&mut ranges);
+                combined.push(Block { node_id: None, ancestor_ids: Vec::new(), kind, label,
+                    start: ranges.first().map_or(members[0].start, |range| range.start),
+                    end: ranges.last().map_or(members[members.len() - 1].end, |range| range.end),
+                    text: self.source_text.membership_text_utf16(&ranges), ranges });
             }
         }
         combined
@@ -1070,11 +1192,9 @@ impl Located<'_> {
         let mut labels: Vec<String> = Vec::new();
         for &(score, candidate) in matches {
             let block = self.block(ranges, candidate);
-            if labels.contains(&block.label) { continue; }
-            let prefix = format!("{}(", block.label.to_lowercase());
+            if labels.contains(&block.label) || !self.label_is_unique(block) { continue; }
             if block.kind == QuoteBlockKind::Section && matches.iter().any(|&(other, other_candidate)| {
-                let other_block = self.block(ranges, other_candidate);
-                other_block.kind == QuoteBlockKind::Section && other >= score && other_block.label.to_lowercase().starts_with(&prefix)
+                other >= score && within(block, self.block(ranges, other_candidate))
             }) { continue; }
             labels.push(block.label.clone());
         }
@@ -1120,7 +1240,7 @@ impl Located<'_> {
 
     fn resolve(&mut self, quote: &str, scopes: &QuoteScopes) -> Resolution {
         let text = self.text;
-        let selection = if has_scopes(scopes) { self.cited_selection(scopes) } else { Vec::new() };
+        let (selection, scope_ambiguous) = self.cited_selection(scopes);
         let scoped = selection.iter().map(|(index, _)| Candidate::Block(*index)).collect::<Vec<_>>();
         let ranges = self.range_blocks(scopes);
         let mut scoped_and_ranges = scoped.clone();
@@ -1132,7 +1252,7 @@ impl Located<'_> {
                 Candidate::Block(index) => selection.iter().find(|(at, _)| *at == index).is_some_and(|(_, value)| *value),
                 Candidate::Range(_) => true,
             };
-            Resolution { location: if cited { "cited" } else { "cited_parent" }, score: matches[0].0,
+            Resolution { scope_ambiguous, location: if cited { "cited" } else { "cited_parent" }, score: matches[0].0,
                 labels: this.specific_labels(matches, &ranges), text: this.block(&ranges, best).text.clone(), cited: None }
         };
         // A block that holds the quotation as written is where it is: a cited one first, then any other. Scores
@@ -1169,9 +1289,8 @@ impl Located<'_> {
         if matches.is_empty() {
             let collapsed = alternates.iter().copied().filter(|&(score, c)| {
                 let block = self.block(&ranges, c);
-                let prefix = format!("{}(", block.label.to_lowercase());
                 block.kind != QuoteBlockKind::Section || !alternates.iter().any(|&(other, oc)| other >= score
-                    && self.block(&ranges, oc).label.to_lowercase().starts_with(&prefix))
+                    && within(block, self.block(&ranges, oc)))
             }).collect::<Vec<_>>();
             if !collapsed.is_empty() && (collapsed.len() == 1 || collapsed[0].0 - collapsed[1].0 >= 0.1) {
                 matches = collapsed[..1].to_vec();
@@ -1191,15 +1310,15 @@ impl Located<'_> {
                 else if has_scopes(scopes) { "scope_unavailable" } else { "uncited" };
             let cited = (location == "alternate" && !scoped_matches.is_empty()).then(|| (scoped_matches[0].0,
                 self.specific_labels(&scoped_matches[..1], &ranges), self.block(&ranges, scoped_matches[0].1).text.clone()));
-            return Resolution { location, score: matches[0].0, labels, text: self.block(&ranges, matches[0].1).text.clone(), cited };
+            return Resolution { scope_ambiguous, location, score: matches[0].0, labels, text: self.block(&ranges, matches[0].1).text.clone(), cited };
         }
         let score = self.document_score(quote, text);
         if score >= MIN_MATCH {
             let location = if !scoped.is_empty() || target_kind_available { "alternate_document" }
                 else if has_scopes(scopes) { "scope_unavailable_document" } else { "uncited_document" };
-            return Resolution { location, score, labels: Vec::new(), text: text.to_owned(), cited: None };
+            return Resolution { scope_ambiguous, location, score, labels: Vec::new(), text: text.to_owned(), cited: None };
         }
-        Resolution { location: "unmatched", score, labels: Vec::new(), text: String::new(), cited: None }
+        Resolution { scope_ambiguous, location: "unmatched", score, labels: Vec::new(), text: String::new(), cited: None }
     }
 
     /// Page labels where the quotation's words run, over a page break too.
@@ -1207,12 +1326,16 @@ impl Located<'_> {
         let pages = self.blocks.iter().filter(|block| block.kind == QuoteBlockKind::Page).cloned().collect::<Vec<_>>();
         let mut hits = Vec::new();
         for block in &pages {
-            if self.reader.quote_match_score(quote, &block.text, 0.0) >= STRONG_MATCH { hits.push(block.label.clone()); }
+            if self.label_is_unique(block) && self.reader.quote_match_score(quote, &block.text, 0.0) >= STRONG_MATCH { hits.push(block.label.clone()); }
         }
         if !hits.is_empty() { return pinpoint_summary(&hits, 2); }
         for pair in pages.windows(2) {
+            if pair.iter().any(|block| !self.label_is_unique(block)) { continue; }
+            let mut ranges = pair.iter().flat_map(|block| block.ranges.iter().copied()).collect();
+            ScalarRange::normalize_union(&mut ranges);
+            let text = self.source_text.membership_text_utf16(&ranges);
             if !quote_words(quote).is_empty()
-                && self.reader.quote_match_score(quote, &format!("{} {}", pair[0].text, pair[1].text), 0.0) >= STRONG_MATCH {
+                && self.reader.quote_match_score(quote, &text, 0.0) >= STRONG_MATCH {
                 let tail = |label: &str| label.split(' ').next_back().unwrap_or("").to_owned();
                 return format!("pages {}\u{2013}{}", tail(&pair[0].label), tail(&pair[1].label));
             }
@@ -1234,12 +1357,12 @@ impl Located<'_> {
     fn locate(&mut self, quote: &str, scopes: &QuoteScopes) -> QuoteLocation {
         let text = self.text;
         let mut resolution = if self.blocks.is_empty() {
-            Resolution { location: "uncited_document", score: self.document_score(quote, text), labels: Vec::new(),
+            Resolution { scope_ambiguous: false, location: "uncited_document", score: self.document_score(quote, text), labels: Vec::new(),
                 text: text.to_owned(), cited: None }
         } else { self.resolve(quote, scopes) };
         let short = quote_words(quote).len() < 3;
         if short && resolution.location.starts_with("alternate") && resolution.labels.is_empty() {
-            resolution = Resolution { location: "unmatched", score: 0.0, labels: Vec::new(), text: String::new(), cited: None };
+            resolution = Resolution { scope_ambiguous: resolution.scope_ambiguous, location: "unmatched", score: 0.0, labels: Vec::new(), text: String::new(), cited: None };
         }
         let unmatched = QuoteLocation { location: "unmatched".into(), score: resolution.score, labels: Vec::new(),
             pinpoint: String::new(), text: String::new(), correction: QuoteCorrection::default(), perfect: false,
@@ -1251,7 +1374,8 @@ impl Located<'_> {
             if correction.region.is_empty() { &match_text } else { &correction.region }) { return unmatched; }
         if self.reader.only_bracketed(&correction.corrected) { return unmatched; }
         let labeled = !resolution.labels.is_empty() && !resolution.location.starts_with("scope_unavailable");
-        let limited = resolution.location.starts_with("scope_unavailable") || resolution.location == "cited_parent";
+        let limited = resolution.scope_ambiguous || resolution.location.starts_with("scope_unavailable")
+            || resolution.location == "cited_parent";
         let cited = resolution.cited.take().map(|(score, labels, text)| CitedPartialMatch { score,
             pinpoint: pinpoint_summary(&labels, 2), labels, correction: self.correction(quote, &text) });
         let pinpoint = if labeled { pinpoint_summary(&resolution.labels, 2) } else { self.page_pinpoint(quote) };
@@ -1271,13 +1395,18 @@ fn js_display(value: f64) -> String {
 /// Every quotation of `quotes` located in `text`, its blocks given by their UTF-16 offsets, and with `compare`,
 /// compared with the source's words where it was found (the whole text where it was not).
 pub fn locate_quotes_in(text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate], compare: bool) -> Vec<LocatedQuote> {
-    let units = text.encode_utf16().collect::<Vec<_>>();
-    let blocks: Vec<Block> = blocks.iter().map(|block| Block { kind: block.kind, label: block.label.clone(), start: block.start,
-        end: block.end, text: slice16(&units, block.start, block.end) }).collect();
+    let source_text = ScalarText::new(text);
+    let blocks: Vec<Block> = blocks.iter().map(|block| {
+        let mut ranges = block.ranges.clone();
+        ScalarRange::normalize_union(&mut ranges);
+        Block { node_id: block.node_id.clone(), ancestor_ids: block.ancestor_ids.clone(),
+            kind: block.kind, label: block.label.clone(), start: block.start, end: block.end,
+            text: source_text.membership_text_utf16(&ranges), ranges }
+    }).collect();
     let prepared = vec![None; blocks.len()];
     let trimmed = js_trim(text);
     let reader = Reader { whole: Some((trimmed.as_ptr() as usize, trimmed.len())), ..Reader::default() };
-    let mut located = Located { reader, text, blocks, prepared, whole: None };
+    let mut located = Located { reader, text, source_text, blocks, prepared, whole: None };
     // A quotation compared with the whole text reads its index and words, built once.
     let mut whole: Option<(legal_document_query::TextFragmentIndex<'_>, SourceWords)> = None;
     let out = quotes.iter().map(|item| {
