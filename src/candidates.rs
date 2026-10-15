@@ -988,7 +988,9 @@ pub fn resolve_structure_graph_with_assembler(
                     PrimaryRole::Text
                 });
             }
-            if node.role == Some(PrimaryRole::Heading) && node.heading_range.is_none() {
+            // A heading's range is its one membership part; a heading over several lines has
+            // no single range, as composition derives it.
+            if node.role == Some(PrimaryRole::Heading) && node.heading_range.is_none() && node.ranges.len() <= 1 {
                 node.heading_range = Some(node.range);
             }
             node.kind = kind;
