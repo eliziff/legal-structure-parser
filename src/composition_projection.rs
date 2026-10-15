@@ -302,6 +302,10 @@ impl<'a> Projection<'a> {
                 .iter()
                 .flat_map(|id| projection.rendered[id].iter().map(|span| span.range))
                 .collect();
+            if membership.is_empty() {
+                // A page without text is in the manuscript nowhere.
+                page["rendered_range"] = json!({"start": 0, "end": 0});
+            }
             page["rendered_membership"] = json!(membership);
             page["rendered_ranges"] = json!(membership);
         }
