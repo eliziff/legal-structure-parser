@@ -671,6 +671,26 @@ fn derive(groups:&mut [CompositionBlock], annotations:&mut [CompositionAnnotatio
         logical_quotes.push((quote.id.clone(),spans));
     }
     if consumed.len()!=quotes.len() {return Err("Quotation continuation cycle".into());}
+    // A note belongs to the document holding its references when they name one document; a note
+    // printed after the next document's opening (a footnote area) otherwise falls to position.
+    let mut note_owners:Vec<(Vec<SourceSpan>,String)>=Vec::new();
+    let note_links=link_map(continuations.get("note"),source);
+    let notes:HashMap<_,_>=annotations.iter().filter(|a|a.kind=="note").map(|a|(anchor(&a.spans[0]),&*a)).collect();
+    for (first,note) in &notes {
+        let references=source_spans(note.attributes.get("references"))?;
+        let documents:HashSet<_>=references.iter().map(|r|location(&anchor(r),source).map(owner)).collect::<Result<_,_>>()?;
+        if documents.len()!=1 {continue;}
+        let document=documents.into_iter().next().unwrap();
+        let mut current=first.clone();let mut seen=HashSet::new();
+        while let Some(part)=notes.get(&current) {
+            if !seen.insert(current.clone()) || current!=*first && !source_spans(part.attributes.get("references"))?.is_empty() {break;}
+            note_owners.push((part.spans.clone(),document.clone()));
+            let Some(link)=note_links.get(&current) else {break;};
+            current=link.next.clone();
+        }
+    }
+    drop(notes);
+    let note_owner=|spans:&[SourceSpan]|note_owners.iter().find(|(note,_)|spans.iter().all(|s|note.iter().any(|n|n.line_id==s.line_id&&n.start<=s.start&&s.end<=n.end))).map(|(_,id)|id.clone());
     let observed:HashSet<_>=groups.iter().filter(|g|through.is_none_or(|end|source.lines[g.spans[0].line_id.as_str()].page<=end)).map(|g|g.id.clone()).collect();
     let all_ids:HashSet<_>=groups.iter().map(|g|g.id.clone()).collect();
     let mut nodes=Vec::new();
@@ -682,6 +702,7 @@ fn derive(groups:&mut [CompositionBlock], annotations:&mut [CompositionAnnotatio
         for span in &group.spans {
             if owner((source.positions[span.line_id.as_str()],span.start))!=document_id || owner((source.positions[span.line_id.as_str()],span.end-1))!=document_id {return Err("Block crosses constituent ownership".into());}
         }
+        let document_id=note_owner(&group.spans).unwrap_or(document_id);
         let markers=source_spans(group.attributes.get("marker"))?;
         let scope_spans=if markers.is_empty(){&group.spans}else{&markers};
         let quotation_id=crate::composition_annotations::quotation_scope(scope_spans,&logical_quotes,None).map(str::to_owned);
@@ -713,7 +734,9 @@ fn derive(groups:&mut [CompositionBlock], annotations:&mut [CompositionAnnotatio
     }
     for annotation in annotations.iter_mut() {
         if annotation.kind=="document" && parents.contains_key(&annotation.id) {annotation.attributes.insert("parent".into(),json!(parents[&annotation.id]));}
-        let document_id=if annotation.kind=="document" {annotation.id.clone()} else {owner(location(&anchor(&annotation.spans[0]),source)?)};
+        let document_id=if annotation.kind=="document" {annotation.id.clone()}
+            else if let Some(document)=(annotation.kind=="note").then(||note_owner(&annotation.spans)).flatten() {document}
+            else {owner(location(&anchor(&annotation.spans[0]),source)?)};
         // Exclude the canonical self, but retain each fragment's enclosing scope
         // so continuation validation can detect crossings of an outer quotation.
         let logical_self=quotation_identity.get(&annotation.id);
