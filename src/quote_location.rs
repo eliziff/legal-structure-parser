@@ -768,14 +768,28 @@ pub struct QuoteBlockInput {
 }
 
 
-/// Prepare quotation locators from the document's own reflected structure. A judgment PDF
-/// uses actual printed paragraph numbers, or page/provision locators when absent.
+/// How a source's locators are read: a provider's text by every block its structure labels; a PDF by what it prints,
+/// its numbered paragraphs, provisions and page numbers; a statute's PDF with its provisions as its print reads them.
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum QuoteSource {
+    Text,
+    Pdf,
+    Legislation,
+}
+
+/// Prepare quotation locators from the document's own reflected structure. A PDF uses the
+/// paragraph numbers it prints, its provisions (`provisions`, a statute's as its print reads them)
+/// and the page numbers it prints, front matter's and every sequence's as printed; a PDF that
+/// prints no page numbers, its PDF pages.
 /// Repeated locators retain their source candidates but do not resolve unqualified citations.
 pub fn document_quote_blocks(
     document: &legal_structure_model::DocumentStructure,
     query: &legal_document_query::DocumentQuery,
-    judgment: bool,
+    source: QuoteSource,
+    provisions: Option<Vec<QuoteBlockInput>>,
 ) -> Vec<QuoteBlockInput> {
+    let pdf = source != QuoteSource::Text;
     use legal_document_query::DocumentKind;
     use legal_structure_model::{parse_ordinal, NodeKind};
     let blocks = query.blocks(document, None).collect::<Vec<_>>();
@@ -792,35 +806,35 @@ pub fn document_quote_blocks(
         ancestors
     };
     let mut printed = Vec::new();
-    if judgment {
-        let mut counts = HashMap::new();
-        let numbered = blocks.iter().filter_map(|block| {
+    if pdf {
+        printed = blocks.iter().filter_map(|block| {
             let node = nodes.get(block.node_id.as_deref()?)?;
-            if node.kind != NodeKind::Paragraph { return None; }
+            // A paragraph's number is a locator only where the PDF prints it.
+            if node.kind != NodeKind::Paragraph || !node.marker_range.is_some_and(|range| range.start < range.end) { return None; }
             let number = parse_ordinal("paragraph", node.label.as_deref()?)?;
-            *counts.entry(number).or_insert(0usize) += 1;
-            Some((number, block))
+            Some(QuoteBlockInput { node_id: block.node_id.clone(), ancestor_ids: ancestors(block.node_id.as_deref()),
+                kind: QuoteBlockKind::Paragraph, label: format!("par{number}"), start: block.start, end: block.end,
+                ranges: block.ranges.clone() })
         }).collect::<Vec<_>>();
-        let has_unique = counts.values().any(|count| *count == 1);
-        printed = numbered.into_iter()
-            .map(|(number, block)| QuoteBlockInput { node_id: block.node_id.clone(),
-                ancestor_ids: ancestors(block.node_id.as_deref()), kind: QuoteBlockKind::Paragraph,
-                label: format!("par{number}"), start: block.start, end: block.end, ranges: block.ranges.clone() })
-            .collect::<Vec<_>>();
         printed.sort_by_key(|block| (block.start, block.end));
-        if has_unique { return printed; }
     }
+    let statute = provisions.is_some();
+    printed.extend(provisions.unwrap_or_default());
+    let numbered_pages = pdf && blocks.iter().any(|block| block.kind == DocumentKind::Page && !block.aliases.is_empty());
     static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:paras?\.?|par|¶)[{JS_SPACE}]*([0-9])")).unwrap());
     static PAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:pages?|pp?\.?)[{JS_SPACE}]*([0-9])")).unwrap());
     static SECTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:sections?|ss?\.|sec)[{JS_SPACE}]*([0-9])")).unwrap());
     printed.extend(blocks.into_iter().filter_map(|block| {
         let (kind, prefix) = match block.kind {
-            DocumentKind::Paragraph if !judgment => (QuoteBlockKind::Paragraph, &*PARAGRAPH),
+            DocumentKind::Paragraph if !pdf => (QuoteBlockKind::Paragraph, &*PARAGRAPH),
             DocumentKind::Page => (QuoteBlockKind::Page, &*PAGE),
-            DocumentKind::Section => (QuoteBlockKind::Section, &*SECTION),
+            DocumentKind::Section if !statute => (QuoteBlockKind::Section, &*SECTION),
             _ => return None,
         };
-        let normalized = prefix.replace(js_trim(&block.label), "$1");
+        // A page is the number it prints, where the PDF prints them; a page printing none is no locator then.
+        let printed_page = kind == QuoteBlockKind::Page && numbered_pages;
+        if printed_page && block.aliases.is_empty() { return None; }
+        let normalized = if printed_page { block.aliases[0].as_str().into() } else { prefix.replace(js_trim(&block.label), "$1") };
         let mut value = normalized.as_ref();
         if value.starts_with('[') && value.ends_with(']') { value = &value[1..value.len()-1]; }
         if kind == QuoteBlockKind::Section && value.strip_prefix("sec")
@@ -829,6 +843,7 @@ pub fn document_quote_blocks(
         }
         let label = match kind {
             QuoteBlockKind::Paragraph => format!("par{value}"),
+            QuoteBlockKind::Page if pdf && !numbered_pages => format!("PDF page {value}"),
             QuoteBlockKind::Page => format!("page {value}"),
             QuoteBlockKind::Section => format!("sec{value}"),
         };
@@ -836,6 +851,30 @@ pub fn document_quote_blocks(
             kind, label, start: block.start, end: block.end, ranges: block.ranges })
     }));
     printed
+}
+
+/// Every quotation located in `text` among `blocks`. A PDF's quotation is located by one scheme of its locators: the
+/// kind its citation names where the PDF prints it, else the PDF's numbered paragraphs, provisions or pages, the
+/// first it prints.
+pub fn locate_source_quotes(source: QuoteSource, text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate],
+    compare: bool) -> Vec<LocatedQuote> {
+    use QuoteBlockKind::{Page, Paragraph, Section};
+    if source == QuoteSource::Text { return locate_quotes_in(text, blocks, quotes, compare); }
+    let printed = |kind: QuoteBlockKind| blocks.iter().any(|block| block.kind == kind);
+    let scheme = |scopes: &QuoteScopes| [(Paragraph, &scopes.paragraphs), (Page, &scopes.pages)].into_iter()
+        .filter(|(_, asked)| !asked.is_empty()).map(|(kind, _)| kind)
+        .chain((!scopes.sections.is_empty()).then_some(Section))
+        .find(|kind| printed(*kind)).or_else(|| [Paragraph, Section, Page].into_iter().find(|kind| printed(*kind)));
+    let schemes = quotes.iter().map(|quote| scheme(&quote.scopes)).collect::<Vec<_>>();
+    let mut located = quotes.iter().map(|_| None).collect::<Vec<_>>();
+    for kind in [Some(Paragraph), Some(Section), Some(Page), None] {
+        let members = (0..quotes.len()).filter(|&at| schemes[at] == kind).collect::<Vec<_>>();
+        if members.is_empty() { continue; }
+        let kept = blocks.iter().filter(|block| Some(block.kind) == kind).cloned().collect::<Vec<_>>();
+        let group = members.iter().map(|&at| quotes[at].clone()).collect::<Vec<_>>();
+        for (at, found) in members.into_iter().zip(locate_quotes_in(text, &kept, &group, compare)) { located[at] = Some(found); }
+    }
+    located.into_iter().map(|found| found.expect("every quotation is located")).collect()
 }
 
 #[derive(Clone)]
@@ -858,7 +897,7 @@ pub struct QuoteScopes {
     pub sections: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct QuoteToLocate {
     pub quote: String,
     #[serde(default)]

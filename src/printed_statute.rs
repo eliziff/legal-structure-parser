@@ -468,6 +468,16 @@ impl PrintedStatute {
         &self.structure
     }
 
+    /// The reading's sections as quotation locators of the PDF's text.
+    pub fn quote_blocks(&self) -> Vec<crate::QuoteBlockInput> {
+        crate::document_quote_blocks(&self.structure, &DocumentQuery::new(), crate::QuoteSource::Text, None).into_iter()
+            .filter(|block| block.kind == crate::quote_location::QuoteBlockKind::Section).filter_map(|block| {
+                let mut ranges = self.source_ranges(block.start, block.end);
+                ScalarRange::normalize_union(&mut ranges);
+                Some(crate::QuoteBlockInput { start: ranges.first()?.start, end: ranges.last()?.end, ranges, ..block })
+            }).collect()
+    }
+
     /// The paragraphs a range of the reading covers: their PDF node, lines, and whether
     /// each is a title and a history note.
     pub fn parts(&self, start: usize, end: usize) -> impl Iterator<Item = (usize, &[String], bool, bool)> + '_ {

@@ -94,8 +94,8 @@ pub use provider_text::{
 pub use journal_titles::{journal_title_choice, journal_title_searches, JournalTitleHit, JournalTitleSearch};
 #[cfg(feature = "document-query")]
 pub use quote_location::{
-    corrected_quote, document_quote_blocks, editorial_quote, locate_quotes_in, quote_text_comparison, verbatim_repair, LocatedQuote,
-    QuoteBlockInput, QuoteComparison, QuoteLocation, QuoteToLocate,
+    corrected_quote, document_quote_blocks, editorial_quote, locate_quotes_in, locate_source_quotes, quote_text_comparison,
+    verbatim_repair, LocatedQuote, QuoteBlockInput, QuoteSource, QuoteComparison, QuoteLocation, QuoteToLocate,
 };
 #[cfg(feature = "quote-verification")]
 pub use quote_verification::*;
