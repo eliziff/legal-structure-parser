@@ -745,7 +745,7 @@ impl Reader {
     }
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum QuoteBlockKind {
     Paragraph,
@@ -996,7 +996,10 @@ fn pinpoint_summary(pinpoints: &[String], limit: usize) -> String {
 
 /// Whether `inner` is a smaller block of the same kind inside `outer`.
 fn within(outer: &Block, inner: &Block) -> bool {
+    let extent = |block: &Block| block.ranges.first().zip(block.ranges.last()).map(|(first, last)| (first.start, last.end));
     inner.kind == outer.kind
+        // Its members' extent first: most blocks are not inside each other, and this alone says so.
+        && extent(inner).zip(extent(outer)).is_none_or(|(inner, outer)| outer.0 <= inner.0 && inner.1 <= outer.1)
         && inner.ranges.iter().all(|part| outer.ranges.iter().any(|range| range.start <= part.start && part.end <= range.end))
         && match outer.node_id.as_ref().zip(inner.node_id.as_ref()) {
             Some((outer_id, _)) => inner.ancestor_ids.contains(outer_id),
@@ -1020,6 +1023,9 @@ struct Located<'a> {
     /// Each block's readings, and the whole text's, prepared once for every quotation.
     prepared: Vec<Option<std::rc::Rc<Prepared>>>,
     whole: Option<std::rc::Rc<Prepared>>,
+    /// How many blocks of a kind have each label, and each number.
+    labels: HashMap<(QuoteBlockKind, String), usize>,
+    numbers: HashMap<(QuoteBlockKind, u64), usize>,
 }
 
 /// A text's readings a quotation is scored against (quote_match_score's of `source`), prepared once.
@@ -1112,13 +1118,12 @@ impl Located<'_> {
         match candidate { Candidate::Block(index) => &self.blocks[index], Candidate::Range(index) => &ranges[index] }
     }
 
+    /// Whether no other block of its kind has its label or its number (blocks of one label have one number).
     fn label_is_unique(&self, block: &Block) -> bool {
-        let label = block.label.to_lowercase();
-        let number = (block.kind != QuoteBlockKind::Section).then(|| block_number(block));
-        self.blocks.iter().filter(|other| other.kind == block.kind
-            && (other.label.to_lowercase() == label
-                || number.is_some_and(|number| number.is_finite() && block_number(other) == number)))
-            .take(2).count() <= 1
+        match (block.kind != QuoteBlockKind::Section).then(|| block_number(block)).filter(|number| number.is_finite()) {
+            Some(number) => self.numbers.get(&(block.kind, number.to_bits())).is_none_or(|count| *count <= 1),
+            None => self.labels.get(&(block.kind, block.label.to_lowercase())).is_none_or(|count| *count <= 1),
+        }
     }
 
     fn cited_selection(&self, scopes: &QuoteScopes) -> (Vec<(usize, bool)>, bool) {
@@ -1445,7 +1450,13 @@ pub fn locate_quotes_in(text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteT
     let prepared = vec![None; blocks.len()];
     let trimmed = js_trim(text);
     let reader = Reader { whole: Some((trimmed.as_ptr() as usize, trimmed.len())), ..Reader::default() };
-    let mut located = Located { reader, text, source_text, blocks, prepared, whole: None };
+    let (mut labels, mut numbers) = (HashMap::new(), HashMap::new());
+    for block in &blocks {
+        *labels.entry((block.kind, block.label.to_lowercase())).or_insert(0) += 1;
+        let number = block_number(block);
+        if block.kind != QuoteBlockKind::Section && number.is_finite() { *numbers.entry((block.kind, number.to_bits())).or_insert(0) += 1; }
+    }
+    let mut located = Located { reader, text, source_text, blocks, prepared, whole: None, labels, numbers };
     // A quotation compared with the whole text reads its index and words, built once.
     let mut whole: Option<(legal_document_query::TextFragmentIndex<'_>, SourceWords)> = None;
     let out = quotes.iter().map(|item| {
