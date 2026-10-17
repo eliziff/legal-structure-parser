@@ -44,7 +44,8 @@ pub trait StructureAnalysis: Sync {
         diagnostics: Vec<StructureDiagnostic>,
     ) -> Result<DocumentStructure, EngineError>;
 
-    /// Resolve source candidates, then invoke the producer's single outline assembler.
+    /// Resolve source candidates, then invoke the producer's single outline assembler. The
+    /// producer refreshes the revision once it completes the structure.
     #[allow(clippy::too_many_arguments)]
     fn resolve_structure_graph_with_assembler(
         &self,

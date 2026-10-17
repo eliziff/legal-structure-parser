@@ -15,6 +15,7 @@ fn heading(node: &crate::StructureNode) -> bool {
 
 /// Each node's one-based level under its parents, its extent (its own membership with its
 /// descendants'), and its readable membership in the rendered text.
+/// The producer, which completes the structure, refreshes its revision.
 pub(crate) fn assemble_structure(mut structure: DocumentStructure) -> Result<DocumentStructure, String> {
     let positions = structure.nodes.iter().enumerate()
         .map(|(i, node)| (node.id.clone(), i)).collect::<HashMap<_, _>>();
@@ -77,6 +78,5 @@ pub(crate) fn assemble_structure(mut structure: DocumentStructure) -> Result<Doc
         node.rendered_membership = own_rendered[i].clone();
         node.rendered_range = Some(envelope(&node.rendered_ranges).unwrap_or(ScalarRange { start: 0, end: 0 }));
     }
-    structure.refresh_revision().map_err(|error| error.to_string())?;
     Ok(structure)
 }
