@@ -1,6 +1,7 @@
 use super::search;
 use super::*;
 use crate::{javascript_whitespace, utf16_len};
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
@@ -552,8 +553,9 @@ fn browser_key(value: &str) -> String {
         .collect()
 }
 
-#[derive(Clone)]
 struct BrowserSpelledTerm {
+    /// Which of a replay's spelled terms this is (BrowserReplay::spelled_term), naming it in the replay's memos.
+    id: usize,
     key: String,
     words: Vec<String>,
     leading_punctuation: bool,
@@ -575,6 +577,7 @@ fn browser_spelled_term_with_mode(
         })
         .collect();
     Some(BrowserSpelledTerm {
+        id: 0,
         leading_punctuation,
         trailing_punctuation: last_end < text.len(),
         key: browser_key(&text),
@@ -582,7 +585,7 @@ fn browser_spelled_term_with_mode(
     })
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct ExactDirectiveReplay {
     first: Option<PhraseSpan>,
     count: usize,
@@ -646,9 +649,13 @@ impl ReplayIndex {
             let literal = match (at(token.start), at(token.end)) {
                 (Some(start), Some(end)) if start <= end => &text[start..end],
                 _ => "",
-            }
-            .to_lowercase();
-            let word = browser_key(&literal);
+            };
+            // An ASCII word's key is its ASCII lowercase (browser_key), made without a second copy.
+            let word = if literal.is_ascii() {
+                literal.to_ascii_lowercase()
+            } else {
+                browser_key(&literal.to_lowercase())
+            };
             postings
                 .entry(search::word_hash(&word))
                 .or_default()
@@ -665,10 +672,18 @@ struct BrowserReplay<'a> {
     index: std::borrow::Cow<'a, ReplayIndex>,
     /// Spelling a term runs several regexes; a plan asks for the same few hundred
     /// terms tens of thousands of times, so each is spelled once.
-    spelled: std::cell::RefCell<HashMap<String, Option<BrowserSpelledTerm>>>,
+    spelled: std::cell::RefCell<HashMap<String, Option<Rc<BrowserSpelledTerm>>>>,
     /// The ends found for an end term and the suffix after it (see first_valid_end), whichever start they follow:
     /// each occurrence is read once for every replay of the plan.
-    ends: std::cell::RefCell<HashMap<(String, Vec<String>, bool, bool, String, bool), ValidEnds>>,
+    ends: std::cell::RefCell<HashMap<(usize, String, bool), ValidEnds>>,
+    /// Where each term can begin (term_starts) and what it matches at a word (spelled_term_bounds_at): a range plan
+    /// replays every pairing of its candidate starts and ends, each asking again where the same terms match.
+    starts: std::cell::RefCell<HashMap<usize, Rc<[usize]>>>,
+    bounds: std::cell::RefCell<HashMap<(usize, usize, bool), Option<(PhraseSpan, usize, usize)>>>,
+    /// Each directive's replay, by its terms (the start's, the end's or none, the prefix's and the suffix's, each
+    /// usize::MAX where absent): a plan asks again for the replays its earlier candidates made.
+    exacts: std::cell::RefCell<HashMap<(usize, usize, usize, bool), ExactDirectiveReplay>>,
+    ranges: std::cell::RefCell<HashMap<(usize, usize, usize, usize, bool), Option<PhraseSpan>>>,
 }
 
 impl<'a> BrowserReplay<'a> {
@@ -687,18 +702,32 @@ impl<'a> BrowserReplay<'a> {
             index,
             spelled: std::cell::RefCell::new(HashMap::new()),
             ends: std::cell::RefCell::new(HashMap::new()),
+            starts: std::cell::RefCell::new(HashMap::new()),
+            bounds: std::cell::RefCell::new(HashMap::new()),
+            exacts: std::cell::RefCell::new(HashMap::new()),
+            ranges: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
-    fn spelled_term(&self, value: &str) -> Option<BrowserSpelledTerm> {
+    fn spelled_term(&self, value: &str) -> Option<Rc<BrowserSpelledTerm>> {
         if let Some(term) = self.spelled.borrow().get(value) {
             return term.clone();
         }
-        let term = browser_spelled_term_with_mode(value, self.preserve_punctuation_spacing);
+        let id = self.spelled.borrow().len();
+        let term = browser_spelled_term_with_mode(value, self.preserve_punctuation_spacing)
+            .map(|term| Rc::new(BrowserSpelledTerm { id, ..term }));
         self.spelled
             .borrow_mut()
             .insert(value.to_owned(), term.clone());
         term
+    }
+
+    /// A context's term id for the replay memos: usize::MAX where there is no context, None where it spells no term.
+    fn context_id(&self, value: &str) -> Option<usize> {
+        if value.is_empty() {
+            return Some(usize::MAX);
+        }
+        self.spelled_term(value).map(|term| term.id)
     }
 
     fn fragment_spelling(&self, value: &str) -> String {
@@ -772,6 +801,21 @@ impl<'a> BrowserReplay<'a> {
         first_word: usize,
         allow_across_lines: bool,
     ) -> Option<(PhraseSpan, usize, usize)> {
+        let key = (term.id, first_word, allow_across_lines);
+        if let Some(found) = self.bounds.borrow().get(&key) {
+            return *found;
+        }
+        let found = self.read_spelled_term_bounds_at(term, first_word, allow_across_lines);
+        self.bounds.borrow_mut().insert(key, found);
+        found
+    }
+
+    fn read_spelled_term_bounds_at(
+        &self,
+        term: &BrowserSpelledTerm,
+        first_word: usize,
+        allow_across_lines: bool,
+    ) -> Option<(PhraseSpan, usize, usize)> {
         let matched = self.term_at(&term.words, first_word, allow_across_lines)?;
         let source = self.document.tokens();
         let word_start = source[first_word].start;
@@ -809,6 +853,25 @@ impl<'a> BrowserReplay<'a> {
         suffix: &str,
         allow_across_lines: bool,
     ) -> ExactDirectiveReplay {
+        let (Some(prefix_id), Some(suffix_id)) = (self.context_id(prefix), self.context_id(suffix)) else {
+            return ExactDirectiveReplay::default();
+        };
+        let key = (target_term.id, prefix_id, suffix_id, allow_across_lines);
+        if let Some(found) = self.exacts.borrow().get(&key) {
+            return *found;
+        }
+        let found = self.read_replay_exact(target_term, prefix, suffix, allow_across_lines);
+        self.exacts.borrow_mut().insert(key, found);
+        found
+    }
+
+    fn read_replay_exact(
+        &self,
+        target_term: &BrowserSpelledTerm,
+        prefix: &str,
+        suffix: &str,
+        allow_across_lines: bool,
+    ) -> ExactDirectiveReplay {
         let prefix_term = (!prefix.is_empty()).then(|| self.spelled_term(prefix));
         let suffix_term = (!suffix.is_empty()).then(|| self.spelled_term(suffix));
         if prefix_term.as_ref().is_some_and(Option::is_none)
@@ -818,7 +881,7 @@ impl<'a> BrowserReplay<'a> {
         }
         let prefix_term = prefix_term.flatten();
         let suffix_term = suffix_term.flatten();
-        let first_term = prefix_term.as_ref().unwrap_or(target_term);
+        let first_term = prefix_term.as_deref().unwrap_or(target_term);
         let candidates = self.term_starts(first_term);
         // A prefix's occurrences that matter are those the target follows: where the target's first word is rarer,
         // they are read from the target's occurrences, the prefix's words before each.
@@ -826,7 +889,7 @@ impl<'a> BrowserReplay<'a> {
             Some(prefix) => {
                 let targets = self.term_starts(target_term);
                 if targets.len() < candidates.len() {
-                    targets.iter().filter_map(|target| target.checked_sub(prefix.words.len())).collect::<Vec<_>>()
+                    targets.iter().filter_map(|target| target.checked_sub(prefix.words.len())).collect::<Rc<[usize]>>()
                 } else {
                     candidates
                 }
@@ -834,7 +897,7 @@ impl<'a> BrowserReplay<'a> {
             None => candidates,
         };
         let mut replay = ExactDirectiveReplay::default();
-        for &first_word in &starts {
+        for &first_word in starts.iter() {
             let prefix_match = prefix_term.as_ref().and_then(|prefix| {
                 self.spelled_term_bounds_at(prefix, first_word, allow_across_lines)
             });
@@ -867,12 +930,17 @@ impl<'a> BrowserReplay<'a> {
 
     /// Where a term can begin, in order: where its rarest word occurs, less that word's place in the term (a term
     /// matches only where every one of its words does).
-    fn term_starts(&self, term: &BrowserSpelledTerm) -> Vec<usize> {
+    fn term_starts(&self, term: &BrowserSpelledTerm) -> Rc<[usize]> {
+        if let Some(starts) = self.starts.borrow().get(&term.id) {
+            return starts.clone();
+        }
         let (place, occurrences) = term.words.iter().enumerate()
             .map(|(place, word)| (place, self.index.postings.get(&search::word_hash(word)).map_or(&[][..], Vec::as_slice)))
             .min_by_key(|(_, occurrences)| occurrences.len())
             .unwrap_or((0, &[]));
-        occurrences.iter().filter_map(|word| word.checked_sub(place)).collect()
+        let starts = occurrences.iter().filter_map(|word| word.checked_sub(place)).collect::<Rc<[usize]>>();
+        self.starts.borrow_mut().insert(term.id, starts.clone());
+        starts
     }
 
     fn first_spelled_term_from(
@@ -899,7 +967,7 @@ impl<'a> BrowserReplay<'a> {
         allow_across_lines: bool,
     ) -> Option<PhraseSpan> {
         if ends.next.is_empty() {
-            ends.starts = self.term_starts(end_term);
+            ends.starts = self.term_starts(end_term).to_vec();
             ends.ends = vec![None; ends.starts.len()];
             ends.next = (0..=ends.starts.len()).collect();
         }
@@ -940,6 +1008,23 @@ impl<'a> BrowserReplay<'a> {
         suffix: &str,
         allow_across_lines: bool,
     ) -> Option<PhraseSpan> {
+        let key = (start_term.id, end_term.id, self.context_id(prefix)?, self.context_id(suffix)?, allow_across_lines);
+        if let Some(found) = self.ranges.borrow().get(&key) {
+            return *found;
+        }
+        let found = self.read_replay_range(start_term, end_term, prefix, suffix, allow_across_lines);
+        self.ranges.borrow_mut().insert(key, found);
+        found
+    }
+
+    fn read_replay_range(
+        &self,
+        start_term: &BrowserSpelledTerm,
+        end_term: &BrowserSpelledTerm,
+        prefix: &str,
+        suffix: &str,
+        allow_across_lines: bool,
+    ) -> Option<PhraseSpan> {
         let prefix_term = (!prefix.is_empty()).then(|| self.spelled_term(prefix));
         let suffix_term = (!suffix.is_empty()).then(|| self.spelled_term(suffix));
         if prefix_term.as_ref().is_some_and(Option::is_none)
@@ -950,9 +1035,7 @@ impl<'a> BrowserReplay<'a> {
         let prefix_term = prefix_term.flatten();
         let suffix_term = suffix_term.flatten();
         let mut kept_ends = self.ends.borrow_mut();
-        let ends = kept_ends.entry((end_term.key.clone(), end_term.words.clone(), end_term.leading_punctuation,
-            end_term.trailing_punctuation, suffix.to_owned(), allow_across_lines))
-            .or_default();
+        let ends = kept_ends.entry((end_term.id, suffix.to_owned(), allow_across_lines)).or_default();
         // A context (the prefix where there is one, else the start) in the order the browser meets it: Some(the
         // replay's answer) where it settles the replay, None to read on.
         let mut consider = |context: PhraseSpan| -> Option<Option<PhraseSpan>> {
@@ -974,7 +1057,7 @@ impl<'a> BrowserReplay<'a> {
             let last = self.first_valid_end(
                 ends,
                 end_term,
-                suffix_term.as_ref(),
+                suffix_term.as_deref(),
                 first.last_word + 1,
                 allow_across_lines,
             );
@@ -991,7 +1074,7 @@ impl<'a> BrowserReplay<'a> {
             let starts = self.term_starts(start_term);
             if starts.len() < self.term_starts(prefix).len() {
                 let length = prefix.words.len();
-                for &start in &starts {
+                for &start in starts.iter() {
                     let Some(context) = start
                         .checked_sub(length)
                         .and_then(|at| self.spelled_term_at(prefix, at, allow_across_lines))
@@ -1008,7 +1091,7 @@ impl<'a> BrowserReplay<'a> {
         let mut start_from = 0;
         while start_from < self.index.words.len() {
             let context = self.first_spelled_term_from(
-                prefix_term.as_ref().unwrap_or(start_term),
+                prefix_term.as_deref().unwrap_or(start_term),
                 start_from,
                 allow_across_lines,
             )?;
@@ -1360,6 +1443,9 @@ struct MaximalPlanner<'replay, 'document> {
     split_html_source_blocks: bool,
     atom_cache: HashMap<usize, LexicalTerm>,
     atomic_options_cache: HashMap<usize, Vec<LexicalTerm>>,
+    /// endpoint_terms_from_start and _end by (from the start, first word, last word, context): a range plan reads a
+    /// piece's endpoints once for each way it pairs them.
+    endpoint_cache: HashMap<(bool, usize, usize, bool), Vec<LexicalTerm>>,
     directive_cache: HashMap<PieceKey, Option<String>>,
     furniture_cache: HashMap<usize, Option<FurnitureKind>>,
 }
@@ -1398,6 +1484,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             split_html_source_blocks,
             atom_cache: HashMap::new(),
             atomic_options_cache: HashMap::new(),
+            endpoint_cache: HashMap::new(),
             directive_cache: HashMap::new(),
             furniture_cache: HashMap::new(),
         }
@@ -1634,15 +1721,35 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         suffix: &str,
     ) -> Option<PhraseSpan> {
         self.replay.replay_range(
-            &self.replay.spelled_term(start)?,
-            &self.replay.spelled_term(end)?,
+            &*self.replay.spelled_term(start)?,
+            &*self.replay.spelled_term(end)?,
             prefix,
             suffix,
             false,
         )
     }
 
-    fn endpoint_terms_from_start(
+    fn endpoint_terms_from_start(&mut self, piece: MaximalCorePiece, context: bool) -> Vec<LexicalTerm> {
+        let key = (true, piece.first_word, piece.last_word, context);
+        if let Some(terms) = self.endpoint_cache.get(&key) {
+            return terms.clone();
+        }
+        let terms = self.read_endpoint_terms_from_start(piece, context);
+        self.endpoint_cache.insert(key, terms.clone());
+        terms
+    }
+
+    fn endpoint_terms_from_end(&mut self, piece: MaximalCorePiece, context: bool) -> Vec<LexicalTerm> {
+        let key = (false, piece.first_word, piece.last_word, context);
+        if let Some(terms) = self.endpoint_cache.get(&key) {
+            return terms.clone();
+        }
+        let terms = self.read_endpoint_terms_from_end(piece, context);
+        self.endpoint_cache.insert(key, terms.clone());
+        terms
+    }
+
+    fn read_endpoint_terms_from_start(
         &mut self,
         piece: MaximalCorePiece,
         context: bool,
@@ -1682,7 +1789,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         terms
     }
 
-    fn endpoint_terms_from_end(
+    fn read_endpoint_terms_from_end(
         &mut self,
         piece: MaximalCorePiece,
         context: bool,
