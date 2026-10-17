@@ -429,6 +429,10 @@ pub struct DocumentAnchor<'a> {
     row_span: Option<usize>,
     #[serde(rename = "columnSpan", skip_serializing_if = "Option::is_none")]
     column_span: Option<usize>,
+    /// The block's function where its kind does not say it: a headnote, a caption, the bench,
+    /// counsel, a date, a docket number, the court.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<legal_structure_model::PrimaryRole>,
 }
 
 #[derive(Serialize)]
@@ -1537,6 +1541,8 @@ impl DocumentQuery {
                 parent_label: parent_label(document, position),
                 row_span: node.row_span,
                 column_span: node.column_span,
+                role: node.role.filter(|role| !matches!(role,
+                    legal_structure_model::PrimaryRole::Text | legal_structure_model::PrimaryRole::Heading)),
             })
         })
     }

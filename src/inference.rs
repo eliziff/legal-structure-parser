@@ -175,6 +175,12 @@ fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtlistener: boo
             });
         }
         {
+            // Oklahoma's OSCN serves its pilcrow as mojibake, "Â¶1".
+            let value = if courtlistener {
+                value.strip_prefix('Â').filter(|rest| rest.starts_with('¶')).unwrap_or(value)
+            } else {
+                value
+            };
             let glyph = value
                 .chars()
                 .next()

@@ -81,6 +81,13 @@ pub enum PrimaryRole {
     MarginalNote,
     Furniture,
     PageLabel,
+    /// A judgment's front matter, as its source marks it: the bench, counsel, a date, the
+    /// docket number and the court.
+    Judges,
+    Counsel,
+    Date,
+    DocketNumber,
+    Court,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
