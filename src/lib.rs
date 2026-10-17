@@ -13,6 +13,8 @@ mod layout_cues;
 mod note_dropout;
 #[cfg(feature = "structure-inference")]
 mod note_pairing;
+#[cfg(feature = "structure-inference")]
+mod text_notes;
 #[cfg(feature = "citator")]
 mod citator;
 #[cfg(feature = "citator")]
@@ -31,8 +33,6 @@ use legal_structure_model::document;
 mod docx_lint;
 mod docx_numbering;
 use legal_structure_model::fingerprint;
-#[cfg(feature = "footnote-pairing")]
-mod footnote_pairing;
 mod instrument;
 #[cfg(feature = "structure-inference")]
 mod instrument_contents;
@@ -69,8 +69,8 @@ pub use document::{
 pub use docx_lint::*;
 pub use docx_numbering::*;
 pub use fingerprint::*;
-#[cfg(feature = "footnote-pairing")]
-pub use footnote_pairing::{pair_numbered_footnotes, NumberedFootnotePairing, PairedFootnote};
+#[cfg(feature = "structure-inference")]
+pub use text_notes::{pair_numbered_footnotes, NumberedFootnotePairing, PairedFootnote};
 pub use instrument::*;
 #[cfg(feature = "journal")]
 pub use journal::{journal_document_structure, journal_text_document_structure, JournalPageLabel};
@@ -78,6 +78,8 @@ pub use journal::{journal_document_structure, journal_text_document_structure, J
 pub use legal_document_query::*;
 use legal_structure_model::text;
 pub use legal_structure_model::AuthoritativeTableCell;
+/// The laid-out pages and lines note pairing reads, for programs that hand it lines of their own.
+pub use legal_structure_model::layout;
 pub use locator::{normalize_compact_numbered_section_locator, normalize_section_locator};
 #[cfg(feature = "native-markup")]
 pub use native_markup::{
@@ -88,7 +90,8 @@ pub use native_markup::{
 pub use numeric_sequence::*;
 #[cfg(feature = "provider-text")]
 pub use provider_text::{
-    provider_text_document_structure, ProviderSectionMap, ProviderTextInput, ProviderTextSourceKind,
+    provider_text_document_structure, windows_1252_punctuation, ProviderSectionMap, ProviderTextInput,
+    ProviderTextSourceKind,
 };
 #[cfg(all(feature = "citator", feature = "document-query"))]
 pub use journal_titles::{journal_title_choice, journal_title_searches, JournalTitleHit, JournalTitleSearch};

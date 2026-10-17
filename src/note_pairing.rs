@@ -196,7 +196,13 @@ fn numeric_value(value: &str) -> Option<u32> {
     (found && (1..=MAX_VALUE).contains(&number)).then_some(number)
 }
 
-fn label_token(text: &str) -> Option<LabelToken> {
+/// Whether a line is a provider's flattened text, whose notes read as their HTML printed them:
+/// a label "[1]" or "Footnote 1", a call run into the word before it ("counsel[1]", "job.Footnote 1").
+fn provider_text(line: &Line) -> bool {
+    line.source == "provider_text"
+}
+
+fn label_token(text: &str, provider: bool) -> Option<LabelToken> {
     let values = chars(text);
     let scalar = ScalarText::new(text);
     let mut cursor = 0;
@@ -206,6 +212,9 @@ fn label_token(text: &str) -> Option<LabelToken> {
     {
         cursor += 1;
     }
+    if provider && text.chars().skip(cursor).take(9).eq("Footnote ".chars()) {
+        cursor += 9;
+    }
     let pre_start = 0;
     let start = cursor;
     let mut form = "plain";
@@ -213,7 +222,13 @@ fn label_token(text: &str) -> Option<LabelToken> {
     let token_end: usize;
     let mut value = None;
     let mut symbol = String::new();
-    if values.get(cursor) == Some(&'(') {
+    // A bracketed label encloses its number as a parenthesized one does.
+    let close = match values.get(cursor) {
+        Some('(') => Some(')'),
+        Some('[') if provider => Some(']'),
+        _ => None,
+    };
+    if let Some(close) = close {
         cursor += 1;
         while values
             .get(cursor)
@@ -232,7 +247,7 @@ fn label_token(text: &str) -> Option<LabelToken> {
         {
             cursor += 1;
         }
-        if token_end == token_start || values.get(cursor) != Some(&')') {
+        if token_end == token_start || values.get(cursor) != Some(&close) {
             return None;
         }
         cursor += 1;
@@ -597,7 +612,7 @@ fn build_lines<'a>(
     let note_column = median(
         lines
             .iter()
-            .filter(|line| line.zone == Zone::Note && label_token(&line.text).is_some())
+            .filter(|line| line.zone == Zone::Note && label_token(&line.text, provider_text(line)).is_some())
             .map(|line| line.bbox[0])
             .collect(),
     );
@@ -1105,6 +1120,9 @@ fn extract_refs(lines: &[PairLine<'_>]) -> Vec<Candidate> {
     static PAREN_REF: OnceLock<Regex> = OnceLock::new();
     static SECTION_BEFORE_PAREN: OnceLock<Regex> = OnceLock::new();
     let paren_ref = PAREN_REF.get_or_init(|| Regex::new(r"\(\s*(\d{1,3})\s*\)").unwrap());
+    static PROVIDER_CALL: OnceLock<Regex> = OnceLock::new();
+    let provider_call =
+        PROVIDER_CALL.get_or_init(|| Regex::new(r"\[(\d{1,3})\]|Footnote (\d{1,3})\b").unwrap());
     let section_before = SECTION_BEFORE_PAREN
         .get_or_init(|| Regex::new(r"(?i)\b(?:ss?|sub-?ss?|arts?|paras?|cls?)\.?\s*$").unwrap());
     // A subsection number after the section number opening its line: "2. (1) The ...".
@@ -1132,11 +1150,55 @@ fn extract_refs(lines: &[PairLine<'_>]) -> Vec<Candidate> {
             continue;
         };
         let label_end = if line.zone == Zone::Note {
-            label_token(&line.text).map_or(0, |token| token.match_end)
+            label_token(&line.text, provider_text(line)).map_or(0, |token| token.match_end)
         } else {
             0
         };
         let line_chars = chars(&line.text);
+        // A provider's flattened text runs a note's call into the word before it: "counsel[1] for",
+        // "appeal.[1] The", "job.Footnote 1 The".
+        // Its calls take no other form: no superscript survives the flattening, and its digits are text.
+        if provider_text(line) {
+            let Some((zone_score, _)) = zone else {
+                continue;
+            };
+            for captures in provider_call.captures_iter(&line.text) {
+                let whole = captures.get(0).expect("provider call");
+                let digits = captures.get(1).or_else(|| captures.get(2)).expect("call digits");
+                let open = line.text[..whole.start()].chars().count();
+                let start = line.text[..digits.start()].chars().count();
+                let end = line.text[..digits.end()].chars().count();
+                if open == 0
+                    || start < label_end
+                    || !ref_left(line_chars[open - 1])
+                    || line.protected(start, end)
+                {
+                    continue;
+                }
+                let Some(value) = numeric_value(digits.as_str()) else {
+                    continue;
+                };
+                candidates.push(Candidate {
+                    line: line_index,
+                    start: open,
+                    end: line.text[..whole.end()].chars().count(),
+                    observed: digits.as_str().to_owned(),
+                    value: Some(value),
+                    symbol: String::new(),
+                    form: "paren",
+                    score: zone_score + 0.4,
+                    reason: "provider_call",
+                    repaired: false,
+                    repair_kind: "",
+                    requires_visual_cue: false,
+                    flags: CandidateFlags {
+                        paren_ref: true,
+                        ..CandidateFlags::default()
+                    },
+                });
+            }
+            continue;
+        }
         let trimmed_len = line_chars
             .iter()
             .rposition(|character| !character.is_whitespace())
@@ -1491,7 +1553,7 @@ fn paren_style(lines: &[PairLine<'_>]) -> bool {
     let mut paren = 0;
     let mut plain = 0;
     for line in lines.iter().filter(|line| line.zone == Zone::Note) {
-        let Some(token) = label_token(&line.text) else {
+        let Some(token) = label_token(&line.text, provider_text(line)) else {
             continue;
         };
         if token.form == "paren" || (token.form == "plain" && token.post.contains(')')) {
@@ -1590,7 +1652,7 @@ fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate]) -> Vec<Candidate> 
         if line.suppress_footnote_label || line.edge_folio {
             continue;
         }
-        let Some(token) = label_token(&line.text) else {
+        let Some(token) = label_token(&line.text, provider_text(line)) else {
             continue;
         };
         let paired_note_region = (line.zone == Zone::Note && !line.region_witness_demoted
@@ -2009,7 +2071,7 @@ fn gap_line_score(line: &PairLine<'_>, body: &str) -> f64 {
 
 fn gap_repair_tokens(line: &PairLine<'_>) -> Vec<(String, usize, usize)> {
     let mut tokens = Vec::new();
-    if let Some(token) = label_token(&line.text) {
+    if let Some(token) = label_token(&line.text, provider_text(line)) {
         if token.value.is_some() && matches!(token.form, "plain" | "sup") {
             tokens.push((token.observed, token.start, token.end));
         }
@@ -2105,7 +2167,7 @@ fn sequence_position_rekey(
             continue;
         }
         let line = &lines[line_index];
-        let Some(token) = label_token(&line.text) else {
+        let Some(token) = label_token(&line.text, provider_text(line)) else {
             continue;
         };
         if !matches!(token.form, "plain" | "sup") {
@@ -4347,7 +4409,7 @@ fn materialize(
         for line in &body_lines {
             let mut text = line.text.as_str();
             if line.id == label_line.id {
-                let body_start = label_token(text)
+                let body_start = label_token(text, provider_text(line))
                     .filter(|token| {
                         token.start == pair.label.start && token.value == pair.label.value
                     })

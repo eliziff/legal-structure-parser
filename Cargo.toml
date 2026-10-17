@@ -21,7 +21,6 @@ citator = ["dep:legal-citations"]
 quote-verification = ["document-query"]
 native-markup = ["structure-inference"]
 provider-text = ["structure-inference"]
-footnote-pairing = []
 journal = []
 
 [dependencies]

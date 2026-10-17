@@ -596,6 +596,166 @@ fn endnote_shaped(text: &ScalarText<'_>, chain: &[Marker]) -> bool {
             >= 0.7
 }
 
+/// Where another count from 1 opens among a rooted count's other numbers: "[1]" followed by "[2]"
+/// and "[3]", another writing's paragraphs or a note list. A paragraph's quoted numbers ("[42] This
+/// matters." under [76]) open none.
+fn restart_boundaries(candidates: &[Marker], chain: &[Marker]) -> Vec<Marker> {
+    let held = chain.iter().map(|marker| marker.start).collect::<HashSet<_>>();
+    let mut rest = candidates.iter().filter(|marker| !held.contains(&marker.start)).collect::<Vec<_>>();
+    rest.sort_by_key(|marker| marker.start);
+    rest.iter().enumerate().filter(|(index, marker)| {
+        marker.number == 1 && rest[index + 1..].iter().fold(2, |expected, later| {
+            if later.number == expected { expected + 1 } else { expected }
+        }) > 3
+    }).map(|(_, marker)| (*marker).clone()).collect()
+}
+
+/// A judge's or member's signature, or a release line, as a decision prints them after its reasons
+/// ("“K. Feldman J.A.”", "“I agree. L.B. Roberts J.A.”", "Released: November 28, 2022").
+fn signature_line(value: &str) -> bool {
+    let value = value.trim().trim_matches(['"', '“', '”', '\'', '‘', '’']).trim();
+    !value.is_empty()
+        && value.chars().count() <= 90
+        && (cached_regex!(
+            SIGNATURE,
+            r"\b(?:J|JJ|C\.?J|C\.?J\.?C|C\.?J\.?O|J\.?A|JJ\.?A|J\.?C\.?A|Q\.?C|K\.?C)\.(?:\s*\((?:ad hoc|dissenting|concurring)\))?$|\b(?:Member|Adjudicator|Arbitrator|Chairperson|Vice-Chairperson|Commissioner|Associate Judge|Master|Prothonotary|Referee)$"
+        )
+        .is_match(value)
+            || cached_regex!(RELEASE, r"^(?i:released|date of release|dated|i agree)\b").is_match(value))
+}
+
+/// A paragraph's end before the signatures and release lines it closes with, which are the
+/// decision's; never its first line.
+fn paragraph_end_before_signatures(text: &ScalarText<'_>, start: usize, end: usize) -> usize {
+    let index = text.lines();
+    let first = index.partition_point(|line| line[2] <= start);
+    let last = index.partition_point(|line| line[2] < end);
+    let mut candidate = end;
+    for position in (first..last).rev() {
+        let line = index[position];
+        let value = text.value[line[0]..line[1]].trim();
+        if !value.is_empty() && !signature_line(value) {
+            break;
+        }
+        candidate = line[2];
+    }
+    candidate
+}
+
+/// Bare paragraph numbers a provider's flattened text runs into the heading before them
+/// ("I. Introduction 1 The complainant …", "II. Background 6 The complainant presented …").
+fn bare_heading_joined(text: &ScalarText<'_>, known: &HashSet<usize>) -> Vec<Marker> {
+    let mut result = Vec::new();
+    for line in lines(text) {
+        for (at, _) in line.text.match_indices(' ') {
+            let digits = line.text[at + 1..].bytes().take(4).take_while(u8::is_ascii_digit).count();
+            if digits == 0 || line.text.as_bytes().get(at + 1 + digits) != Some(&b' ') {
+                continue;
+            }
+            let content = at + 2 + digits;
+            if !line.text[content..].chars().next().is_some_and(char::is_uppercase) {
+                continue;
+            }
+            let start = text.scalar(line.byte_start + at + 1);
+            if known.contains(&start) || !formal_heading(line.text[..at].trim()) {
+                continue;
+            }
+            result.push(Marker {
+                number: line.text[at + 1..at + 1 + digits].parse().unwrap(),
+                start,
+                content_start: text.scalar(line.byte_start + content),
+                style: MarkerStyle::Bare,
+                score: 0.6,
+                formal: true,
+                sentence: false,
+            });
+        }
+    }
+    result
+}
+
+/// A provider text's paragraphs numbered in parentheses ("(3) I note the decision …"), read only
+/// where it has no other count: a quoted provision numbers its subsections the same way.
+fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[ScalarRange]) -> Vec<Block> {
+    let markers = lines(text)
+        .filter_map(|line| {
+            let lead = leading_ascii_space(line.text);
+            let rest = line.text[lead..].strip_prefix('(')?;
+            let digits = rest.bytes().take(4).take_while(u8::is_ascii_digit).count();
+            if digits == 0 || rest.as_bytes().get(digits) != Some(&b')') {
+                return None;
+            }
+            let after = &rest[digits + 1..];
+            let content = after.len() - after.trim_start().len();
+            (content > 0 && after.trim_start().chars().next().is_some_and(char::is_uppercase)).then(|| Marker {
+                number: rest[..digits].parse().unwrap(),
+                start: line.scalar_start,
+                content_start: text.scalar(line.byte_start + lead + 1 + digits + 1 + content),
+                style: MarkerStyle::Bracket,
+                score: 1.0,
+                formal: false,
+                sentence: false,
+            })
+        })
+        .collect::<Vec<_>>();
+    let (chain, _) = rooted_chain(&markers);
+    if chain.len() < 5 {
+        return Vec::new();
+    }
+    let mut counts = chain
+        .windows(2)
+        .map(|pair| word_count(text.slice(pair[0].start..pair[1].start).unwrap_or(""), false))
+        .collect::<Vec<_>>();
+    if median(&mut counts) < 12.0 {
+        return Vec::new();
+    }
+    paragraph_ranges(text, &chain, &chain, MarkerStyle::Bracket, false, excluded)
+}
+
+/// A provider text's paragraphs where it numbers none, a line each: from where its reasons open
+/// (an author's "MARTLAND J.—…", "The judgment of the Court was delivered by", else the end of its
+/// catalogue record) to its note list, the lines that read as running prose.
+fn unnumbered_paragraphs(text: &ScalarText<'_>, until: usize) -> Vec<Block> {
+    let index = text.lines();
+    let value = |line: &[usize; 3]| text.value[line[0]..line[1]].trim();
+    let record = index.iter().position(|line| value(line) == "Decision Content").map_or(0, |at| at + 1);
+    let author = index.iter().skip(record).position(|line| {
+        let line = value(line);
+        cached_regex!(AUTHOR, r"^[A-Z][A-Za-zÀ-ÿ'’. -]{1,60}?(?:C\.J\.[A-Z.]*|J\.A\.|JJ\.|J\.)\s*[—–-]\s*\S").is_match(line)
+            || line.contains("judgment of the Court was delivered by")
+            || line.contains("reasons for judgment were delivered by")
+    });
+    let from = author.map_or(record, |at| record + at);
+    let prose = |line: &str| {
+        let words = line.split_whitespace().collect::<Vec<_>>();
+        let lowercase = words.iter().filter(|word| word.chars().next().is_some_and(char::is_lowercase)).count();
+        words.len() >= 12 && lowercase >= 4 && line.trim_end().ends_with(['.', '?', '!', ':', ';', '"', '”', ')'])
+    };
+    index[from.min(index.len())..]
+        .iter()
+        .filter(|line| line[2] < until)
+        .filter(|line| prose(value(line)) && !signature_line(value(line)))
+        .map(|line| {
+            let lead = text.value[line[0]..line[1]].len() - text.value[line[0]..line[1]].trim_start().len();
+            let start = text.scalar(line[0] + lead);
+            let end = text.scalar(line[0] + text.value[line[0]..line[1]].trim_end().len());
+            Block {
+                kind: NodeKind::Prose,
+                range: ScalarRange { start, end },
+                label: None,
+                aliases: Vec::new(),
+                parent_label: None,
+                content_start: None,
+                marker_range: None,
+                note: None,
+                diagnostic: None,
+                source: Derivation::Heuristic,
+                origin_id: ENGINE_ORIGIN,
+            }
+        })
+        .collect()
+}
+
 fn monotone_scopes<'a>(
     markers: impl IntoIterator<Item = &'a Marker>,
     max_gap: u32,
@@ -1300,6 +1460,9 @@ fn detect_paragraphs(
             let mut candidates = std::mem::take(&mut by_style[style_index]);
             if style != MarkerStyle::Bare {
                 candidates.append(&mut joined[style_index]);
+            } else {
+                let known = candidates.iter().map(|marker| marker.start).collect::<HashSet<_>>();
+                candidates.extend(bare_heading_joined(text, &known));
             }
             let (mut chain, mut score) = rooted_chain(&candidates);
             if style == MarkerStyle::Bracket {
@@ -1408,6 +1571,15 @@ fn detect_paragraphs(
             }
         })
     });
+    // A rooted count's paragraphs end at one another and at a second count from 1, not at the
+    // numbers a paragraph quotes from another decision, which stay in the paragraph quoting them.
+    let boundaries = |hypothesis: &Hypothesis| -> Vec<Marker> {
+        if rooted {
+            hypothesis.markers.iter().cloned().chain(restart_boundaries(&hypothesis.all, &hypothesis.markers)).collect()
+        } else {
+            hypothesis.all.to_vec()
+        }
+    };
     for hypothesis in hypotheses {
         let mut next = HashMap::with_capacity(hypothesis.all.len());
         for pair in hypothesis.all.windows(2) {
@@ -1449,13 +1621,14 @@ fn detect_paragraphs(
         let span = (text.utf16(last_start) - first_utf16) as f64 / text_length.max(1) as f64;
         if hypothesis.short {
             if text_length <= 6_000
-                && (first_utf16 <= 1_200 || start <= 0.5)
+                // A provider's catalogue record opens its text, so a rooted count may start late.
+                && (rooted || first_utf16 <= 1_200 || start <= 0.5)
                 && counts.iter().copied().max().unwrap_or(0) >= 30
             {
                 return paragraph_ranges(
                     text,
                     &hypothesis.markers,
-                    &hypothesis.all,
+                    &boundaries(&hypothesis),
                     hypothesis.style,
                     !strict,
                     excluded,
@@ -1480,11 +1653,14 @@ fn detect_paragraphs(
         return paragraph_ranges(
             text,
             &hypothesis.markers,
-            &hypothesis.all,
+            &boundaries(&hypothesis),
             hypothesis.style,
             !strict,
             excluded,
         );
+    }
+    if rooted {
+        return parenthesized_paragraphs(text, excluded);
     }
     Vec::new()
 }
@@ -1684,7 +1860,52 @@ fn detect_case(
         }
         profile => detect_paragraphs(text, profile, excluded, courtlistener),
     };
+    if profile == DetectionProfile::CaseRootedComplete {
+        paragraphs = with_endnotes(text, paragraphs);
+        for block in paragraphs.iter_mut().filter(|block| block.kind == NodeKind::Paragraph) {
+            block.range.end = paragraph_end_before_signatures(text, block.range.start, block.range.end);
+        }
+        if !paragraphs.iter().any(|block| block.kind == NodeKind::Paragraph) {
+            let until = paragraphs.iter().filter(|block| block.kind == NodeKind::Endnote)
+                .filter_map(|block| block.marker_range.map(|range| range.start)).min().unwrap_or(text.len());
+            paragraphs.extend(unnumbered_paragraphs(text, until));
+        }
+    }
     paragraphs.extend(detect_pages(text, report_start_page, require_report_start));
+    paragraphs
+}
+
+/// A provider text's paragraphs with its note list after them, paired by note pairing's plain-text
+/// mode: the list may open at the last "[1] …" or "Footnote 1" line after the paragraphs' last
+/// number (with a "Footnotes" heading just above it), and the paragraphs' numbered lines are labels
+/// the pairer may take for notes instead. Where it pairs notes, the paragraphs end where they open.
+fn with_endnotes(text: &ScalarText<'_>, mut paragraphs: Vec<Block>) -> Vec<Block> {
+    let after = paragraphs.iter().map(|block| block.range.start).max().unwrap_or(0);
+    let index = text.lines();
+    let opening = index.iter().rposition(|line| {
+        let value = text.value[line[0]..line[1]].trim();
+        line[2] > after && (value.starts_with("[1]") || value == "Footnote 1")
+    });
+    let Some(opening) = opening else { return paragraphs };
+    let heading = opening.checked_sub(1).filter(|previous| {
+        matches!(text.value[index[*previous][0]..index[*previous][1]].trim(),
+            "Footnotes" | "FOOTNOTES" | "Notes" | "NOTES" | "Endnotes" | "ENDNOTES")
+    });
+    let note_start = index[opening][2];
+    let labels = paragraphs.iter().filter_map(|block| block.marker_range.map(|range| range.start))
+        .map(|start| index[index.partition_point(|line| line[2] <= start) - 1][2])
+        .collect::<HashSet<_>>();
+    let notes = crate::text_notes::text_note_blocks(text, note_start, &labels);
+    if notes.is_empty() {
+        return paragraphs;
+    }
+    let list_start = heading.map_or(note_start, |line| index[line][2]);
+    for block in &mut paragraphs {
+        if block.range.end > list_start {
+            block.range.end = list_start.max(block.range.start);
+        }
+    }
+    paragraphs.extend(notes);
     paragraphs
 }
 

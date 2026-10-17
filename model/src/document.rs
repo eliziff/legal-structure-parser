@@ -21,6 +21,8 @@ pub enum NodeKind {
     Prose,
     List,
     ListItem,
+    /// A passage a paragraph quotes, set apart from its own words.
+    Quote,
     Table,
     Row,
     Cell,
@@ -30,7 +32,7 @@ impl NodeKind {
     pub fn evidence(self) -> EvidenceKind {
         match self {
             Self::Paragraph => EvidenceKind::Paragraph,
-            Self::Prose => EvidenceKind::Prose,
+            Self::Prose | Self::Quote => EvidenceKind::Prose,
             Self::Page => EvidenceKind::Page,
             Self::Section => EvidenceKind::Section,
             Self::Heading => EvidenceKind::Heading,
@@ -46,6 +48,7 @@ impl NodeKind {
     pub fn name(self) -> &'static str {
         match self {
             Self::ListItem => "list_item",
+            Self::Quote => "quote",
             _ => self.evidence().name(),
         }
     }

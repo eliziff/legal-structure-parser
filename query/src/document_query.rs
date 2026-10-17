@@ -284,7 +284,11 @@ fn projected_kind(node: &StructureNode) -> Option<DocumentKind> {
         NodeKind::Table => DocumentKind::Table,
         NodeKind::Row => DocumentKind::Row,
         NodeKind::Cell => DocumentKind::Cell,
-        NodeKind::Heading | NodeKind::Endnote | NodeKind::List | NodeKind::ListItem => return None,
+        NodeKind::Heading
+        | NodeKind::Endnote
+        | NodeKind::List
+        | NodeKind::ListItem
+        | NodeKind::Quote => return None,
     })
 }
 
@@ -444,6 +448,9 @@ pub struct DocumentViewerSlice<'a> {
     pub anchors: Vec<DocumentAnchor<'a>>,
     pub primary: Option<DocumentAnchor<'a>>,
     pub depth: usize,
+    /// The slice is a heading the structure reads, not a block of text.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub heading: bool,
 }
 
 #[derive(Serialize)]
@@ -1574,7 +1581,11 @@ impl DocumentQuery {
             })
             .collect::<Vec<_>>();
         let mut grouped = BTreeMap::<usize, Vec<_>>::new();
+        let mut breaks = Vec::new();
         for anchor in anchors {
+            if anchor.kind == primary_kind {
+                breaks.push(anchor.end);
+            }
             grouped.entry(anchor.start).or_default().push(anchor);
         }
         if grouped.is_empty() {
@@ -1583,6 +1594,19 @@ impl DocumentQuery {
                 if let Some(start) = scalar.utf16_at_byte(found.end()) {
                     grouped.entry(start).or_default();
                 }
+            }
+        }
+        // A heading, and text after a block that no block holds, read apart from the block before.
+        let headings = document
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Heading)
+            .map(|node| document.query_range(node).start)
+            .filter(|start| *start < end)
+            .collect::<HashSet<_>>();
+        for at in breaks.into_iter().chain(headings.iter().copied()) {
+            if at < end {
+                grouped.entry(at).or_default();
             }
         }
         grouped.entry(0).or_default();
@@ -1623,6 +1647,7 @@ impl DocumentQuery {
                     text: slice_text,
                     anchors,
                     depth,
+                    heading: primary.is_none() && headings.contains(&start),
                     primary,
                 });
             }

@@ -15,7 +15,7 @@ fn pair_numbered_footnotes<'py>(
     page_labels: Vec<String>,
     include_context: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let result = py.detach(|| pair(text, &page_labels, include_context));
+    let result = py.detach(|| pair(text, &page_labels));
     let notes = PyList::empty(py);
     for note in result.notes {
         let item = PyDict::new(py);

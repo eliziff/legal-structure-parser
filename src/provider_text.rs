@@ -472,6 +472,14 @@ pub fn provider_text_document_structure(
             }
         }
     }
+    if let Cow::Owned(text) = windows_1252_punctuation(&input.text) {
+        input.text = text;
+    }
+    for (_, provision) in input.section_map.iter_mut().flatten() {
+        if let Cow::Owned(text) = windows_1252_punctuation(provision) {
+            *provision = text;
+        }
+    }
     let has_text = !input.text.trim().is_empty();
     let ordered = match (&input.section_map, has_text) {
         (Some(map), true) => {
@@ -501,6 +509,10 @@ pub fn provider_text_document_structure(
         apply_provider_section_evidence(&coordinates, &mut inferred, &evidence.native_claims, map);
     }
     let mut structure = crate::derive::derive_trusted_inferred(evidence, inferred)?;
+    if input.source_kind == ProviderTextSourceKind::Cases {
+        crate::case_outline::add_case_nodes(&mut structure);
+        structure.refresh_revision().expect("Typed document structure is serializable");
+    }
     if input.source_kind == ProviderTextSourceKind::Laws {
         structure.cross_references = Some(crate::instrument::cross_reference_graph(&structure)?);
     }
@@ -744,4 +756,26 @@ mod tests {
                 .start
         );
     }
+}
+
+/// Windows-1252 punctuation a provider's text carries read as Latin-1 control characters ("\u{96}"
+/// for "–"): the characters Windows-1252 puts at 0x80–0x9F, the five it leaves undefined kept as
+/// they are. Each is one character for one, so offsets keep their places.
+pub fn windows_1252_punctuation(value: &str) -> Cow<'_, str> {
+    const WINDOWS_1252: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
+        '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+    ];
+    if !value.chars().any(|character| ('\u{80}'..='\u{9f}').contains(&character)) {
+        return Cow::Borrowed(value);
+    }
+    Cow::Owned(
+        value
+            .chars()
+            .map(|character| match character {
+                '\u{80}'..='\u{9f}' => WINDOWS_1252[character as usize - 0x80],
+                _ => character,
+            })
+            .collect(),
+    )
 }
