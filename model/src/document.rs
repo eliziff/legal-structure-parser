@@ -27,12 +27,6 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
-    /// Grid containment identifies physical objects, not a semantic outline attachment.
-    /// Cell contents may carry independent document, quotation or reading-stream ownership.
-    pub fn is_grid_child_of(self, parent: Self) -> bool {
-        matches!((self, parent), (Self::Cell, Self::Row) | (Self::Row, Self::Table))
-    }
-
     pub fn evidence(self) -> EvidenceKind {
         match self {
             Self::Paragraph => EvidenceKind::Paragraph,
@@ -89,49 +83,11 @@ pub enum PrimaryRole {
     PageLabel,
 }
 
-/// Outline relationships may not cross any of these independently owned scopes.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StructureScopeKind { Document, Quotation, ReadingStream }
-
-/// Supplied or inferred scope identity and exact membership; absent metadata stays absent.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct StructureScopeAnnotation {
-    pub id: String,
-    pub kind: StructureScopeKind,
-    pub ownership: StructureOwnership,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_scope_id: Option<String>,
-    pub ranges: Vec<ScalarRange>,
-    /// Exact members owned by this document, excluding nested constituent documents.
-    #[serde(default)]
-    pub owned_ranges: Vec<ScalarRange>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub title_ranges: Vec<ScalarRange>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub layout: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attribution_ranges: Vec<ScalarRange>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relationship: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct StructureOwnership {
-    pub document_id: String,
-    pub quotation_id: Option<String>,
-    pub reading_stream_id: Option<String>,
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct StructureNode {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<PrimaryRole>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ownership: Option<StructureOwnership>,
     /// Exact physical membership; range remains its envelope for positioning.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ranges: Vec<ScalarRange>,
@@ -213,7 +169,6 @@ impl StructureNode {
         Self {
             id,
             role: None,
-            ownership: None,
             ranges: Vec::new(),
             heading_range: None,
             level: None,
@@ -309,8 +264,6 @@ pub struct Note {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ownership: Option<StructureOwnership>,
     pub kind: NoteKindV2,
     pub label_range: ScalarRange,
     pub body_range: ScalarRange,
@@ -370,16 +323,6 @@ pub struct MarkupAncestor {
     pub attributes: BTreeMap<String, String>,
 }
 
-/// Actual PDF marked-content role; empty membership means the native tag remains unaligned.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-pub struct PdfStructureTagWitness {
-    pub page_index: usize,
-    pub mcid: i64,
-    pub role: String,
-    pub ranges: Vec<ScalarRange>,
-    pub line_ids: Vec<String>,
-}
-
 /// Physical text fragment in this identified source representation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -393,7 +336,7 @@ pub struct SourceFragment {
 /// An explicit logical object link between physical source starts (UTF-16).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ContinuationKind { Paragraph, Heading, Note, Table, Quotation, List }
+pub enum ContinuationKind { Paragraph, Heading, Note, Table, List }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SourceContinuation {
@@ -412,53 +355,6 @@ pub struct SourceJoin {
     pub from: usize,
     pub to: usize,
     pub separator: String,
-}
-
-/// A source-backed form field, independent of the enclosing text/table structure.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FieldKind { Text, Signature, Checkbox, Choice }
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FieldState { Checked, Unchecked }
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct FieldAnnotation {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub kind: FieldKind,
-    pub ranges: Vec<ScalarRange>,
-    pub label_ranges: Vec<ScalarRange>,
-    pub value_ranges: Vec<ScalarRange>,
-    pub placeholder_ranges: Vec<ScalarRange>,
-    pub state: Option<FieldState>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ownership: Option<StructureOwnership>,
-}
-
-/// Original PDF navigation metadata; its destination does not assert a visible heading.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct NativeNavigationWitness {
-    pub id: String,
-    pub title: String,
-    pub parent_id: Option<String>,
-    pub page_index: usize,
-}
-
-/// Recorded navigation targets. An empty target remains unresolved.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct NavigationEntry {
-    pub id: String,
-    pub kind: String,
-    pub source_ranges: Vec<ScalarRange>,
-    #[serde(default)]
-    pub title_ranges: Vec<ScalarRange>,
-    pub source_line_ids: Vec<String>,
-    pub target_ranges: Vec<ScalarRange>,
-    pub target_line_ids: Vec<String>,
-    pub parent_id: Option<String>,
-    pub witness_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -487,16 +383,6 @@ pub struct DocumentStructure {
     pub nodes: Vec<StructureNode>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_fragments: Vec<SourceFragment>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub scope_annotations: Vec<StructureScopeAnnotation>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub structure_tags: Vec<PdfStructureTagWitness>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub native_navigation: Vec<NativeNavigationWitness>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub navigation: Vec<NavigationEntry>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<FieldAnnotation>,
     /// None means no explicit source links were supplied, not an empty authored decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuations: Option<Vec<SourceContinuation>>,
@@ -642,11 +528,6 @@ impl DocumentStructure {
             origins,
             nodes,
             source_fragments: Vec::new(),
-            scope_annotations: Vec::new(),
-            structure_tags: Vec::new(),
-            native_navigation: Vec::new(),
-            navigation: Vec::new(),
-            fields: Vec::new(),
             continuations: None,
             joins: Vec::new(),
             manuscript_edits: BTreeMap::new(),

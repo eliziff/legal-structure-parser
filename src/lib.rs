@@ -11,21 +11,13 @@ mod analysis;
 mod citator;
 #[cfg(feature = "citator")]
 mod canlii;
-mod annotations;
-pub use annotations::*;
-mod composition_seed;
-mod composition_annotation_seed;
-pub use composition_seed::*;
+mod assembly;
 mod composition;
 pub use composition::*;
 mod composition_annotations;
 pub use composition_annotations::*;
-mod composition_native;
-pub use composition_native::*;
-mod composition_projection;
-pub use composition_projection::*;
-mod corrections;
-pub use corrections::*;
+mod composition_seed;
+pub use composition_seed::*;
 mod definitions;
 use legal_structure_model::document;
 mod docx_lint;
@@ -64,7 +56,7 @@ pub use definitions::*;
 pub(crate) use document::node_depths;
 pub use document::{
     CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,
-    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, FieldAnnotation, FieldKind, FieldState, MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, PrimaryRole, NativeNavigationWitness, PdfStructureTagWitness, NavigationEntry, SourceFragment, StructureOwnership, StructureScopeAnnotation, StructureScopeKind, StructureDiagnostic, StructureNode,
+    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, PrimaryRole, SourceFragment, StructureDiagnostic, StructureNode,
 };
 pub use docx_lint::*;
 pub use docx_numbering::*;

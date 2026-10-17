@@ -453,7 +453,7 @@ pub fn resolve_structure_graph(
         evidence,
         note_pairs,
         diagnostics,
-        &mut |nodes, _| nest_by_numbering(nodes, &coordinates),
+        &mut |nodes| nest_by_numbering(nodes, &coordinates),
     )
 }
 
@@ -468,7 +468,7 @@ pub fn resolve_structure_graph_with_assembler(
     evidence: &[CandidateEvidenceV2],
     note_pairs: &[NotePairClaimV2],
     mut diagnostics: Vec<StructureDiagnostic>,
-    assembler: &mut dyn FnMut(&mut Vec<StructureNode>, &mut Vec<crate::StructureScopeAnnotation>),
+    assembler: &mut dyn FnMut(&mut Vec<StructureNode>),
 ) -> Result<DocumentStructure, EngineError> {
     let scalar_text = ScalarText::new(text);
     let scalar_len = scalar_text.len();
@@ -630,7 +630,7 @@ pub fn resolve_structure_graph_with_assembler(
                 let references = pair.references.iter().filter(|reference| seen.insert(reference.range))
                     .map(|reference| NoteReference { range: reference.range, anchor: None,
                         page_indexes: vec![reference.page_index], line_ids: vec![reference.line_id.clone()] }).collect::<Vec<_>>();
-                notes.push(Note { id: pair.pair_id.clone(), node_id: None, ownership: None, kind: pair.kind,
+                notes.push(Note { id: pair.pair_id.clone(), node_id: None, kind: pair.kind,
                     label_range: pair.label.range, body_range: pair.body.range, label_ranges: vec![pair.label.range],
                     body_ranges: if pair.body.ranges.is_empty() { vec![pair.body.range] } else { pair.body.ranges.clone() },
                     primary_reference: references.first().map(|reference| reference.range), references });
@@ -751,7 +751,6 @@ pub fn resolve_structure_graph_with_assembler(
         notes.push(Note {
             id: pair.pair_id.clone(),
             node_id: Some(nodes[note_node_index].id.clone()),
-            ownership: None,
             kind: pair.kind,
             label_range: pair.label.range,
             body_range: pair.body.range,
@@ -1289,10 +1288,9 @@ pub fn resolve_structure_graph_with_assembler(
         nodes[index].parent_id = candidate_parent.or(enclosing);
     }
 
-    let mut scope_annotations = Vec::new();
     let anchors = nodes.iter().map(|node| (node.id.clone(), node.range.start)).collect::<HashMap<_, _>>();
     let candidate_ids = candidate_node_ids.iter().map(|(candidate, index)| (*candidate, nodes[*index].id.clone())).collect::<HashMap<_, _>>();
-    assembler(&mut nodes, &mut scope_annotations);
+    assembler(&mut nodes);
     let retained = nodes.iter().map(|node| node.id.as_str()).collect::<HashSet<_>>();
     let remapped = anchors.iter().filter(|(id, _)| !retained.contains(id.as_str())).filter_map(|(id, start)| {
         nodes.iter().filter(|node| node.role.is_some()).find(|node| {
@@ -1338,7 +1336,7 @@ pub fn resolve_structure_graph_with_assembler(
         .map(|id| Origin { id: id.to_owned() })
         .collect::<Vec<_>>();
     origins.sort_by(|left, right| left.id.cmp(&right.id));
-    let mut structure = DocumentStructure::from_scalar_parts(
+    Ok(DocumentStructure::from_scalar_parts(
         document_id,
         provider,
         text.to_owned(),
@@ -1349,21 +1347,7 @@ pub fn resolve_structure_graph_with_assembler(
         nodes,
         notes,
         diagnostics,
-    );
-    for scope in &mut scope_annotations {
-        for range in scope
-            .ranges
-            .iter_mut()
-            .chain(scope.owned_ranges.iter_mut())
-            .chain(scope.title_ranges.iter_mut())
-            .chain(scope.attribution_ranges.iter_mut())
-        {
-            range.start = scalar_text.utf16(range.start);
-            range.end = scalar_text.utf16(range.end);
-        }
-    }
-    structure.scope_annotations = scope_annotations;
-    Ok(structure)
+    ))
 }
 
 /// How a marker counts: its brackets, and whether it counts in digits, dotted digits, letters or

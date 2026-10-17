@@ -2771,7 +2771,6 @@ fn supplement_courtlistener_printed_notes(
         structure.notes.push(Note {
             id: format!("note-{}", node.id),
             node_id: Some(node.id.clone()),
-            ownership: node.ownership.clone(),
             kind: NoteKindV2::Footnote,
             label_range: marker,
             body_range: node.range,
@@ -5759,7 +5758,6 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
                 Note {
                     id: format!("note-{}", node.id),
                     node_id: Some(node.id.clone()),
-            ownership: node.ownership.clone(),
                     kind: NoteKindV2::Footnote,
                     // Attribute-only labels have no rendered span; a source
                     // label or sibling number retains its separate range.

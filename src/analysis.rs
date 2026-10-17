@@ -58,7 +58,7 @@ impl StructureAnalysis for EngineAnalysis {
         evidence: &[CandidateEvidenceV2],
         note_pairs: &[NotePairClaimV2],
         diagnostics: Vec<StructureDiagnostic>,
-        assembler: &mut dyn FnMut(&mut Vec<StructureNode>, &mut Vec<crate::StructureScopeAnnotation>),
+        assembler: &mut dyn FnMut(&mut Vec<StructureNode>),
     ) -> Result<DocumentStructure, EngineError> {
         let structure = crate::candidates::resolve_structure_graph_with_assembler(
             document_id,
@@ -72,9 +72,7 @@ impl StructureAnalysis for EngineAnalysis {
             diagnostics,
             assembler,
         )?;
-        crate::assemble_structure_annotations(structure)
-            .map(|assembled| assembled.structure)
-            .map_err(EngineError::invalid)
+        crate::assembly::assemble_structure(structure).map_err(EngineError::invalid)
     }
 
     fn numbering_marker(

@@ -235,8 +235,8 @@ pub fn document_outline(
     pdf: bool,
     printed: Option<&PrintedStatute>,
 ) -> Vec<OutlineEntry> {
-    // Exact PDF source identity and established role/ownership/level facts select
-    // literal projection. Other sources retain their existing markup view rules.
+    // Exact PDF source identity and established role and level facts select literal
+    // projection. Other sources retain their existing markup view rules.
     let literal = pdf
         && !structure.source_fragments.is_empty()
         && structure.nodes.iter().any(|node| node.role.is_some())
@@ -244,7 +244,7 @@ pub fn document_outline(
             .nodes
             .iter()
             .filter(|node| node.role.is_some())
-            .all(|node| node.ownership.is_some() && node.level.is_some());
+            .all(|node| node.level.is_some());
     let mut entries = outline_entries(structure, !pdf, literal);
     let explicit_headings = structure
         .nodes

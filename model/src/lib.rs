@@ -22,7 +22,7 @@ pub use analysis::{CitationSpan, NumberingMarker, StructureAnalysis};
 pub use definitions::{DefinedTerm, DefinitionOccurrence, DefinitionsResult};
 pub use document::{
     CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,
-    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, FieldAnnotation, FieldKind, FieldState, MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, PrimaryRole, NativeNavigationWitness, PdfStructureTagWitness, NavigationEntry, SourceFragment, StructureOwnership, StructureScopeAnnotation, StructureScopeKind, StructureDiagnostic, StructureNode,
+    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, PrimaryRole, SourceFragment, StructureDiagnostic, StructureNode,
 };
 pub use docx::{
     DocxAttachmentReference, DocxAttachmentReferenceStatus, DocxCrossReference,

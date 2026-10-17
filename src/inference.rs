@@ -2058,7 +2058,7 @@ fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>) -> CaseSo
         let mut block = Block::labelled(NodeKind::Footnote, format!("fn{number}"), body_start, body_end);
         block.marker_range = Some(label_range);
         block.note = Some(Note {
-            id: String::new(), node_id: None, ownership: None, kind: NoteKindV2::Footnote,
+            id: String::new(), node_id: None, kind: NoteKindV2::Footnote,
             label_range, body_range, label_ranges: vec![label_range], body_ranges: vec![body_range],
             references: vec![NoteReference { range: reference, anchor: None, page_indexes: Vec::new(), line_ids: Vec::new() }],
             primary_reference: Some(reference),
