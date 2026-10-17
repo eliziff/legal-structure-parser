@@ -1979,14 +1979,22 @@ fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>) -> CaseSo
                     form_feeds.binary_search(&page.physical.end).is_err())
                     || word_count(text.slice(left.after_line..right.line.start).unwrap_or(""), true) < 80 { continue; }
             }
-            if form_feeds.is_empty() && !scope.windows(2).enumerate().all(|(position, pair)| {
-                let left = page_by_start[&pair[0].start];
-                let right = page_by_start[&pair[1].start];
-                let words = word_count(text.slice(left.line.end..right.line.start).unwrap_or(""), true);
-                words >= 80 || position + 2 == scope.len() && words >= 12
-                    && left.range.start - left.line.start == right.range.start - right.line.start
-                    && text.slice(right.after_line..text.len()).unwrap_or("").trim().is_empty()
-            }) { continue; }
+            let mut scope = scope;
+            if form_feeds.is_empty() {
+                // Without page breaks a page holds a page's words: the counters stand as far as
+                // that holds, and a stray short final run does not unseat the pages before it.
+                let length = scope.len();
+                let held = scope.windows(2).enumerate().take_while(|(position, pair)| {
+                    let left = page_by_start[&pair[0].start];
+                    let right = page_by_start[&pair[1].start];
+                    let words = word_count(text.slice(left.line.end..right.line.start).unwrap_or(""), true);
+                    words >= 80 || position + 2 == length && words >= 12
+                        && left.range.start - left.line.start == right.range.start - right.line.start
+                        && text.slice(right.after_line..text.len()).unwrap_or("").trim().is_empty()
+                }).count() + 1;
+                if held < length && held < 3 { continue; }
+                scope.truncate(held);
+            }
             for (position, marker) in scope.iter().enumerate() {
                 let page = page_by_start[&marker.start];
                 result.exclusions.push(page.line);

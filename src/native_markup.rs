@@ -5786,6 +5786,38 @@ fn courtlistener_bracketnum_divisions(structure: &mut DocumentStructure) {
     }
 }
 
+/// An opinion's divisions printed as paragraphs of their own, "I", "II", "A.": headings, where
+/// the opinion opens its divisions with "I".
+fn courtlistener_division_headings(structure: &mut DocumentStructure) {
+    static DIVISION: OnceLock<Regex> = OnceLock::new();
+    let division = DIVISION.get_or_init(|| Regex::new(r"^(?:[IVX]{1,5}|[A-H])\.?$").unwrap());
+    let coordinates = ScalarText::new(structure.query_text());
+    // A heading the engine already reads there stays the one heading.
+    let existing = structure.nodes.iter().filter(|node| node.kind == NodeKind::Heading)
+        .map(|node| structure.query_range(node)).collect::<Vec<_>>();
+    let headings = structure.nodes.iter().enumerate().filter_map(|(index, node)| {
+        if node.source != Derivation::Native || !matches!(node.kind, NodeKind::Prose | NodeKind::Paragraph)
+            || node.marker_range.is_some() || node.markup_tag.as_deref() != Some("p")
+        {
+            return None;
+        }
+        let range = structure.query_range(node);
+        let printed = trim_js(coordinates.slice_utf16(range.start..range.end)?);
+        let read = existing.iter().any(|heading| heading.start < range.end && range.start < heading.end);
+        division.is_match(printed).then(|| (index, printed.trim_end_matches('.') == "I", read))
+    }).collect::<Vec<_>>();
+    if headings.len() < 2 || !headings.iter().any(|(_, first, _)| *first) {
+        return;
+    }
+    for (index, _, _) in headings.into_iter().filter(|(_, _, read)| !read) {
+        let range = structure.query_range(&structure.nodes[index]);
+        let node = &mut structure.nodes[index];
+        node.kind = NodeKind::Heading;
+        node.role = Some(crate::PrimaryRole::Heading);
+        node.heading_range = Some(range);
+    }
+}
+
 /// The front-matter roles a CourtListener source marks: CAP's own elements, and the classes of
 /// Westlaw, OSCN, Lexis and public.resource.org renditions, on the block or an ancestor.
 fn courtlistener_source_roles(structure: &mut DocumentStructure) {
@@ -5808,7 +5840,7 @@ fn courtlistener_source_roles(structure: &mut DocumentStructure) {
             "co_date" | "date" => Some(Role::Date),
             "co_docketBlock" | "docket" | "slip-docket" => Some(Role::DocketNumber),
             "court" => Some(Role::Court),
-            "de-summary" | "courtsummary" | "summaries" | "syllabus" => Some(Role::Headnote),
+            "de-summary" | "courtsummary" | "syllabus" => Some(Role::Headnote),
             _ => None,
         }))
     }
@@ -6063,6 +6095,7 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         courtlistener_opening_pages(&mut structure);
         courtlistener_resource_paragraph_markers(&mut structure);
         courtlistener_bracketnum_divisions(&mut structure);
+        courtlistener_division_headings(&mut structure);
         courtlistener_source_roles(&mut structure);
     }
     Ok(structure)
