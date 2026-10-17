@@ -187,3 +187,37 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
             text: own, start: utf16[entry.start.min(chars.len())], end: utf16[entry.end.min(chars.len())] }
     }).collect())
 }
+
+/// Where each provision `labels` cite is in a statute's text, by its outline: a section or
+/// article ("16"), a part of one ("16(3)(a)", each part a level under the last), or a range
+/// ("49-51", "33 to 35") from its first provision through its last; each span (UTF-16) with
+/// everything under it, in the order the text has them. A label the outline does not hold has none.
+pub fn statute_provision_spans(text: &str, labels: &[String]) -> Result<Vec<[usize; 2]>, EngineError> {
+    static PARTS: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"^[^(]+|\([^)]*\)").unwrap());
+    static RANGE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\s*(?:-|\u{2013}|to)\s*").unwrap());
+    let outline = statute_outline(text, false)?;
+    let entry = |label: &str| {
+        let compact = label.chars().filter(|character| !character.is_whitespace()).collect::<String>();
+        let mut parts = PARTS.find_iter(&compact).map(|part| part.as_str());
+        let top = parts.next()?;
+        let mut at = outline.iter().find(|item| matches!(item.kind, "section" | "article")
+            && item.label.strip_suffix('.').unwrap_or(&item.label) == top.strip_suffix('.').unwrap_or(top))?;
+        for part in parts {
+            at = outline.iter().find(|item| item.start >= at.start && item.end <= at.end && item.level > at.level
+                && item.label == part)?;
+        }
+        Some(at)
+    };
+    let mut spans = labels.iter().filter_map(|label| {
+        if let Some(whole) = entry(label) {
+            return Some([whole.start, whole.end]);
+        }
+        let mut ends = RANGE.split(label);
+        let (first, last) = (entry(ends.next().unwrap_or("")), ends.next().and_then(|to| (!to.is_empty()).then(|| entry(to)).flatten()));
+        Some([first?.start, last?.end])
+    }).collect::<Vec<_>>();
+    spans.sort_by_key(|span| span[0]);
+    Ok(spans)
+}

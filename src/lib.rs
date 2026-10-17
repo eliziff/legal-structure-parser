@@ -19,6 +19,8 @@ pub use composition_annotations::*;
 mod composition_seed;
 pub use composition_seed::*;
 mod definitions;
+mod filing;
+pub use filing::{filing_cover, front_matter_line, FiledBy, FilingCover, FrontMatterLine, PartyGroup};
 use legal_structure_model::document;
 mod docx_lint;
 mod docx_numbering;
@@ -339,11 +341,11 @@ mod printed_statute;
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
 pub use outline::{document_outline, OutlineEntry};
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
-pub use printed_statute::{PrintedLine, PrintedStatute, ProvisionPlacement};
+pub use printed_statute::{statute_currency, PrintedLine, PrintedStatute, ProvisionPlacement};
 #[cfg(feature = "provider-text")]
 mod statute_outline;
 #[cfg(feature = "provider-text")]
-pub use statute_outline::{statute_outline, StatuteOutlineEntry};
+pub use statute_outline::{statute_outline, statute_provision_spans, StatuteOutlineEntry};
 #[cfg(feature = "provider-text")]
 mod case_outline;
 #[cfg(feature = "provider-text")]
