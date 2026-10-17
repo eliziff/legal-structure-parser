@@ -2309,6 +2309,22 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         directive
     }
 
+    /// A start term's words before its first hyphen (from_start), or an end term's after its last: a term that ends
+    /// or begins at the word boundary a hyphen makes, with no hyphen in it.
+    fn hyphen_free_part(&self, term: &LexicalTerm, from_start: bool) -> Option<LexicalTerm> {
+        let words = self.replay.document.tokens();
+        let hyphen_after = |index: usize| has_hyphen(self.replay.document.slice(words[index].end, words[index + 1].start));
+        let (start, end, first_word, last_word) = if from_start {
+            let cut = (term.first_word..term.last_word).find(|&index| hyphen_after(index))?;
+            (term.start, words[cut].end, term.first_word, cut)
+        } else {
+            let cut = (term.first_word..term.last_word).rev().find(|&index| hyphen_after(index))?;
+            (words[cut + 1].start, term.end, cut + 1, term.last_word)
+        };
+        let text = self.replay.fragment_spelling(self.replay.document.slice(start, end));
+        (!has_hyphen(&text)).then_some(LexicalTerm { text, start, end, first_word, last_word, form: LexicalForm::Run })
+    }
+
     fn range_directive_for(
         &mut self,
         piece: MaximalCorePiece,
@@ -2319,6 +2335,22 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         require_multiword_endpoints: bool,
         allow_ordered_start: bool,
     ) -> Option<String> {
+        self.range_directives_for(piece, head_piece, tail_piece, desired, required, require_multiword_endpoints,
+            allow_ordered_start).map(|(whole, preferred)| preferred.unwrap_or(whole))
+    }
+
+    /// The shortest range directive with its endpoints read whole, and the one preferred to it where that one has a
+    /// hyphen in a term and a directive with none selects the piece.
+    fn range_directives_for(
+        &mut self,
+        piece: MaximalCorePiece,
+        head_piece: MaximalCorePiece,
+        tail_piece: MaximalCorePiece,
+        desired: PhraseSpan,
+        required: &HashSet<usize>,
+        require_multiword_endpoints: bool,
+        allow_ordered_start: bool,
+    ) -> Option<(String, Option<String>)> {
         if piece.first_word >= piece.last_word {
             return None;
         }
@@ -2342,6 +2374,23 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                 continue;
             }
             tails.push(term);
+        }
+        // The endpoints read whole come first; then each hyphenated one cut at the word boundary its first hyphen
+        // (a start) or last hyphen (an end) makes.
+        let (whole_heads, whole_tails) = (heads.len(), tails.len());
+        for (from_start, whole) in [(true, whole_heads), (false, whole_tails)] {
+            for index in 0..whole {
+                let term = if from_start { &heads[index] } else { &tails[index] };
+                let Some(cut) = self.hyphen_free_part(term, from_start)
+                    .filter(|cut| !require_multiword_endpoints || cut.first_word < cut.last_word)
+                else {
+                    continue;
+                };
+                let terms = if from_start { &mut heads } else { &mut tails };
+                if !terms.iter().any(|term| term.first_word == cut.first_word && term.last_word == cut.last_word) {
+                    terms.push(cut);
+                }
+            }
         }
         if heads.is_empty() || tails.is_empty() {
             return None;
@@ -2432,6 +2481,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             .iter()
             .map(|tail| encoded_fragment(&tail.text).len())
             .collect::<Vec<_>>();
+        // The shortest directive the pairings select, with the endpoints read whole, or (hyphen_free) only of terms with
+        // no hyphen, the cut endpoints included.
+        let search = |hyphen_free: bool| -> Option<String> {
         for contexts in [
             &[(None, None)][..],
             one_sided.as_slice(),
@@ -2462,7 +2514,10 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             let mut unique_tails = HashMap::<(usize, String), bool>::new();
             for (head_index, head) in heads.iter().enumerate() {
                 for (tail_index, tail) in tails.iter().enumerate() {
-                    if head.last_word >= tail.first_word {
+                    if head.last_word >= tail.first_word
+                        || (hyphen_free && (has_hyphen(&head.text) || has_hyphen(&tail.text)))
+                        || (!hyphen_free && (head_index >= whole_heads || tail_index >= whole_tails))
+                    {
                         continue;
                     }
                     let ordered_start = allow_ordered_start
@@ -2482,6 +2537,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     {
                         let prefix = prefix.as_ref().map_or("", |term| term.text.as_str());
                         let suffix = suffix.as_ref().map_or("", |term| term.text.as_str());
+                        if hyphen_free && (has_hyphen(prefix) || has_hyphen(suffix)) {
+                            continue;
+                        }
                         let length = "text=,".len()
                             + context_length
                             + head_lengths[head_index]
@@ -2529,6 +2587,15 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             }
         }
         None
+        };
+        // A publisher may print a hyphen as another hyphen character (CanLII's legislation prints U+2011 where provider
+        // text has "-") and a browser matches neither for the other: where the directive found has a hyphen, one with no
+        // hyphen in any term is preferred.
+        let found = search(false)?;
+        // A directive spells its terms' hyphens encoded ("-" alone marks a context).
+        let hyphenated = ["%2D", "%E2%80%90", "%E2%80%91"].iter().any(|hyphen| found.contains(hyphen));
+        let preferred = if hyphenated { search(true) } else { None };
+        Some((found, preferred))
     }
 
     fn full_document_edge_range(
@@ -2796,6 +2863,11 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     .any(javascript_whitespace)
         })
     }
+}
+
+/// Hyphen characters a publisher may print in place of one another.
+fn has_hyphen(text: &str) -> bool {
+    text.contains(['-', '\u{2010}', '\u{2011}'])
 }
 
 fn better_cover(left: Option<Vec<Candidate>>, right: Vec<Candidate>) -> Vec<Candidate> {
@@ -3192,9 +3264,10 @@ fn build_selected_fragment_plan(
                     }
                 }
                 let conservative = range_pieces.and_then(|(head, tail)| {
-                    planner.range_directive_for(whole, head, tail, desired, &required, false, false)
+                    planner.range_directives_for(whole, head, tail, desired, &required, false, false)
                 });
-                let exact_precedence = conservative.as_ref().is_some_and(|directive| {
+                // Whether an exact directive takes precedence is read from the directive with its endpoints whole.
+                let exact_precedence = conservative.as_ref().is_some_and(|(directive, _)| {
                     let needs_external_prefix = directive
                         .strip_prefix("text=")
                         .and_then(|value| value.split(',').next())
@@ -3210,6 +3283,7 @@ fn build_selected_fragment_plan(
                         continue;
                     }
                 }
+                let conservative = conservative.map(|(whole, preferred)| preferred.unwrap_or(whole));
                 let ordered = range_pieces.and_then(|(head, tail)| {
                     planner.range_directive_for(whole, head, tail, desired, &required, false, true)
                 });
