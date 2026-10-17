@@ -1674,6 +1674,8 @@ struct CaseSourceLayout {
     exclusions: Vec<ScalarRange>,
     note_ranges: Vec<ScalarRange>,
     running_heads: HashSet<usize>,
+    /// Margin line numerals: never paragraph or note markers, and not part of the lines they number.
+    gutter: Vec<ScalarRange>,
 }
 
 struct SourcePageMarker {
@@ -1824,23 +1826,53 @@ fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>) -> CaseSo
     let line_by_start = source_lines.iter().enumerate().map(|(index, line)|
         (line.scalar_start, index)).collect::<HashMap<_, _>>();
     let mut margin_numbers = HashSet::new();
+    let mut ruled = Vec::new();
+    let alone =|marker: &Marker| source_lines[line_by_start[&marker.start]].text.trim().bytes().all(|byte| byte.is_ascii_digit());
     for scope in monotone_scopes(numeric.iter().filter(|marker| marker.style == MarkerStyle::Bare), 1) {
         for window in scope.windows(3) {
             let positions = [line_by_start[&window[0].start], line_by_start[&window[1].start], line_by_start[&window[2].start]];
             if positions.windows(2).all(|pair| pair[1] == pair[0] + 1)
                 && positions.windows(2).all(|pair|
                     leading_ascii_space(source_lines[pair[0]].text) == leading_ascii_space(source_lines[pair[1]].text))
-                && positions.iter().any(|position|
-                    source_lines[*position].text.trim().bytes().all(|byte| byte.is_ascii_digit())) {
+                && window.iter().any(alone) {
                 // Consecutive +1 numerals at one source column number PDF lines,
                 // including blank lines; a remote attached numeral is not a note reference to them.
                 margin_numbers.extend(window.iter().map(|marker| marker.start));
             }
         }
+        // Pleading paper numbers its ruled lines, so text extracted around them can put a
+        // line between two numerals.
+        let mut run = 0;
+        for index in 1..=scope.len() {
+            let continues = scope.get(index).is_some_and(|marker| {
+                let [left, right] = [line_by_start[&scope[index - 1].start], line_by_start[&marker.start]];
+                right > left && right - left <= 2
+                    && leading_ascii_space(source_lines[left].text) == leading_ascii_space(source_lines[right].text)
+            });
+            if continues { continue; }
+            if index - run >= 4 && scope[run..index].iter().any(alone) {
+                ruled.push((scope[run..index].to_vec(), leading_ascii_space(source_lines[line_by_start[&scope[run].start]].text)));
+            }
+            run = index;
+        }
     }
-    for start in &margin_numbers {
-        let line = source_lines[line_by_start[start]];
-        result.exclusions.push(ScalarRange { start: *start, end: text.scalar(line.byte_end) });
+    // A page's gutter counts from its first line: a long run from 1, many standing alone, is one,
+    // and so is a run of five at that gutter's column. A run of note labels starts where its notes do.
+    let gutters = ruled.iter().filter(|(run, _)| run[0].number <= 2 && run.len() >= 8
+        && run.iter().filter(|marker| alone(marker)).count() >= 3)
+        .map(|(_, column)| *column).collect::<HashSet<_>>();
+    for (run, column) in &ruled {
+        if gutters.contains(column) && run.len() >= 5 {
+            margin_numbers.extend(run.iter().map(|marker| marker.start));
+        }
+    }
+    // A gutter numeral is not the text's: the line it numbers keeps its words.
+    for marker in numeric.iter().filter(|marker| margin_numbers.contains(&marker.start)) {
+        let line = source_lines[line_by_start[&marker.start]];
+        let value = text.slice(marker.start..text.scalar(line.byte_end)).unwrap_or("");
+        let lead = leading_ascii_space(value);
+        let digits = value[lead..].bytes().take_while(u8::is_ascii_digit).count();
+        result.gutter.push(ScalarRange { start: marker.start, end: marker.start + lead + digits });
     }
     let decimal_headings = case_decimal_subheadings(evidence, text, &source_lines, &numeric);
     for scope in monotone_scopes(numeric.iter().filter(|marker| marker.style == MarkerStyle::Dot), 1) {
@@ -2069,14 +2101,16 @@ fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>) -> CaseSo
             || pages.iter().any(|page| page.line.start == body_end)) {
             block.diagnostic = Some("source-note-page-fragment");
         }
-        // A later separate block is unresolved note continuation or trailing matter.
-        // Preserve it verbatim without manufacturing paragraph/heading roles inside it.
-        result.exclusions.push(ScalarRange { start: line.scalar_start, end: fragment_limit });
-        result.note_ranges.push(ScalarRange { start: body_start, end: fragment_limit });
+        // A later separate block on the note's physical page is unresolved note continuation or
+        // trailing matter: preserve it verbatim without manufacturing paragraph/heading roles inside it.
+        // Text with no page breaks bounds nothing after the note's body, so the text after it stays readable.
+        let limit = if form_feeds.is_empty() { body_end } else { fragment_limit };
+        result.exclusions.push(ScalarRange { start: line.scalar_start, end: limit });
+        result.note_ranges.push(ScalarRange { start: body_start, end: limit });
         result.blocks.push(block);
     }
     for block in decimal_headings {
-        if !result.exclusions.iter().any(|range|
+        if !result.exclusions.iter().chain(&result.gutter).any(|range|
             range.start < block.range.end && block.range.start < range.end) {
             result.exclusions.push(block.range);
             result.blocks.push(block);
@@ -2330,14 +2364,25 @@ fn detect_case_prose(
         let end = text.byte(range.end);
         let mut index = cached_lines.partition_point(|line| line[0] <= start).saturating_sub(1);
         while let Some(line) = cached_lines.get(index).filter(|line| line[0] < end) {
-            let byte_start = line[0].max(start);
+            let mut byte_start = line[0].max(start);
             let byte_end = line[1].min(end);
+            // A margin numeral opening the line is the page's gutter: read the line after it,
+            // indented to the column its text stands at.
+            let mut gutter = 0;
+            let first = text.scalar(byte_start + leading_ascii_space(&text.value[byte_start..byte_end]));
+            let at = layout.gutter.partition_point(|range| range.end <= first);
+            if let Some(range) = layout.gutter.get(at).filter(|range| range.start <= first) {
+                gutter = text.byte(range.end).min(byte_end) - byte_start;
+                byte_start += gutter;
+            }
             if byte_start < byte_end {
                 let fragment = case_source_line(text, Line {
                     byte_start, byte_end, scalar_start: text.scalar(byte_start),
                     text: &text.value[byte_start..byte_end],
                 });
-                if !fragment.text.trim().is_empty() { source.push((index, fragment)); }
+                if !fragment.text.trim().is_empty() {
+                    source.push((index, fragment, gutter + leading_ascii_space(fragment.text)));
+                }
             }
             index += 1;
         }
@@ -2371,14 +2416,14 @@ fn detect_case_prose(
     let ordinary_line = |line: Line<'_>| !blocked(line_range(line))
         && !layout.running_heads.contains(&line.scalar_start)
         && word_count(line.text, true) >= 8 && lowercase_words(line.text) >= 2;
-    let mut indents = source.iter().filter(|(_, line)| ordinary_line(*line))
-        .map(|(_, line)| leading_ascii_space(line.text)).collect::<Vec<_>>();
+    let mut indents = source.iter().filter(|(_, line, _)| ordinary_line(*line))
+        .map(|(_, _, indent)| *indent).collect::<Vec<_>>();
     let body_indent = median(&mut indents) as usize;
     // A double-spaced PDF has blanks between soft wraps too. Learn that spacing
     // only from adjacent ordinary lines whose first line has not ended a sentence.
     let mut wrap_gaps = source.windows(2).filter_map(|pair| {
-        let (index, line) = pair[0];
-        let (next_index, next) = pair[1];
+        let (index, line, _) = pair[0];
+        let (next_index, next, _) = pair[1];
         (ordinary_line(line) && ordinary_line(next) && !sentence_end(line.text)
             && line_range(line).end - line_range(line).start <= 120
             && next_index > index && next_index - index <= 3
@@ -2389,8 +2434,10 @@ fn detect_case_prose(
     let mut result = Vec::new();
     let mut emit = |range: ScalarRange| {
         let value = text.slice(range.start..range.end).unwrap_or("");
-        if word_count(value, true) >= 12 && lowercase_words(value) >= 4
-            && value.split_whitespace().any(sentence_end)
+        let (words, lowercase) = (word_count(value, true), lowercase_words(value));
+        // Prose a page break or a note cuts before its sentence ends is still prose.
+        if words >= 12 && lowercase >= 4
+            && (value.split_whitespace().any(sentence_end) || words >= 20 && lowercase >= 8)
             && evidence.clip_inference(EvidenceKind::Prose, range) == Some(range)
         {
             result.push(Block {
@@ -2404,7 +2451,7 @@ fn detect_case_prose(
     let mut current = None::<ScalarRange>;
     let mut current_body = false;
     let mut previous = None::<(usize, ScalarRange)>;
-    for (position, &(index, line)) in source.iter().enumerate() {
+    for (position, &(index, line, indent)) in source.iter().enumerate() {
         let value = line.text.trim();
         let range = line_range(line);
         if blocked(range) || layout.running_heads.contains(&line.scalar_start)
@@ -2416,7 +2463,6 @@ fn detect_case_prose(
         }
         let words = value.split_whitespace().collect::<Vec<_>>();
         let enumerated = words.first().is_some_and(|word| heading_enumerator(word));
-        let indent = leading_ascii_space(line.text);
         let continued_wrap = current_body && !enumerated && indent <= body_indent
             && previous.is_some_and(|(previous_index, previous_range)| {
                 let preceding = text.slice(previous_range.start..previous_range.end).unwrap_or("");
@@ -2425,7 +2471,10 @@ fn detect_case_prose(
                     && !sentence_end(preceding) && !preceding.trim_end().ends_with(':')
                     && !crosses(previous_range.end, range.start)
             });
-        let title = !sentence_end(value) && heading_levels(value).is_some()
+        // An enumerator opening a line of running prose ("(1) In May 2018, a grand jury indicted
+        // the appellant for") opens a paragraph, not a heading.
+        let opening = enumerated && ordinary_line(line);
+        let title = !opening && !sentence_end(value) && heading_levels(value).is_some()
             && (enumerated || heading_title_case(&words) && !continued_wrap);
         let uppercase = !value.chars().any(char::is_lowercase);
         let columns = value.matches("  ").take(2).count() == 2 && lowercase_words(value) < 3;
@@ -2436,8 +2485,14 @@ fn detect_case_prose(
             continue;
         }
         let first_line_indent = indent > body_indent && source.get(position + 1)
-            .is_some_and(|(_, next)| leading_ascii_space(next.text) < indent);
-        let separated = previous.is_some_and(|(previous_index, previous_range)|
+            .is_some_and(|(_, _, next)| *next < indent);
+        // A numeral enumerator ("(2)", "2.") after a finished sentence starts its paragraph; a lone
+        // capital may be an initial ("J. D. Smith"), and a wrapped "(2)" or "43.5." continues one.
+        let numeral = words.first().map_or("", |word| word.trim_start_matches('(').trim_end_matches(['.', ')']));
+        let numbered = opening && !numeral.is_empty() && numeral.bytes().all(|byte| byte.is_ascii_digit())
+            && previous.is_none_or(|(_, previous_range)|
+                sentence_end(text.slice(previous_range.start..previous_range.end).unwrap_or("")));
+        let separated = numbered || previous.is_some_and(|(previous_index, previous_range)|
             index.saturating_sub(previous_index + 1) > wrap_gap || first_line_indent
                 || crosses(previous_range.end, range.start));
         if separated {
@@ -4996,7 +5051,7 @@ pub(super) fn inferred_blocks(evidence: &DocumentInput, text: &ScalarText<'_>) -
                 .filter(|value| value.applies_to.iter().any(|name| name == "paragraph"))
                 .map(|value| value.range)
                 .collect::<Vec<_>>();
-            exclusions.extend(layout.exclusions.iter().copied());
+            exclusions.extend(layout.exclusions.iter().chain(&layout.gutter).copied());
             exclusions.sort_unstable_by_key(|range| (range.start, range.end));
             let mut blocks = detect_case(
                 text,
@@ -5010,7 +5065,53 @@ pub(super) fn inferred_blocks(evidence: &DocumentInput, text: &ScalarText<'_>) -
             let prose = detect_case_prose(evidence, text, &layout, &blocks);
             blocks.extend(layout.blocks);
             blocks.extend(prose);
+            if evidence.provider == "courtlistener" {
+                let pages = form_feed_pages(evidence, text, &blocks);
+                blocks.extend(pages);
+            }
             blocks
         }
     }
+}
+
+/// Form feeds are the source's own page breaks, so a physical page no printed number marks is
+/// still a page. It takes the number the printed pages count it to, else its place in the text.
+fn form_feed_pages(evidence: &DocumentInput, text: &ScalarText<'_>, blocks: &[Block]) -> Vec<Block> {
+    let form_feeds = text.value.char_indices().filter(|(_, character)| *character == '\u{c}')
+        .map(|(byte, _)| text.scalar(byte)).collect::<Vec<_>>();
+    if form_feeds.is_empty() {
+        return Vec::new();
+    }
+    let pages = blocks.iter().filter(|block| block.kind == NodeKind::Page)
+        .map(|block| (block.range, block.label.as_deref(), block.marker_range))
+        .chain(evidence.native_claims.iter().filter(|claim| claim.kind == EvidenceKind::Page)
+            .map(|claim| (claim.range, claim.label.as_deref(), None)))
+        .collect::<Vec<_>>();
+    let mut offsets = HashMap::<i64, usize>::new();
+    for (_, label, marker) in &pages {
+        let (Some(label), Some(marker)) = (label, marker) else { continue; };
+        let Ok(number) = label.trim_start_matches("page").parse::<i64>() else { continue; };
+        let ordinal = form_feeds.partition_point(|boundary| *boundary < marker.start) as i64 + 1;
+        *offsets.entry(number - ordinal).or_default() += 1;
+    }
+    let offset = offsets.into_iter().max_by_key(|&(offset, count)| (count, -offset.abs()))
+        .map_or(0, |(offset, _)| offset);
+    let labels = pages.iter().filter_map(|(_, label, _)| *label).collect::<HashSet<_>>();
+    let mut result = Vec::new();
+    let mut start = 0;
+    for (index, end) in form_feeds.iter().copied().chain([text.len()]).enumerate() {
+        let range = ScalarRange { start, end };
+        start = end + 1;
+        let number = index as i64 + 1 + offset;
+        let label = number.to_string();
+        if number < 1 || labels.contains(label.as_str())
+            || text.slice(range.start..range.end).is_none_or(|value| value.trim().is_empty())
+            || pages.iter().any(|(page, _, _)| page.start < range.end && range.start < page.end) {
+            continue;
+        }
+        let mut block = Block::labelled(NodeKind::Page, label.clone(), range.start, range.end);
+        block.aliases.push(label);
+        result.push(block);
+    }
+    result
 }

@@ -2783,6 +2783,33 @@ fn supplement_courtlistener_printed_notes(
     }
 }
 
+/// A printed note's label is not a paragraph number: a recovered numbered paragraph that a
+/// note's own marker opens is that note, not the opinion's prose.
+fn drop_note_numbered_paragraphs(structure: &mut DocumentStructure) {
+    let labels = structure.notes.iter()
+        .flat_map(|note| note.label_ranges.iter().copied().chain([note.label_range]))
+        .filter(|range| range.start < range.end)
+        .collect::<Vec<_>>();
+    let dropped = structure.nodes.iter()
+        .filter(|node| node.kind == NodeKind::Paragraph && node.source == Derivation::Heuristic
+            && node.marker_range.is_some_and(|marker|
+                labels.iter().any(|label| label.start < marker.end && marker.start < label.end)))
+        .map(|node| (node.id.clone(), node.parent_id.clone()))
+        .collect::<HashMap<_, _>>();
+    if dropped.is_empty() {
+        return;
+    }
+    structure.nodes.retain(|node| !dropped.contains_key(&node.id));
+    for node in &mut structure.nodes {
+        while let Some(parent) = node.parent_id.as_ref().and_then(|id| dropped.get(id)).cloned() {
+            node.parent_id = parent;
+        }
+    }
+    for diagnostic in &mut structure.diagnostics {
+        diagnostic.node_ids.retain(|id| !dropped.contains_key(id));
+    }
+}
+
 fn courtlistener_uncontained_note_blocks(
     markup: &str,
     elements: &[MarkupElement],
@@ -5782,6 +5809,7 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
             &body_exclusions,
         );
         supplement_courtlistener_printed_notes(&mut structure, printed_notes);
+        drop_note_numbered_paragraphs(&mut structure);
         courtlistener_source_parents(&mut structure);
     }
     Ok(structure)
