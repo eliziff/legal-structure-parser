@@ -459,7 +459,12 @@ fn copied_run<'a>(unmarked: &str, sources: &'a [VisibleEvidenceText]) -> Option<
         .split('\0')
         .filter(|chunk| !chunk.is_empty())
         .map(|chunk| (chunk, tokenize_source_text(chunk)))
+        .filter(|(_, prose)| prose.len() >= MIN_COPY_TOKENS)
         .collect::<Vec<_>>();
+    // Prose too short to hold a copied run reads no source.
+    if prose.is_empty() {
+        return None;
+    }
     for source in sources {
         let source_tokens = tokenize_source_text(&source.text);
         if source_tokens.len() < MIN_COPY_TOKENS {
@@ -473,9 +478,6 @@ fn copied_run<'a>(unmarked: &str, sources: &'a [VisibleEvidenceText]) -> Option<
                 .push(index);
         }
         for (chunk, prose) in &prose {
-            if prose.len() < MIN_COPY_TOKENS {
-                continue;
-            }
             for index in 0..=prose.len() - MIN_COPY_TOKENS {
                 for &source_index in windows
                     .get(prose[index].word.as_str())

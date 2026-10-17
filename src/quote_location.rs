@@ -83,6 +83,8 @@ struct Reader {
     whole_positions: Option<std::rc::Rc<Vec<usize>>>,
     /// The document's text in UTF-16, as written and lower-cased.
     whole_units: Option<std::rc::Rc<(Vec<u16>, Vec<u16>)>>,
+    /// A long document's runs of letters and digits, where its anchor phrases are looked for.
+    whole_runs: std::cell::OnceCell<Option<std::rc::Rc<TextRuns>>>,
 }
 
 /// A long source's lower-cased words and the set of them.
@@ -112,20 +114,15 @@ fn internal_omission(tokens: &[String]) -> bool {
 
 /// Words, bracketed insertions, ellipses, quotation marks and punctuation; adjoining words merge.
 fn quote_tokens(text: &str) -> Vec<Token> {
-    let raw = TOKEN.find_iter(text).map(|found| Token { text: found.as_str().to_owned(), start: found.start(),
-        end: found.end() }).collect::<Vec<_>>();
+    let raw = TOKEN.find_iter(text).map(|found| (found.start(), found.end())).collect::<Vec<_>>();
+    let joins = |&(start, end): &(usize, usize)| mergeable(&text[start..end]);
     let mut merged = Vec::new();
     let mut i = 0;
     while i < raw.len() {
-        let mut token = raw[i].clone();
         let mut next = i + 1;
-        while next < raw.len() && raw[next - 1].end == raw[next].start && mergeable(&raw[next - 1].text)
-            && mergeable(&raw[next].text) {
-            token.text.push_str(&raw[next].text);
-            token.end = raw[next].end;
-            next += 1;
-        }
-        merged.push(token);
+        while next < raw.len() && raw[next - 1].1 == raw[next].0 && joins(&raw[next - 1]) && joins(&raw[next]) { next += 1; }
+        let (start, end) = (raw[i].0, raw[next - 1].1);
+        merged.push(Token { text: text[start..end].to_owned(), start, end });
         i = next;
     }
     merged
@@ -182,8 +179,14 @@ pub fn normalize_quote_for_compare(text: &str) -> String {
         c if is_dash(c) => '-',
         c => c,
     }).collect::<Vec<char>>();
-    // A hyphen joining two words, spaced or not, is a space: (?<=[\p{L}\p{N}])\s*-\s*(?=[\p{L}\p{N}]).
-    let mut joined = String::new();
+    // A hyphen joining two words, spaced or not, is a space: (?<=[\p{L}\p{N}])\s*-\s*(?=[\p{L}\p{N}]); then every run of
+    // blanks (\s+) one space.
+    let mut collapsed = String::with_capacity(text.len());
+    let mut blank = false;
+    let mut push = |c: char| {
+        if !c.is_whitespace() { collapsed.push(c); } else if !blank { collapsed.push(' '); }
+        blank = c.is_whitespace();
+    };
     let mut i = 0;
     while i < value.len() {
         if i > 0 && is_word_char(value[i - 1]) {
@@ -193,26 +196,24 @@ pub fn normalize_quote_for_compare(text: &str) -> String {
                 let mut k = j + 1;
                 while k < value.len() && js_space(value[k]) { k += 1; }
                 if k < value.len() && is_word_char(value[k]) {
-                    joined.push(' ');
+                    push(' ');
                     i = k;
                     continue;
                 }
             }
         }
-        joined.push(value[i]);
+        push(value[i]);
         i += 1;
     }
-    let collapsed = WHITESPACE.replace_all(&joined, " ").into_owned();
-    let mut value = js_trim(&collapsed).to_owned();
-    let chars = value.chars().collect::<Vec<_>>();
-    let quote = |c: char| DOUBLE_QUOTES.contains(&c.to_string().as_str()) || SINGLE_QUOTES.contains(&c.to_string().as_str());
-    if chars.len() >= 2 && quote(chars[0]) && quote(chars[chars.len() - 1])
-        && utf16_len(&chars[0].to_string()) == 1 && utf16_len(&chars[chars.len() - 1].to_string()) == 1 {
-        value = js_trim(&chars[1..chars.len() - 1].iter().collect::<String>()).to_owned();
+    let mut value = js_trim(&collapsed);
+    let quote = |c: char| matches!(c, '"' | '\u{201c}' | '\u{201d}' | '\u{ab}' | '\u{bb}' | '\u{201e}' | '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}');
+    let mut ends = value.chars();
+    if let (Some(first), Some(last)) = (ends.next(), ends.next_back()) {
+        if quote(first) && quote(last) { value = js_trim(&value[first.len_utf8()..value.len() - last.len_utf8()]); }
     }
     // A closing quotation mark before the sentence's punctuation: (?<=[A-Za-z0-9])"\s*(?=[.,;:!?…]).
     let chars = value.chars().collect::<Vec<_>>();
-    let mut out = String::new();
+    let mut out = String::with_capacity(value.len());
     let mut i = 0;
     while i < chars.len() {
         if chars[i] == '"' && i > 0 && chars[i - 1].is_ascii_alphanumeric() {
@@ -504,9 +505,9 @@ struct Windows {
     /// The quotation's tokens short of trailing punctuation, and its exact key.
     core: Vec<String>,
     key: String,
-    /// How many of the source's first n tokens could hold the key's anchor word (see exact_anchor); None where the key
-    /// has none, and every window is searched.
-    anchored: Option<Vec<usize>>,
+    /// For each of the key's anchor words (see exact_anchors), how many of the source's first n tokens could hold it;
+    /// None where the key begins with "[", and every window is searched.
+    anchored: Option<Vec<Vec<usize>>>,
     /// The quotation's words and each source token's word as a bracketed suffix aligns them, where it has such a suffix.
     aligned: Option<(Vec<String>, Vec<Option<String>>)>,
     /// How often the quotation holds each of its distinct tokens, and which of them each source token is (u32::MAX: none).
@@ -517,14 +518,20 @@ struct Windows {
 impl Windows {
     fn new(source: std::rc::Rc<Vec<String>>, quoted: &[String], key: String) -> Self {
         let core = strip_trailing(quoted);
-        let anchored = exact_anchor(&key).map(|anchor| {
-            let mut counts = Vec::with_capacity(source.len() + 1);
-            counts.push(0);
-            for token in source.iter() {
-                let holds = !token.is_ascii() || token.split(|c: char| !c.is_ascii_alphanumeric()).any(|run| run.eq_ignore_ascii_case(&anchor));
-                counts.push(counts.last().unwrap() + usize::from(holds));
-            }
-            counts
+        let anchored = exact_anchors(&key).map(|anchors| {
+            // Each token as the window's key reads it: lower-cased (ASCII is compared case aside), and the long s as a
+            // case-insensitive single word matches it.
+            let runs = source.iter().map(|token| if token.is_ascii() { std::borrow::Cow::Borrowed(token.as_str()) }
+                else { token.to_lowercase().replace('\u{17f}', "s").into() }).collect::<Vec<_>>();
+            anchors.iter().map(|anchor| {
+                let mut counts = Vec::with_capacity(source.len() + 1);
+                counts.push(0);
+                for token in &runs {
+                    let holds = token.split(|c: char| !is_word_char(c)).any(|run| anchor.fits(run));
+                    counts.push(counts.last().unwrap() + usize::from(holds));
+                }
+                counts
+            }).collect()
         });
         let aliases = alignment_aliases(&core);
         let aligned = (!aliases.is_empty()).then(|| (
@@ -540,35 +547,56 @@ impl Windows {
         Windows { source, core, key, anchored, aligned, wanted, slots }
     }
 
-    /// Whether the window's text could hold the quotation's key word for word: it holds the key's anchor word, or it
-    /// begins where a "[T]he" read as "The" could change what it holds.
+    /// Whether the window's text could hold the quotation's key word for word: it holds each of the key's anchor words,
+    /// or it begins where a "[T]he" read as "The" could change what it holds.
     fn may_hold_exactly(&self, start: usize, end: usize) -> bool {
         if self.key.is_empty() { return false; }
-        let Some(counts) = &self.anchored else { return true };
-        counts[end] > counts[start] || self.source[start..end.min(start + 3)].iter().any(|token| token.contains('['))
+        let Some(anchored) = &self.anchored else { return true };
+        anchored.iter().all(|counts| counts[end] > counts[start])
+            || self.source[start..end.min(start + 3)].iter().any(|token| token.contains('['))
     }
 }
 
-/// A word any text holding `key` word for word (exact_in_source) holds whole, as one of its tokens' runs of letters and
-/// digits: the key's longest run with a letter or digit on neither side (any run of a single word, which is matched
-/// whole), where that run is ASCII. None where there is none, or the key begins with "[", which "[T]he" read as "The"
-/// joins to the run after it.
-fn exact_anchor(key: &str) -> Option<String> {
+/// A run of letters and digits a text holding a key word for word holds: as one of its own runs where the key has no
+/// letter or digit on either side of it, else as the start or end of one, or inside one.
+struct Anchor {
+    run: String,
+    left: bool,
+    right: bool,
+}
+
+impl Anchor {
+    /// Whether a run, lower-cased but for its ASCII, holds this one.
+    fn fits(&self, run: &str) -> bool {
+        let (run, anchor) = (run.as_bytes(), self.run.as_bytes());
+        let at = |start: usize| run[start..start + anchor.len()].eq_ignore_ascii_case(anchor);
+        if run.len() < anchor.len() { return false; }
+        match (self.left, self.right) {
+            (true, true) => run.len() == anchor.len() && at(0),
+            (true, false) => at(0),
+            (false, true) => at(run.len() - anchor.len()),
+            (false, false) => (0..=run.len() - anchor.len()).any(at),
+        }
+    }
+}
+
+/// The runs of letters and digits any text holding `key` word for word (exact_in_source) holds, each within one of its
+/// tokens' runs as the key's own neighbours bound it (a single word's whole, as it is matched): the key's ASCII runs.
+/// None where the key begins with "[", which "[T]he" read as "The" joins to the run after it.
+fn exact_anchors(key: &str) -> Option<Vec<Anchor>> {
     if key.is_empty() || key.starts_with('[') { return None; }
     let single = SINGLE_WORD.is_match(js_trim(key));
     let chars = key.chars().collect::<Vec<_>>();
-    let mut best: Option<String> = None;
+    let mut anchors: Vec<Anchor> = Vec::new();
     let mut i = 0;
     while i < chars.len() {
         if !is_word_char(chars[i]) { i += 1; continue; }
         let start = i;
         while i < chars.len() && is_word_char(chars[i]) { i += 1; }
         let run = chars[start..i].iter().collect::<String>();
-        if (single || (start > 0 && i < chars.len())) && run.is_ascii() && best.as_ref().is_none_or(|kept| run.len() > kept.len()) {
-            best = Some(run);
-        }
+        if run.is_ascii() { anchors.push(Anchor { run, left: single || start > 0, right: single || i < chars.len() }); }
     }
-    best
+    Some(anchors)
 }
 
 fn content_words(text: &str) -> Vec<String> {
@@ -589,24 +617,79 @@ fn plausible_content_overlap(quote: &str, source: &str) -> bool {
     overlap as f64 / needle.len() as f64 >= 0.35
 }
 
-fn long_source_region(quote: &str, text: &str, window: usize) -> String {
+/// A long text's runs of letters and digits in order: where each begins, and a key every casing of it shares.
+struct TextRuns {
+    starts: Vec<usize>,
+    keys: Vec<u64>,
+    by_key: HashMap<u64, Vec<usize>>,
+}
+
+static RUN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\p{L}\p{N}]+").unwrap());
+
+/// What a run shares with every run a case-insensitive pattern matches it to: its ASCII lower-cased, the long s and
+/// the Kelvin sign with them, every other character alike.
+fn run_key(run: &str) -> u64 {
+    run.chars().fold(0u64, |key, c| {
+        let c = match c { '\u{17f}' => 's', '\u{212a}' => 'k', c if c.is_ascii() => c.to_ascii_lowercase(), _ => '\u{fffd}' };
+        (key.rotate_left(5) ^ c as u64).wrapping_mul(0x517c_c1b7_2722_0a95)
+    })
+}
+
+impl TextRuns {
+    /// None where the text holds U+0345, which is no letter yet matches iota in any case.
+    fn new(text: &str) -> Option<Self> {
+        if text.contains('\u{345}') { return None; }
+        let (mut starts, mut keys, mut by_key) = (Vec::new(), Vec::new(), HashMap::<u64, Vec<usize>>::new());
+        for run in RUN.find_iter(text) {
+            let key = run_key(run.as_str());
+            by_key.entry(key).or_default().push(starts.len());
+            starts.push(run.start());
+            keys.push(key);
+        }
+        Some(TextRuns { starts, keys, by_key })
+    }
+
+    /// Where a match of `phrase` beginning and ending at a word's edge can begin: at a run, the phrase's runs standing
+    /// in a row from it, since what joins them in the phrase or between its words is no letter or digit in any case.
+    fn starts(&self, phrase: &[String]) -> Vec<usize> {
+        let wanted = phrase.iter().flat_map(|word| RUN.find_iter(word).map(|run| run_key(run.as_str()))).collect::<Vec<_>>();
+        self.by_key.get(&wanted[0]).into_iter().flatten().copied()
+            .filter(|&at| self.keys.get(at..at + wanted.len()).is_some_and(|keys| *keys == wanted[..]))
+            .map(|at| self.starts[at]).collect()
+    }
+}
+
+/// The text around the quotation's first anchor phrase found whole, its words separated by anything but letters and
+/// digits, case aside.
+fn long_source_region(quote: &str, text: &str, units: &[u16], runs: Option<&TextRuns>, window: usize) -> String {
     let words = quote_words(quote);
-    let units = text.encode_utf16().collect::<Vec<_>>();
+    let edge = |c: Option<char>| c.is_some_and(|c| is_word_char(c) || c == '_');
+    let edges = |start: usize, end: usize| !edge(text[..start].chars().next_back()) && !edge(text[end..].chars().next());
     for phrase in anchor_phrases(&words) {
-        let pattern = format!("(?i){}", phrase.iter().map(|word| regex::escape(word)).collect::<Vec<_>>()
-            .join(r"[^\p{L}\p{N}_]+"));
-        let Ok(pattern) = Regex::new(&pattern) else { continue };
-        let mut from = 0;
-        while let Some(found) = pattern.find_at(text, from) {
-            let before = text[..found.start()].chars().next_back();
-            let after = text[found.end()..].chars().next();
-            let edge = |c: Option<char>| c.is_some_and(|c| is_word_char(c) || c == '_');
-            if !edge(before) && !edge(after) {
-                let at = byte_to_utf16(text, found.start());
-                let length = utf16_len(found.as_str());
-                return slice16(&units, at.saturating_sub(window), units.len().min(at + length + utf16_len(quote) + window));
+        let pattern = phrase.iter().map(|word| regex::escape(word)).collect::<Vec<_>>().join(r"[^\p{L}\p{N}_]+");
+        // A match of a phrase beginning with a letter or digit begins a run; the text is searched throughout otherwise.
+        let found = match runs.filter(|_| RUN.find(&phrase[0]).is_some_and(|run| run.start() == 0)) {
+            Some(runs) => {
+                let starts = runs.starts(&phrase);
+                if starts.is_empty() { continue; }
+                let Ok(pattern) = Regex::new(&format!("^(?i:{pattern})")) else { continue };
+                starts.into_iter().find_map(|start| pattern.find(&text[start..]).map(|found| (start, start + found.end()))
+                    .filter(|&(start, end)| edges(start, end)))
             }
-            from = found.start() + text[found.start()..].chars().next().map_or(1, char::len_utf8);
+            None => {
+                let Ok(pattern) = Regex::new(&format!("(?i){pattern}")) else { continue };
+                let (mut from, mut found) = (0, None);
+                while let Some(next) = pattern.find_at(text, from) {
+                    if edges(next.start(), next.end()) { found = Some((next.start(), next.end())); break; }
+                    from = next.start() + text[next.start()..].chars().next().map_or(1, char::len_utf8);
+                }
+                found
+            }
+        };
+        if let Some((start, end)) = found {
+            let at = byte_to_utf16(text, start);
+            let length = utf16_len(&text[start..end]);
+            return slice16(units, at.saturating_sub(window), units.len().min(at + length + utf16_len(quote) + window));
         }
     }
     String::new()
@@ -644,7 +727,11 @@ impl Reader {
         if let Some(at) = found {
             return slice16(&units, at.saturating_sub(window / 2), units.len().min(at + q_units.len() + window / 2));
         }
-        if units.len() > LONG_SOURCE_CHARS { return long_source_region(q, text, window); }
+        if units.len() > LONG_SOURCE_CHARS {
+            let runs = if self.is_whole(text) { self.whole_runs.get_or_init(|| TextRuns::new(text).map(std::rc::Rc::new)).clone() }
+                else { TextRuns::new(text).map(std::rc::Rc::new) };
+            return long_source_region(q, text, units, runs.as_deref(), window);
+        }
         if quoted.is_empty() { return text.to_owned(); }
         let step = 1.max(quoted.len() / 2);
         let source = self.tokens(text);
@@ -1030,10 +1117,17 @@ struct Prepared {
     length: usize,
     key: String,
     lower: Vec<u16>,
-    tokens: std::rc::Rc<Vec<String>>,
+    /// A long source's tokens are read only where a quotation's bracketed suffix is looked for in them.
+    tokens: std::cell::OnceCell<std::rc::Rc<Vec<String>>>,
     counts: HashMap<String, usize>,
     /// A long source's words, which a long source is scored by.
     words: Option<std::rc::Rc<LongWords>>,
+}
+
+impl Prepared {
+    fn tokens(&self) -> &[String] {
+        self.tokens.get_or_init(|| std::rc::Rc::new(token_texts(&self.text)))
+    }
 }
 
 /// A quotation's readings (quote_match_score's of `quote`), prepared once for every block.
@@ -1051,12 +1145,17 @@ impl Reader {
     fn prepare(&mut self, source: &str) -> Prepared {
         let trimmed = js_trim(source);
         let key = self.exact_key(trimmed);
+        let lower = key.to_lowercase().encode_utf16().collect();
+        let length = utf16_len(trimmed);
+        if length > LONG_SOURCE_CHARS {
+            return Prepared { length, lower, key, tokens: Default::default(), counts: HashMap::new(),
+                words: Some(self.long_words(trimmed)), text: trimmed.to_owned() };
+        }
         let tokens = self.tokens(trimmed);
         let mut counts = HashMap::new();
         for token in tokens.iter() { *counts.entry(token.clone()).or_default() += 1; }
-        let length = utf16_len(trimmed);
-        let words = (length > LONG_SOURCE_CHARS || tokens.len() > LONG_SOURCE_TOKENS).then(|| self.long_words(trimmed));
-        Prepared { length, lower: key.to_lowercase().encode_utf16().collect(), key, tokens, counts, words, text: trimmed.to_owned() }
+        let words = (tokens.len() > LONG_SOURCE_TOKENS).then(|| self.long_words(trimmed));
+        Prepared { length, lower, key, tokens: tokens.into(), counts, words, text: trimmed.to_owned() }
     }
     fn is_whole(&self, text: &str) -> bool {
         self.whole == Some((text.as_ptr() as usize, text.len()))
@@ -1080,15 +1179,15 @@ impl Reader {
 fn prepared_score(quoted: &Quoted, source: &Prepared, floor: f64) -> f64 {
     if quoted.empty || source.text.is_empty() || quoted.core.is_empty() { return 0.0; }
     if !quoted.key.is_empty() && prepared_exact(quoted, source) { return 1.0; }
-    if bracket_suffix_in(&quoted.core, &quoted.aliases, &source.tokens) { return 1.0; }
+    if !quoted.aliases.is_empty() && bracket_suffix_in(&quoted.core, &quoted.aliases, source.tokens()) { return 1.0; }
     if source.length > LONG_SOURCE_CHARS { return long_source_score(&quoted.core, source.words.as_ref().expect("long words")); }
-    if source.tokens.is_empty() { return 0.0; }
-    if source.tokens.len() > LONG_SOURCE_TOKENS { return long_source_score(&quoted.core, source.words.as_ref().expect("long words")); }
+    if source.tokens().is_empty() { return 0.0; }
+    if source.tokens().len() > LONG_SOURCE_TOKENS { return long_source_score(&quoted.core, source.words.as_ref().expect("long words")); }
     if floor > 0.0 {
         let shared: usize = quoted.counts.iter().map(|(token, count)| (*count).min(source.counts.get(token).copied().unwrap_or(0))).sum();
         if (shared as f64) / (quoted.core.len() as f64) < floor { return 0.0; }
     }
-    matched_size(&source.tokens, &quoted.core) as f64 / quoted.core.len() as f64
+    matched_size(source.tokens(), &quoted.core) as f64 / quoted.core.len() as f64
 }
 /// exact_in_source of the quotation's key in the source's, from prepared readings.
 fn prepared_exact(quoted: &Quoted, source: &Prepared) -> bool {
@@ -1418,14 +1517,13 @@ pub fn locate_quotes_in(text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteT
     let reader = Reader { whole: Some((trimmed.as_ptr() as usize, trimmed.len())), ..Reader::default() };
     let mut located = Located { reader, text, source_text, blocks, prepared, whole: None };
     // A quotation compared with the whole text reads its index and words, built once.
-    let mut whole: Option<(legal_document_query::TextFragmentIndex<'_>, SourceWords)> = None;
+    let mut whole: Option<ComparedText<'_>> = None;
     let out = quotes.iter().map(|item| {
         let found = located.locate(&item.quote, &item.scopes);
         let passage = [found.correction.region.as_str(), found.text.as_str()].into_iter().find(|value| !value.is_empty())
             .unwrap_or(text);
         let comparison = if !compare { None } else if passage == text {
-            let (index, words) = whole.get_or_insert_with(|| (legal_document_query::text_fragment_index(text), SourceWords::new(text)));
-            Some(quote_text_comparison_in(&item.quote, text, index, Some(words)))
+            Some(quote_text_comparison_in(&item.quote, whole.get_or_insert_with(|| ComparedText::new(text))))
         } else {
             Some(quote_text_comparison(&item.quote, passage))
         };
@@ -1638,24 +1736,29 @@ pub fn verbatim_repair(authored: &str, source: &str) -> Option<String> {
     verbatim_repair_in(authored, source, &SourceWords::new(source))
 }
 
-/// A source's words (byte spans) and their folded forms, read once for every quotation compared with it.
+/// A source's words (byte spans) and their folded forms, read once for every quotation compared with it; a word is
+/// folded only where a quotation is aligned with them.
 pub struct SourceWords {
     spans: Vec<(usize, usize)>,
-    keys: Vec<String>,
+    keys: std::cell::OnceCell<Vec<String>>,
 }
 
 impl SourceWords {
     pub fn new(source: &str) -> Self {
-        let spans = WORD.find_iter(source).map(|word| (word.start(), word.end())).collect::<Vec<_>>();
-        SourceWords { keys: spans.iter().map(|&(start, end)| fold_for_comparison(&source[start..end])).collect(), spans }
+        SourceWords { spans: WORD.find_iter(source).map(|word| (word.start(), word.end())).collect(), keys: Default::default() }
+    }
+    fn keys(&self, source: &str) -> &[String] {
+        self.keys.get_or_init(|| self.spans.iter().map(|&(start, end)| fold_for_comparison(&source[start..end])).collect())
     }
 }
 
 fn verbatim_repair_in(authored: &str, source: &str, words: &SourceWords) -> Option<String> {
     let before = WORD.find_iter(authored).map(|word| fold_for_comparison(word.as_str())).collect::<Vec<_>>();
-    let (after, keys) = (&words.spans, &words.keys);
+    let after = &words.spans;
     if before.is_empty() || after.is_empty() { return None; }
-    let equal = sequence_opcodes(&before, keys).into_iter().filter(|op| op.0 == "equal").collect::<Vec<_>>();
+    // Too long to align, sequence_opcodes finds nothing equal.
+    if before.len().saturating_mul(after.len()) > MAX_SEQUENCE_WORK { return None; }
+    let equal = sequence_opcodes(&before, words.keys(source)).into_iter().filter(|op| op.0 == "equal").collect::<Vec<_>>();
     let (first_op, last_op) = (equal.first()?, equal.last()?);
     let first = first_op.3.saturating_sub(first_op.1);
     let last = after.len().min(last_op.4 + before.len() - last_op.2);
@@ -1696,19 +1799,33 @@ pub struct QuoteComparison {
 
 /// Mechanical match locations and the correction and diff Authorities review shows.
 pub fn quote_text_comparison(authored: &str, source: &str) -> QuoteComparison {
-    quote_text_comparison_in(authored, source, &legal_document_query::text_fragment_index(source), None)
+    quote_text_comparison_in(authored, &ComparedText::new(source))
 }
 
-/// quote_text_comparison with the source's word index, and its words where read, already built.
-fn quote_text_comparison_in(authored: &str, source: &str, index: &legal_document_query::TextFragmentIndex<'_>,
-    words: Option<&SourceWords>) -> QuoteComparison {
-    let plan = legal_document_query::text_fragment_plan_in(source, index, &[authored.to_owned()], false, false, false);
-    let units = source.encode_utf16().collect::<Vec<_>>();
+/// What comparing a quotation with a text reads of the text: its word index and UTF-16 units, and its words where a
+/// verbatim repair is looked for, read once for every quotation compared with it.
+struct ComparedText<'a> {
+    source: &'a str,
+    index: legal_document_query::TextFragmentIndex<'a>,
+    units: Vec<u16>,
+    words: std::cell::OnceCell<SourceWords>,
+}
+
+impl<'a> ComparedText<'a> {
+    fn new(source: &'a str) -> Self {
+        ComparedText { source, index: legal_document_query::text_fragment_index(source), units: source.encode_utf16().collect(),
+            words: Default::default() }
+    }
+}
+
+fn quote_text_comparison_in(authored: &str, text: &ComparedText<'_>) -> QuoteComparison {
+    let (source, units) = (text.source, &text.units);
+    let plan = legal_document_query::text_fragment_plan_in(source, &text.index, &[authored.to_owned()], false, false, false);
     let matches = if plan.source_safe_complete { plan.source_word_intervals.iter().map(|interval| QuoteComparisonMatch {
         start: interval.start, end: interval.end, text: slice16(&units, interval.start, interval.end) }).collect() }
         else { Vec::new() };
     let candidate = if matches.is_empty() {
-        match words { Some(words) => verbatim_repair_in(authored, source, words), None => verbatim_repair(authored, source) }
+        verbatim_repair_in(authored, source, text.words.get_or_init(|| SourceWords::new(source)))
     } else {
         let start = matches.iter().map(|found: &QuoteComparisonMatch| found.start).min().unwrap_or(0);
         Some(slice16(&units, start, matches.iter().map(|found| found.end).max().unwrap_or(0)))
