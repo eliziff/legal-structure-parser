@@ -1519,7 +1519,7 @@ impl DocumentQuery {
                     let end = end.map_or(range.end, |end| range.end.min(end));
                     (range.start <= end).then_some(ScalarRange { start: range.start, end })
                 }).collect(),
-                level: node.level.map(|level| level + 1).unwrap_or_else(|| {
+                level: node.level.unwrap_or_else(|| {
                     let mut level = 1;
                     let mut parent = position.parent;
                     let mut seen = HashSet::new();
