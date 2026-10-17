@@ -587,6 +587,18 @@ pub fn resolve_structure_graph_with_assembler(
                 })
         })
         .collect::<Vec<_>>();
+    // The candidates by where their markers start, each with the furthest marker end so far, so a
+    // note's label finds the markers holding it without reading every candidate.
+    let markers = runs.iter().flat_map(|run| &run.markers).collect::<Vec<_>>();
+    let mut by_marker_start = (0..markers.len()).collect::<Vec<_>>();
+    by_marker_start.sort_by_key(|&slot| markers[slot].marker_range.start);
+    let marker_reach = by_marker_start
+        .iter()
+        .scan(0, |end, &slot| {
+            *end = (*end).max(markers[slot].marker_range.end);
+            Some(*end)
+        })
+        .collect::<Vec<_>>();
     let mut notes = Vec::with_capacity(note_pairs.len());
     let mut pair_ids = HashSet::new();
     for pair in note_pairs {
@@ -721,19 +733,20 @@ pub fn resolve_structure_graph_with_assembler(
                 .start,
             end: node.ranges.last().expect("validated note membership").end,
         };
-        for candidate in runs.iter().flat_map(|run| &run.markers) {
-            if candidate.marker_range.start <= pair.label.range.start
-                && pair.label.range.end <= candidate.marker_range.end
+        let upto = by_marker_start.partition_point(|&slot| markers[slot].marker_range.start <= pair.label.range.start);
+        let from = marker_reach[..upto].partition_point(|end| *end < pair.label.range.end);
+        let mut holding = by_marker_start[from..upto].iter().copied()
+            .filter(|&slot| pair.label.range.end <= markers[slot].marker_range.end).collect::<Vec<_>>();
+        holding.sort_unstable();
+        for candidate in holding.into_iter().map(|slot| markers[slot]) {
+            if paired_candidate_nodes
+                .insert(candidate.id.as_str(), note_node_index)
+                .is_some()
             {
-                if paired_candidate_nodes
-                    .insert(candidate.id.as_str(), note_node_index)
-                    .is_some()
-                {
-                    return Err(EngineError::invalid(format!(
-                        "candidate '{}' matches more than one note pair",
-                        candidate.id
-                    )));
-                }
+                return Err(EngineError::invalid(format!(
+                    "candidate '{}' matches more than one note pair",
+                    candidate.id
+                )));
             }
         }
         let mut seen = HashSet::new();
