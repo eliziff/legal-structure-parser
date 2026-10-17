@@ -113,7 +113,21 @@ fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtlistener: boo
         let lead = leading_ascii_space(line.text);
         let value = &line.text[lead..];
         let start = line.scalar_start;
-        let basic = if let Some(rest) = value.strip_prefix('[') {
+        // Public-domain citation courts bracket the number, mostly with a pilcrow: "[¶ 12]",
+        // South Dakota's "[¶ 12.]", Ohio's "{¶ 12}", New Mexico's "{12}".
+        let pilcrow = courtlistener.then(|| {
+            let close = match value.as_bytes().first() { Some(b'[') => ']', Some(b'{') => '}', _ => return None };
+            let inner = value[1..].trim_start_matches([' ', '\t']);
+            let inner = inner.strip_prefix('¶').or((close == '}').then_some(inner))?;
+            let rest = inner.trim_start_matches([' ', '\t']);
+            let (number, length) = decimal_prefix(rest, 4)?;
+            let after = rest[length..].strip_prefix('.').unwrap_or(&rest[length..]).trim_start_matches([' ', '\t']);
+            after.strip_prefix(close)?;
+            Some((number, MarkerStyle::Bracket, value.len() - after.len() + 1))
+        }).flatten();
+        let basic = if pilcrow.is_some() {
+            pilcrow
+        } else if let Some(rest) = value.strip_prefix('[') {
             decimal_prefix(rest, 4).and_then(|(number, length)| {
                 (rest.as_bytes().get(length) == Some(&b']'))
                     .then(|| (number, MarkerStyle::Bracket, length + 2))
