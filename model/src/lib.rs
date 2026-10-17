@@ -13,7 +13,9 @@ pub mod definitions;
 pub mod document;
 pub mod docx;
 pub mod fingerprint;
+mod heading_ladder;
 pub mod instrument;
+pub mod layout;
 pub mod locator;
 pub mod numeric_sequence;
 pub mod text;
@@ -28,6 +30,10 @@ pub use docx::{
     DocxAttachmentReference, DocxAttachmentReferenceStatus, DocxCrossReference,
     DocxCrossReferenceStatus, DocxNumberAnchor, DocxNumberingDuplicate, DocxNumberingGap,
     DocxNumberingResult, DocxStructureFacts,
+};
+pub use heading_ladder::{
+    enumerator_interpretations, parse_heading_ladder, EnumeratorInterpretation, HeadingAction,
+    HeadingAssignment, HeadingFamilyStats, HeadingLadder, HeadingLadderStatus,
 };
 pub use fingerprint::{document_fingerprint, DocumentFingerprint, DocumentFingerprintCounts};
 pub use instrument::{

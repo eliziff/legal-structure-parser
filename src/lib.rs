@@ -7,6 +7,12 @@ use std::sync::OnceLock;
 
 #[cfg(feature = "structure-inference")]
 mod analysis;
+#[cfg(feature = "structure-inference")]
+mod layout_cues;
+#[cfg(feature = "structure-inference")]
+mod note_dropout;
+#[cfg(feature = "structure-inference")]
+mod note_pairing;
 #[cfg(feature = "citator")]
 mod citator;
 #[cfg(feature = "citator")]

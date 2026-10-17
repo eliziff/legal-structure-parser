@@ -2,6 +2,8 @@ use crate::{
     AuthoritativeTableCell, CandidateEvidenceV2, DocumentStructure, EngineError, NotePairClaimV2,
     StructureCandidateRun, StructureDiagnostic, StructureNode,
 };
+use crate::layout::{Page, PairingOutput, PdfSourceSpan};
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 /// A citation the citation grammar found, by byte range and the text it spans.
@@ -86,7 +88,10 @@ pub trait StructureAnalysis: Sync {
     fn citations(&self, text: &str) -> Vec<CitationSpan>;
     /// The spans of a laid-out line a citation protects, in scalar offsets.
     fn protected_citation_spans(&self, text: &str) -> Vec<(usize, usize)>;
+    /// Whether a short laid-out line reads as a heading's title, by the citation grammar.
     fn heading_text_plausible(&self, text: &str) -> bool;
+    /// [`Self::heading_text_plausible`], or a title set apart in bold naming a case by its parties.
+    fn styled_heading_text_plausible(&self, text: &str) -> bool;
     fn has_citation_cue(&self, text: &str) -> bool;
     fn has_citation_signal(&self, text: &str) -> bool;
     fn is_citation_continuation(&self, text: &str) -> bool;
@@ -94,4 +99,15 @@ pub trait StructureAnalysis: Sync {
     fn is_counter_noun(&self, word: &str) -> bool;
     fn crossref_short_form(&self, text: &str, byte_start: usize) -> String;
     fn reporter_abbreviation_regex(&self, abbreviation: &str) -> String;
+
+    /// A laid-out document's note labels paired with their references, its lines' citations
+    /// (by line id, in scalar offsets) protected from being read as either.
+    fn pair_footnotes(
+        &self,
+        pages: &[Page],
+        protected_citation_spans: &BTreeMap<String, Vec<PdfSourceSpan>>,
+        include_audit: bool,
+    ) -> PairingOutput;
+    /// Restores note labels whose leading digits recognition dropped, from the note chain.
+    fn repair_label_dropouts(&self, pages: &mut [Page]);
 }

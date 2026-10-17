@@ -6,7 +6,9 @@ use crate::{
     StructureCandidateRun, StructureDiagnostic, StructureNode,
 };
 use legal_citations::cues;
+use legal_structure_model::layout::{Page, PairingOutput, PdfSourceSpan};
 use legal_structure_model::{CitationSpan, StructureAnalysis};
+use std::collections::BTreeMap;
 
 pub struct EngineAnalysis;
 
@@ -103,14 +105,7 @@ impl StructureAnalysis for EngineAnalysis {
     }
 
     fn citations(&self, text: &str) -> Vec<CitationSpan> {
-        legal_citations::extract(text, &legal_citations::Options::default())
-            .into_iter()
-            .map(|citation| CitationSpan {
-                range: citation.full_span.start..citation.full_span.end,
-                core_range: citation.span.start..citation.span.end,
-                text: citation.full_span.text,
-            })
-            .collect()
+        citation_spans(text)
     }
 
     fn protected_citation_spans(&self, text: &str) -> Vec<(usize, usize)> {
@@ -127,7 +122,11 @@ impl StructureAnalysis for EngineAnalysis {
     }
 
     fn heading_text_plausible(&self, text: &str) -> bool {
-        cues::layout_heading_text_plausible(text)
+        crate::layout_cues::heading_text_plausible(text)
+    }
+
+    fn styled_heading_text_plausible(&self, text: &str) -> bool {
+        crate::layout_cues::styled_heading_text_plausible(text)
     }
 
     fn has_citation_cue(&self, text: &str) -> bool {
@@ -157,4 +156,29 @@ impl StructureAnalysis for EngineAnalysis {
     fn reporter_abbreviation_regex(&self, abbreviation: &str) -> String {
         cues::reporter_abbreviation_regex(abbreviation)
     }
+
+    fn pair_footnotes(
+        &self,
+        pages: &[Page],
+        protected_citation_spans: &BTreeMap<String, Vec<PdfSourceSpan>>,
+        include_audit: bool,
+    ) -> PairingOutput {
+        crate::note_pairing::pair_footnotes(pages, protected_citation_spans, include_audit)
+    }
+
+    fn repair_label_dropouts(&self, pages: &mut [Page]) {
+        crate::note_dropout::repair_label_dropouts(pages);
+    }
+}
+
+/// Every citation in `text`, each with its style of cause, pinpoints and parentheticals.
+pub(crate) fn citation_spans(text: &str) -> Vec<CitationSpan> {
+    legal_citations::extract(text, &legal_citations::Options::default())
+        .into_iter()
+        .map(|citation| CitationSpan {
+            range: citation.full_span.start..citation.full_span.end,
+            core_range: citation.span.start..citation.span.end,
+            text: citation.full_span.text,
+        })
+        .collect()
 }
