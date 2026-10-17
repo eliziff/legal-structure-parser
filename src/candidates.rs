@@ -819,17 +819,14 @@ pub fn resolve_structure_graph_with_assembler(
         {
             continue;
         }
-        let mut cuts = starts
+        let within = starts.partition_point(|start| *start <= node.range.start)
+            ..starts.partition_point(|start| *start < node.range.end);
+        let mut cuts = starts[within]
             .iter()
             .copied()
             .filter(|start| {
-                node.range.start < *start
-                    && *start < node.range.end
-                    && (node.ranges.is_empty()
-                        || node
-                            .ranges
-                            .iter()
-                            .any(|part| part.start <= *start && *start < part.end))
+                node.ranges.is_empty()
+                    || node.ranges.iter().any(|part| part.start <= *start && *start < part.end)
             })
             .collect::<Vec<_>>();
         if cuts.is_empty() {
@@ -888,6 +885,11 @@ pub fn resolve_structure_graph_with_assembler(
         }
     }
     nodes.extend(fragments);
+    // Source units by where they open, so each candidate finds its own in one lookup.
+    let mut units_at = HashMap::<usize, Vec<usize>>::new();
+    for (index, node) in nodes.iter().enumerate() {
+        units_at.entry(node.range.start).or_default().push(index);
+    }
     for resolved in &mut resolved_candidates {
         if candidate_node_ids.contains_key(resolved.candidate.id.as_str()) {
             continue;
@@ -903,7 +905,8 @@ pub fn resolve_structure_graph_with_assembler(
         }
         // A PDF source unit owns its role and exact membership; numbering adds locator facts
         // to that unit rather than manufacturing a second outline unit at the same start.
-        let source_unit = nodes.iter().position(|node| {
+        let source_unit = units_at.get(&resolved.candidate.marker_range.start).into_iter().flatten().copied().find(|&index| {
+            let node = &nodes[index];
             matches!(
                 node.kind,
                 NodeKind::Prose
@@ -1029,6 +1032,7 @@ pub fn resolve_structure_graph_with_assembler(
         if source_unit.is_some() {
             nodes[index] = node;
         } else {
+            units_at.entry(node.range.start).or_default().push(nodes.len());
             nodes.push(node);
         }
     }
