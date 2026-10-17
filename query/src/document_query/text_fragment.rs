@@ -92,13 +92,12 @@ impl DocumentQuery {
                 complete = false;
                 continue;
             }
-            selections.push(FragmentSelection {
-                quote_index,
-                desired: PhraseSpan { start: words[first_word].start, end: words[last_word].end,
-                    first_word, last_word },
-                clamp_leading: false,
-                clamp_trailing: false,
-            });
+            // The member's words, from the first its printed label leaves.
+            let mut selection = trimmed_selection(source, quote_index,
+                PhraseSpan { start: range.start, end: range.end, first_word, last_word }, false);
+            selection.desired.start = words[selection.desired.first_word].start;
+            selection.desired.end = words[selection.desired.last_word].end;
+            selections.push(selection);
         }
         let mut plan = build_selected_fragment_plan(source, &selections, pdf,
             publisher_may_annotate_legal_reference, false, true, complete);
@@ -2936,18 +2935,26 @@ fn build_fragment_plan(
             complete = false;
             continue;
         };
-        let adjusted =
-            adjust_span_edges_with_options(block, selected, true, split_html_source_blocks);
-        let Some(desired) = locate_document_quote(block, document, adjusted) else {
+        let mut selection = trimmed_selection(block, quote_index, selected, split_html_source_blocks);
+        let Some(desired) = locate_document_quote(block, document, selection.desired) else {
             complete = false;
             continue;
         };
-        selections.push(FragmentSelection { quote_index, desired,
-            clamp_leading: adjusted.start > selected.start,
-            clamp_trailing: adjusted.end < selected.end });
+        selection.desired = desired;
+        selections.push(selection);
     }
     build_selected_fragment_plan(document, &selections, pdf,
         publisher_may_annotate_legal_reference, split_html_source_blocks, false, complete)
+}
+
+/// `selected` of `text` without its printed label ("[85]", "(a)") or trailing citation artifact, which a publisher
+/// may set apart from the words: quotations and passages a locator names are painted from their first word.
+fn trimmed_selection(text: FragmentText<'_>, quote_index: usize, selected: PhraseSpan, markdown_labels: bool)
+    -> FragmentSelection {
+    let desired = adjust_span_edges_with_options(text, selected, true, markdown_labels);
+    FragmentSelection { quote_index, desired,
+        clamp_leading: desired.start > selected.start,
+        clamp_trailing: desired.end < selected.end }
 }
 
 struct FragmentSelection {
