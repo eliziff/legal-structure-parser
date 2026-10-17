@@ -1143,12 +1143,15 @@ fn paragraph_ranges(
                 marker.start,
                 next_boundary(&boundaries, marker.start, text.len()),
             );
-            Block::labelled(
+            let mut block = Block::labelled(
                 NodeKind::Paragraph,
                 format!("par{}", marker.number),
                 marker.start,
                 end,
-            )
+            );
+            // The number is read from the text, so it is printed there.
+            block.marker_range = Some(ScalarRange { start: marker.start, end: marker.content_start });
+            block
         })
         .collect()
 }
