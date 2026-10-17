@@ -58,7 +58,7 @@ impl StructureAnalysis for EngineAnalysis {
         evidence: &[CandidateEvidenceV2],
         note_pairs: &[NotePairClaimV2],
         diagnostics: Vec<StructureDiagnostic>,
-        assembler: &mut dyn FnMut(&mut Vec<StructureNode>),
+        assembler: &mut dyn FnMut(&mut [StructureNode]),
     ) -> Result<DocumentStructure, EngineError> {
         let structure = crate::candidates::resolve_structure_graph_with_assembler(
             document_id,

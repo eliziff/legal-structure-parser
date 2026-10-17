@@ -57,7 +57,7 @@ pub trait StructureAnalysis: Sync {
         evidence: &[CandidateEvidenceV2],
         note_pairs: &[NotePairClaimV2],
         diagnostics: Vec<StructureDiagnostic>,
-        assembler: &mut dyn FnMut(&mut Vec<StructureNode>),
+        assembler: &mut dyn FnMut(&mut [StructureNode]),
     ) -> Result<DocumentStructure, EngineError>;
 
     fn numbering_marker(

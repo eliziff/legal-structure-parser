@@ -468,7 +468,7 @@ pub fn resolve_structure_graph_with_assembler(
     evidence: &[CandidateEvidenceV2],
     note_pairs: &[NotePairClaimV2],
     mut diagnostics: Vec<StructureDiagnostic>,
-    assembler: &mut dyn FnMut(&mut Vec<StructureNode>),
+    assembler: &mut dyn FnMut(&mut [StructureNode]),
 ) -> Result<DocumentStructure, EngineError> {
     let scalar_text = ScalarText::new(text);
     let scalar_len = scalar_text.len();
@@ -1288,19 +1288,11 @@ pub fn resolve_structure_graph_with_assembler(
         nodes[index].parent_id = candidate_parent.or(enclosing);
     }
 
-    let anchors = nodes.iter().map(|node| (node.id.clone(), node.range.start)).collect::<HashMap<_, _>>();
     let candidate_ids = candidate_node_ids.iter().map(|(candidate, index)| (*candidate, nodes[*index].id.clone())).collect::<HashMap<_, _>>();
     assembler(&mut nodes);
-    let retained = nodes.iter().map(|node| node.id.as_str()).collect::<HashSet<_>>();
-    let remapped = anchors.iter().filter(|(id, _)| !retained.contains(id.as_str())).filter_map(|(id, start)| {
-        nodes.iter().filter(|node| node.role.is_some()).find(|node| {
-            let parts = if node.ranges.is_empty() { std::slice::from_ref(&node.range) } else { &node.ranges };
-            parts.iter().any(|part| part.start <= *start && *start < part.end)
-        }).map(|node| (id.clone(), node.id.clone()))
-    }).collect::<HashMap<_, _>>();
     for diagnostic in &mut diagnostics {
-        for id in &mut diagnostic.node_ids { if let Some(anchor) = remapped.get(id) { *id = anchor.clone(); } }
-        diagnostic.node_ids.sort(); diagnostic.node_ids.dedup();
+        diagnostic.node_ids.sort();
+        diagnostic.node_ids.dedup();
     }
 
     diagnostics.extend(runs.iter().map(|run| {
@@ -1308,9 +1300,7 @@ pub fn resolve_structure_graph_with_assembler(
             .markers
             .iter()
             .filter_map(|candidate| {
-                candidate_ids
-                    .get(candidate.id.as_str())
-                    .map(|id| remapped.get(id).unwrap_or(id).clone())
+                candidate_ids.get(candidate.id.as_str()).cloned()
             })
             .collect::<Vec<_>>();
         let resolved_count = node_ids.len();
