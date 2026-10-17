@@ -354,12 +354,12 @@ pub fn assemble_structure_annotations(
     }
     // Older authoritative producers can omit this optional collection entirely.
     if !scopes.is_empty() {
-        for owner in structure
+        for (owned, owner) in structure
             .nodes
             .iter()
-            .filter_map(|node| node.ownership.as_ref())
-            .chain(structure.notes.iter().filter_map(|note| note.ownership.as_ref()))
-            .chain(structure.fields.iter().filter_map(|field| field.ownership.as_ref()))
+            .filter_map(|node| Some((&node.id, node.ownership.as_ref()?)))
+            .chain(structure.notes.iter().filter_map(|note| Some((&note.id, note.ownership.as_ref()?))))
+            .chain(structure.fields.iter().filter_map(|field| Some((&field.id, field.ownership.as_ref()?))))
         {
             if owner.document_id != structure.document_id
                 && !scopes
@@ -382,7 +382,8 @@ pub fn assemble_structure_annotations(
                     if !scopes.get(id).is_some_and(|scope| {
                         scope.kind == kind && scope.ownership.document_id == owner.document_id
                     }) {
-                        return Err("Node scope is absent or belongs to another document".into());
+                        return Err(format!("Node scope is absent or belongs to another document: {owned} of {} names {id} of {}",
+                            owner.document_id, scopes.get(id).map_or("no document", |scope| scope.ownership.document_id.as_str())));
                     }
                 }
             }
