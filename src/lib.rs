@@ -17,7 +17,7 @@ mod note_pairing;
 mod text_notes;
 #[cfg(feature = "citator")]
 mod citator;
-#[cfg(feature = "citator")]
+#[cfg(all(feature = "citator", feature = "canlii"))]
 mod canlii;
 mod assembly;
 mod composition;
@@ -58,7 +58,7 @@ mod tables;
 pub use analysis::{EngineAnalysis, STRUCTURE_ANALYSIS};
 #[cfg(feature = "citator")]
 pub use citator::*;
-#[cfg(feature = "citator")]
+#[cfg(all(feature = "citator", feature = "canlii"))]
 pub use canlii::{canlii_case_url, canlii_court_route, canlii_law_url};
 pub use definitions::*;
 pub(crate) use document::node_depths;
@@ -82,11 +82,14 @@ pub use legal_structure_model::AuthoritativeTableCell;
 pub use legal_structure_model::layout;
 pub use locator::{normalize_compact_numbered_section_locator, normalize_section_locator};
 #[cfg(feature = "native-markup")]
+pub use native_markup::{analyze_native_markup, NativeMarkupInput};
+#[cfg(all(feature = "native-markup", feature = "courtlistener"))]
 pub use native_markup::{
-    analyze_native_markup, courtlistener_markup_recipe, courtlistener_source_markups,
-    legisquebec_statute_text, restore_courtlistener_markup, CourtListenerMarkupRecipe,
-    CourtListenerSourceMarkup, NativeMarkupInput,
+    courtlistener_markup_recipe, courtlistener_source_markups, restore_courtlistener_markup, CourtListenerMarkupRecipe,
+    CourtListenerSourceMarkup,
 };
+#[cfg(all(feature = "native-markup", feature = "legisquebec"))]
+pub use native_markup::legisquebec_statute_text;
 pub use numeric_sequence::*;
 #[cfg(feature = "provider-text")]
 pub use provider_text::{

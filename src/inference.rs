@@ -4991,7 +4991,7 @@ fn detect_journal(text: &ScalarText<'_>) -> Vec<Block> {
 
 /// Source formatting supplies isolation that physical text lines cannot. Keep
 /// the source paragraph and its anchors; append only a heuristic heading role.
-#[cfg(feature = "native-markup")]
+#[cfg(all(feature = "native-markup", feature = "courtlistener"))]
 pub(super) fn supplement_source_formatted_headings(
     structure: &mut DocumentStructure,
     heading_exclusions: &[ScalarRange],
