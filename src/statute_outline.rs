@@ -2,6 +2,7 @@
 //! each provision with its marginal note and its own text, in document order, each covering
 //! its whole subtree, so a caller can lay the statute out or cut one provision out of it.
 
+use crate::analysis::citation_spans;
 use crate::{
     provider_text_document_structure, EngineError, NodeKind, ProviderTextInput,
     ProviderTextSourceKind,
@@ -11,8 +12,9 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatuteOutlineEntry {
-    /// "part", "division", "heading", "schedule", "section" (or "article" in a code numbered
-    /// by article), "subsection", "paragraph", "subparagraph" or "clause".
+    /// "preamble" (the words before the first heading or provision: a long title, an enacting
+    /// formula), "part", "division", "heading", "schedule", "section" (or "article" in a code
+    /// numbered by article), "subsection", "paragraph", "subparagraph" or "clause".
     pub kind: &'static str,
     /// Headings nest by their own hierarchy, a provision sits under the heading before it,
     /// and each enumerated provision under the one it is part of.
@@ -23,7 +25,8 @@ pub struct StatuteOutlineEntry {
     /// A provision's marginal note, or a heading's text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// The entry's own text, before any entry under it, without its label.
+    /// The entry's own text, before any entry under it, without its label or the source's
+    /// emphasis marks: a line to each of its paragraphs.
     pub text: String,
     /// The entry's span in the input, in UTF-16 code units, covering everything under it; a
     /// provision's span opens with its marginal note.
@@ -80,9 +83,13 @@ fn enumerated_kind(tokens: &[&str]) -> &'static str {
     })
 }
 
-/// The text without markdown emphasis.
+/// The text without markdown emphasis, a line to each paragraph.
 fn plain(text: &str) -> String {
-    text.replace("**", "").trim().to_owned()
+    text.lines()
+        .map(|line| line.replace(['*', '_'], "").trim().to_owned())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Reads a statute's text, as A2AJ and other providers give it (markdown headings, a marginal
@@ -173,7 +180,18 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
             entries[index].end = entries[index].end.min(next.start);
         }
     }
-    Ok(entries.iter().enumerate().map(|(index, entry)| {
+    // The words before the first entry, without the document's title ("# Criminal Code") or a line
+    // naming it by its citation.
+    let first = entries.first().map_or(chars.len(), |entry| entry.start);
+    let preamble = lines.iter()
+        .filter(|line| line.end <= first && !line.text.trim_start().starts_with('#'))
+        .map(|line| plain(line.text))
+        .filter(|line| !line.is_empty() && !citation_spans(line).iter().any(|span| span.range == (0..line.len())))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let preamble = (!preamble.is_empty()).then(|| StatuteOutlineEntry { kind: "preamble", level: 0, label: String::new(),
+        title: None, text: preamble, start: 0, end: utf16[first] });
+    Ok(preamble.into_iter().chain(entries.iter().enumerate().map(|(index, entry)| {
         // The entry's own text runs to the first entry under it.
         let own_end = entries.get(index + 1).filter(|next| next.start < entry.end).map_or(entry.end, |next| next.start);
         let own = if entry.heading { String::new() } else { slice(entry.content, own_end.max(entry.content)) };
@@ -185,7 +203,7 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
             .unwrap_or(&own).trim_start_matches('.').trim().to_owned();
         StatuteOutlineEntry { kind: entry.kind, level: entry.level, label: entry.label.clone(), title: entry.title.clone(),
             text: own, start: utf16[entry.start.min(chars.len())], end: utf16[entry.end.min(chars.len())] }
-    }).collect())
+    })).collect())
 }
 
 /// Where each provision `labels` cite is in a statute's text, by its outline: a section or

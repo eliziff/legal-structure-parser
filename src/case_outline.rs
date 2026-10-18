@@ -2,7 +2,11 @@
 //! paragraphs, the lists within them, and the matter before and after its reasons, in document
 //! order, so a caller can lay the judgment out.
 
-use crate::inference::{enum_readings, heading_enumerator, heading_levels, sentence_heading};
+use crate::inference::{
+    enum_readings, heading_enumerator, heading_levels, joined_heading_levels, sentence_heading,
+};
+use crate::filing::{front_matter_line, FrontMatterLine};
+use crate::analysis::citation_spans;
 use crate::{
     provider_text_document_structure, Derivation, DocumentStructure, EngineError, NodeKind,
     ProviderTextInput, ProviderTextSourceKind, ScalarRange, StructureNode,
@@ -26,6 +30,28 @@ pub struct CaseOutlineEntry {
     /// The entry's span in the input, in UTF-16 code units.
     pub start: usize,
     pub end: usize,
+    /// A front-matter line's part: "title" (the provider's line naming the decision by its
+    /// citation), "party" (a party's role), "caption" (a short line of the court's heading),
+    /// "labelled" ("DOCKET: C69420") or "counsel".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<&'static str>,
+}
+
+/// What a line before a judgment's reasons is: the opening line that names the decision by its
+/// citation ("R. v. Murphy, 2022 ONCA 615"), a party's role, a short line that is no label's and no
+/// counsel's, a labelled line, or counsel's.
+fn front_role(line: &str, opening: bool) -> Option<&'static str> {
+    if opening && citation_spans(line).iter().any(|span| span.range == (0..line.len())) {
+        return Some("title");
+    }
+    match front_matter_line(line) {
+        FrontMatterLine::Party => Some("party"),
+        FrontMatterLine::Labelled => Some("labelled"),
+        FrontMatterLine::Counsel => Some("counsel"),
+        FrontMatterLine::Other => {
+            (line.chars().count() <= 72 && !line.ends_with(['.', ';', ':'])).then_some("caption")
+        }
+    }
 }
 
 const BULLETS: [&str; 8] = ["•", "-", "–", "—", "*", "·", "◦", "▪"];
@@ -118,6 +144,19 @@ fn enumerated(line: &str) -> Option<(&str, &str)> {
             || heading_enumerator(token)
             || BULLETS.contains(&token)))
     .then_some((token, rest))
+}
+
+/// Whether a line may head what follows it rather than being matter the judgment quotes: a table's
+/// figure ("1,000.00") has no words, and a quoted enactment's provision opens its first subsection
+/// on its number's line ("399. (1) On motion, the Court may …", "6 (1) Except where …").
+fn may_head(line: &str) -> bool {
+    let mut words = line.split_whitespace();
+    let provision = words.next().is_some_and(|first| first.trim_end_matches('.').bytes().all(|byte| byte.is_ascii_digit() || byte == b'.'))
+        && words.next().is_some_and(|second| {
+            second.len() >= 3 && second.starts_with('(') && second.ends_with(')')
+                && second[1..second.len() - 1].bytes().all(|byte| byte.is_ascii_alphanumeric())
+        });
+    line.chars().any(char::is_alphabetic) && !provision
 }
 
 /// What follows a line, read for whether the line heads it: without the number of the paragraph it
@@ -221,6 +260,7 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
             text: own.trim().to_owned(),
             start: utf16[start],
             end: utf16[end],
+            role: None,
         });
     };
     // The lines between two paragraphs (or before the first): each a heading where the heading
@@ -244,9 +284,15 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
             }
             at = close + 1;
         }
-        // A heading's path, a level at a time; a sentence heading is one level.
+        // A heading's path, a level at a time; a sentence heading is one level. The last line, where
+        // the paragraph after it opens on that line, is a path its number vouches for.
+        let joined = end > start && end < chars.len() && chars[end - 1] != '\n';
         let heading = |index: usize, line: &str| {
-            heading_levels(line).or_else(|| {
+            if !may_head(line) {
+                return None;
+            }
+            let levels = if joined && index + 1 == lines.len() { joined_heading_levels(line) } else { heading_levels(line) };
+            levels.or_else(|| {
                 let sentence = match lines.get(index + 1) {
                     Some((_, _, next)) => sentence_heading(line, after_marker(next)),
                     None => sentence_heading(
@@ -302,7 +348,10 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
                 continue;
             }
             let Some(levels) = (index >= opening).then(|| heading(index, line)).flatten() else {
+                let role = (matches!(place, Place::Front) && index < opening)
+                    .then(|| front_role(line, entries.is_empty()));
                 push(entries, "text", 0, String::new(), *from, *to, line);
+                entries.last_mut().unwrap().role = role.flatten();
                 continue;
             };
             // Each level takes its depth from its enumerator; one without keeps the depth of the

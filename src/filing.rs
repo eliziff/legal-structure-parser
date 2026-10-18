@@ -112,16 +112,15 @@ fn cover_parties(lines: &[&str]) -> Vec<PartyGroup> {
 /// What a line of a judgment's front matter is: a party's role ("Respondent", "The Appellants (Plaintiffs)
 /// and Respondent by cross-appeal"), a labelled line ("DOCKET: C69420"), counsel's line ("A. Lawyer,
 /// for the appellant"), or another.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum FrontMatterLine {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum FrontMatterLine {
     Party,
     Labelled,
     Counsel,
     Other,
 }
 
-pub fn front_matter_line(text: &str) -> FrontMatterLine {
+pub(crate) fn front_matter_line(text: &str) -> FrontMatterLine {
     static PARTY: LazyLock<Regex> = LazyLock::new(|| Regex::new(
         r"(?i)^(?:(?:the\s+)?(?:appellants?|respondents?|applicants?|plaintiffs?|defendants?|petitioners?|intervener?s?|intervenors?|moving\s+part(?:y|ies)|responding\s+part(?:y|ies))(?:\s*\([^()]*\))?(?:\s+and\s+\S[^\n\r\u{2028}\u{2029}]*)?)$",
     ).unwrap());

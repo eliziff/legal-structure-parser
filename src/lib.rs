@@ -28,7 +28,7 @@ mod composition_seed;
 pub use composition_seed::*;
 mod definitions;
 mod filing;
-pub use filing::{filing_cover, front_matter_line, FiledBy, FilingCover, FrontMatterLine, PartyGroup};
+pub use filing::{filing_cover, FiledBy, FilingCover, PartyGroup};
 use legal_structure_model::document;
 mod docx_lint;
 mod docx_numbering;
