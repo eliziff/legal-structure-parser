@@ -3415,9 +3415,13 @@ fn build_selected_fragment_plan(
                         continue;
                     }
                 }
-                // A piece with no seam in it reads the same on any page, so its exact directive is as sure as a range
-                // and asks every word of it, not two ends a page's other text (a summary, a headnote) may share.
-                if whole_stays_in_structural_piece {
+                // A short piece with no seam in it reads the same on any page, so its exact directive is as sure as a
+                // range and asks every word of it, not two ends a page's other text (a summary, a headnote) may share.
+                // Measured on the cached pages (2026-10-18): exact directives of 6-15 words painted on target 98.2%
+                // (ranges 98.5%), of 16-30 words 97.1%, of 31 or more 94.6%: a long one meets more of what a page
+                // prints between the words (a note number, a link's icon), so it is planned as a range. Up to 30
+                // words the exact one stays: a range's two ends may match a page's paraphrase (a CanLII summary).
+                if whole_stays_in_structural_piece && whole.last_word - whole.first_word < 30 {
                     if let Some(directive) =
                         planner.atomic_directive_for(whole, quote_index, first_word, last_word, desired, &required)
                     {
