@@ -122,7 +122,7 @@ pub(crate) enum FrontMatterLine {
 
 pub(crate) fn front_matter_line(text: &str) -> FrontMatterLine {
     static PARTY: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r"(?i)^(?:(?:the\s+)?(?:appellants?|respondents?|applicants?|plaintiffs?|defendants?|petitioners?|intervener?s?|intervenors?|moving\s+part(?:y|ies)|responding\s+part(?:y|ies))(?:\s*\([^()]*\))?(?:\s+and\s+\S[^\n\r\u{2028}\u{2029}]*)?)$",
+        r"(?i)^(?:(?:the\s+)?(?:appellants?|respondents?|applicants?|plaintiffs?|defendants?|petitioners?|intervener?s?|intervenors?|complainants?|grievors?|fonctionnaires?\s+s.estimant\s+lésée?s?|employers?|employeurs?|plaignante?s?|intimée?s?|demandeurs?|demanderesses?|défendeurs?|défenderesses?|appelante?s?|requérante?s?|moving\s+part(?:y|ies)|responding\s+part(?:y|ies))(?:\s*\([^()]*\))?(?:\s+and\s+\S[^\n\r\u{2028}\u{2029}]*)?)$",
     ).unwrap());
     static LABELLED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[\p{L}\s]+:\s").unwrap());
     static COUNSEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i),\s+for\s+the\s").unwrap());

@@ -1168,9 +1168,12 @@ fn extract_refs(lines: &[PairLine<'_>]) -> Vec<Candidate> {
                 let open = line.text[..whole.start()].chars().count();
                 let start = line.text[..digits.start()].chars().count();
                 let end = line.text[..digits.end()].chars().count();
+                // A bracketed call may follow a number: a citation's page runs into it ("2011 SKCA 136[1]");
+                // a year in brackets has four digits, which no call has.
+                let left = line_chars.get(open.wrapping_sub(1)).copied();
                 if open == 0
                     || start < label_end
-                    || !ref_left(line_chars[open - 1])
+                    || !left.is_some_and(|left| ref_left(left) || left.is_ascii_digit() && whole.as_str().starts_with('['))
                     || line.protected(start, end)
                 {
                     continue;

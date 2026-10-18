@@ -13,6 +13,7 @@ macro_rules! cached_regex {
 
 mod paragraphs;
 use paragraphs::*;
+pub(crate) use paragraphs::run_in_heading;
 mod headings;
 pub(crate) use headings::*;
 mod runs;

@@ -33,7 +33,7 @@ pub(super) fn detect_case(
         if !paragraphs.iter().any(|block| block.kind == NodeKind::Paragraph) {
             let until = paragraphs.iter().filter(|block| block.kind == NodeKind::Endnote)
                 .filter_map(|block| block.marker_range.map(|range| range.start)).min().unwrap_or(text.len());
-            paragraphs.extend(unnumbered_paragraphs(text, until));
+            paragraphs.extend(unnumbered_paragraphs(text, 0, until));
         }
     }
     paragraphs.extend(detect_pages(text, report_start_page, require_report_start));
@@ -61,7 +61,17 @@ pub(super) fn with_endnotes(text: &ScalarText<'_>, mut paragraphs: Vec<Block>) -
         .map(|start| index[index.partition_point(|line| line[2] <= start) - 1][2])
         .collect::<HashSet<_>>();
     let notes = crate::text_notes::text_note_blocks(text, note_start, &labels);
-    if notes.is_empty() {
+    // A correction restating a paragraph after the reasons ("Paragraph 1 should read as follows: [1] This
+    // is an application …") is no note list: its first "note" opens as one of the paragraphs does.
+    let opening_words = |range: ScalarRange| text.slice(range.start..range.end).unwrap_or("").split_whitespace().take(12).collect::<Vec<_>>();
+    let restated = notes.first().is_some_and(|note| {
+        let words = opening_words(note.range);
+        words.len() >= 6 && paragraphs.iter().filter(|block| block.kind == NodeKind::Paragraph).any(|block| {
+            let start = block.content_start.unwrap_or(block.range.start);
+            opening_words(ScalarRange { start, end: block.range.end }) == words
+        })
+    });
+    if notes.is_empty() || restated {
         return paragraphs;
     }
     let list_start = heading.map_or(note_start, |line| index[line][2]);

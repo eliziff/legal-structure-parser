@@ -3,7 +3,7 @@
 //! order, so a caller can lay the judgment out.
 
 use crate::inference::{
-    enum_readings, heading_enumerator, heading_levels, joined_heading_levels, sentence_heading,
+    enum_readings, heading_enumerator, heading_levels, joined_heading_levels, run_in_heading, sentence_heading,
 };
 use crate::filing::{front_matter_line, FrontMatterLine};
 use crate::analysis::citation_spans;
@@ -291,7 +291,12 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
             if !may_head(line) {
                 return None;
             }
-            let levels = if joined && index + 1 == lines.len() { joined_heading_levels(line) } else { heading_levels(line) };
+            // The last line, its paragraph's number run in after it, is read as the paragraph reader reads it.
+            let levels = if joined && index + 1 == lines.len() {
+                joined_heading_levels(line).or_else(|| run_in_heading(line).then(|| vec![line.to_owned()]))
+            } else {
+                heading_levels(line)
+            };
             levels.or_else(|| {
                 let sentence = match lines.get(index + 1) {
                     Some((_, _, next)) => sentence_heading(line, after_marker(next)),
