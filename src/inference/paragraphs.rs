@@ -995,6 +995,8 @@ pub(super) fn paragraph_end_before_trailing_headings(
 /// Statute marginal notes are short sentence-case lines ("Lawyer's right to costs out of property
 /// recovered") without terminal punctuation; structural headings ("PART 2", "Division 3") also
 /// precede the provision they introduce. Enactment-history lines (which carry digits) stay put.
+/// A line a provider sets in bold alone is a note whatever its words ("**Target — 2050**",
+/// "**Liability of directors, officers, etc.**").
 pub(super) fn provision_end_before_marginal_notes(text: &ScalarText<'_>, start: usize, end: usize) -> usize {
     let index = text.lines();
     let first = index.partition_point(|line| line[2] <= start);
@@ -1005,6 +1007,11 @@ pub(super) fn provision_end_before_marginal_notes(text: &ScalarText<'_>, start: 
         let line = index[position];
         // A provider's markdown sets a note as a heading ("### Commencement of order").
         let value = text.value[line[0]..line[1]].trim().trim_start_matches('#').trim_start();
+        let emphasized = value
+            .strip_prefix("**")
+            .and_then(|inner| inner.strip_suffix("**"))
+            .filter(|inner| !inner.trim().is_empty() && !inner.contains('*'));
+        let value = emphasized.map_or(value, str::trim);
         let words = value.split_whitespace().count();
         let structural = cached_regex!(
             VALUE,
@@ -1012,9 +1019,10 @@ pub(super) fn provision_end_before_marginal_notes(text: &ScalarText<'_>, start: 
         )
         .is_match(value);
         let note = (1..=16).contains(&words)
-            && value.chars().next().is_some_and(char::is_uppercase)
-            && !value.ends_with(['.', ';', ':', ',', '—', '-'])
-            && !value.chars().any(|character| character.is_ascii_digit());
+            && (emphasized.is_some()
+                || value.chars().next().is_some_and(char::is_uppercase)
+                    && !value.ends_with(['.', ';', ':', ',', '—', '-'])
+                    && !value.chars().any(|character| character.is_ascii_digit()));
         if value.is_empty() {
             candidate = line[2];
         } else if (note || structural) && notes < 4 {

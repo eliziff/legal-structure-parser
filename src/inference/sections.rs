@@ -1193,6 +1193,23 @@ pub(super) fn roman_value(value: &str) -> Option<u32> {
     (total > 0).then_some(total as u32)
 }
 
+/// Where a provider's markdown opens a schedule between `from` and `end` ("## Schedule 1", "## SCHEDULE I —
+/// (Section 2)", "## Schedule Reference Generating Unit …"), else `end`: a provision ends where a schedule begins. A
+/// heading that only names one ("### Schedule of rates") is a marginal note.
+pub(super) fn schedule_start(text: &ScalarText<'_>, from: usize, end: usize) -> usize {
+    let heading = cached_regex!(
+        VALUE,
+        r"^[ \t]*#{1,6}[ \t]+(?:SCHEDULE|Schedule|ANNEX|Annex)(?:[ \t]*$|[ \t]*[^a-z \t])"
+    );
+    let index = text.lines();
+    let first = index.partition_point(|line| line[2] <= from);
+    let last = index.partition_point(|line| line[2] < end);
+    index[first..last.max(first)]
+        .iter()
+        .find(|line| heading.is_match(&text.value[line[0]..line[1]]))
+        .map_or(end, |line| line[2])
+}
+
 pub(super) fn detect_legislation(
     text: &ScalarText<'_>,
     allow_hyphenated_sections: bool,
@@ -1208,6 +1225,7 @@ pub(super) fn detect_legislation(
         let end = sections
             .get(index + 1)
             .map_or(text.len(), |value| value.start);
+        let end = schedule_start(text, section.content_start, end);
         let parent = format!("sec{}", section.label);
         let mut top = Block::labelled(NodeKind::Section, parent.clone(), section.start, end);
         top.aliases = section
