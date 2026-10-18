@@ -107,6 +107,15 @@ impl DocumentQuery {
             // The member's words, from the first its printed label leaves.
             let mut selection = trimmed_selection(source, quote_index,
                 PhraseSpan { start: range.start, end: range.end, first_word, last_word }, false);
+            // A page that prints the number against the word after it leaves no word boundary before that word
+            // ("57An application"): the passage starts at the next.
+            let first = selection.desired.first_word;
+            if source.glues_labels() && selection.clamp_leading && first > 0 && first < selection.desired.last_word
+                && source.slice(words[first - 1].start, words[first - 1].end).bytes().all(|byte| byte.is_ascii_digit())
+                && source.slice(words[first - 1].end, words[first].start).chars().all(javascript_whitespace)
+            {
+                selection.desired.first_word += 1;
+            }
             selection.desired.start = words[selection.desired.first_word].start;
             selection.desired.end = words[selection.desired.last_word].end;
             selections.push(selection);
@@ -181,6 +190,14 @@ impl<'a> FragmentText<'a> {
             Self::Document(query, ..) => query.legal_reference_ends.get().is_some_and(|ends| {
                 ends.get(ends.partition_point(|&end| end <= from)).is_some_and(|&end| end <= to)
             }),
+            Self::Text(_) => false,
+        }
+    }
+
+    /// Whether the page prints a section's number against its first word (DocumentQuery::set_page_glues_labels).
+    fn glues_labels(self) -> bool {
+        match self {
+            Self::Document(query, ..) => query.page_glues_labels.load(Ordering::Relaxed),
             Self::Text(_) => false,
         }
     }
@@ -339,36 +356,6 @@ fn leading_label_length_with_mode(value: &str, _markdown: bool) -> usize {
     leading_label_length(value).max(markdown_label_length(value))
 }
 
-fn extend_terminal_punctuation(text: FragmentText<'_>, end: usize, quote: &str) -> usize {
-    let comma = js_trim(quote).ends_with(',');
-    let mut extended = end;
-    for character in text.slice(end, text.utf16_len()).chars() {
-        if matches!(
-            character,
-            '.' | '!' | '?' | ';' | ':' | '…' | '\'' | '’' | '”' | '»' | ')' | ']'
-        ) || comma && character == ','
-        {
-            extended += character.len_utf16();
-        } else {
-            break;
-        }
-    }
-    extended
-}
-
-fn extend_leading_punctuation(text: FragmentText<'_>, start: usize, quote: &str) -> usize {
-    let leading = quote
-        .trim_start_matches(javascript_whitespace)
-        .chars()
-        .take_while(|character| matches!(character, '[' | '(' | '{' | '"' | '\'' | '‘' | '“' | '«'))
-        .collect::<String>();
-    let length = utf16_len(&leading);
-    start
-        .checked_sub(length)
-        .filter(|from| !leading.is_empty() && text.slice(*from, start) == leading)
-        .unwrap_or(start)
-}
-
 fn word_at_or_after(text: FragmentText<'_>, offset: usize, from: usize) -> Option<usize> {
     text.tokens()
         .iter()
@@ -461,14 +448,10 @@ fn choose_source_span(text: FragmentText<'_>, quote: &str, words: &[String]) -> 
     static BETWEEN_QUOTES: OnceLock<Regex> = OnceLock::new();
     static OPENING_QUOTE: OnceLock<Regex> = OnceLock::new();
     static CLOSING_QUOTE: OnceLock<Regex> = OnceLock::new();
-    let extend = |span: &mut PhraseSpan| {
-        span.start = extend_leading_punctuation(text, span.start, quote);
-        span.end = extend_terminal_punctuation(text, span.end, quote);
-    };
+    // A span runs from its first word to its last: the quotation's own brackets and closing marks stay out of the
+    // terms (a browser matches at word boundaries either way, and a page prints "(Emphasis added)" where the
+    // document holds "[Emphasis added.]"; measured 2026-10-18).
     let mut spans = text.phrase_spans(words, PhraseOptions::default());
-    for span in &mut spans {
-        extend(span);
-    }
     if spans.is_empty() {
         let separated = quote
             .chars()
@@ -481,9 +464,6 @@ fn choose_source_span(text: FragmentText<'_>, quote: &str, words: &[String]) -> 
             })
             .collect::<String>();
         spans = text.phrase_spans(&fragment_words(&separated), PhraseOptions::default());
-        for span in &mut spans {
-            extend(span);
-        }
     }
     if spans.len() == 1 {
         return spans.pop();
@@ -561,6 +541,22 @@ fn encoded_context(value: &str, prefix: bool) -> String {
     } else {
         format!(",-{}", encoded_fragment(value))
     }
+}
+
+/// A term without the punctuation outside its words on the sides no context meets: a browser matches at word
+/// boundaries, so the marks add nothing there, and a page prints "(Emphasis added)" where the document holds
+/// "[Emphasis added.]" (measured 2026-10-18: 85 links painted nothing for an edge mark). A context must meet the
+/// term with whitespace alone between, so the side it meets keeps its marks.
+fn shed_outer_punctuation(value: &str, leading: bool, trailing: bool) -> String {
+    let word = |character: char| character.is_alphanumeric();
+    let mut shed = value;
+    if leading {
+        shed = shed.trim_start_matches(|character: char| !word(character));
+    }
+    if trailing {
+        shed = shed.trim_end_matches(|character: char| !word(character));
+    }
+    if shed.is_empty() { value.to_owned() } else { shed.to_owned() }
 }
 
 fn text_directive(target: &str, prefix: &str, suffix: &str) -> String {
@@ -1573,6 +1569,18 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             && (piece.context_first_word..piece.first_word).all(|word| self.source_furniture(word) == Some(FurnitureKind::Label))
     }
 
+    /// Whether the page prints the label before `word` against it ("57An application"): the document sets the two
+    /// apart by whitespace alone, on a page that glues its section labels.
+    fn glued_label_before(&mut self, word: usize) -> bool {
+        if word == 0 || !self.replay.document.glues_labels()
+            || self.source_furniture(word - 1) != Some(FurnitureKind::Label)
+        {
+            return false;
+        }
+        let words = self.replay.document.tokens();
+        self.replay.document.slice(words[word - 1].end, words[word].start).chars().all(javascript_whitespace)
+    }
+
     /// Whether a term holds a seam the page may print otherwise ([`has_seam`]): never on a page of the source text.
     fn seamed(&self, text: &str) -> bool {
         !self.source_page && has_seam(text)
@@ -1959,6 +1967,13 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         if atom.first_word < first_word && atom.start < span.start {
             return Some(span);
         }
+        // A page that prints the label against the word after it leaves no word boundary before that word: the
+        // passage starts at the next.
+        let first_word = if first_word < span.last_word && self.glued_label_before(first_word) {
+            first_word + 1
+        } else {
+            first_word
+        };
         let words = self.replay.document.tokens();
         Some(PhraseSpan {
             start: words[first_word].start,
@@ -2116,6 +2131,10 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     if !label_prefix.trim_start().starts_with(['*', '_']) {
                         piece.context_first_word = label;
                     }
+                }
+                if trimmed_furniture && piece.first_word > 0 && planner.glued_label_before(piece.first_word - 1) {
+                    // The word glued to the label is no context either: no prefix before the passage.
+                    piece.context_first_word = piece.first_word;
                 }
                 pieces.push(piece);
             }
@@ -2284,24 +2303,19 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                 {
                     continue;
                 }
-                let selected = self
-                    .replay_exact_text(
-                        &target.text,
-                        before.as_ref().map_or("", |term| term.text.as_str()),
-                        after.as_ref().map_or("", |term| term.text.as_str()),
-                    )
-                    .first;
-                if !selects(piece, selected) {
-                    continue;
+                let (before_text, after_text) = (before.as_ref().map_or("", |term| term.text.as_str()),
+                    after.as_ref().map_or("", |term| term.text.as_str()));
+                // The term without its outer marks where that selects, else with them (a mark may be what tells
+                // the term apart: "Tribunal”)" once, "Tribunal" throughout).
+                let shed = shed_outer_punctuation(&target.text, before.is_none(), after.is_none());
+                let variants = if shed == target.text { vec![shed] } else { vec![shed, target.text.clone()] };
+                for target_text in variants {
+                    if !selects(piece, self.replay_exact_text(&target_text, before_text, after_text).first) {
+                        continue;
+                    }
+                    consider(&mut shortest, text_directive(&target_text, before_text, after_text));
+                    break;
                 }
-                consider(
-                    &mut shortest,
-                    text_directive(
-                        &target.text,
-                        before.as_ref().map_or("", |term| term.text.as_str()),
-                        after.as_ref().map_or("", |term| term.text.as_str()),
-                    ),
-                );
             }
         }
         shortest
@@ -2331,7 +2345,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         let mut directive = if guarded { None } else { self.shortest_for(piece, &exact_targets, &bare) };
         if directive.is_none() {
             let words = self.replay.document.tokens();
-            let mut prefix = if piece.first_word > piece.context_first_word {
+            let prefix = if piece.first_word > piece.context_first_word {
                 let context = MaximalCorePiece {
                     start: words[piece.context_first_word].start,
                     end: words[piece.first_word - 1].end,
@@ -2345,7 +2359,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             } else {
                 Vec::new()
             };
-            let mut suffix = if piece.last_word < piece.context_last_word {
+            let suffix = if piece.last_word < piece.context_last_word {
                 let context = MaximalCorePiece {
                     start: words[piece.last_word + 1].start,
                     end: words[piece.context_last_word].end,
@@ -2359,58 +2373,75 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             } else {
                 Vec::new()
             };
-            prefix.retain(|term| !self.boundary_seam(term.last_word, piece.first_word));
-            suffix.retain(|term| !self.boundary_seam(piece.last_word, term.first_word));
-            // A guarded piece with no prefix to take (its words open their line) is planned as before.
-            let guarded = guarded && (labelled || !prefix.is_empty());
-            if guarded && !labelled {
-                // Two words or more where the prefix has them: one word may recur before a headnote's copy.
-                let longer = prefix.iter().filter(|term| term.last_word > term.first_word).cloned().collect::<Vec<_>>();
-                if !longer.is_empty() {
-                    prefix = longer;
+            // A context meeting the piece at a seam is read only where no other tells the piece apart: a sentence a
+            // headnote repeats whole is told apart by the sentence before it, or painted nowhere.
+            let (seamed_prefix, mut prefix): (Vec<_>, Vec<_>) = prefix.into_iter()
+                .partition(|term| self.boundary_seam(term.last_word, piece.first_word));
+            let (seamed_suffix, mut suffix): (Vec<_>, Vec<_>) = suffix.into_iter()
+                .partition(|term| self.boundary_seam(piece.last_word, term.first_word));
+            for seamed in [false, true] {
+                if seamed {
+                    if seamed_prefix.is_empty() && seamed_suffix.is_empty() {
+                        break;
+                    }
+                    prefix.extend(seamed_prefix.iter().cloned());
+                    suffix.extend(seamed_suffix.iter().cloned());
                 }
-            }
-            if self.split_html_source_blocks && piece.first_word != desired.first_word && !guarded {
-                let suffix_only = suffix
-                    .iter()
-                    .cloned()
-                    .map(|after| (None, Some(after)))
-                    .collect::<Vec<_>>();
-                directive = self.shortest_for(piece, &exact_targets, &suffix_only);
-            }
-            let mut contexts_by_class = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
-            for before in &prefix {
-                let class =
-                    self.context_class(piece, Some(before), None, requested_first, requested_last);
-                contexts_by_class[class].push((Some(before.clone()), None));
-            }
-            for after in &suffix {
-                let class =
-                    self.context_class(piece, None, Some(after), requested_first, requested_last);
-                contexts_by_class[class].push((None, Some(after.clone())));
-            }
-            for before in &prefix {
+                // A guarded piece with no prefix to take (its words open their line) is planned as before.
+                let guarded = guarded && (labelled || !prefix.is_empty());
+                let mut prefix = prefix.clone();
+                if guarded && !labelled {
+                    // Two words or more where the prefix has them: one word may recur before a headnote's copy.
+                    let longer = prefix.iter().filter(|term| term.last_word > term.first_word).cloned().collect::<Vec<_>>();
+                    if !longer.is_empty() {
+                        prefix = longer;
+                    }
+                }
+                if self.split_html_source_blocks && piece.first_word != desired.first_word && !guarded {
+                    let suffix_only = suffix
+                        .iter()
+                        .cloned()
+                        .map(|after| (None, Some(after)))
+                        .collect::<Vec<_>>();
+                    directive = self.shortest_for(piece, &exact_targets, &suffix_only);
+                }
+                let mut contexts_by_class = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+                for before in &prefix {
+                    let class =
+                        self.context_class(piece, Some(before), None, requested_first, requested_last);
+                    contexts_by_class[class].push((Some(before.clone()), None));
+                }
                 for after in &suffix {
-                    let class = self.context_class(
-                        piece,
-                        Some(before),
-                        Some(after),
-                        requested_first,
-                        requested_last,
-                    );
-                    contexts_by_class[class].push((Some(before.clone()), Some(after.clone())));
+                    let class =
+                        self.context_class(piece, None, Some(after), requested_first, requested_last);
+                    contexts_by_class[class].push((None, Some(after.clone())));
                 }
-            }
-            if guarded {
-                for contexts in &mut contexts_by_class {
-                    contexts.retain(|(before, _)| before.is_some());
+                for before in &prefix {
+                    for after in &suffix {
+                        let class = self.context_class(
+                            piece,
+                            Some(before),
+                            Some(after),
+                            requested_first,
+                            requested_last,
+                        );
+                        contexts_by_class[class].push((Some(before.clone()), Some(after.clone())));
+                    }
                 }
-            }
-            for contexts in contexts_by_class.iter().skip(1) {
-                if directive.is_some() {
-                    break;
+                if guarded {
+                    for contexts in &mut contexts_by_class {
+                        contexts.retain(|(before, _)| before.is_some());
+                    }
                 }
-                directive = self.shortest_for(piece, &exact_targets, contexts);
+                for contexts in contexts_by_class.iter().skip(1) {
+                    if directive.is_some() {
+                        break;
+                    }
+                    directive = self.shortest_for(piece, &exact_targets, contexts);
+                    if directive.is_some() {
+                        break;
+                    }
+                }
                 if directive.is_some() {
                     break;
                 }
@@ -2515,7 +2546,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         allow_ordered_start: bool,
     ) -> Option<String> {
         self.range_directives_for(piece, head_piece, tail_piece, desired, required, require_multiword_endpoints,
-            allow_ordered_start).map(|(shortest, preferred)| preferred.unwrap_or(shortest))
+            allow_ordered_start, false).map(|(shortest, preferred)| preferred.unwrap_or(shortest))
     }
 
     /// The shortest range directive, and the one preferred to it where that one has a one-word endpoint: one whose
@@ -2529,6 +2560,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         required: &HashSet<usize>,
         require_multiword_endpoints: bool,
         allow_ordered_start: bool,
+        seamed_contexts: bool,
     ) -> Option<(String, Option<String>)> {
         if piece.first_word >= piece.last_word {
             return None;
@@ -2617,8 +2649,14 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         } else {
             Vec::new()
         };
-        prefixes.retain(|term| !self.boundary_seam(term.last_word, piece.first_word));
-        suffixes.retain(|term| !self.boundary_seam(piece.last_word, term.first_word));
+        // As atomic_directive_for: a context meeting the piece at a seam is read only where no other tells it apart.
+        let dropped = !seamed_contexts
+            && (prefixes.iter().any(|term| self.boundary_seam(term.last_word, piece.first_word))
+                || suffixes.iter().any(|term| self.boundary_seam(piece.last_word, term.first_word)));
+        if !seamed_contexts {
+            prefixes.retain(|term| !self.boundary_seam(term.last_word, piece.first_word));
+            suffixes.retain(|term| !self.boundary_seam(piece.last_word, term.first_word));
+        }
         // As atomic_directive_for: on a page that may repeat the passage, a range inside its paragraph takes a prefix
         // where it has one, of two words or more where the prefix has them.
         let guarded = labelled || self.repeating_page && !self.pdf && !self.source_page
@@ -2710,8 +2748,8 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         // a Bhasin sentence the judgment repeats: 84,000 replays and 10 s
         // for one plan before this, since every head was re-replayed for
         // every tail and the reverse.
-        let mut unique_heads = HashMap::<(usize, Option<usize>), bool>::new();
-        let mut unique_tails = HashMap::<(usize, Option<usize>), bool>::new();
+        let mut unique_heads = HashMap::<(usize, Option<usize>, usize), bool>::new();
+        let mut unique_tails = HashMap::<(usize, Option<usize>, usize), bool>::new();
         fn context_text(terms: &[LexicalTerm], index: Option<usize>) -> &str {
             index.map_or("", |index| terms[index].text.as_str())
         }
@@ -2730,29 +2768,38 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     let mut try_contexts = |prefix: Option<usize>, suffix: Option<usize>,
                                             shortest: &mut Option<(String, bool)>| {
                         let (prefix_text, suffix_text) = (context_text(&prefixes, prefix), context_text(&suffixes, suffix));
-                        if !ordered_start {
-                            let head_unique = *unique_heads.entry((head_index, prefix)).or_insert_with(|| {
-                                self.replay_exact_text(&head.text, prefix_text, "").count == 1
-                            });
-                            if !head_unique {
-                                return false;
+                        // The endpoints without their outer marks where those select (a range's middle meets no
+                        // context, so the start's end and the end's start shed theirs too), else with them.
+                        let shed = (shed_outer_punctuation(&head.text, prefix.is_none(), true),
+                            shed_outer_punctuation(&tail.text, true, suffix.is_none()));
+                        let marked = (head.text.clone(), tail.text.clone());
+                        let variants = if shed == marked { vec![shed] } else { vec![shed, marked] };
+                        for (variant, (head_text, tail_text)) in variants.iter().enumerate() {
+                            if !ordered_start {
+                                let head_unique = *unique_heads.entry((head_index, prefix, variant)).or_insert_with(|| {
+                                    self.replay_exact_text(head_text, prefix_text, "").count == 1
+                                });
+                                if !head_unique {
+                                    continue;
+                                }
+                                let tail_unique = *unique_tails.entry((tail_index, suffix, variant)).or_insert_with(|| {
+                                    self.replay_exact_text(tail_text, "", suffix_text).count == 1
+                                });
+                                if !tail_unique {
+                                    continue;
+                                }
                             }
-                            let tail_unique = *unique_tails.entry((tail_index, suffix)).or_insert_with(|| {
-                                self.replay_exact_text(&tail.text, "", suffix_text).count == 1
-                            });
-                            if !tail_unique {
-                                return false;
+                            if !selects(piece, self.replay_range_text(head_text, tail_text, prefix_text, suffix_text)) {
+                                continue;
                             }
+                            if shortest.as_ref().is_none_or(|(current, _)| length(prefix, suffix) < current.len()) {
+                                *shortest = Some((
+                                    text_range_directive_with_context(head_text, tail_text, prefix_text, suffix_text),
+                                    single(head) || single(tail)));
+                            }
+                            return true;
                         }
-                        if !selects(piece, self.replay_range_text(&head.text, &tail.text, prefix_text, suffix_text)) {
-                            return false;
-                        }
-                        if shortest.as_ref().is_none_or(|(current, _)| length(prefix, suffix) < current.len()) {
-                            *shortest = Some((
-                                text_range_directive_with_context(&head.text, &tail.text, prefix_text, suffix_text),
-                                single(head) || single(tail)));
-                        }
-                        true
+                        false
                     };
                     // Only a shorter directive can replace the one already found, so a one-sided or bare pairing that
                     // cannot be shorter is never replayed.
@@ -2800,7 +2847,14 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         };
         // One with endpoints of three words or more is preferred; else, where the one found has a one-word endpoint,
         // one with endpoints of two words or more.
-        let (found, single_endpoint) = search(0)?;
+        let Some((found, single_endpoint)) = search(0) else {
+            return if dropped {
+                self.range_directives_for(piece, head_piece, tail_piece, desired, required, require_multiword_endpoints,
+                    allow_ordered_start, true)
+            } else {
+                None
+            };
+        };
         let preferred = search(3).or_else(|| if single_endpoint { search(2) } else { None })
             .map(|(directive, _)| directive).filter(|directive| *directive != found);
         Some((found, preferred))

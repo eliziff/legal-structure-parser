@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 use legal_citations::reference_names::reference_name_ends;
 use legal_citations::url::{
     is_pdf_address, law_web_document, passage_locator, publisher_annotates_legal_references,
-    publisher_may_repeat_passages, source_url,
+    publisher_glues_section_labels, publisher_may_repeat_passages, source_url,
 };
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +64,7 @@ pub fn passage_link(query: &DocumentQuery, structure: &DocumentStructure, reques
         if annotated {
             query.read_legal_reference_ends(structure, reference_name_ends);
         }
+        query.set_page_glues_labels(publisher_glues_section_labels(url));
         let fragments = |split: bool| query.text_fragment_plan(structure, &request.block_text, &request.quotes, pdf,
             annotated, split, publisher_may_repeat_passages(url));
         let whole = fragments(false);
@@ -115,6 +116,7 @@ pub fn cited_passage_link(query: &DocumentQuery, structure: &DocumentStructure, 
     if annotated {
         query.read_legal_reference_ends(structure, reference_name_ends);
     }
+    query.set_page_glues_labels(publisher_glues_section_labels(&url));
     let kind = if section { DocumentKind::Section } else { DocumentKind::Paragraph };
     let plan = |target: &str| query.range_fragment_plan(structure, kind, target, target, pdf, annotated, section,
         publisher_may_repeat_passages(&url)).filter(|plan| plan.source_safe_complete && !plan.directives.is_empty());
