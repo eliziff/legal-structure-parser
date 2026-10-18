@@ -24,6 +24,7 @@ impl DocumentQuery {
             pdf,
             publisher_may_annotate_legal_reference,
             false,
+            false,
         );
         if !split_html_source_blocks {
             return base;
@@ -35,6 +36,7 @@ impl DocumentQuery {
             pdf,
             publisher_may_annotate_legal_reference,
             true,
+            false,
         );
         if !blocks.source_safe_complete || crosses_multiple_lettered_breaks(source, &base) {
             base
@@ -56,7 +58,12 @@ impl DocumentQuery {
         let resolve = |locator: &str| {
             let label = self.requested_label(document, kind, locator);
             if label.is_empty() { return None; }
-            self.unique_position(document, &label, Some(kind))
+            let position = self.unique_position(document, &label, Some(kind))?;
+            // A citation's paragraph is the one printed with its number, never one the structure counted where it
+            // read no numbers: the 38th block of prose is not paragraph 38.
+            let node = &document.nodes[position.node];
+            (kind != DocumentKind::Paragraph || node.marker_range.is_some_and(|range| range.start < range.end))
+                .then_some(position)
         };
         let first = resolve(start)?;
         let last = resolve(end)?;
@@ -101,7 +108,7 @@ impl DocumentQuery {
             selections.push(selection);
         }
         let mut plan = build_selected_fragment_plan(source, &selections, pdf,
-            publisher_may_annotate_legal_reference, false, true, complete);
+            publisher_may_annotate_legal_reference, false, true, complete, false);
         // Replay must select these source coordinates, not merely the same
         // amount of text. No emitted directive may bridge an unselected member.
         let required = selections.iter().flat_map(|selection|
@@ -119,18 +126,40 @@ impl DocumentQuery {
 
 struct TextSearch<'a> {
     text: ScalarText<'a>,
-    index: search::SearchIndex,
+    index: std::borrow::Cow<'a, search::SearchIndex>,
     /// Its replay index, built on the first plan that replays the text.
-    replay: OnceLock<ReplayIndex>,
+    replay: std::borrow::Cow<'a, OnceLock<ReplayIndex>>,
 }
 
 impl<'a> TextSearch<'a> {
     fn new(text: &'a str) -> Self {
         let scalar = ScalarText::new(text);
         Self {
-            index: search::SearchIndex::new(text),
+            index: std::borrow::Cow::Owned(search::SearchIndex::new(text)),
             text: scalar,
-            replay: OnceLock::new(),
+            replay: std::borrow::Cow::Owned(OnceLock::new()),
+        }
+    }
+}
+
+/// A page's text with its word indexes, built once and planned on for every link to it.
+pub struct TextFragmentPage {
+    text: String,
+    index: search::SearchIndex,
+    replay: OnceLock<ReplayIndex>,
+}
+
+impl TextFragmentPage {
+    pub fn new(text: String) -> Self {
+        let index = search::SearchIndex::new(&text);
+        Self { text, index, replay: OnceLock::new() }
+    }
+
+    fn search(&self) -> TextSearch<'_> {
+        TextSearch {
+            text: ScalarText::new(&self.text),
+            index: std::borrow::Cow::Borrowed(&self.index),
+            replay: std::borrow::Cow::Borrowed(&self.replay),
         }
     }
 }
@@ -266,6 +295,16 @@ fn leading_label_length(value: &str) -> usize {
         .iter()
         .filter_map(|pattern| pattern.find(value))
         .find(|found| found.end() < trimmed_end.len())
+        .map_or_else(|| provision_number_length(value), |found| utf16_len(&value[..found.end()]))
+}
+
+/// A provision's bare number opening its text ("49.2 Where", "6A The"), which a statute's page prints apart from the
+/// words, as it prints "[85]" apart from a paragraph's.
+fn provision_number_length(value: &str) -> usize {
+    static NUMBER: OnceLock<Regex> = OnceLock::new();
+    js_regex(r"(?u)^[0-9]{1,4}(?:\.[0-9]{1,4})*[A-Z]?\s+", &NUMBER).find(value)
+        .filter(|found| value[found.end()..].chars().next()
+            .is_some_and(|next| next.is_uppercase() || matches!(next, '(' | '\u{201C}' | '"')))
         .map_or(0, |found| utf16_len(&value[..found.end()]))
 }
 
@@ -1441,6 +1480,8 @@ struct MaximalPlanner<'replay, 'document> {
     pdf: bool,
     publisher_may_annotate_legal_reference: bool,
     split_html_source_blocks: bool,
+    /// The page renders the document's own text: no seam prints otherwise there.
+    source_page: bool,
     atom_cache: HashMap<usize, LexicalTerm>,
     atomic_options_cache: HashMap<usize, Vec<LexicalTerm>>,
     /// endpoint_terms_from_start and _end by (from the start, first word, last word, context): a range plan reads a
@@ -1476,12 +1517,14 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         pdf: bool,
         publisher_may_annotate_legal_reference: bool,
         split_html_source_blocks: bool,
+        source_page: bool,
     ) -> Self {
         Self {
             replay,
             pdf,
             publisher_may_annotate_legal_reference,
             split_html_source_blocks,
+            source_page,
             atom_cache: HashMap::new(),
             atomic_options_cache: HashMap::new(),
             endpoint_cache: HashMap::new(),
@@ -1492,6 +1535,11 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
 
     fn line_first_word(&self, word: usize) -> usize {
         source_line_first_word(self.replay, word)
+    }
+
+    /// Whether a term holds a seam the page may print otherwise ([`has_seam`]): never on a page of the source text.
+    fn seamed(&self, text: &str) -> bool {
+        !self.source_page && has_seam(text)
     }
 
     fn line_last_word(&self, word: usize) -> usize {
@@ -1612,7 +1660,8 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         allow_line_break: bool,
     ) -> bool {
         let gap = self.replay.document.slice(left.end, right.start);
-        (allow_line_break
+        // On a page each of the text's lines is a block of its own, which no term crosses; a PDF's lines are not.
+        (allow_line_break && self.pdf
             || !gap
                 .chars()
                 .any(|character| matches!(character, '\r' | '\n')))
@@ -1661,7 +1710,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
 
     fn exact_target_for(&mut self, piece: MaximalCorePiece) -> Option<LexicalTerm> {
         for word in piece.first_word..piece.last_word {
-            if self.has_structural_seam(word, word + 1) {
+            if self.has_structural_seam(word, word + 1)
+                || !self.pdf && source_line_break_between(self.replay, word, word + 1)
+            {
                 return None;
             }
         }
@@ -1904,8 +1955,10 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             end: span.end,
             first_word: span.first_word,
             last_word: span.last_word,
+            // A piece whose printed label was trimmed takes context only from its own line: the label alone, which
+            // context_allowed admits as a term of its own (a passage a headnote repeats is told apart by its number).
             context_first_word: if clamp_leading_context {
-                span.first_word
+                same_line_first.min(span.first_word)
             } else {
                 adjacent_first
             },
@@ -2074,17 +2127,16 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         self.furniture_cache.get(&word).copied().flatten()
     }
 
-    fn contains_label_furniture(&mut self, term: &LexicalTerm) -> bool {
-        (term.first_word..=term.last_word)
-            .any(|word| self.source_furniture(word) == Some(FurnitureKind::Label))
-    }
-
     fn context_allowed(
         &mut self,
         term: &LexicalTerm,
         desired: PhraseSpan,
         required: &HashSet<usize>,
     ) -> bool {
+        // A printed label is context only alone: a page sets it apart from the words (an anchor, a run of no-break
+        // spaces), so a browser finds it as a term of its own but not run into them.
+        let label_only = (term.first_word..=term.last_word)
+            .all(|word| self.source_furniture(word) == Some(FurnitureKind::Label));
         for word in term.first_word..=term.last_word {
             let furniture = self.source_furniture(word);
             if self.split_html_source_blocks && furniture == Some(FurnitureKind::Label) {
@@ -2106,7 +2158,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     return false;
                 }
             } else if furniture == Some(FurnitureKind::Metadata)
-                || furniture == Some(FurnitureKind::Label) && self.pdf
+                || furniture == Some(FurnitureKind::Label) && !label_only && !self.source_page
             {
                 return false;
             }
@@ -2122,6 +2174,10 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
     ) -> Vec<LexicalTerm> {
         let mut allowed = Vec::new();
         for term in terms {
+            // Terms come from the target outward, each a word longer, so once one holds a seam all after it do.
+            if self.seamed(&term.text) {
+                break;
+            }
             if !self.context_allowed(&term, desired, required) {
                 continue;
             }
@@ -2148,22 +2204,17 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         if before.is_none() && after.is_none() {
             return 0;
         }
-        if before.is_some_and(|term| self.contains_label_furniture(term))
-            || after.is_some_and(|term| self.contains_label_furniture(term))
-        {
-            return 2;
-        }
         if before.is_some_and(|term| self.has_structural_seam(term.last_word, piece.first_word))
             || after.is_some_and(|term| self.has_structural_seam(piece.last_word, term.first_word))
         {
-            return 4;
+            return 3;
         }
         if before.is_some_and(|term| {
             term.first_word < requested_first || term.last_word > requested_last
         }) || after.is_some_and(|term| {
             term.first_word < requested_first || term.last_word > requested_last
         }) {
-            3
+            2
         } else {
             1
         }
@@ -2184,7 +2235,8 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                 *shortest = Some(directive);
             }
         };
-        for target in exact_targets {
+        let exact_targets = exact_targets.iter().filter(|target| !self.seamed(&target.text)).cloned().collect::<Vec<_>>();
+        for target in &exact_targets {
             for (before, after) in contexts {
                 if target.form == LexicalForm::Word
                     && before.is_none()
@@ -2271,8 +2323,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     .collect::<Vec<_>>();
                 directive = self.shortest_for(piece, &exact_targets, &suffix_only);
             }
-            let mut contexts_by_class =
-                [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+            let mut contexts_by_class = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
             for before in &prefix {
                 let class =
                     self.context_class(piece, Some(before), None, requested_first, requested_last);
@@ -2309,11 +2360,62 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         directive
     }
 
-    /// A start term's words before its first hyphen (from_start), or an end term's after its last: a term that ends
-    /// or begins at the word boundary a hyphen makes, with no hyphen in it.
-    fn hyphen_free_part(&self, term: &LexicalTerm, from_start: bool) -> Option<LexicalTerm> {
+    /// The piece, then the piece read on to its sentence's end, back to its sentence's start, and both, within its
+    /// line and short of a printed label: where only a context past a seam tells the piece apart (a passage a headnote
+    /// repeats but for its next sentence, or its paragraph's number), the piece read to the seam takes that context
+    /// as a term of its own, at the cost of painting the rest of the sentence.
+    fn sentence_extensions(&mut self, piece: MaximalCorePiece) -> Vec<MaximalCorePiece> {
         let words = self.replay.document.tokens();
-        let hyphen_after = |index: usize| has_hyphen(self.replay.document.slice(words[index].end, words[index + 1].start));
+        let seam = |planner: &mut Self, left: usize| {
+            has_seam(planner.replay.document.slice(words[left].start, words[left + 1].end))
+                || source_line_break_between(planner.replay, left, left + 1)
+                || planner.has_structural_seam(left, left + 1)
+                || [left, left + 1].iter().any(|&word| planner.source_furniture(word) == Some(FurnitureKind::Label))
+        };
+        let mut last = piece.last_word;
+        while last < piece.context_last_word && !seam(self, last) {
+            last += 1;
+        }
+        let mut first = piece.first_word;
+        while first > piece.context_first_word && !seam(self, first - 1) {
+            first -= 1;
+        }
+        let read = |first_word: usize, last_word: usize| MaximalCorePiece {
+            start: words[first_word].start, end: words[last_word].end, first_word, last_word, ..piece
+        };
+        let mut pieces = vec![piece];
+        for extended in [read(piece.first_word, last), read(first, piece.last_word), read(first, last)] {
+            if !pieces.iter().any(|other| other.first_word == extended.first_word && other.last_word == extended.last_word) {
+                pieces.push(extended);
+            }
+        }
+        pieces
+    }
+
+    /// The piece's parts between its seams ([`has_seam`]), where it has any.
+    fn seam_parts(&self, piece: MaximalCorePiece) -> Vec<MaximalCorePiece> {
+        let words = self.replay.document.tokens();
+        let mut parts = Vec::new();
+        let mut first = piece.first_word;
+        for left in piece.first_word..piece.last_word {
+            if has_seam(self.replay.document.slice(words[left].start, words[left + 1].end)) {
+                parts.push(MaximalCorePiece { start: words[first].start, end: words[left].end, first_word: first,
+                    last_word: left, ..piece });
+                first = left + 1;
+            }
+        }
+        if parts.is_empty() {
+            return parts;
+        }
+        parts.push(MaximalCorePiece { start: words[first].start, end: piece.end, first_word: first, ..piece });
+        parts
+    }
+
+    /// A start term's words before its first seam (from_start), or an end term's after its last: a term that ends or
+    /// begins at the word boundary a hyphen or a sentence's end makes, with no seam in it.
+    fn seamless_part(&self, term: &LexicalTerm, from_start: bool) -> Option<LexicalTerm> {
+        let words = self.replay.document.tokens();
+        let hyphen_after = |index: usize| has_seam(self.replay.document.slice(words[index].start, words[index + 1].end));
         let (start, end, first_word, last_word) = if from_start {
             let cut = (term.first_word..term.last_word).find(|&index| hyphen_after(index))?;
             (term.start, words[cut].end, term.first_word, cut)
@@ -2322,7 +2424,24 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             (words[cut + 1].start, term.end, cut + 1, term.last_word)
         };
         let text = self.replay.fragment_spelling(self.replay.document.slice(start, end));
-        (!has_hyphen(&text)).then_some(LexicalTerm { text, start, end, first_word, last_word, form: LexicalForm::Run })
+        (!has_seam(&text)).then_some(LexicalTerm { text, start, end, first_word, last_word, form: LexicalForm::Run })
+    }
+
+    /// `term` without the quotation marks it opens or closes on, where any remain and none are left inside it.
+    fn quote_free(&self, term: &LexicalTerm) -> Option<LexicalTerm> {
+        let quote = |character: char| has_quote_mark(character.encode_utf8(&mut [0; 4]));
+        let source = self.replay.document.slice(term.start, term.end);
+        let opened = source.trim_start_matches(quote);
+        let inner = opened.trim_end_matches(quote);
+        if inner.len() == source.len() || inner.trim().is_empty() {
+            return None;
+        }
+        let start = term.start + utf16_len(&source[..source.len() - opened.len()]);
+        let end = start + utf16_len(inner);
+        let text = self.replay.fragment_spelling(inner);
+        (!has_seam(&text)).then_some(LexicalTerm {
+            text, start, end, first_word: term.first_word, last_word: term.last_word, form: LexicalForm::Run,
+        })
     }
 
     fn range_directive_for(
@@ -2336,11 +2455,11 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         allow_ordered_start: bool,
     ) -> Option<String> {
         self.range_directives_for(piece, head_piece, tail_piece, desired, required, require_multiword_endpoints,
-            allow_ordered_start).map(|(whole, preferred)| preferred.unwrap_or(whole))
+            allow_ordered_start).map(|(shortest, preferred)| preferred.unwrap_or(shortest))
     }
 
-    /// The shortest range directive with its endpoints read whole, and the one preferred to it where that one has a
-    /// hyphen in a term and a directive with none selects the piece.
+    /// The shortest range directive, and the one preferred to it where that one has a one-word endpoint: one whose
+    /// endpoints have three words or more, else two.
     fn range_directives_for(
         &mut self,
         piece: MaximalCorePiece,
@@ -2375,21 +2494,33 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             }
             tails.push(term);
         }
-        // The endpoints read whole come first; then each hyphenated one cut at the word boundary its first hyphen
-        // (a start) or last hyphen (an end) makes.
-        let (whole_heads, whole_tails) = (heads.len(), tails.len());
-        for (from_start, whole) in [(true, whole_heads), (false, whole_tails)] {
-            for index in 0..whole {
-                let term = if from_start { &heads[index] } else { &tails[index] };
-                let Some(cut) = self.hyphen_free_part(term, from_start)
-                    .filter(|cut| !require_multiword_endpoints || cut.first_word < cut.last_word)
-                else {
-                    continue;
-                };
-                let terms = if from_start { &mut heads } else { &mut tails };
-                if !terms.iter().any(|term| term.first_word == cut.first_word && term.last_word == cut.last_word) {
-                    terms.push(cut);
+        // Each endpoint with a seam cut at the word boundary its first seam (a start) or last seam (an end) makes, and
+        // each that opens or closes on a quotation mark read without it: no term holds a seam.
+        for from_start in [true, false] {
+            let terms = if from_start { &heads } else { &tails };
+            let variants = terms.iter()
+                .flat_map(|term| [self.seamless_part(term, from_start), self.quote_free(term)])
+                .flatten()
+                .filter(|term| !require_multiword_endpoints || term.first_word < term.last_word)
+                .collect::<Vec<_>>();
+            let terms = if from_start { &mut heads } else { &mut tails };
+            terms.retain(|term| !self.seamed(&term.text));
+            for term in variants {
+                if !terms.iter().any(|other| other.start == term.start && other.end == term.end) {
+                    terms.push(term);
                 }
+            }
+            // From the piece's edge inward, shortest first.
+            let reach = |term: &LexicalTerm| term.last_word - term.first_word;
+            terms.sort_by_key(reach);
+            // An endpoint longer than the first that the document holds once, of three words or more, only lengthens
+            // a directive: each pairing it is in, that one makes shorter and as surely. A paragraph's passage offers
+            // an endpoint for each of its words up to a seam.
+            if let Some(unique) = terms.iter().position(|term| reach(term) >= 2
+                && self.replay_exact_text(&term.text, "", "").count == 1)
+            {
+                let longest = reach(&terms[unique]);
+                terms.retain(|term| reach(term) <= longest);
             }
         }
         if heads.is_empty() || tails.is_empty() {
@@ -2425,22 +2556,6 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         } else {
             Vec::new()
         };
-        let one_sided = prefixes
-            .iter()
-            .cloned()
-            .map(|prefix| (Some(prefix), None))
-            .chain(suffixes.iter().cloned().map(|suffix| (None, Some(suffix))))
-            .collect::<Vec<_>>();
-        let two_sided = prefixes
-            .iter()
-            .cloned()
-            .flat_map(|prefix| {
-                suffixes
-                    .iter()
-                    .cloned()
-                    .map(move |suffix| (Some(prefix.clone()), Some(suffix)))
-            })
-            .collect::<Vec<_>>();
         // For each tail: None when its spelling has no browser term, otherwise the last word
         // between the earliest head end and the tail where the tail's term also matches. A
         // pairing is rejected exactly when that word falls after its head, which is what scanning
@@ -2481,104 +2596,124 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             .iter()
             .map(|tail| encoded_fragment(&tail.text).len())
             .collect::<Vec<_>>();
-        // The shortest directive the pairings select, with the endpoints read whole, or (hyphen_free) only of terms with
-        // no hyphen, the cut endpoints included.
-        let search = |hyphen_free: bool| -> Option<String> {
-        for contexts in [
-            &[(None, None)][..],
-            one_sided.as_slice(),
-            two_sided.as_slice(),
-        ] {
-            let context_lengths = contexts
-                .iter()
-                .map(
-                    |(prefix, suffix): &(Option<LexicalTerm>, Option<LexicalTerm>)| {
-                        encoded_context(prefix.as_ref().map_or("", |term| term.text.as_str()), true)
-                            .len()
-                            + encoded_context(
-                                suffix.as_ref().map_or("", |term| term.text.as_str()),
-                                false,
-                            )
-                            .len()
-                    },
-                )
-                .collect::<Vec<_>>();
-            let mut shortest = None::<String>;
-            // An endpoint replays the same way for every partner, so its
-            // uniqueness under a context is decided once per endpoint and
-            // context rather than once per head and tail pairing. Measured on
-            // a Bhasin sentence the judgment repeats: 84,000 replays and 10 s
-            // for one plan before this, since every head was re-replayed for
-            // every tail and the reverse.
-            let mut unique_heads = HashMap::<(usize, String), bool>::new();
-            let mut unique_tails = HashMap::<(usize, String), bool>::new();
-            for (head_index, head) in heads.iter().enumerate() {
-                for (tail_index, tail) in tails.iter().enumerate() {
-                    if head.last_word >= tail.first_word
-                        || (hyphen_free && (has_hyphen(&head.text) || has_hyphen(&tail.text)))
-                        || (!hyphen_free && (head_index >= whole_heads || tail_index >= whole_tails))
-                    {
+        // A one-word endpoint: page text the provider's copy lacks (a title, a table of contents, a marginal note) may
+        // hold the word before the passage, so a browser starts or ends the range there.
+        let single = |term: &LexicalTerm| term.first_word == term.last_word;
+        // A short endpoint: two words a page's own text may hold before the passage just as one word may.
+        let short = |term: &LexicalTerm| term.last_word - term.first_word + 1 < 3;
+        // Encoded lengths of the contexts.
+        let prefix_lengths = prefixes.iter().map(|term| encoded_context(&term.text, true).len()).collect::<Vec<_>>();
+        let suffix_lengths = suffixes.iter().map(|term| encoded_context(&term.text, false).len()).collect::<Vec<_>>();
+        // The shortest directive the pairings select: (strictness 0) of any endpoints; (2) only of endpoints of more
+        // than one word; (3) only of endpoints of three words or more. With whether it has a one-word endpoint. No
+        // context is tried before one-sided ones, and those before two-sided ones.
+        let search = |strictness: u8| -> Option<(String, bool)> {
+        // Whether the pairing may be tried, and whether its start is read in order (no uniqueness asked of it).
+        let pairing = |head_index: usize, tail_index: usize| -> Option<bool> {
+            let (head, tail) = (&heads[head_index], &tails[tail_index]);
+            if head.last_word >= tail.first_word
+                || (strictness > 1 && (single(head) || single(tail)))
+                || (strictness > 2 && (short(head) || short(tail)))
+            {
+                return None;
+            }
+            let ordered_start = allow_ordered_start && !self.pdf && head.last_word - head.first_word + 1 >= 3;
+            if !ordered_start {
+                // Chromium would end the range at an earlier copy of the tail between
+                // the head and this tail; the last such copy is the one that decides it.
+                let earlier = tail_earlier[tail_index]?;
+                if earlier.is_some_and(|word| word > head.last_word) {
+                    return None;
+                }
+            }
+            Some(ordered_start)
+        };
+        // Contexts are read from the piece outward, each one word longer than the one before, so a longer one only
+        // drops matches a shorter one makes.
+        let (prefix_count, suffix_count) = (prefixes.len(), suffixes.len());
+        // An endpoint replays the same way for every partner, so its
+        // uniqueness under a context is decided once per endpoint and
+        // context rather than once per head and tail pairing. Measured on
+        // a Bhasin sentence the judgment repeats: 84,000 replays and 10 s
+        // for one plan before this, since every head was re-replayed for
+        // every tail and the reverse.
+        let mut unique_heads = HashMap::<(usize, Option<usize>), bool>::new();
+        let mut unique_tails = HashMap::<(usize, Option<usize>), bool>::new();
+        fn context_text(terms: &[LexicalTerm], index: Option<usize>) -> &str {
+            index.map_or("", |index| terms[index].text.as_str())
+        }
+        for sides in 0..3 {
+            let mut shortest = None::<(String, bool)>;
+            for head_index in 0..heads.len() {
+                for tail_index in 0..tails.len() {
+                    let Some(ordered_start) = pairing(head_index, tail_index) else {
                         continue;
-                    }
-                    let ordered_start = allow_ordered_start
-                        && !self.pdf
-                        && head.last_word - head.first_word + 1 >= 3;
-                    if !ordered_start {
-                        // Chromium would end the range at an earlier copy of the tail between
-                        // the head and this tail; the last such copy is the one that decides it.
-                        let Some(earlier) = &tail_earlier[tail_index] else {
-                            continue;
-                        };
-                        if earlier.is_some_and(|word| word > head.last_word) {
-                            continue;
-                        }
-                    }
-                    for ((prefix, suffix), context_length) in contexts.iter().zip(&context_lengths)
-                    {
-                        let prefix = prefix.as_ref().map_or("", |term| term.text.as_str());
-                        let suffix = suffix.as_ref().map_or("", |term| term.text.as_str());
-                        if hyphen_free && (has_hyphen(prefix) || has_hyphen(suffix)) {
-                            continue;
-                        }
-                        let length = "text=,".len()
-                            + context_length
-                            + head_lengths[head_index]
-                            + tail_lengths[tail_index];
-                        // Only a shorter directive can replace the one already found,
-                        // so a pairing that cannot be shorter is never replayed.
-                        if shortest
-                            .as_ref()
-                            .is_some_and(|current| length >= current.len())
-                        {
-                            continue;
-                        }
+                    };
+                    let (head, tail) = (&heads[head_index], &tails[tail_index]);
+                    let endpoints = "text=,".len() + head_lengths[head_index] + tail_lengths[tail_index];
+                    let length = |prefix: Option<usize>, suffix: Option<usize>| endpoints
+                        + prefix.map_or(0, |index| prefix_lengths[index]) + suffix.map_or(0, |index| suffix_lengths[index]);
+                    // Whether the pairing under these contexts selects the piece; the shortest such kept.
+                    let mut try_contexts = |prefix: Option<usize>, suffix: Option<usize>,
+                                            shortest: &mut Option<(String, bool)>| {
+                        let (prefix_text, suffix_text) = (context_text(&prefixes, prefix), context_text(&suffixes, suffix));
                         if !ordered_start {
-                            let head_unique = *unique_heads
-                                .entry((head_index, prefix.to_string()))
-                                .or_insert_with(|| {
-                                    self.replay_exact_text(&head.text, prefix, "").count == 1
-                                });
+                            let head_unique = *unique_heads.entry((head_index, prefix)).or_insert_with(|| {
+                                self.replay_exact_text(&head.text, prefix_text, "").count == 1
+                            });
                             if !head_unique {
-                                continue;
+                                return false;
                             }
-                            let tail_unique = *unique_tails
-                                .entry((tail_index, suffix.to_string()))
-                                .or_insert_with(|| {
-                                    self.replay_exact_text(&tail.text, "", suffix).count == 1
-                                });
+                            let tail_unique = *unique_tails.entry((tail_index, suffix)).or_insert_with(|| {
+                                self.replay_exact_text(&tail.text, "", suffix_text).count == 1
+                            });
                             if !tail_unique {
-                                continue;
+                                return false;
                             }
                         }
-                        if !selects(
-                            piece,
-                            self.replay_range_text(&head.text, &tail.text, prefix, suffix),
-                        ) {
-                            continue;
+                        if !selects(piece, self.replay_range_text(&head.text, &tail.text, prefix_text, suffix_text)) {
+                            return false;
                         }
-                        shortest = Some(text_range_directive_with_context(
-                            &head.text, &tail.text, prefix, suffix,
-                        ));
+                        if shortest.as_ref().is_none_or(|(current, _)| length(prefix, suffix) < current.len()) {
+                            *shortest = Some((
+                                text_range_directive_with_context(&head.text, &tail.text, prefix_text, suffix_text),
+                                single(head) || single(tail)));
+                        }
+                        true
+                    };
+                    // Only a shorter directive can replace the one already found, so a one-sided or bare pairing that
+                    // cannot be shorter is never replayed.
+                    let shorter = |shortest: &Option<(String, bool)>, prefix: Option<usize>, suffix: Option<usize>|
+                        shortest.as_ref().is_none_or(|(current, _)| length(prefix, suffix) < current.len());
+                    match sides {
+                        0 => {
+                            if shorter(&shortest, None, None) {
+                                try_contexts(None, None, &mut shortest);
+                            }
+                        }
+                        1 => {
+                            let one_sided = (0..prefix_count).map(|index| (Some(index), None))
+                                .chain((0..suffix_count).map(|index| (None, Some(index))));
+                            for (prefix, suffix) in one_sided {
+                                if shorter(&shortest, prefix, suffix) {
+                                    try_contexts(prefix, suffix, &mut shortest);
+                                }
+                            }
+                        }
+                        _ => {
+                            // The shortest suffix that selects with each prefix is no longer than with the prefix
+                            // before it, so the pairings worth reading form a staircase: each prefix in turn, its
+                            // suffix shortened while the pairing still selects.
+                            let mut suffix = suffix_count;
+                            for prefix in 0..prefix_count {
+                                if suffix_count == 0 || !shorter(&shortest, Some(prefix), Some(0)) {
+                                    break;
+                                }
+                                while suffix > 0 && try_contexts(Some(prefix), Some(suffix - 1), &mut shortest) {
+                                    suffix -= 1;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2588,13 +2723,11 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         }
         None
         };
-        // A publisher may print a hyphen as another hyphen character (CanLII's legislation prints U+2011 where provider
-        // text has "-") and a browser matches neither for the other: where the directive found has a hyphen, one with no
-        // hyphen in any term is preferred.
-        let found = search(false)?;
-        // A directive spells its terms' hyphens encoded ("-" alone marks a context).
-        let hyphenated = ["%2D", "%E2%80%90", "%E2%80%91"].iter().any(|hyphen| found.contains(hyphen));
-        let preferred = if hyphenated { search(true) } else { None };
+        // One with endpoints of three words or more is preferred; else, where the one found has a one-word endpoint,
+        // one with endpoints of two words or more.
+        let (found, single_endpoint) = search(0)?;
+        let preferred = search(3).or_else(|| if single_endpoint { search(2) } else { None })
+            .map(|(directive, _)| directive).filter(|directive| *directive != found);
         Some((found, preferred))
     }
 
@@ -2675,11 +2808,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
     }
 
     fn bare_atomic_directive(&mut self, piece: MaximalCorePiece) -> Option<String> {
-        self.exact_target_for(piece).and_then(|target| {
-            let replay = self.replay_exact_text(&target.text, "", "");
-            (replay.count == 1 && selects(piece, replay.first))
-                .then(|| text_directive(&target.text, "", ""))
-        })
+        let target = self.exact_target_for(piece).filter(|target| !self.seamed(&target.text))?;
+        let replay = self.replay_exact_text(&target.text, "", "");
+        (replay.count == 1 && selects(piece, replay.first)).then(|| text_directive(&target.text, "", ""))
     }
 
     fn full_exact_directive_across_lines(&mut self, piece: MaximalCorePiece) -> Option<String> {
@@ -2740,34 +2871,6 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     .then(|| text_directive(&target, prefix, suffix))
             })
             .min_by_key(String::len)
-    }
-
-    fn is_one_source_line(&self, piece: MaximalCorePiece) -> bool {
-        !self
-            .replay
-            .document
-            .slice(piece.start, piece.end)
-            .chars()
-            .any(|character| matches!(character, '\r' | '\n'))
-    }
-
-    fn ends_after_sentence_opening_capital(&self, piece: MaximalCorePiece) -> bool {
-        if piece.first_word == piece.last_word {
-            return false;
-        }
-        let words = self.replay.document.tokens();
-        let gap = self
-            .replay
-            .document
-            .slice(words[piece.last_word - 1].end, words[piece.last_word].start);
-        gap.contains('.')
-            && self
-                .replay
-                .document
-                .slice(words[piece.last_word].start, words[piece.last_word].end)
-                .chars()
-                .next()
-                .is_some_and(char::is_uppercase)
     }
 
     fn starts_across_sentence_opening_capital(&self, piece: MaximalCorePiece) -> bool {
@@ -2868,6 +2971,59 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
 /// Hyphen characters a publisher may print in place of one another.
 fn has_hyphen(text: &str) -> bool {
     text.contains(['-', '\u{2010}', '\u{2011}'])
+}
+
+/// Where a publisher may set the words differently from the provider's copy, so that a browser finds neither for the
+/// other: a hyphen (printed as another hyphen character: CanLII's legislation prints U+2011 where the provider has
+/// "-"), and the space after a full stop, question or exclamation mark (set as a no-break space and a space, which a
+/// browser reads as two).
+/// Quotation marks and primes: a browser folds none of them onto another (curly against straight quotes, low,
+/// reversed and guillemet quotes, primes against apostrophes), and a publisher may print any of them for another.
+fn has_quote_mark(text: &str) -> bool {
+    text.contains(['"', '\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}', '\u{201C}', '\u{201D}', '\u{201E}',
+        '\u{201F}', '\u{AB}', '\u{BB}', '\u{2032}', '\u{2033}'])
+}
+
+/// Whether a term holds a seam a page may print otherwise than the source: a sentence's end (a page may space it with
+/// a no-break space and a space) or a hyphen (U+2011 for `-`). No term holds one; a seam falls only between terms,
+/// where a browser takes any spacing. Measured on the cached pages (2026-10-18): a term across a sentence's end
+/// painted nothing on 36% of CanLII links and 50% of publisher links, against 3% and 2% with no seam; quotation
+/// marks, apostrophes and dashes failed about one in ten, so a term may hold them (endpoints are also offered
+/// without the marks they open or close on).
+fn has_seam(text: &str) -> bool {
+    let words = text.split_whitespace().collect::<Vec<_>>();
+    has_hyphen(text) || words.windows(2).any(|pair| sentence_end(pair[0], pair[1]))
+}
+
+/// Abbreviations whose full stop is no sentence's end.
+const ABBREVIATIONS: &[&str] = &["Mr", "Ms", "Mrs", "Mme", "Dr", "St", "Jr", "Sr", "Hon", "No", "Nos", "Co", "Inc",
+    "Ltd", "Corp", "s", "ss", "p", "pp", "para", "paras", "v", "vs", "c", "ch", "art", "arts", "al", "cf", "ed",
+    "eds", "Vol", "vol", "Rev", "Stat", "Reg", "Supp", "fig", "approx", "et"];
+
+/// Whether `word` ends a sentence before `next`: a full stop, question or exclamation mark (inside any closing marks)
+/// before a word that opens on a capital, the stop no abbreviation's (a single letter, "U.S.", "Mr.", "s.", "v.").
+/// Pages set an abbreviation's stop with one space and often a sentence's with a no-break space and a space: of
+/// some 36,000 abbreviation stops on cached SCC and CanLII pages none had the two, against 43-46% of sentence ends.
+fn sentence_end(word: &str, next: &str) -> bool {
+    let opens_capital = next.trim_start_matches(|character: char| !character.is_alphanumeric())
+        .chars().next().is_some_and(char::is_uppercase);
+    let word = word.trim_end_matches(is_closing);
+    if !opens_capital {
+        return false;
+    }
+    if word.ends_with(['?', '!']) {
+        return true;
+    }
+    let Some(stem) = word.strip_suffix('.') else {
+        return false;
+    };
+    let stem = stem.trim_start_matches(|character: char| !character.is_alphanumeric());
+    !(stem.chars().count() <= 1 || stem.contains('.') || ABBREVIATIONS.contains(&stem))
+}
+
+/// A closing quotation mark or bracket a sentence may end inside.
+fn is_closing(character: char) -> bool {
+    matches!(character, '"' | '\'' | '\u{2019}' | '\u{201D}' | ')' | ']' | '\u{BB}')
 }
 
 fn better_cover(left: Option<Vec<Candidate>>, right: Vec<Candidate>) -> Vec<Candidate> {
@@ -3090,6 +3246,7 @@ fn build_fragment_plan(
     pdf: bool,
     publisher_may_annotate_legal_reference: bool,
     split_html_source_blocks: bool,
+    source_page: bool,
 ) -> TextFragmentPlan {
     // A block that is its document's whole text reads the document's index, not one built again.
     let block_search;
@@ -3123,7 +3280,7 @@ fn build_fragment_plan(
         selections.push(selection);
     }
     build_selected_fragment_plan(document, &selections, pdf,
-        publisher_may_annotate_legal_reference, split_html_source_blocks, false, complete)
+        publisher_may_annotate_legal_reference, split_html_source_blocks, false, complete, source_page)
 }
 
 /// `selected` of `text` without its printed label ("[85]", "(a)") or trailing citation artifact, which a publisher
@@ -3151,6 +3308,7 @@ fn build_selected_fragment_plan(
     split_html_source_blocks: bool,
     exact_members: bool,
     mut complete: bool,
+    source_page: bool,
 ) -> TextFragmentPlan {
     let replay = BrowserReplay::new(document, split_html_source_blocks);
     let mut planner = MaximalPlanner::new(
@@ -3158,6 +3316,7 @@ fn build_selected_fragment_plan(
         pdf,
         publisher_may_annotate_legal_reference,
         split_html_source_blocks,
+        source_page,
     );
     let source_words = document.tokens();
     let mut built = Vec::<BuiltPiece>::new();
@@ -3225,18 +3384,9 @@ fn build_selected_fragment_plan(
                 && first_word < last_word
                 && last_word - first_word < 32
             {
-                if let Some(directive) = planner.bare_atomic_directive(whole) {
-                    built.push(planner.candidate_for(whole, quote_index, directive).piece);
-                    continue;
-                }
-                if let Some(directive) = planner.atomic_directive_for(
-                    whole,
-                    quote_index,
-                    first_word,
-                    last_word,
-                    desired,
-                    &required,
-                ) {
+                if let Some(directive) = planner.bare_atomic_directive(whole).or_else(|| {
+                    planner.atomic_directive_for(whole, quote_index, first_word, last_word, desired, &required)
+                }) {
                     built.push(planner.candidate_for(whole, quote_index, directive).piece);
                     continue;
                 }
@@ -3263,32 +3413,35 @@ fn build_selected_fragment_plan(
                         continue;
                     }
                 }
-                let conservative = range_pieces.and_then(|(head, tail)| {
-                    planner.range_directives_for(whole, head, tail, desired, &required, false, false)
-                });
-                // Whether an exact directive takes precedence is read from the directive with its endpoints whole.
-                let exact_precedence = conservative.as_ref().is_some_and(|(directive, _)| {
-                    let needs_external_prefix = directive
-                        .strip_prefix("text=")
-                        .and_then(|value| value.split(',').next())
-                        .is_some_and(|start| start.ends_with('-'));
-                    whole_stays_in_structural_piece
-                        && planner.is_one_source_line(whole)
-                        && needs_external_prefix
-                        && !planner.ends_after_sentence_opening_capital(whole)
-                });
-                if exact_precedence {
-                    if let Some(directive) = planner.bare_atomic_directive(whole) {
+                // A piece with no seam in it reads the same on any page, so its exact directive is as sure as a range
+                // and asks every word of it, not two ends a page's other text (a summary, a headnote) may share.
+                if whole_stays_in_structural_piece {
+                    if let Some(directive) =
+                        planner.atomic_directive_for(whole, quote_index, first_word, last_word, desired, &required)
+                    {
                         built.push(planner.candidate_for(whole, quote_index, directive).piece);
                         continue;
                     }
                 }
-                let conservative = conservative.map(|(whole, preferred)| preferred.unwrap_or(whole));
+                let conservative = range_pieces.and_then(|(head, tail)| {
+                    planner.range_directive_for(whole, head, tail, desired, &required, false, false)
+                });
                 let ordered = range_pieces.and_then(|(head, tail)| {
                     planner.range_directive_for(whole, head, tail, desired, &required, false, true)
                 });
-                if let Some(directive) = ordered.or(conservative) {
-                    built.push(planner.candidate_for(whole, quote_index, directive).piece);
+                // Where no range selects the piece, an exact directive of it, or else of it read on to its sentence's
+                // edges (back to its paragraph's first words, after the printed label a page sets apart).
+                let found = ordered.or(conservative).map(|directive| (whole, directive)).or_else(|| {
+                    if !whole_stays_in_structural_piece {
+                        return None;
+                    }
+                    planner.sentence_extensions(whole).into_iter().find_map(|piece| {
+                        planner.atomic_directive_for(piece, quote_index, first_word, last_word, desired, &required)
+                            .map(|directive| (piece, directive))
+                    })
+                });
+                if let Some((piece, directive)) = found {
+                    built.push(planner.candidate_for(piece, quote_index, directive).piece);
                     continue;
                 }
             }
@@ -3366,6 +3519,16 @@ fn build_selected_fragment_plan(
                         }
                         add_candidate(candidate, &mut candidates, &mut candidate_keys);
                     }
+                } else if !pdf {
+                    // A piece no one directive selects, read a part between seams at a time (a quotation whose
+                    // first sentence a headnote repeats): each part takes the directive it can, the cover the rest.
+                    for part in planner.seam_parts(piece) {
+                        if let Some(candidate) =
+                            planner.candidate_for_piece(part, quote_index, first_word, last_word, desired, &required)
+                        {
+                            add_candidate(candidate, &mut candidates, &mut candidate_keys);
+                        }
+                    }
                 }
             }
 
@@ -3391,45 +3554,73 @@ fn build_selected_fragment_plan(
                     add_candidate(candidate, &mut range_candidates, &mut range_candidate_keys);
                 }
             }
-            for (head_index, head) in
-                line_pieces
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .take(if split_html_source_blocks {
-                        0
-                    } else {
-                        line_pieces.len()
-                    })
-            {
-                for tail in line_pieces.iter().copied().skip(head_index + 1) {
-                    let candidate_first = first_word.max(head.first_word);
-                    let candidate_last = last_word.min(tail.last_word);
-                    if candidate_first >= candidate_last {
+            // The range from one line's first word in the piece to another's last.
+            let line_range = |planner: &mut MaximalPlanner<'_, '_>, head: MaximalCorePiece, tail: MaximalCorePiece| {
+                let candidate_first = first_word.max(head.first_word);
+                let candidate_last = last_word.min(tail.last_word);
+                if candidate_first >= candidate_last {
+                    return None;
+                }
+                let span = planner.core_piece(
+                    PhraseSpan {
+                        start: source_words[candidate_first].start,
+                        end: source_words[candidate_last].end,
+                        first_word: candidate_first,
+                        last_word: candidate_last,
+                    },
+                    clamp_leading && candidate_first == desired.first_word,
+                    clamp_trailing && candidate_last == desired.last_word,
+                );
+                let mut range_head = head;
+                range_head.first_word = candidate_first;
+                range_head.start = source_words[candidate_first].start;
+                let mut range_tail = tail;
+                range_tail.last_word = candidate_last;
+                range_tail.end = source_words[candidate_last].end;
+                planner.range_directive_for(span, range_head, range_tail, desired, &required, pdf, !pdf)
+                    .map(|directive| planner.candidate_for(span, quote_index, directive))
+            };
+            let lines = line_pieces.iter().copied()
+                .filter(|line| line.first_word <= last_word && line.last_word >= first_word)
+                .collect::<Vec<_>>();
+            if pdf {
+                for (head_index, head) in lines.iter().copied().enumerate() {
+                    for tail in lines.iter().copied().skip(head_index + 1) {
+                        if let Some(candidate) = line_range(&mut planner, head, tail) {
+                            add_candidate(candidate, &mut range_candidates, &mut range_candidate_keys);
+                        }
+                    }
+                }
+            } else if !split_html_source_blocks && !lines.is_empty() {
+                // Ranges only over the lines no line's own directive covers: each run of them, widened a line at a
+                // time to either side until a range selects it. Every pairing of lines would cost the square of their
+                // number (a passage of hundreds of lines in a judgment of millions of characters).
+                let open = lines.iter().map(|line| {
+                    let (from, to) = (first_word.max(line.first_word), last_word.min(line.last_word));
+                    !candidates.iter().any(|candidate| candidate.piece.first_word <= from && candidate.piece.last_word >= to)
+                }).collect::<Vec<_>>();
+                let last_line = lines.len() - 1;
+                let mut index = 0;
+                while index <= last_line {
+                    if !open[index] {
+                        index += 1;
                         continue;
                     }
-                    let span = planner.core_piece(
-                        PhraseSpan {
-                            start: source_words[candidate_first].start,
-                            end: source_words[candidate_last].end,
-                            first_word: candidate_first,
-                            last_word: candidate_last,
-                        },
-                        clamp_leading && candidate_first == desired.first_word,
-                        clamp_trailing && candidate_last == desired.last_word,
-                    );
-                    let mut range_head = head;
-                    range_head.first_word = candidate_first;
-                    range_head.start = source_words[candidate_first].start;
-                    let mut range_tail = tail;
-                    range_tail.last_word = candidate_last;
-                    range_tail.end = source_words[candidate_last].end;
-                    if let Some(directive) = planner.range_directive_for(
-                        span, range_head, range_tail, desired, &required, pdf, !pdf,
-                    ) {
-                        let candidate = planner.candidate_for(span, quote_index, directive);
-                        add_candidate(candidate, &mut range_candidates, &mut range_candidate_keys);
+                    let first_open = index;
+                    while index < last_line && open[index + 1] {
+                        index += 1;
                     }
+                    for widening in 0..=last_line {
+                        let (head, tail) = (first_open.saturating_sub(widening), (index + widening).min(last_line));
+                        if let Some(candidate) = line_range(&mut planner, lines[head], lines[tail]) {
+                            add_candidate(candidate, &mut range_candidates, &mut range_candidate_keys);
+                            break;
+                        }
+                        if head == 0 && tail == last_line {
+                            break;
+                        }
+                    }
+                    index += 1;
                 }
             }
 
@@ -3578,6 +3769,21 @@ pub fn text_fragment_index(text: &str) -> TextFragmentIndex<'_> {
     TextFragmentIndex(TextSearch::new(text))
 }
 
+/// The plan over a page's own text (`page`, the text a reader shows, as A2AJ Law Web's does): every seam prints as it
+/// does there, so a term may hold one, and a printed label is context like any other word. One directive per block
+/// where that paints the same words.
+pub fn source_text_fragment_plan(block_text: &str, page: &TextFragmentPage, quotes: &[String]) -> TextFragmentPlan {
+    let search = page.search();
+    let source = FragmentText::Text(&search);
+    let base = build_fragment_plan(block_text, source, quotes, false, false, false, true);
+    let blocks = build_fragment_plan(block_text, source, quotes, false, false, true, true);
+    if !blocks.source_safe_complete || crosses_multiple_lettered_breaks(source, &base) {
+        base
+    } else {
+        blocks
+    }
+}
+
 /// text_fragment_plan with its document text's index already built.
 pub fn text_fragment_plan_in(
     block_text: &str,
@@ -3595,6 +3801,7 @@ pub fn text_fragment_plan_in(
         pdf,
         publisher_may_annotate_legal_reference,
         false,
+        false,
     );
     if !split_html_source_blocks {
         return base;
@@ -3606,6 +3813,7 @@ pub fn text_fragment_plan_in(
         pdf,
         publisher_may_annotate_legal_reference,
         true,
+        false,
     );
     if !blocks.source_safe_complete || crosses_multiple_lettered_breaks(source, &base) {
         base
@@ -3682,7 +3890,7 @@ mod tests {
         let fragment = FragmentText::Text(&search);
         let replay = BrowserReplay::new(fragment, false);
         let words = fragment.tokens();
-        let mut planner = MaximalPlanner::new(&replay, true, false, false);
+        let mut planner = MaximalPlanner::new(&replay, true, false, false, false);
         planner.full_exact_directive_across_lines(MaximalCorePiece {
             start: words[first_word].start,
             end: words[last_word].end,

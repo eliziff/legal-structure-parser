@@ -1003,7 +1003,8 @@ pub(super) fn provision_end_before_marginal_notes(text: &ScalarText<'_>, start: 
     let mut notes = 0;
     for position in (first..last).rev() {
         let line = index[position];
-        let value = text.value[line[0]..line[1]].trim();
+        // A provider's markdown sets a note as a heading ("### Commencement of order").
+        let value = text.value[line[0]..line[1]].trim().trim_start_matches('#').trim_start();
         let words = value.split_whitespace().count();
         let structural = cached_regex!(
             VALUE,

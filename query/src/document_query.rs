@@ -20,7 +20,8 @@ pub use source_text::TextStatistics;
 use search::{quote_text, quote_words, PhraseOptions, PhraseSpan};
 pub use search::{tokenize_source_text, DocumentWordSpan};
 pub use text_fragment::{
-    text_fragment_index, text_fragment_plan, text_fragment_plan_in, TextFragmentIndex, TextFragmentPlan,
+    source_text_fragment_plan, text_fragment_index, text_fragment_plan, text_fragment_plan_in, TextFragmentIndex,
+    TextFragmentPage, TextFragmentPlan,
     TextFragmentWordInterval,
 };
 
@@ -563,6 +564,8 @@ pub struct DocumentQuery {
     search: OnceLock<search::SearchIndex>,
     replay: OnceLock<text_fragment::ReplayIndex>,
     normalized_fragment_text: OnceLock<String>,
+    /// The page a reader shows of the document's own text (A2AJ Law Web's), indexed once.
+    source_page: OnceLock<TextFragmentPage>,
 }
 
 impl Default for DocumentQuery {
@@ -572,6 +575,12 @@ impl Default for DocumentQuery {
 }
 
 impl DocumentQuery {
+    /// The page a reader shows of the document's own text, made by `page` on the first call: one document is shown
+    /// by one reader.
+    pub fn source_page(&self, page: impl FnOnce() -> String) -> &TextFragmentPage {
+        self.source_page.get_or_init(|| TextFragmentPage::new(page()))
+    }
+
     pub fn new() -> Self {
         Self {
             searched: AtomicBool::new(false),
@@ -587,6 +596,7 @@ impl DocumentQuery {
             search: OnceLock::new(),
             replay: OnceLock::new(),
             normalized_fragment_text: OnceLock::new(),
+            source_page: OnceLock::new(),
         }
     }
 

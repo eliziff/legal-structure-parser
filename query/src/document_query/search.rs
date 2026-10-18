@@ -31,6 +31,7 @@ pub(super) struct WordOffset {
     pub(super) end: usize,
 }
 
+#[derive(Clone)]
 pub(super) struct SearchIndex {
     pub(super) tokens: Vec<WordOffset>,
     postings: HashMap<u64, Vec<u32>>,

@@ -96,6 +96,10 @@ pub use provider_text::{
     provider_text_document_structure, windows_1252_punctuation, ProviderSectionMap, ProviderTextInput,
     ProviderTextSourceKind,
 };
+#[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
+mod passage_links;
+#[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
+pub use passage_links::{cited_passage_link, law_web_link, passage_link, PassageLink, PassageLinkRequest, VerifiedPdf};
 #[cfg(all(feature = "citator", feature = "document-query"))]
 pub use journal_titles::{journal_title_choice, journal_title_searches, JournalTitleHit, JournalTitleSearch};
 #[cfg(feature = "document-query")]
