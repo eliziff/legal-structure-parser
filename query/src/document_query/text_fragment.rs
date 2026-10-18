@@ -3441,6 +3441,21 @@ fn build_selected_fragment_plan(
                         planner.atomic_directive_for(piece, quote_index, first_word, last_word, desired, &required)
                             .map(|directive| (piece, directive))
                     })
+                }).or_else(|| {
+                    // Else a range read back to its paragraph's first words, after the printed label a page sets
+                    // apart, with that label for context: a passage a headnote repeats is told apart by its number.
+                    let (head, tail) = range_pieces?;
+                    let line_first = planner.line_first_word(whole.first_word);
+                    let opening = (line_first..whole.first_word)
+                        .find(|&word| planner.source_furniture(word) != Some(FurnitureKind::Label))?;
+                    if opening == line_first {
+                        return None;
+                    }
+                    let read = |piece: MaximalCorePiece| MaximalCorePiece {
+                        start: source_words[opening].start, first_word: opening, context_first_word: line_first, ..piece };
+                    let extended = read(whole);
+                    planner.range_directive_for(extended, read(head), tail, desired, &required, false, false)
+                        .map(|directive| (extended, directive))
                 });
                 if let Some((piece, directive)) = found {
                     built.push(planner.candidate_for(piece, quote_index, directive).piece);
