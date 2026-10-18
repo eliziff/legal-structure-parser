@@ -112,7 +112,31 @@ fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtlistener: boo
         let line = if courtlistener { case_source_line(text, line) } else { line };
         let lead = leading_ascii_space(line.text);
         let value = &line.text[lead..];
-        let start = line.scalar_start;
+        // A page marker ("*517 ", "*Page 516 ") or a caption in capitals ("JOURNAL ENTRY AND OPINION ") can
+        // share its line with the first bracketed paragraph number; that paragraph opens at the bracket.
+        let shift = if courtlistener && !value.starts_with(['[', '{']) {
+            value.find("{¶").or_else(|| value.find("[¶")).filter(|&at| at > 0 && at <= 80 && {
+                // Each word before it a star page ("*517", "*Page 4") or capitals ("I", "A", "JOURNAL ENTRY").
+                let prefix = value[..at].trim_end();
+                let words = prefix.split_ascii_whitespace().collect::<Vec<_>>();
+                let digits = |word: &str| !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_digit());
+                let mut index = 0;
+                while index < words.len() {
+                    let word = words[index];
+                    if word == "*Page" && words.get(index + 1).is_some_and(|next| digits(next)) {
+                        index += 2;
+                    } else if word.strip_prefix('*').is_some_and(digits) || (word.bytes().any(|byte| byte.is_ascii_uppercase())
+                        && !word.bytes().any(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())) {
+                        index += 1;
+                    } else {
+                        break;
+                    }
+                }
+                prefix.is_ascii() && !words.is_empty() && index == words.len()
+            }).unwrap_or(0)
+        } else { 0 };
+        let value = &value[shift..];
+        let start = if shift > 0 { line.scalar_start + lead + shift } else { line.scalar_start };
         // Public-domain citation courts bracket the number, mostly with a pilcrow: "[¶ 12]",
         // South Dakota's "[¶ 12.]", Ohio's "{¶ 12}", New Mexico's "{12}".
         let pilcrow = courtlistener.then(|| {
@@ -167,7 +191,7 @@ fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtlistener: boo
             result.push(Marker {
                 number: number.parse().unwrap(),
                 start,
-                content_start: line.scalar_start + lead + content,
+                content_start: line.scalar_start + lead + shift + content,
                 style,
                 score: 1.0,
                 formal: false,
@@ -2169,7 +2193,10 @@ fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>) -> CaseSo
         if let Some((offset, _)) = explicit {
             // A combined administrative footer is supported at the physical boundary;
             // an incidental prose mention of Page N of M does not supply this evidence.
-            if offset > 0 && (form_feeds.is_empty() || !footer) { continue; }
+            // A court's filing stamp ("Case 1:20-cv-123 Document 45 Filed 01/02/20 Page 3 of 9")
+            // heads each filed page as well as footing it.
+            let stamp = value.starts_with("Case ") && value.contains(" Document ") && value.contains(" Filed ");
+            if offset > 0 && (form_feeds.is_empty() || !(footer || stamp && header)) { continue; }
             start = text.scalar(line.byte_start + lead + offset);
         }
         let centered = leading_ascii_space(line.text) >= body_indent + 12;
@@ -2201,6 +2228,13 @@ fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>) -> CaseSo
                     || word_count(text.slice(left.after_line..right.line.start).unwrap_or(""), true) < 80 { continue; }
             }
             let mut scope = scope;
+            // A filing stamp's numbering yields to the document's own printed pages: it reads only where
+            // they read none (an exhibit stamped in another court keeps the record's page numbers).
+            if header && accepted_pages.iter().any(|page: &&SourcePageMarker| !page.header)
+                && scope.iter().all(|marker| text.slice(page_by_start[&marker.start].line.start..page_by_start[&marker.start].line.end)
+                    .is_some_and(|line| line.contains(" Document ") && line.contains(" Filed "))) {
+                continue;
+            }
             if form_feeds.is_empty() {
                 // Without page breaks a page holds a page's words: the counters stand as far as
                 // that holds, and a stray short final run does not unseat the pages before it.
@@ -5057,7 +5091,8 @@ pub(super) fn supplement_source_formatted_headings(
             quotations.push(element.tag.eq_ignore_ascii_case("blockquote")
                 || element.parent.map_or(external_quote, |parent| quotations[parent]));
             let paragraph = element.parent.and_then(|parent| paragraphs[parent]);
-            if matches!(element.tag.to_ascii_lowercase().as_str(), "em" | "strong" | "b") {
+            // Emphasis, and a centred run (Columbia sets "OPINION" or "Findings of Fact." in CENTER).
+            if matches!(element.tag.to_ascii_lowercase().as_str(), "em" | "strong" | "b" | "center") {
                 if let Some(paragraph) = paragraph {
                     formats[paragraph].push(element.range);
                 }
