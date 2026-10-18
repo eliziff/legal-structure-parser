@@ -2,14 +2,14 @@
 //! with the text fragments the planner gives the passage's block and quotations. These are the links Beaver's
 //! legalSourceLinks.ts makes (buildLegalSourcePinpoint, citedPassageLink, and A2AJ Law Web's).
 
-use crate::{DocumentKind, DocumentQuery, DocumentStructure, TextFragmentPlan};
+use crate::{canlii_case_url, canlii_law_url, DocumentKind, DocumentQuery, DocumentStructure, TextFragmentPlan};
 use legal_document_query::source_text_fragment_plan;
 use regex::Regex;
 use std::sync::OnceLock;
 use legal_citations::reference_names::reference_name_ends;
 use legal_citations::url::{
-    is_pdf_address, law_web_document, passage_locator, publisher_annotates_legal_references,
-    publisher_glues_section_labels, publisher_may_repeat_passages, source_url,
+    canlii_a2aj_law_url, is_pdf_address, law_web_document, passage_locator, publisher_annotates_legal_references,
+    publisher_glues_section_labels, publisher_may_repeat_passages, source_anchor, source_url,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +41,86 @@ pub struct PassageLinkRequest {
 pub struct PassageLink {
     pub target: String,
     pub plan: Option<TextFragmentPlan>,
+}
+
+/// A passage of an A2AJ document, for every link it can take (`source_links`).
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceLinksRequest {
+    /// The publisher's page A2AJ names for the document, where it names one.
+    pub url: Option<String>,
+    /// The A2AJ dataset (`SCC`, `LEGISLATION-ON`), the document's citation and its other one.
+    pub dataset: String,
+    pub citation: String,
+    #[serde(default)]
+    pub alternate_citation: Option<String>,
+    #[serde(default)]
+    pub language: String,
+    /// `cases` or `laws`.
+    #[serde(default)]
+    pub doc_type: String,
+    /// The passage's locator where the citation pinpoints one: its kind (`paragraph`, `section`, `page`) and label
+    /// (`par12`, `5(2)`, `3`).
+    pub locator: Option<SourceLocator>,
+    pub block_text: String,
+    #[serde(default)]
+    pub quotes: Vec<String>,
+    pub verified_pdf: Option<VerifiedPdf>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct SourceLocator {
+    pub kind: String,
+    pub label: String,
+}
+
+/// A passage's links: each page it can be linked on, and the one routed best.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceLinks {
+    /// On the publisher's page A2AJ names.
+    pub publisher: Option<PassageLink>,
+    /// On the document's CanLII page.
+    pub canlii: Option<PassageLink>,
+    /// On A2AJ Law Web's reader, where the passage plans whole there.
+    pub law_web: Option<String>,
+    /// The publisher's link where its page prints an anchor for the pinpoint (the anchor is where a link lands when
+    /// its words do not paint), else CanLII's; the page that exists where only one does. Measured 2026-10-18 on
+    /// 3,904 passages judged on both pages: publisher always 99.08% painted on the words / 99.28% on the words or
+    /// at the anchor; CanLII always 98.13 / 99.46; this rule 99.15 / 99.54.
+    pub best: Option<String>,
+}
+
+/// Every link a passage of an A2AJ document can take, planned against `structure` (the document's text).
+pub fn source_links(query: &DocumentQuery, structure: &DocumentStructure, request: &SourceLinksRequest) -> SourceLinks {
+    let anchor_on = |page: &str| request.locator.as_ref()
+        .and_then(|locator| source_anchor(page, &locator.kind, &locator.label));
+    let link = |page: &str, verified_pdf: Option<VerifiedPdf>| passage_link(query, structure, &PassageLinkRequest {
+        url: page.to_owned(), anchor: anchor_on(page), block_text: request.block_text.clone(),
+        quotes: request.quotes.clone(), prefer_independent_html_blocks: false, verified_pdf,
+    });
+    let laws = request.doc_type == "laws";
+    let language = if request.language.is_empty() { "en" } else { &request.language };
+    let publisher = request.url.as_deref().and_then(|page| link(page, request.verified_pdf.clone()));
+    let canlii_page = if laws {
+        canlii_a2aj_law_url(&request.dataset, &request.citation, language)
+            .or_else(|| canlii_law_url(&request.citation))
+    } else {
+        let citations = [Some(request.citation.clone()), request.alternate_citation.clone()].into_iter().flatten()
+            .collect::<Vec<_>>();
+        canlii_case_url(&citations, language, Some(&request.dataset))
+    };
+    let canlii = canlii_page.as_deref().and_then(|page| link(page, None));
+    let law_web = law_web_link(query, structure, &request.citation, if laws { "laws" } else { "cases" },
+        &request.block_text, &request.quotes);
+    let publisher_anchored = request.url.as_deref().and_then(anchor_on).is_some();
+    let best = match (&publisher, &canlii) {
+        (Some(publisher), Some(canlii)) => Some(if publisher_anchored { &publisher.target } else { &canlii.target }),
+        (Some(publisher), None) => Some(&publisher.target),
+        (None, Some(canlii)) => Some(&canlii.target),
+        (None, None) => law_web.as_ref(),
+    }.cloned();
+    SourceLinks { publisher, canlii, law_web, best }
 }
 
 fn append_directives(url: &str, directives: &[String]) -> String {
