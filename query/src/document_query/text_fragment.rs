@@ -2992,7 +2992,9 @@ fn has_quote_mark(text: &str) -> bool {
 /// without the marks they open or close on).
 fn has_seam(text: &str) -> bool {
     let words = text.split_whitespace().collect::<Vec<_>>();
-    has_hyphen(text) || words.windows(2).any(|pair| sentence_end(pair[0], pair[1]))
+    // An ellipsis: a page may space its dots (". . ." for "..."), which a browser does not fold.
+    has_hyphen(text) || text.contains(['…']) || text.contains("..") || text.contains(". .")
+        || words.windows(2).any(|pair| sentence_end(pair[0], pair[1]))
 }
 
 /// Abbreviations whose full stop is no sentence's end.
