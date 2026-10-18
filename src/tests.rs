@@ -866,6 +866,7 @@ fn structured_paragraph_markers_are_not_fragment_text() {
         false,
         false,
         false,
+        false,
     );
     assert!(plan.source_safe_complete);
     assert_eq!(
@@ -879,6 +880,7 @@ fn structured_paragraph_markers_are_not_fragment_text() {
         &document,
         &quotes.join("\n\n"),
         &[quotes.join("\n\n")],
+        false,
         false,
         false,
         false,
@@ -896,6 +898,7 @@ fn structured_paragraph_markers_are_not_fragment_text() {
         &plain,
         plain.query_text(),
         &[plain.query_text().to_string()],
+        false,
         false,
         false,
         false,

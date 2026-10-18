@@ -14,6 +14,7 @@ impl DocumentQuery {
         pdf: bool,
         publisher_may_annotate_legal_reference: bool,
         split_html_source_blocks: bool,
+        page_may_repeat_passages: bool,
     ) -> TextFragmentPlan {
         let text = self.text(document);
         let source = FragmentText::Document(self, document, &text);
@@ -25,6 +26,7 @@ impl DocumentQuery {
             publisher_may_annotate_legal_reference,
             false,
             false,
+            page_may_repeat_passages,
         );
         if !split_html_source_blocks {
             return base;
@@ -37,6 +39,7 @@ impl DocumentQuery {
             publisher_may_annotate_legal_reference,
             true,
             false,
+            page_may_repeat_passages,
         );
         if !blocks.source_safe_complete || crosses_multiple_lettered_breaks(source, &base) {
             base
@@ -54,6 +57,7 @@ impl DocumentQuery {
         pdf: bool,
         publisher_may_annotate_legal_reference: bool,
         first_block_only: bool,
+        page_may_repeat_passages: bool,
     ) -> Option<TextFragmentPlan> {
         let resolve = |locator: &str| {
             let label = self.requested_label(document, kind, locator);
@@ -108,7 +112,7 @@ impl DocumentQuery {
             selections.push(selection);
         }
         let mut plan = build_selected_fragment_plan(source, &selections, pdf,
-            publisher_may_annotate_legal_reference, false, true, complete, false);
+            publisher_may_annotate_legal_reference, false, true, complete, false, page_may_repeat_passages);
         // Replay must select these source coordinates, not merely the same
         // amount of text. No emitted directive may bridge an unselected member.
         let required = selections.iter().flat_map(|selection|
@@ -328,12 +332,11 @@ fn markdown_label_length(value: &str) -> usize {
     .map_or(0, |found| utf16_len(&value[..found.end()]))
 }
 
-fn leading_label_length_with_mode(value: &str, markdown: bool) -> usize {
-    leading_label_length(value).max(if markdown {
-        markdown_label_length(value)
-    } else {
-        0
-    })
+/// A printed label at the start of `value`, markdown's bold number ("**78** The Minister", a federal act's as A2AJ
+/// holds it; a page prints the number plain) counted in every mode: measured 2026-10-18, a bare "78" left in a
+/// passage became a range's start and painted a history note.
+fn leading_label_length_with_mode(value: &str, _markdown: bool) -> usize {
+    leading_label_length(value).max(markdown_label_length(value))
 }
 
 fn extend_terminal_punctuation(text: FragmentText<'_>, end: usize, quote: &str) -> usize {
@@ -833,13 +836,15 @@ impl<'a> BrowserReplay<'a> {
     }
 
     /// Chromium finds a context term only where white space alone parts it from the text it frames.
+    /// Whether only whitespace, or markdown's emphasis marks (which a page prints as nothing: "**1** This"), lies
+    /// between `end` and `start`.
     fn adjoins(&self, end: usize, start: usize) -> bool {
         end <= start
             && self
                 .document
                 .slice(end, start)
                 .chars()
-                .all(char::is_whitespace)
+                .all(|character| character.is_whitespace() || matches!(character, '*' | '_' | '`'))
     }
 
     /// A term's words from `first_word`, with the start and end of the text it matches there,
@@ -1496,6 +1501,10 @@ struct MaximalPlanner<'replay, 'document> {
     split_html_source_blocks: bool,
     /// The page renders the document's own text: no seam prints otherwise there.
     source_page: bool,
+    /// The page may print a passage again where the document holds it once (CanLII's reporter headnotes, its
+    /// "[See Note]" lines): a quotation inside a paragraph is told apart by the words before it, a passage opening its
+    /// paragraph by its printed label.
+    repeating_page: bool,
     atom_cache: HashMap<usize, LexicalTerm>,
     atomic_options_cache: HashMap<usize, Vec<LexicalTerm>>,
     /// endpoint_terms_from_start and _end by (from the start, first word, last word, context): a range plan reads a
@@ -1532,6 +1541,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         publisher_may_annotate_legal_reference: bool,
         split_html_source_blocks: bool,
         source_page: bool,
+        repeating_page: bool,
     ) -> Self {
         Self {
             replay,
@@ -1539,6 +1549,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             publisher_may_annotate_legal_reference,
             split_html_source_blocks,
             source_page,
+            repeating_page,
             atom_cache: HashMap::new(),
             atomic_options_cache: HashMap::new(),
             endpoint_cache: HashMap::new(),
@@ -1556,7 +1567,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
     /// headnote on CanLII), and only the label tells the paragraph's copy apart. Measured on every cached page
     /// (2026-10-18, 3,690 links): painted elsewhere 10 -> 3 and on target +8, none worse.
     fn labelled_opening(&mut self, piece: MaximalCorePiece) -> bool {
-        !self.pdf && !self.source_page && piece.first_word > piece.context_first_word
+        // Only where the page may repeat the passage: elsewhere the page is the document (bccourts' 1999 template and
+        // e-Laws print the number otherwise, and lost 27 of 45 labelled links, 2026-10-18).
+        self.repeating_page && !self.pdf && !self.source_page && piece.first_word > piece.context_first_word
             && (piece.context_first_word..piece.first_word).all(|word| self.source_furniture(word) == Some(FurnitureKind::Label))
     }
 
@@ -1729,6 +1742,15 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                 &PARENTHETICAL_MARKDOWN,
             )
             .is_match(gap)
+    }
+
+    /// Whether a context term meeting the piece at `left_word` | `right_word` meets it at a seam a page may print
+    /// otherwise (a sentence's end, "at para."): a prefix ending at one finds no start after it on such a page.
+    fn boundary_seam(&self, left_word: usize, right_word: usize) -> bool {
+        let words = self.replay.document.tokens();
+        let left = self.replay.document.slice(words[left_word].start, words[left_word].end);
+        let right = self.replay.document.slice(words[right_word].start, words[right_word].end);
+        !self.source_page && (sentence_end(left, right) || spaced_apart(left, right))
     }
 
     fn exact_target_for(&mut self, piece: MaximalCorePiece) -> Option<LexicalTerm> {
@@ -1931,7 +1953,10 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         if first_word < span.first_word || first_word > span.last_word {
             return None;
         }
-        if self.atom_at(first_word)?.first_word < first_word {
+        // A word run into a tight token before it stays with it, unless that token is the label itself: a provider
+        // may glue the label to the first word ("[82]The cases"), which a page prints apart.
+        let atom = self.atom_at(first_word)?;
+        if atom.first_word < first_word && atom.start < span.start {
             return Some(span);
         }
         let words = self.replay.document.tokens();
@@ -2162,18 +2187,6 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             .all(|word| self.source_furniture(word) == Some(FurnitureKind::Label));
         for word in term.first_word..=term.last_word {
             let furniture = self.source_furniture(word);
-            if self.split_html_source_blocks && furniture == Some(FurnitureKind::Label) {
-                let line_first = self.line_first_word(word);
-                let words = self.replay.document.tokens();
-                let label_start = words[line_first].start;
-                let line = self
-                    .replay
-                    .document
-                    .slice(label_start.saturating_sub(3), words[word].end);
-                if line.contains("**") || line.contains("__") {
-                    return false;
-                }
-            }
             if word >= desired.first_word && word <= desired.last_word {
                 if !required.contains(&word)
                     && (furniture != Some(FurnitureKind::Label) || self.pdf)
@@ -2309,12 +2322,16 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         }
         let exact_targets = self.exact_target_for(piece).into_iter().collect::<Vec<_>>();
         let labelled = self.labelled_opening(piece);
+        // On a page that may repeat the passage, a piece inside its paragraph is told apart by the words before it
+        // where it has any (a reporter's headnote quotes the words, not what precedes them in the paragraph).
+        let guarded = labelled || self.repeating_page && !self.pdf && !self.source_page
+            && piece.first_word > piece.context_first_word;
 
         let bare = vec![(None, None)];
-        let mut directive = if labelled { None } else { self.shortest_for(piece, &exact_targets, &bare) };
+        let mut directive = if guarded { None } else { self.shortest_for(piece, &exact_targets, &bare) };
         if directive.is_none() {
             let words = self.replay.document.tokens();
-            let prefix = if piece.first_word > piece.context_first_word {
+            let mut prefix = if piece.first_word > piece.context_first_word {
                 let context = MaximalCorePiece {
                     start: words[piece.context_first_word].start,
                     end: words[piece.first_word - 1].end,
@@ -2328,7 +2345,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             } else {
                 Vec::new()
             };
-            let suffix = if piece.last_word < piece.context_last_word {
+            let mut suffix = if piece.last_word < piece.context_last_word {
                 let context = MaximalCorePiece {
                     start: words[piece.last_word + 1].start,
                     end: words[piece.context_last_word].end,
@@ -2342,7 +2359,18 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             } else {
                 Vec::new()
             };
-            if self.split_html_source_blocks && piece.first_word != desired.first_word && !labelled {
+            prefix.retain(|term| !self.boundary_seam(term.last_word, piece.first_word));
+            suffix.retain(|term| !self.boundary_seam(piece.last_word, term.first_word));
+            // A guarded piece with no prefix to take (its words open their line) is planned as before.
+            let guarded = guarded && (labelled || !prefix.is_empty());
+            if guarded && !labelled {
+                // Two words or more where the prefix has them: one word may recur before a headnote's copy.
+                let longer = prefix.iter().filter(|term| term.last_word > term.first_word).cloned().collect::<Vec<_>>();
+                if !longer.is_empty() {
+                    prefix = longer;
+                }
+            }
+            if self.split_html_source_blocks && piece.first_word != desired.first_word && !guarded {
                 let suffix_only = suffix
                     .iter()
                     .cloned()
@@ -2373,7 +2401,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     contexts_by_class[class].push((Some(before.clone()), Some(after.clone())));
                 }
             }
-            if labelled {
+            if guarded {
                 for contexts in &mut contexts_by_class {
                     contexts.retain(|(before, _)| before.is_some());
                 }
@@ -2561,7 +2589,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
 
         let words = self.replay.document.tokens();
         let labelled = self.labelled_opening(piece);
-        let prefixes = if piece.first_word > piece.context_first_word {
+        let mut prefixes = if piece.first_word > piece.context_first_word {
             let context = MaximalCorePiece {
                 start: words[piece.context_first_word].start,
                 end: words[piece.first_word - 1].end,
@@ -2575,7 +2603,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         } else {
             Vec::new()
         };
-        let suffixes = if piece.last_word < piece.context_last_word {
+        let mut suffixes = if piece.last_word < piece.context_last_word {
             let context = MaximalCorePiece {
                 start: words[piece.last_word + 1].start,
                 end: words[piece.context_last_word].end,
@@ -2589,6 +2617,18 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         } else {
             Vec::new()
         };
+        prefixes.retain(|term| !self.boundary_seam(term.last_word, piece.first_word));
+        suffixes.retain(|term| !self.boundary_seam(piece.last_word, term.first_word));
+        // As atomic_directive_for: on a page that may repeat the passage, a range inside its paragraph takes a prefix
+        // where it has one, of two words or more where the prefix has them.
+        let guarded = labelled || self.repeating_page && !self.pdf && !self.source_page
+            && piece.first_word > piece.context_first_word && !prefixes.is_empty();
+        if guarded && !labelled {
+            let longer = prefixes.iter().filter(|term| term.last_word > term.first_word).cloned().collect::<Vec<_>>();
+            if !longer.is_empty() {
+                prefixes = longer;
+            }
+        }
         // For each tail: None when its spelling has no browser term, otherwise the last word
         // between the earliest head end and the tail where the tail's term also matches. A
         // pairing is rejected exactly when that word falls after its head, which is what scanning
@@ -2719,8 +2759,8 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     let shorter = |shortest: &Option<(String, bool)>, prefix: Option<usize>, suffix: Option<usize>|
                         shortest.as_ref().is_none_or(|(current, _)| length(prefix, suffix) < current.len());
                     match sides {
-                        // A labelled opening is told apart by its label: never without the prefix.
-                        0 if labelled => {}
+                        // A guarded piece is told apart by its prefix: never without one.
+                        0 if guarded => {}
                         0 => {
                             if shorter(&shortest, None, None) {
                                 try_contexts(None, None, &mut shortest);
@@ -2728,7 +2768,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                         }
                         1 => {
                             let one_sided = (0..prefix_count).map(|index| (Some(index), None))
-                                .chain((0..if labelled { 0 } else { suffix_count }).map(|index| (None, Some(index))));
+                                .chain((0..if guarded { 0 } else { suffix_count }).map(|index| (None, Some(index))));
                             for (prefix, suffix) in one_sided {
                                 if shorter(&shortest, prefix, suffix) {
                                     try_contexts(prefix, suffix, &mut shortest);
@@ -3063,8 +3103,11 @@ const ABBREVIATIONS: &[&str] = &["Mr", "Ms", "Mrs", "Mme", "Dr", "St", "Jr", "Sr
 fn sentence_end(word: &str, next: &str) -> bool {
     let opens_capital = next.trim_start_matches(|character: char| !character.is_alphanumeric())
         .chars().next().is_some_and(char::is_uppercase);
+    // A bracketed citation after a stop ("Crown. [para. 41]", "disrepute. (R. v. Grant …)") is set apart as a
+    // sentence's end is: a seam, whatever case it opens in.
+    let opens_citation = next.starts_with(['[', '(']);
     let word = word.trim_end_matches(is_closing);
-    if !opens_capital {
+    if !opens_capital && !opens_citation {
         return false;
     }
     if word.ends_with(['?', '!']) {
@@ -3303,6 +3346,7 @@ fn build_fragment_plan(
     publisher_may_annotate_legal_reference: bool,
     split_html_source_blocks: bool,
     source_page: bool,
+    repeating_page: bool,
 ) -> TextFragmentPlan {
     // A block that is its document's whole text reads the document's index, not one built again.
     let block_search;
@@ -3336,7 +3380,7 @@ fn build_fragment_plan(
         selections.push(selection);
     }
     build_selected_fragment_plan(document, &selections, pdf,
-        publisher_may_annotate_legal_reference, split_html_source_blocks, false, complete, source_page)
+        publisher_may_annotate_legal_reference, split_html_source_blocks, false, complete, source_page, repeating_page)
 }
 
 /// `selected` of `text` without its printed label ("[85]", "(a)") or trailing citation artifact, which a publisher
@@ -3365,6 +3409,7 @@ fn build_selected_fragment_plan(
     exact_members: bool,
     mut complete: bool,
     source_page: bool,
+    repeating_page: bool,
 ) -> TextFragmentPlan {
     let replay = BrowserReplay::new(document, split_html_source_blocks);
     let mut planner = MaximalPlanner::new(
@@ -3373,6 +3418,7 @@ fn build_selected_fragment_plan(
         publisher_may_annotate_legal_reference,
         split_html_source_blocks,
         source_page,
+        repeating_page,
     );
     let source_words = document.tokens();
     let mut built = Vec::<BuiltPiece>::new();
@@ -3852,8 +3898,8 @@ pub fn text_fragment_index(text: &str) -> TextFragmentIndex<'_> {
 pub fn source_text_fragment_plan(block_text: &str, page: &TextFragmentPage, quotes: &[String]) -> TextFragmentPlan {
     let search = page.search();
     let source = FragmentText::Text(&search);
-    let base = build_fragment_plan(block_text, source, quotes, false, false, false, true);
-    let blocks = build_fragment_plan(block_text, source, quotes, false, false, true, true);
+    let base = build_fragment_plan(block_text, source, quotes, false, false, false, true, false);
+    let blocks = build_fragment_plan(block_text, source, quotes, false, false, true, true, false);
     if !blocks.source_safe_complete || crosses_multiple_lettered_breaks(source, &base) {
         base
     } else {
@@ -3879,6 +3925,7 @@ pub fn text_fragment_plan_in(
         publisher_may_annotate_legal_reference,
         false,
         false,
+        false,
     );
     if !split_html_source_blocks {
         return base;
@@ -3890,6 +3937,7 @@ pub fn text_fragment_plan_in(
         pdf,
         publisher_may_annotate_legal_reference,
         true,
+        false,
         false,
     );
     if !blocks.source_safe_complete || crosses_multiple_lettered_breaks(source, &base) {
@@ -4390,6 +4438,7 @@ mod tests {
             block,
             &[quote.to_owned()],
             true,
+            false,
             false,
             false,
         );

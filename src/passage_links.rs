@@ -8,7 +8,8 @@ use regex::Regex;
 use std::sync::OnceLock;
 use legal_citations::reference_names::reference_name_ends;
 use legal_citations::url::{
-    is_pdf_address, law_web_document, passage_locator, publisher_annotates_legal_references, source_url,
+    is_pdf_address, law_web_document, passage_locator, publisher_annotates_legal_references,
+    publisher_may_repeat_passages, source_url,
 };
 use serde::{Deserialize, Serialize};
 
@@ -64,7 +65,7 @@ pub fn passage_link(query: &DocumentQuery, structure: &DocumentStructure, reques
             query.read_legal_reference_ends(structure, reference_name_ends);
         }
         let fragments = |split: bool| query.text_fragment_plan(structure, &request.block_text, &request.quotes, pdf,
-            annotated, split);
+            annotated, split, publisher_may_repeat_passages(url));
         let whole = fragments(false);
         let value = whole.directives.first().and_then(|directive| directive.strip_prefix("text=")).unwrap_or("");
         let simple_range = whole.directives.len() == 1 && value.split(',').count() == 2
@@ -115,9 +116,11 @@ pub fn cited_passage_link(query: &DocumentQuery, structure: &DocumentStructure, 
         query.read_legal_reference_ends(structure, reference_name_ends);
     }
     let kind = if section { DocumentKind::Section } else { DocumentKind::Paragraph };
-    let plan = |target: &str| query.range_fragment_plan(structure, kind, target, target, pdf, annotated, section)
-        .filter(|plan| plan.source_safe_complete && !plan.directives.is_empty());
-    let planned = locator.part.as_deref().and_then(plan).or_else(|| plan(&locator.label));
+    let plan = |target: &str| query.range_fragment_plan(structure, kind, target, target, pdf, annotated, section,
+        publisher_may_repeat_passages(&url)).filter(|plan| plan.source_safe_complete && !plan.directives.is_empty());
+    // A part the pinpoint names is painted or nothing is: the provision's opening block in its place would paint the
+    // wrong part (measured 2026-10-18, 13 links).
+    let planned = match locator.part.as_deref() { Some(part) => plan(part), None => plan(&locator.label) };
     Some(planned.map_or_else(|| url.clone(), |plan| append_directives(&url, &plan.directives)))
 }
 

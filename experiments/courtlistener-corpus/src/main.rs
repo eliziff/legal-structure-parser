@@ -1052,6 +1052,7 @@ fn run(pack: &Path, out: &Path, limit: usize) -> Result<()> {
                             false,
                             true,
                             true,
+                            false,
                         );
                         let mut plan = serde_json::to_value(plan)?;
                         plan["label"] = json!(block.label);
