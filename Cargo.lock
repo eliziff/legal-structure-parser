@@ -539,6 +539,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "legal-layout"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "legal-structure"
 version = "0.1.0"
 dependencies = [
@@ -557,6 +565,7 @@ dependencies = [
 name = "legal-structure-model"
 version = "0.1.0"
 dependencies = [
+ "legal-layout",
  "regex",
  "serde",
  "serde_json",

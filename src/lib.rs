@@ -114,7 +114,7 @@ pub(crate) use legal_structure_model::EvidenceKind;
 pub use legal_structure_model::{
     CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, DetectionProfile, EngineError,
     NoteBodyV2, NotePairClaimV2, NotePairSupportV2, Origin, ResolutionProofV2, ResolutionRuleV2, ScalarRange, Scope,
-    ScopeKind, StructureAnalysis, StructureCandidateRun, StructureMarkerCandidate, TextAnchorV2,
+    LayoutAnalysis, ScopeKind, StructureAnalysis, StructureCandidateRun, StructureMarkerCandidate, TextAnchorV2,
     DOCUMENT_STRUCTURE_SCHEMA,
 };
 pub const ENGINE_SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_ENGINE_SHA256");

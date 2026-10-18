@@ -9,7 +9,7 @@ readme = "README.md"
 exclude = ["data/grammar-corpus.json", "data/manifest.json", "grammar/**", "experiments/**"]
 
 [workspace]
-members = ["grammar", "model", "python", "query"]
+members = ["grammar", "layout", "model", "python", "query"]
 default-members = ["."]
 resolver = "2"
 

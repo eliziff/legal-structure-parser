@@ -1,10 +1,60 @@
-//! Laid-out pages of lines, as a PDF's extraction or a provider's flattened text gives them to
-//! the structure engine, and the note pairs the engine reads from them.
+//! Laid-out pages of lines, as a PDF's extraction or a provider's flattened text gives them, the
+//! note pairs read from them, and the structure engine's services on them. It depends on nothing
+//! of the document model, so a parser that reads only lines recompiles for neither.
 
-use crate::NotePairSupportV2;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScalarRange {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl ScalarRange {
+    /// Sort and merge touching or overlapping members without filling gaps.
+    /// All ranges must use the same coordinate plane and offset unit.
+    pub fn normalize_union(ranges: &mut Vec<Self>) {
+        ranges.sort_by_key(|range| (range.start, range.end));
+        let mut result: Vec<Self> = Vec::with_capacity(ranges.len());
+        for range in ranges.drain(..) {
+            if let Some(last) = result.last_mut().filter(|last| range.start <= last.end) {
+                last.end = last.end.max(range.end);
+            } else {
+                result.push(range);
+            }
+        }
+        *ranges = result;
+    }
+
+    #[inline]
+    pub fn valid(self, length: usize) -> bool {
+        self.start <= self.end && self.end <= length
+    }
+}
+
+/// Evidence from an occurrence-level assignment within one numbering restart.
+/// Counts concern distinct labels, not repeated references to the same note.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+pub struct NotePairSupportV2 {
+    pub sequence_id: usize,
+    pub sequence_labels: usize,
+    pub sequence_observed_pairs: usize,
+    pub sequence_note_labels: usize,
+    pub observed_pair: bool,
+    pub typographic_reference: bool,
+    pub note_region: bool,
+}
+
+impl NotePairSupportV2 {
+    pub fn corroborated_sequence(&self) -> bool {
+        self.sequence_observed_pairs >= 3
+            && 3 * self.sequence_observed_pairs >= self.sequence_labels
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Word {
@@ -353,4 +403,59 @@ pub fn union_bbox(boxes: impl IntoIterator<Item = [f64; 4]>) -> [f64; 4] {
         result[3] = result[3].max(value[3]);
         result
     })
+}
+
+/// A citation the citation grammar found, by byte range and the text it spans.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CitationSpan {
+    pub range: Range<usize>,
+    /// The citation itself, excluding introductory signals and surrounding style.
+    pub core_range: Range<usize>,
+    pub text: String,
+}
+
+/// A marker interpreted by the shared numbering grammar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NumberingMarker {
+    pub family: String,
+    pub ordinal: u32,
+    pub prefix: Vec<u32>,
+}
+
+/// The structure engine's services on laid-out text, as parsers that read pages and lines call
+/// them: the citation grammar's cues, the numbering grammar, and note pairing. A parser takes this
+/// as a dependency on this crate alone, so editing the engine or its document model recompiles
+/// neither it nor anything that reads only lines.
+pub trait LayoutAnalysis: Sync {
+    /// The digest of the engine's source, which keys caches of its results.
+    fn source_sha256(&self) -> &'static str;
+
+    fn numbering_marker(&self, marker: &str, previous: Option<&NumberingMarker>) -> Option<NumberingMarker>;
+
+    /// Every citation in `text`, each with its style of cause, pinpoints and parentheticals.
+    fn citations(&self, text: &str) -> Vec<CitationSpan>;
+    /// The spans of a laid-out line a citation protects, in scalar offsets.
+    fn protected_citation_spans(&self, text: &str) -> Vec<(usize, usize)>;
+    /// Whether a short laid-out line reads as a heading's title, by the citation grammar.
+    fn heading_text_plausible(&self, text: &str) -> bool;
+    /// [`Self::heading_text_plausible`], or a title set apart in bold naming a case by its parties.
+    fn styled_heading_text_plausible(&self, text: &str) -> bool;
+    fn has_citation_cue(&self, text: &str) -> bool;
+    fn has_citation_signal(&self, text: &str) -> bool;
+    fn is_citation_continuation(&self, text: &str) -> bool;
+    fn is_citation_shaped_tail(&self, text: &str) -> bool;
+    fn is_counter_noun(&self, word: &str) -> bool;
+    fn crossref_short_form(&self, text: &str, byte_start: usize) -> String;
+    fn reporter_abbreviation_regex(&self, abbreviation: &str) -> String;
+
+    /// A laid-out document's note labels paired with their references, its lines' citations
+    /// (by line id, in scalar offsets) protected from being read as either.
+    fn pair_footnotes(
+        &self,
+        pages: &[Page],
+        protected_citation_spans: &BTreeMap<String, Vec<PdfSourceSpan>>,
+        include_audit: bool,
+    ) -> PairingOutput;
+    /// Restores note labels whose leading digits recognition dropped, from the note chain.
+    fn repair_label_dropouts(&self, pages: &mut [Page]);
 }

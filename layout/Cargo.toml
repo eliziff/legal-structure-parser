@@ -1,0 +1,10 @@
+[package]
+name = "legal-layout"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Laid-out pages and lines, note pairs, and the structure engine's services on them"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }

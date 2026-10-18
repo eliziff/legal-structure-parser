@@ -7,7 +7,7 @@ use crate::{
 };
 use legal_citations::cues;
 use legal_structure_model::layout::{Page, PairingOutput, PdfSourceSpan};
-use legal_structure_model::{CitationSpan, StructureAnalysis};
+use legal_structure_model::{CitationSpan, LayoutAnalysis, StructureAnalysis};
 use std::collections::BTreeMap;
 
 pub struct EngineAnalysis;
@@ -15,66 +15,9 @@ pub struct EngineAnalysis;
 /// The structure engine, for a program to hand to the parsers it links.
 pub static STRUCTURE_ANALYSIS: EngineAnalysis = EngineAnalysis;
 
-impl StructureAnalysis for EngineAnalysis {
+impl LayoutAnalysis for EngineAnalysis {
     fn source_sha256(&self) -> &'static str {
         crate::ENGINE_SOURCE_SHA256
-    }
-
-    fn detect_structure_candidate_runs(&self, text: &str) -> Vec<StructureCandidateRun> {
-        crate::detect_structure_candidate_runs(text)
-    }
-
-    fn resolve_structure_graph(
-        &self,
-        document_id: String,
-        provider: String,
-        text: &str,
-        source_sha256: Option<String>,
-        nodes: Vec<StructureNode>,
-        runs: &[StructureCandidateRun],
-        evidence: &[CandidateEvidenceV2],
-        note_pairs: &[NotePairClaimV2],
-        diagnostics: Vec<StructureDiagnostic>,
-    ) -> Result<DocumentStructure, EngineError> {
-        crate::resolve_structure_graph(
-            document_id,
-            provider,
-            text,
-            source_sha256,
-            nodes,
-            runs,
-            evidence,
-            note_pairs,
-            diagnostics,
-        )
-    }
-
-    fn resolve_structure_graph_with_assembler(
-        &self,
-        document_id: String,
-        provider: String,
-        text: &str,
-        source_sha256: Option<String>,
-        nodes: Vec<StructureNode>,
-        runs: &[StructureCandidateRun],
-        evidence: &[CandidateEvidenceV2],
-        note_pairs: &[NotePairClaimV2],
-        diagnostics: Vec<StructureDiagnostic>,
-        assembler: &mut dyn FnMut(&mut [StructureNode]),
-    ) -> Result<DocumentStructure, EngineError> {
-        let structure = crate::candidates::resolve_structure_graph_with_assembler(
-            document_id,
-            provider,
-            text,
-            source_sha256,
-            nodes,
-            runs,
-            evidence,
-            note_pairs,
-            diagnostics,
-            assembler,
-        )?;
-        crate::assembly::assemble_structure(structure).map_err(EngineError::invalid)
     }
 
     fn numbering_marker(
@@ -83,25 +26,6 @@ impl StructureAnalysis for EngineAnalysis {
         previous: Option<&legal_structure_model::NumberingMarker>,
     ) -> Option<legal_structure_model::NumberingMarker> {
         crate::candidates::numbering_marker(marker, previous)
-    }
-
-    fn analyze_instrument(
-        &self,
-        text: String,
-        document_id: String,
-        table_cells: &[AuthoritativeTableCell],
-        reconstruct_lineation: bool,
-    ) -> Result<DocumentStructure, EngineError> {
-        crate::analyze_instrument(text, document_id, table_cells, reconstruct_lineation)
-    }
-
-    fn analyze_docx(
-        &self,
-        document_id: String,
-        paragraphs: Vec<String>,
-        table_cells: &[AuthoritativeTableCell],
-    ) -> Result<DocumentStructure, EngineError> {
-        crate::analyze_docx(document_id, paragraphs, table_cells)
     }
 
     fn citations(&self, text: &str) -> Vec<CitationSpan> {
@@ -168,6 +92,84 @@ impl StructureAnalysis for EngineAnalysis {
 
     fn repair_label_dropouts(&self, pages: &mut [Page]) {
         crate::note_dropout::repair_label_dropouts(pages);
+    }
+}
+
+impl StructureAnalysis for EngineAnalysis {
+    fn detect_structure_candidate_runs(&self, text: &str) -> Vec<StructureCandidateRun> {
+        crate::detect_structure_candidate_runs(text)
+    }
+
+    fn resolve_structure_graph(
+        &self,
+        document_id: String,
+        provider: String,
+        text: &str,
+        source_sha256: Option<String>,
+        nodes: Vec<StructureNode>,
+        runs: &[StructureCandidateRun],
+        evidence: &[CandidateEvidenceV2],
+        note_pairs: &[NotePairClaimV2],
+        diagnostics: Vec<StructureDiagnostic>,
+    ) -> Result<DocumentStructure, EngineError> {
+        crate::resolve_structure_graph(
+            document_id,
+            provider,
+            text,
+            source_sha256,
+            nodes,
+            runs,
+            evidence,
+            note_pairs,
+            diagnostics,
+        )
+    }
+
+    fn resolve_structure_graph_with_assembler(
+        &self,
+        document_id: String,
+        provider: String,
+        text: &str,
+        source_sha256: Option<String>,
+        nodes: Vec<StructureNode>,
+        runs: &[StructureCandidateRun],
+        evidence: &[CandidateEvidenceV2],
+        note_pairs: &[NotePairClaimV2],
+        diagnostics: Vec<StructureDiagnostic>,
+        assembler: &mut dyn FnMut(&mut [StructureNode]),
+    ) -> Result<DocumentStructure, EngineError> {
+        let structure = crate::candidates::resolve_structure_graph_with_assembler(
+            document_id,
+            provider,
+            text,
+            source_sha256,
+            nodes,
+            runs,
+            evidence,
+            note_pairs,
+            diagnostics,
+            assembler,
+        )?;
+        crate::assembly::assemble_structure(structure).map_err(EngineError::invalid)
+    }
+
+    fn analyze_instrument(
+        &self,
+        text: String,
+        document_id: String,
+        table_cells: &[AuthoritativeTableCell],
+        reconstruct_lineation: bool,
+    ) -> Result<DocumentStructure, EngineError> {
+        crate::analyze_instrument(text, document_id, table_cells, reconstruct_lineation)
+    }
+
+    fn analyze_docx(
+        &self,
+        document_id: String,
+        paragraphs: Vec<String>,
+        table_cells: &[AuthoritativeTableCell],
+    ) -> Result<DocumentStructure, EngineError> {
+        crate::analyze_docx(document_id, paragraphs, table_cells)
     }
 }
 
