@@ -171,6 +171,16 @@ enum FragmentText<'a> {
 }
 
 impl<'a> FragmentText<'a> {
+    /// Whether a legal reference's name ends after `from` and by `to` (DocumentQuery::read_legal_reference_ends).
+    fn legal_reference_ends_within(self, from: usize, to: usize) -> bool {
+        match self {
+            Self::Document(query, ..) => query.legal_reference_ends.get().is_some_and(|ends| {
+                ends.get(ends.partition_point(|&end| end <= from)).is_some_and(|&end| end <= to)
+            }),
+            Self::Text(_) => false,
+        }
+    }
+
     fn tokens(self) -> &'a [search::WordOffset] {
         match self {
             Self::Document(query, document, text) => &query.index_with_text(document, text).tokens,
@@ -1273,6 +1283,10 @@ fn ends_legal_reference(replay: &BrowserReplay<'_>, word: usize) -> bool {
     let through = source
         .get(word + 1)
         .map_or(replay.document.utf16_len(), |next| next.start);
+    // A statute's name ("Criminal Code", "the Charter"), which the publisher's citator links.
+    if replay.document.legal_reference_ends_within(source[word].start, through) {
+        return true;
+    }
     let mut from = end.saturating_sub(96);
     while from < end && replay.document.try_slice(from, through).is_none() {
         from += 1;
@@ -1535,6 +1549,15 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
 
     fn line_first_word(&self, word: usize) -> usize {
         source_line_first_word(self.replay, word)
+    }
+
+    /// Whether `piece` opens its paragraph after the printed label its context starts at, so a plan of it is told
+    /// apart by that label: a page may print the passage again where the provider's copy does not (a reporter's
+    /// headnote on CanLII), and only the label tells the paragraph's copy apart. Measured on every cached page
+    /// (2026-10-18, 3,690 links): painted elsewhere 10 -> 3 and on target +8, none worse.
+    fn labelled_opening(&mut self, piece: MaximalCorePiece) -> bool {
+        !self.pdf && !self.source_page && piece.first_word > piece.context_first_word
+            && (piece.context_first_word..piece.first_word).all(|word| self.source_furniture(word) == Some(FurnitureKind::Label))
     }
 
     /// Whether a term holds a seam the page may print otherwise ([`has_seam`]): never on a page of the source text.
@@ -2174,7 +2197,10 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
     ) -> Vec<LexicalTerm> {
         let mut allowed = Vec::new();
         for term in terms {
-            // Terms come from the target outward, each a word longer, so once one holds a seam all after it do.
+            // Terms come from the target outward, each a word longer, so once one holds a seam all after it do. A label
+            // read whole across its spacing ("45 (1)") is no exception: offered as well as its last part, it let shorter
+            // endpoints take the place of longer ones and failed where CanLII closes the label up ("9(1)"), 61 links
+            // against 4 (measured 2026-10-18).
             if self.seamed(&term.text) {
                 break;
             }
@@ -2282,9 +2308,10 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             return cached.clone();
         }
         let exact_targets = self.exact_target_for(piece).into_iter().collect::<Vec<_>>();
+        let labelled = self.labelled_opening(piece);
 
         let bare = vec![(None, None)];
-        let mut directive = self.shortest_for(piece, &exact_targets, &bare);
+        let mut directive = if labelled { None } else { self.shortest_for(piece, &exact_targets, &bare) };
         if directive.is_none() {
             let words = self.replay.document.tokens();
             let prefix = if piece.first_word > piece.context_first_word {
@@ -2315,7 +2342,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             } else {
                 Vec::new()
             };
-            if self.split_html_source_blocks && piece.first_word != desired.first_word {
+            if self.split_html_source_blocks && piece.first_word != desired.first_word && !labelled {
                 let suffix_only = suffix
                     .iter()
                     .cloned()
@@ -2344,6 +2371,11 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                         requested_last,
                     );
                     contexts_by_class[class].push((Some(before.clone()), Some(after.clone())));
+                }
+            }
+            if labelled {
+                for contexts in &mut contexts_by_class {
+                    contexts.retain(|(before, _)| before.is_some());
                 }
             }
             for contexts in contexts_by_class.iter().skip(1) {
@@ -2528,6 +2560,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         }
 
         let words = self.replay.document.tokens();
+        let labelled = self.labelled_opening(piece);
         let prefixes = if piece.first_word > piece.context_first_word {
             let context = MaximalCorePiece {
                 start: words[piece.context_first_word].start,
@@ -2686,6 +2719,8 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     let shorter = |shortest: &Option<(String, bool)>, prefix: Option<usize>, suffix: Option<usize>|
                         shortest.as_ref().is_none_or(|(current, _)| length(prefix, suffix) < current.len());
                     match sides {
+                        // A labelled opening is told apart by its label: never without the prefix.
+                        0 if labelled => {}
                         0 => {
                             if shorter(&shortest, None, None) {
                                 try_contexts(None, None, &mut shortest);
@@ -2693,7 +2728,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                         }
                         1 => {
                             let one_sided = (0..prefix_count).map(|index| (Some(index), None))
-                                .chain((0..suffix_count).map(|index| (None, Some(index))));
+                                .chain((0..if labelled { 0 } else { suffix_count }).map(|index| (None, Some(index))));
                             for (prefix, suffix) in one_sided {
                                 if shorter(&shortest, prefix, suffix) {
                                     try_contexts(prefix, suffix, &mut shortest);
@@ -2994,7 +3029,26 @@ fn has_seam(text: &str) -> bool {
     let words = text.split_whitespace().collect::<Vec<_>>();
     // An ellipsis: a page may space its dots (". . ." for "..."), which a browser does not fold.
     has_hyphen(text) || text.contains(['…']) || text.contains("..") || text.contains(". .")
-        || words.windows(2).any(|pair| sentence_end(pair[0], pair[1]))
+        || words.windows(2).any(|pair| sentence_end(pair[0], pair[1]) || spaced_apart(pair[0], pair[1]))
+}
+
+/// Whether a page may set `word` and `next` apart otherwise than the source (measured on the cached pages,
+/// 2026-10-18): a pinpoint's "at" and its "para." (CanLII sets a no-break space and a space), a provision's number
+/// and its parenthesized part ("15 (1)", "11 (e)": a page may close them up), and a printed paragraph number and
+/// the words after it ("[101]  In": an anchor and spaces).
+fn spaced_apart(word: &str, next: &str) -> bool {
+    let bare = |value: &str| value.trim_end_matches(['.', ',']).to_lowercase();
+    let pinpoint = word.eq_ignore_ascii_case("at")
+        && matches!(bare(next).as_str(), "para" | "paras" | "p" | "pp" | "paragraph" | "paragraphs" | "page" | "pages");
+    // Read with or without the closing mark a term cut inside the locator leaves off ("15 (1").
+    let locator = word.ends_with(|character: char| character.is_ascii_digit() || character == ')')
+        && next.strip_prefix('(').map(|rest| rest.split(')').next().unwrap_or(rest)).is_some_and(|part|
+            !part.is_empty() && (part.len() <= 3 && part.bytes().all(|byte| byte.is_ascii_digit())
+                || part.chars().count() <= 4 && part.chars().all(char::is_alphabetic)));
+    // With or without its opening bracket, which a term starting at the number leaves off ("101] In").
+    let label = word.trim_start_matches('[').strip_suffix(']')
+        .is_some_and(|number| (1..=3).contains(&number.len()) && number.bytes().all(|byte| byte.is_ascii_digit()));
+    pinpoint || locator || label
 }
 
 /// Abbreviations whose full stop is no sentence's end.
@@ -3448,6 +3502,8 @@ fn build_selected_fragment_plan(
                 }).or_else(|| {
                     // Else a range read back to its paragraph's first words, after the printed label a page sets
                     // apart, with that label for context: a passage a headnote repeats is told apart by its number.
+                    // Its start is read in order: a browser looks for the end only after the start the label finds,
+                    // so the end need not be the document's only copy (the headnote repeats it).
                     let (head, tail) = range_pieces?;
                     let line_first = planner.line_first_word(whole.first_word);
                     let opening = (line_first..whole.first_word)
@@ -3458,7 +3514,7 @@ fn build_selected_fragment_plan(
                     let read = |piece: MaximalCorePiece| MaximalCorePiece {
                         start: source_words[opening].start, first_word: opening, context_first_word: line_first, ..piece };
                     let extended = read(whole);
-                    planner.range_directive_for(extended, read(head), tail, desired, &required, false, false)
+                    planner.range_directive_for(extended, read(head), tail, desired, &required, false, true)
                         .map(|directive| (extended, directive))
                 });
                 if let Some((piece, directive)) = found {

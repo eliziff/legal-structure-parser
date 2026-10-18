@@ -566,6 +566,8 @@ pub struct DocumentQuery {
     normalized_fragment_text: OnceLock<String>,
     /// The page a reader shows of the document's own text (A2AJ Law Web's), indexed once.
     source_page: OnceLock<TextFragmentPage>,
+    /// Where the names of legal references end in the document's text (UTF-16, sorted).
+    legal_reference_ends: OnceLock<Vec<usize>>,
 }
 
 impl Default for DocumentQuery {
@@ -579,6 +581,22 @@ impl DocumentQuery {
     /// by one reader.
     pub fn source_page(&self, page: impl FnOnce() -> String) -> &TextFragmentPage {
         self.source_page.get_or_init(|| TextFragmentPage::new(page()))
+    }
+
+    /// Reads where the names of legal references a publisher links end in the document's text, with `ends` (byte
+    /// offsets in that text) on the first call: a plan for a page that links them breaks its terms there.
+    pub fn read_legal_reference_ends(&self, document: &DocumentStructure, ends: impl FnOnce(&str) -> Vec<usize>) {
+        self.legal_reference_ends.get_or_init(|| {
+            let text = self.text(document);
+            let mut bytes = ends(text.value);
+            bytes.sort_unstable();
+            let (mut units, mut at) = (0, 0);
+            bytes.into_iter().filter(|&byte| text.value.is_char_boundary(byte)).map(|byte| {
+                units += crate::utf16_len(&text.value[at..byte]);
+                at = byte;
+                units
+            }).collect()
+        });
     }
 
     pub fn new() -> Self {
@@ -597,6 +615,7 @@ impl DocumentQuery {
             replay: OnceLock::new(),
             normalized_fragment_text: OnceLock::new(),
             source_page: OnceLock::new(),
+            legal_reference_ends: OnceLock::new(),
         }
     }
 

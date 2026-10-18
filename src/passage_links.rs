@@ -6,6 +6,7 @@ use crate::{DocumentKind, DocumentQuery, DocumentStructure, TextFragmentPlan};
 use legal_document_query::source_text_fragment_plan;
 use regex::Regex;
 use std::sync::OnceLock;
+use legal_citations::reference_names::reference_name_ends;
 use legal_citations::url::{
     is_pdf_address, law_web_document, passage_locator, publisher_annotates_legal_references, source_url,
 };
@@ -58,8 +59,12 @@ pub fn passage_link(query: &DocumentQuery, structure: &DocumentStructure, reques
         return Some(PassageLink { target: base, plan: None });
     }
     let plan = |url: &str, pdf: bool| {
+        let annotated = publisher_annotates_legal_references(url);
+        if annotated {
+            query.read_legal_reference_ends(structure, reference_name_ends);
+        }
         let fragments = |split: bool| query.text_fragment_plan(structure, &request.block_text, &request.quotes, pdf,
-            publisher_annotates_legal_references(url), split);
+            annotated, split);
         let whole = fragments(false);
         let value = whole.directives.first().and_then(|directive| directive.strip_prefix("text=")).unwrap_or("");
         let simple_range = whole.directives.len() == 1 && value.split(',').count() == 2
@@ -106,6 +111,9 @@ pub fn cited_passage_link(query: &DocumentQuery, structure: &DocumentStructure, 
     let Some(locator) = passage_locator(&url, pinpoints) else { return Some(url) };
     let section = locator.kind == "section";
     let (pdf, annotated) = (is_pdf_address(&url), publisher_annotates_legal_references(&url));
+    if annotated {
+        query.read_legal_reference_ends(structure, reference_name_ends);
+    }
     let kind = if section { DocumentKind::Section } else { DocumentKind::Paragraph };
     let plan = |target: &str| query.range_fragment_plan(structure, kind, target, target, pdf, annotated, section)
         .filter(|plan| plan.source_safe_complete && !plan.directives.is_empty());
