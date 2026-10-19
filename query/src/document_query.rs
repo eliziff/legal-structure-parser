@@ -20,7 +20,7 @@ pub use source_text::TextStatistics;
 use search::{quote_text, quote_words, PhraseOptions, PhraseSpan};
 pub use search::{tokenize_source_text, DocumentWordSpan};
 pub use text_fragment::{
-    source_text_fragment_plan, text_fragment_index, text_fragment_plan, text_fragment_plan_in, TextFragmentIndex,
+    sentence_end, source_text_fragment_plan, text_fragment_index, text_fragment_plan, text_fragment_plan_in, TextFragmentIndex,
     TextFragmentPage, TextFragmentPlan,
     TextFragmentWordInterval,
 };

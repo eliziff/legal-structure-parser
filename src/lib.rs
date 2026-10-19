@@ -17,6 +17,8 @@ mod note_pairing;
 mod text_notes;
 #[cfg(feature = "citator")]
 mod citator;
+#[cfg(all(feature = "citator", feature = "document-query"))]
+mod text_units;
 #[cfg(all(feature = "citator", feature = "canlii"))]
 mod canlii;
 mod assembly;
@@ -58,6 +60,8 @@ mod tables;
 pub use analysis::{EngineAnalysis, STRUCTURE_ANALYSIS};
 #[cfg(feature = "citator")]
 pub use citator::*;
+#[cfg(all(feature = "citator", feature = "document-query"))]
+pub use text_units::text_units;
 #[cfg(all(feature = "citator", feature = "canlii"))]
 pub use canlii::{canlii_case_url, canlii_court_route, canlii_law_url};
 pub use definitions::*;

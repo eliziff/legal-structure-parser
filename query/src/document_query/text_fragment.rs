@@ -3154,7 +3154,7 @@ const ABBREVIATIONS: &[&str] = &["Mr", "Ms", "Mrs", "Mme", "Dr", "St", "Jr", "Sr
 /// before a word that opens on a capital, the stop no abbreviation's (a single letter, "U.S.", "Mr.", "s.", "v.").
 /// Pages set an abbreviation's stop with one space and often a sentence's with a no-break space and a space: of
 /// some 36,000 abbreviation stops on cached SCC and CanLII pages none had the two, against 43-46% of sentence ends.
-fn sentence_end(word: &str, next: &str) -> bool {
+pub fn sentence_end(word: &str, next: &str) -> bool {
     let opens_capital = next.trim_start_matches(|character: char| !character.is_alphanumeric())
         .chars().next().is_some_and(char::is_uppercase);
     // A bracketed citation after a stop ("Crown. [para. 41]", "disrepute. (R. v. Grant …)") is set apart as a
