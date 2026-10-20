@@ -338,6 +338,30 @@ fn bare_section_label_without_inline_content_is_safe() {
 
 #[test]
 #[cfg(feature = "structure-inference")]
+fn printed_marker_ranges_exclude_separating_whitespace() {
+    for value in [
+        "Harbour log 🧭\n1.   Inspect the lantern.\n2.\tStore the chart.",
+        "Harbour log 🧭\n  1.   Inspect the lantern.\n  2.\tStore the chart.",
+        "(a)   Raise the sail.\n(b)\tSecure the rope.",
+        "Section 1.01   Navigation.\n(a)   Read the compass.\n(b)   Check the tide.\nSection 1.02   Equipment.",
+        "  Section 1.01   Navigation.\n  (a)   Read the compass.\n  (b)   Check the tide.\n  Section 1.02   Equipment.",
+    ] {
+        let text = ScalarText::new(value);
+        let runs = detect_structure_candidate_runs(value);
+        assert!(runs.iter().map(|run| run.markers.len()).sum::<usize>() >= 2);
+        for marker in runs.iter().flat_map(|run| &run.markers) {
+            let printed = text.slice(marker.marker_range.start..marker.marker_range.end).unwrap();
+            assert_eq!(printed.trim_start(), marker.label);
+            assert_eq!(printed, printed.trim_end());
+            assert!(!printed.is_empty());
+            let separator = text.slice(marker.marker_range.end..marker.content_start).unwrap();
+            assert!(separator.chars().all(char::is_whitespace));
+        }
+    }
+}
+
+#[test]
+#[cfg(feature = "structure-inference")]
 fn raw_numeric_candidates_keep_late_and_gapped_runs_for_resolution() {
     let runs = detect_structure_candidate_runs(
         "7. First excerpt paragraph.\n9. A gap remains visible.\n12. Another item.",
@@ -549,6 +573,10 @@ fn paired_note_claim_keeps_note_source_identity() {
             line_id: "note-line".to_owned(),
         },
         body: NoteBodyV2 {
+            ranges: vec![ScalarRange {
+                start: label_start,
+                end: text.chars().count(),
+            }],
             range: ScalarRange {
                 start: label_start,
                 end: text.chars().count(),
@@ -957,6 +985,7 @@ fn note_pair_support_beats_paragraph_majority_only_with_independent_witnesses() 
                 line_id: "line-1".to_owned(),
             },
             body: NoteBodyV2 {
+                ranges: vec![marker.range],
                 range: marker.range,
                 page_indexes: vec![0],
                 line_ids: vec!["line-1".to_owned()],

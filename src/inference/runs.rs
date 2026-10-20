@@ -122,11 +122,10 @@ pub(crate) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
             .iter()
             .map(|marker| {
                 let end = next_boundary(boundaries, marker.start, text.len());
-                let surface_label = text
+                let printed = text
                     .slice(marker.start..marker.content_start)
-                    .expect("numeric marker range is bounded")
-                    .trim()
-                    .to_owned();
+                    .expect("numeric marker range is bounded");
+                let surface_label = printed.trim().to_owned();
                 StructureMarkerCandidate {
                     id: String::new(),
                     range: ScalarRange {
@@ -135,7 +134,7 @@ pub(crate) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
                     },
                     marker_range: ScalarRange {
                         start: marker.start,
-                        end: marker.content_start,
+                        end: marker.start + printed.trim_end().chars().count(),
                     },
                     label: surface_label,
                     grammar_value: marker.number.to_string(),
@@ -304,11 +303,10 @@ pub(crate) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
                 .iter()
                 .map(|marker| {
                     let end = next_boundary(&boundaries, marker.start, text.len());
-                    let surface_label = text
+                    let printed = text
                         .slice(marker.start..marker.content_start)
-                        .expect("enumerator marker range is bounded")
-                        .trim()
-                        .to_owned();
+                        .expect("enumerator marker range is bounded");
+                    let surface_label = printed.trim().to_owned();
                     StructureMarkerCandidate {
                         id: String::new(),
                         range: ScalarRange {
@@ -317,7 +315,7 @@ pub(crate) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
                         },
                         marker_range: ScalarRange {
                             start: marker.start,
-                            end: marker.content_start,
+                            end: marker.start + printed.trim_end().chars().count(),
                         },
                         label: surface_label,
                         grammar_value: format!("{family}:{}", marker.value),

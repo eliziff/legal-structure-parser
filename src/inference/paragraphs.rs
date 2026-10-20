@@ -944,7 +944,9 @@ pub(super) fn paragraph_ranges(
                 end,
             );
             // The number is read from the text, so it is printed there.
-            block.marker_range = Some(ScalarRange { start: marker.start, end: marker.content_start });
+            let printed = text.slice(marker.start..marker.content_start)
+                .expect("printed paragraph marker is bounded").trim_end();
+            block.marker_range = Some(ScalarRange { start: marker.start, end: marker.start + printed.chars().count() });
             block
         })
         .collect()

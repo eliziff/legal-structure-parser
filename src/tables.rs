@@ -265,6 +265,7 @@ mod tests {
 
     fn fact(start: usize, end: usize) -> AuthoritativeTableCell {
         AuthoritativeTableCell {
+            ranges: vec![ScalarRange { start, end }],
             table: 1,
             table_name: Some("Sheet".into()),
             row: 1,

@@ -58,17 +58,16 @@ pub fn detect_structure_candidate_runs(value: &str) -> Vec<StructureCandidateRun
                     | "instrument_ladder_violation"
             )
         );
-        let label = text
+        let printed = text
             .slice(point.range.start..content_start)
-            .expect("grammar point range is bounded")
-            .trim()
-            .to_owned();
+            .expect("grammar point range is bounded");
+        let label = printed.trim().to_owned();
         entry.0.push(StructureMarkerCandidate {
             id: format!("grammar-point-{index:06}"),
             range: point.range,
             marker_range: ScalarRange {
                 start: point.range.start,
-                end: content_start,
+                end: point.range.start + printed.trim_end().chars().count(),
             },
             label,
             grammar_value,
