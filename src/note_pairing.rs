@@ -1752,6 +1752,20 @@ fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate]) -> Vec<Candidate> 
         {
             continue;
         }
+        // So is a bare or bracketed number opening a body line in the body's type with prose
+        // beside it ("4  Where a compromise is proposed", "(8)  Any claim by"): a statute's
+        // section or subsection, or a judgment's paragraph. A note set in the body's type reads
+        // as a citation ("9 [1991] 2 S.C.R. 577", "6 Ibid., p. 8"), as an endnote list does.
+        if token.value.is_some()
+            && matches!(token.form, "plain" | "paren")
+            && line.zone == Zone::Body
+            && !line.spans.is_empty()
+            && !line.small_font
+            && !body_stripped.is_empty()
+            && !cues::layout_has_citation_cue(body_stripped)
+        {
+            continue;
+        }
         if token.value.is_some()
             && token.post.contains(',')
             && line.zone != Zone::Note
