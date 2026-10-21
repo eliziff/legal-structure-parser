@@ -205,6 +205,8 @@ pub enum CandidateObservationV2 {
     BodyProseFlow,
     SectionHeading,
     ListItemLayout,
+    /// A lead-in and clause syntax connect aligned sibling markers into a list.
+    ListItemSyntax,
     CrossReference,
     Furniture,
     TableOrForm,
@@ -255,6 +257,7 @@ pub enum ResolutionRuleV2 {
     RootedNumericProse,
     HierarchySection,
     ListItemLayout,
+    ListItemSyntax,
     PairedNote,
     DirectExclusion,
     ConflictingRoles,

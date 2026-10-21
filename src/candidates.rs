@@ -404,6 +404,11 @@ pub(crate) fn resolve_structure_candidates<'a>(
                     Some(ResolvedRole::Section),
                     ResolutionRuleV2::HierarchySection,
                 )
+            } else if observations.contains(&CandidateObservationV2::ListItemSyntax) {
+                (
+                    Some(ResolvedRole::ListItem),
+                    ResolutionRuleV2::ListItemSyntax,
+                )
             } else if matches!(
                 run.grammar,
                 CandidateGrammar::Hierarchy | CandidateGrammar::Enumerator
@@ -800,16 +805,16 @@ pub fn resolve_structure_graph_with_assembler(
         if resolved.role == Some(ResolvedRole::Section)
             && note_rooted.contains(resolved.candidate.id.as_str())
         {
-            let listed = resolved
-                .proof
-                .observations
-                .contains(&CandidateObservationV2::ListItemLayout);
-            resolved.role = listed.then_some(ResolvedRole::ListItem);
-            resolved.proof.rule = if listed {
-                ResolutionRuleV2::ListItemLayout
+            let observations = &resolved.proof.observations;
+            let rule = if observations.contains(&CandidateObservationV2::ListItemSyntax) {
+                Some(ResolutionRuleV2::ListItemSyntax)
+            } else if observations.contains(&CandidateObservationV2::ListItemLayout) {
+                Some(ResolutionRuleV2::ListItemLayout)
             } else {
-                ResolutionRuleV2::InsufficientEvidence
+                None
             };
+            resolved.role = rule.map(|_| ResolvedRole::ListItem);
+            resolved.proof.rule = rule.unwrap_or(ResolutionRuleV2::InsufficientEvidence);
         }
     }
     // Native PDF paragraph grouping is source layout, not a second structural boundary truth.
