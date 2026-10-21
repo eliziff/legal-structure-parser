@@ -935,45 +935,78 @@ pub fn resolve_structure_graph_with_assembler(
     for (index, node) in nodes.iter().enumerate() {
         units_at.entry(node.range.start).or_default().push(index);
     }
+    let has_locator = |node: &StructureNode| {
+        node.marker_range.is_some()
+            || node.label.is_some()
+            || node.locator_kind.is_some()
+            || node
+                .aliases
+                .as_ref()
+                .is_some_and(|aliases| !aliases.is_empty())
+    };
+    let is_pdf_unit = |node: &StructureNode| {
+        node.origin_id.starts_with("legalpdf.")
+            && (matches!(
+                node.kind,
+                NodeKind::Prose | NodeKind::Heading | NodeKind::Paragraph | NodeKind::ListItem
+            ) || node.kind == NodeKind::Section && (has_locator(node) || node.role.is_some()))
+    };
     for resolved in &mut resolved_candidates {
         if candidate_node_ids.contains_key(resolved.candidate.id.as_str()) {
             continue;
         }
         let Some(role) = resolved.role else { continue };
         let kind = role.node_kind();
-        if let Some(&index) = identities.get(&(kind, resolved.candidate.marker_range.start)) {
-            candidate_node_ids.insert(resolved.candidate.id.as_str(), index);
-            pending_parents
-                .entry(index)
-                .or_insert(resolved.candidate.parent_candidate_id.as_deref());
-            continue;
-        }
         // A PDF source unit owns its role and exact membership; numbering adds locator facts
         // to that unit rather than manufacturing a second outline unit at the same start.
-        let source_unit = units_at.get(&resolved.candidate.marker_range.start).into_iter().flatten().copied().find(|&index| {
+        let source_unit = units_at
+            .get(&resolved.candidate.marker_range.start)
+            .into_iter()
+            .flatten()
+            .copied()
+            .find(|&index| {
+                let node = &nodes[index];
+                is_pdf_unit(node)
+                    && node.range.start == resolved.candidate.marker_range.start
+                    && resolved.candidate.marker_range.end <= node.range.end
+                    && (node.ranges.is_empty()
+                        || node.ranges.iter().any(|part| {
+                            part.start <= resolved.candidate.marker_range.start
+                                && resolved.candidate.marker_range.end <= part.end
+                        }))
+            });
+        let claimed_source = source_unit.filter(|&index| {
             let node = &nodes[index];
-            matches!(
-                node.kind,
-                NodeKind::Prose
-                    | NodeKind::Heading
-                    | NodeKind::Paragraph
-                    | NodeKind::Section
-                    | NodeKind::ListItem
-            ) && node.origin_id.starts_with("legalpdf.")
-                && node.range.start == resolved.candidate.marker_range.start
-                && resolved.candidate.marker_range.end <= node.range.end
-                && (node.ranges.is_empty()
-                    || node.ranges.iter().any(|part| {
-                        part.start <= resolved.candidate.marker_range.start
-                            && resolved.candidate.marker_range.end <= part.end
-                    }))
+            node.marker_range.is_some()
+                || matches!(
+                    node.kind,
+                    NodeKind::Paragraph | NodeKind::Section | NodeKind::ListItem
+                ) && (node.kind != kind || has_locator(node))
         });
-        if let Some(index) = source_unit.filter(|&index| nodes[index].marker_range.is_some()) {
-            identities.insert((kind, resolved.candidate.marker_range.start), index);
+        if let Some(index) = identities
+            .get(&(kind, resolved.candidate.marker_range.start))
+            .copied()
+            .filter(|&index| {
+                let node = &nodes[index];
+                node.kind == kind && (!node.origin_id.starts_with("legalpdf.") || is_pdf_unit(node))
+            })
+        {
+            if source_unit != Some(index) || claimed_source == Some(index) {
+                candidate_node_ids.insert(resolved.candidate.id.as_str(), index);
+                pending_parents
+                    .entry(index)
+                    .or_insert(resolved.candidate.parent_candidate_id.as_deref());
+                continue;
+            }
+        }
+        if let Some(index) = claimed_source {
             candidate_node_ids.insert(resolved.candidate.id.as_str(), index);
-            pending_parents
-                .entry(index)
-                .or_insert(resolved.candidate.parent_candidate_id.as_deref());
+            if nodes[index].kind == kind {
+                identities.insert((kind, resolved.candidate.marker_range.start), index);
+                pending_parents
+                    .entry(index)
+                    .or_insert(resolved.candidate.parent_candidate_id.as_deref());
+            }
             continue;
         }
         let index = source_unit.unwrap_or(nodes.len());
@@ -992,6 +1025,12 @@ pub fn resolve_structure_graph_with_assembler(
             generated_node_ids.insert(index);
             id
         };
+        if let Some(source) = source_unit {
+            let old = (nodes[source].kind, nodes[source].range.start);
+            if identities.get(&old) == Some(&source) {
+                identities.remove(&old);
+            }
+        }
         identities.insert((kind, resolved.candidate.marker_range.start), index);
         candidate_node_ids.insert(resolved.candidate.id.as_str(), index);
         pending_parents.insert(index, resolved.candidate.parent_candidate_id.as_deref());
@@ -1062,14 +1101,17 @@ pub fn resolve_structure_graph_with_assembler(
             node.page_indexes = resolved.page_indexes.to_vec();
             node.line_ids = resolved.line_ids.to_vec();
         }
-        node.grammar = Some(
-            match role {
-                ResolvedRole::NumberedParagraph => "numeric",
-                ResolvedRole::Section => "hierarchy",
-                ResolvedRole::ListItem => "enumerator",
-            }
-            .to_owned(),
-        );
+        // The provision reader still uses the source scope to select the primary text.
+        if !matches!(node.grammar.as_deref(), Some("contents" | "translation")) {
+            node.grammar = Some(
+                match role {
+                    ResolvedRole::NumberedParagraph => "numeric",
+                    ResolvedRole::Section => "hierarchy",
+                    ResolvedRole::ListItem => "enumerator",
+                }
+                .to_owned(),
+            );
+        }
         node.proof = Some(ResolutionProofV2 {
             rule: resolved.proof.rule,
             observations: std::mem::take(&mut resolved.proof.observations),
@@ -1082,6 +1124,23 @@ pub fn resolve_structure_graph_with_assembler(
         }
     }
 
+    // Aliases keep their source binding, but only the canonical node's kind can form lists or
+    // paragraph boundaries. A paired note label supplies neither role.
+    for resolved in &mut resolved_candidates {
+        let Some(role) = resolved.role else { continue };
+        let Some(&index) = candidate_node_ids.get(resolved.candidate.id.as_str()) else {
+            continue;
+        };
+        if nodes[index].kind != role.node_kind() {
+            resolved.role = None;
+            resolved.proof.rule =
+                if matches!(nodes[index].kind, NodeKind::Footnote | NodeKind::Endnote) {
+                    ResolutionRuleV2::PairedNote
+                } else {
+                    ResolutionRuleV2::ConflictingRoles
+                };
+        }
+    }
     // A section that yielded to the numbered paragraph on its line stands for that paragraph,
     // so its sub-items are the paragraph's.
     let hierarchy = runs
