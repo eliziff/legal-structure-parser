@@ -245,7 +245,8 @@ pub(crate) fn raw_bullet_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateRu
 
 pub(crate) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateRun> {
     struct RawEnumerator {
-        value: u32,
+        value: String,
+        ordinal: u32,
         start: usize,
         content_start: usize,
     }
@@ -260,11 +261,21 @@ pub(crate) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
         };
         let content_start = text.scalar(trimmed_byte + at);
         for (family, value) in enum_readings(token).into_iter().flatten() {
-            let Ok(value) = value.parse::<u32>() else {
+            if family == 0 && value.contains('.') {
                 continue;
-            };
+            }
+            let ordinal = value
+                .split('.')
+                .next()
+                .and_then(|value| value.parse::<u32>().ok())
+                .expect("enumerator readings have a numeric base");
             by_family.entry(family).or_default().push(RawEnumerator {
-                value,
+                value: if family == 0 {
+                    ordinal.to_string()
+                } else {
+                    value
+                },
+                ordinal,
                 start,
                 content_start,
             });
@@ -287,12 +298,14 @@ pub(crate) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
                 .enumerate()
                 .filter(|(_, scope)| {
                     scope.last().is_some_and(|prior| {
-                        prior.value < marker.value && marker.value - prior.value <= 8
+                        prior.ordinal <= marker.ordinal
+                            && marker.ordinal - prior.ordinal <= 8
+                            && compare_child_values(&marker.value, &prior.value).is_gt()
                     })
                 })
-                .max_by_key(|(_, scope)| scope.last().unwrap().value)
+                .max_by_key(|(_, scope)| scope.last().unwrap().ordinal)
                 .map(|(index, _)| index);
-            if marker.value == 1 || target.is_none() {
+            if marker.value == "1" || target.is_none() {
                 scopes.push(vec![marker]);
             } else {
                 scopes[target.unwrap()].push(marker);
@@ -337,10 +350,10 @@ pub(crate) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
                 id: format!("enumerator-{ordinal:06}"),
                 grammar: CandidateGrammar::Enumerator,
                 range,
-                rooted: scope[0].value == 1,
+                rooted: scope[0].value == "1",
                 consecutive: scope
                     .windows(2)
-                    .all(|pair| pair[1].value == pair[0].value + 1),
+                    .all(|pair| enum_increment(family, &pair[0].value, &pair[1].value)),
                 markers: candidates,
             });
         }

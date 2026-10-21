@@ -3,7 +3,8 @@
 //! order, so a caller can lay the judgment out.
 
 use crate::inference::{
-    enum_readings, heading_enumerator, heading_levels, joined_heading_levels, run_in_heading, sentence_heading,
+    enum_increment, enum_readings, heading_enumerator, heading_levels, inserted_letter_token,
+    joined_heading_levels, run_in_heading, sentence_heading,
 };
 use crate::filing::{front_matter_line, FrontMatterLine};
 use crate::analysis::citation_spans;
@@ -58,9 +59,9 @@ const BULLETS: [&str; 8] = ["•", "-", "–", "—", "*", "·", "◦", "▪"];
 
 /// An enumerator's readings: its family as the instrument grammar reads it (a letter that is
 /// also a numeral has both), whether it is parenthesized, and its value.
-fn readings(token: &str) -> Option<Vec<((u8, bool), u32)>> {
+fn readings(token: &str) -> Option<Vec<((u8, bool), String)>> {
     if BULLETS.contains(&token) {
-        return Some(vec![((u8::MAX, false), 1)]);
+        return Some(vec![((u8::MAX, false), "1".to_owned())]);
     }
     let (inner, wrapped) = match token.strip_prefix('(') {
         Some(rest) => (rest.strip_suffix(')')?, true),
@@ -69,7 +70,14 @@ fn readings(token: &str) -> Option<Vec<((u8, bool), u32)>> {
     let readings = enum_readings(inner)
         .into_iter()
         .flatten()
-        .filter_map(|(family, value)| Some(((family, wrapped), value.parse::<u32>().ok()?)))
+        .filter_map(|(family, value)| {
+            let value = if family == 0 {
+                value.parse::<u32>().ok()?.to_string()
+            } else {
+                value
+            };
+            Some(((family, wrapped), value))
+        })
         .collect::<Vec<_>>();
     (!readings.is_empty()).then_some(readings)
 }
@@ -78,7 +86,7 @@ fn readings(token: &str) -> Option<Vec<((u8, bool), u32)>> {
 /// instrument grammar's reading of the enumerator, and whether it is parenthesized) and the
 /// value last read in it.
 #[derive(Default)]
-struct Levels(Vec<((u8, bool), u32)>);
+struct Levels(Vec<((u8, bool), String)>);
 
 impl Levels {
     /// The depth an enumerator opens at, from 0, opening or closing levels to it. Of a letter
@@ -86,17 +94,24 @@ impl Levels {
     /// starts one at its first value ("i" is 1, not the ninth letter).
     fn read(&mut self, token: &str) -> Option<usize> {
         let readings = readings(token)?;
-        let (family, value) = readings
-            .iter()
-            .find(|reading| self.continued(reading))
-            .or_else(|| readings.iter().find(|(_, value)| *value == 1))
+        let mut continuing = readings.iter().filter(|reading| self.continued(reading));
+        let inserted =
+            inserted_letter_token(token.trim_start_matches('(').trim_end_matches(['.', ')']))
+                .is_some();
+        let continued = if inserted {
+            continuing.max_by_key(|(family, _)| self.0.iter().rposition(|(open, _)| open == family))
+        } else {
+            continuing.next()
+        };
+        let (family, value) = continued
+            .or_else(|| readings.iter().find(|(_, value)| value == "1"))
             .or_else(|| {
                 readings
                     .iter()
                     .find(|(family, _)| self.0.iter().any(|(open, _)| open == family))
             })
             .or(readings.first())
-            .copied()?;
+            .cloned()?;
         Some(self.open(family, value))
     }
 
@@ -106,13 +121,13 @@ impl Levels {
             .is_some_and(|readings| readings.iter().any(|reading| self.continued(reading)))
     }
 
-    fn continued(&self, (family, value): &((u8, bool), u32)) -> bool {
-        self.0
-            .iter()
-            .any(|(open, last)| open == family && (family.0 == u8::MAX || last + 1 == *value))
+    fn continued(&self, (family, value): &((u8, bool), String)) -> bool {
+        self.0.iter().any(|(open, last)| {
+            open == family && (family.0 == u8::MAX || enum_increment(family.0, last, value))
+        })
     }
 
-    fn open(&mut self, family: (u8, bool), value: u32) -> usize {
+    fn open(&mut self, family: (u8, bool), value: String) -> usize {
         match self.0.iter().position(|(open, _)| *open == family) {
             Some(at) => {
                 self.0.truncate(at + 1);
@@ -142,6 +157,11 @@ fn enumerated(line: &str) -> Option<(&str, &str)> {
     (!rest.is_empty()
         && (token.starts_with('(') && token.ends_with(')') && token.len() <= 7
             || heading_enumerator(token)
+            || token.ends_with(['.', ')'])
+                && inserted_letter_token(
+                    token.trim_start_matches('(').trim_end_matches(['.', ')']),
+                )
+                .is_some()
             || BULLETS.contains(&token)))
     .then_some((token, rest))
 }
@@ -335,7 +355,7 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
                 matches!(place, Place::Front)
                     && index < opening
                     && readings(token)
-                        .is_some_and(|readings| readings.iter().any(|(_, value)| *value == 1))
+                        .is_some_and(|readings| readings.iter().any(|(_, value)| value == "1"))
             };
             if let Some((token, rest)) =
                 enumerated(line).filter(|(token, _)| list.continues(token) || opens(token))

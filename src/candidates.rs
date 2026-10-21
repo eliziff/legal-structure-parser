@@ -96,11 +96,12 @@ pub fn detect_structure_candidate_runs(value: &str) -> Vec<StructureCandidateRun
         .iter()
         .flat_map(|run| run.markers.iter().map(|marker| marker.range.start))
         .collect::<HashSet<_>>();
-    raw_enumerators.retain(|run| {
-        !run.markers
-            .iter()
-            .any(|marker| captured.contains(&marker.range.start))
-    });
+    // Hierarchy claims markers individually; the rest keep their complete count's evidence.
+    for run in &mut raw_enumerators {
+        run.markers
+            .retain(|marker| !captured.contains(&marker.range.start));
+    }
+    raw_enumerators.retain(|run| !run.markers.is_empty());
     hierarchy.append(&mut raw_enumerators);
     hierarchy.sort_by_key(|run| (run.range.start, run.range.end));
     for (run_index, run) in hierarchy.iter_mut().enumerate() {
@@ -1462,7 +1463,10 @@ fn roman_value(token: &str) -> Option<u32> {
 /// A marker's family and the value it counts, read whole: "(a)", "1.", "iv)", "[12]", "2.3", "•".
 /// A single letter that is also a roman numeral reads as a letter when `letter` says the letters
 /// of its brackets stand open at the letter before it.
-fn marker_family(marker: &str, letter: impl Fn(Family, u32) -> bool) -> Option<(Family, u32)> {
+fn marker_family(
+    marker: &str,
+    letter: impl Fn(Family, u32, bool) -> bool,
+) -> Option<(Family, u32)> {
     let text = marker.trim();
     if text.chars().count() == 1 && "•-–—*▪◦●○■□➢✓·o".contains(text) {
         return Some((
@@ -1485,7 +1489,9 @@ fn marker_family(marker: &str, letter: impl Fn(Family, u32) -> bool) -> Option<(
         } else {
             ("", text)
         };
-    let inner = inner.trim();
+    let insertion = inference::inserted_letter_token(inner.trim());
+    // An inserted letter retains its base counter's outline level; its label keeps the suffix.
+    let inner = insertion.map_or(inner.trim(), |(letter, _)| letter);
     if inner.is_empty() || inner.chars().count() > 12 {
         return None;
     }
@@ -1517,7 +1523,7 @@ fn marker_family(marker: &str, letter: impl Fn(Family, u32) -> bool) -> Option<(
                     wrap,
                     count: if upper { "A" } else { "a" },
                 };
-                if letter(alpha, letter_value(c)) {
+                if letter(alpha, letter_value(c), insertion.is_some()) {
                     return Some((alpha, letter_value(c)));
                 }
             }
@@ -1542,10 +1548,11 @@ pub(crate) fn numbering_marker(
     marker: &str,
     previous: Option<&legal_structure_model::NumberingMarker>,
 ) -> Option<legal_structure_model::NumberingMarker> {
-    let (family, ordinal) = marker_family(marker, |family, ordinal| {
+    let (family, ordinal) = marker_family(marker, |family, ordinal, inserted| {
         previous.is_some_and(|previous| {
             previous.family == format!("{}:{}", family.wrap, family.count)
-                && previous.ordinal.checked_add(1) == Some(ordinal)
+                && (previous.ordinal.checked_add(1) == Some(ordinal)
+                    || inserted && previous.ordinal == ordinal)
         })
     })?;
     let mut components = marker
@@ -1599,10 +1606,11 @@ fn nest_by_numbering(nodes: &mut [StructureNode], text: &ScalarText<'_>) {
         else {
             continue;
         };
-        let open = |family: Family, value: u32| {
-            stack
-                .iter()
-                .any(|(open, _, last)| *open == family && last + 1 == value)
+        let open = |family: Family, value: u32, inserted: bool| {
+            stack.iter().any(|(open, _, last)| {
+                *open == family
+                    && (last.checked_add(1) == Some(value) || inserted && *last == value)
+            })
         };
         let Some((family, value)) = marker_family(marker, open) else {
             continue;

@@ -51,7 +51,40 @@ pub(super) struct StructureState {
     used: HashMap<String, usize>,
 }
 
+pub(crate) fn inserted_letter_token(token: &str) -> Option<(&str, &str)> {
+    let (letter, suffix) = token.split_once('.')?;
+    (letter.len() == 1
+        && letter.as_bytes()[0].is_ascii_alphabetic()
+        && !suffix.is_empty()
+        && suffix.bytes().all(|byte| byte.is_ascii_digit()))
+    .then_some((letter, suffix))
+}
+
+pub(crate) fn enum_increment(family: u8, prior: &str, value: &str) -> bool {
+    if let (Ok(prior), Ok(value)) = (prior.parse::<u32>(), value.parse::<u32>()) {
+        return prior.checked_add(1) == Some(value);
+    }
+    if family == 0 {
+        return compare_labels(value, prior, true).is_gt();
+    }
+    let base = |value: &str| {
+        value
+            .split('.')
+            .next()
+            .unwrap()
+            .parse::<u32>()
+            .expect("enumerator readings have a numeric base")
+    };
+    let (before, after) = (base(prior), base(value));
+    (before == after && compare_child_values(value, prior).is_gt())
+        || before.checked_add(1) == Some(after)
+}
+
 pub(crate) fn enum_readings(token: &str) -> [Option<(u8, String)>; 2] {
+    if let Some((letter, suffix)) = inserted_letter_token(token) {
+        return enum_readings(letter)
+            .map(|reading| reading.map(|(family, value)| (family, format!("{value}.{suffix}"))));
+    }
     if token
         .split('.')
         .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
@@ -101,6 +134,7 @@ pub(super) fn any_instrument_marker(value: &str) -> Option<(&str, usize, Instrum
         return None;
     }
     let valid_letters = |token: &str, upper: bool| {
+        let token = inserted_letter_token(token).map_or(token, |(letter, _)| letter);
         let bytes = token.as_bytes();
         let case = |byte: &u8| {
             if upper {
@@ -139,7 +173,7 @@ pub(super) fn any_instrument_marker(value: &str) -> Option<(&str, usize, Instrum
             InstrumentMarkerKind::Parenthesized,
         ));
     }
-    let delimiter = value.find([')', '.'])?;
+    let delimiter = value.split_whitespace().next()?.rfind([')', '.'])?;
     let token = &value[..delimiter];
     if !valid_letters(token, false) {
         return None;
@@ -299,25 +333,34 @@ impl StructureState {
                 (family, value, at)
             })
         });
-        let selected = (0..4).find_map(|pass| {
-            readings.iter().flatten().find_map(|(family, value, at)| {
-                match (pass, *at) {
-                    (0, Some(index)) => {
-                        let prior = &self.stack[index].value;
-                        match (prior.parse::<u32>(), value.parse::<u32>()) {
-                            (Ok(prior), Ok(value)) => prior + 1 == value,
-                            _ => compare_labels(value, prior, true).is_gt(),
+        // Ambiguous insertions continue the innermost open counter, as their base marker does.
+        let inserted = inserted_letter_token(token).and_then(|_| {
+            readings
+                .iter()
+                .flatten()
+                .filter(|(family, value, at)| {
+                    at.is_some_and(|index| enum_increment(*family, &self.stack[index].value, value))
+                })
+                .max_by_key(|(_, _, at)| *at)
+                .map(|(family, value, at)| (0, *family, value.as_str(), *at))
+        });
+        let selected = inserted.or_else(|| {
+            (0..4).find_map(|pass| {
+                readings.iter().flatten().find_map(|(family, value, at)| {
+                    match (pass, *at) {
+                        (0, Some(index)) => {
+                            enum_increment(*family, &self.stack[index].value, value)
                         }
+                        (1, None) => value == "1" && self.stack.len() < 6,
+                        (2, Some(index)) => {
+                            value == "1"
+                                || compare_labels(value, &self.stack[index].value, true).is_gt()
+                        }
+                        (3, None) => self.stack.len() < 6,
+                        _ => false,
                     }
-                    (1, None) => value == "1" && self.stack.len() < 6,
-                    (2, Some(index)) => {
-                        value == "1"
-                            || compare_labels(value, &self.stack[index].value, true).is_gt()
-                    }
-                    (3, None) => self.stack.len() < 6,
-                    _ => false,
-                }
-                .then(|| (pass, *family, value.as_str(), *at))
+                    .then(|| (pass, *family, value.as_str(), *at))
+                })
             })
         });
         let (pass, family, value, at) = selected.unwrap_or((4, 0, "", None));
