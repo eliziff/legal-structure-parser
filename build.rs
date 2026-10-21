@@ -20,7 +20,34 @@ fn files(path: &Path, out: &mut Vec<PathBuf>) {
 fn main() {
     let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let mut paths = Vec::new();
-    for input in ["Cargo.toml", "build.rs", "src", "model/Cargo.toml", "model/src"] {
+    let mut inputs = vec![
+        "Cargo.toml",
+        "build.rs",
+        "src",
+        "layout/Cargo.toml",
+        "layout/src",
+        "model/Cargo.toml",
+        "model/src",
+    ];
+    // The analysis service also executes the citation grammar and its compiled registries.
+    if env::var_os("CARGO_FEATURE_STRUCTURE_INFERENCE").is_some()
+        || env::var_os("CARGO_FEATURE_CITATOR").is_some()
+    {
+        inputs.extend([
+            "../common-law-cite/Cargo.toml",
+            "../common-law-cite/crates/legal-citations/Cargo.toml",
+            "../common-law-cite/crates/legal-citations/build.rs",
+            "../common-law-cite/crates/legal-citations/build_registry.rs",
+            "../common-law-cite/crates/legal-citations/src",
+            "../common-law-cite/crates/legal-citations/registry",
+            "../common-law-cite/crates/legal-citations/vendor",
+            "../common-law-cite/crates/legal-grammar/Cargo.toml",
+            "../common-law-cite/crates/legal-grammar/build.rs",
+            "../common-law-cite/crates/legal-grammar/src",
+            "../common-law-cite/crates/legal-grammar/data",
+        ]);
+    }
+    for input in inputs {
         let input = root.join(input);
         println!("cargo:rerun-if-changed={}", input.display());
         files(&input, &mut paths);
@@ -42,6 +69,18 @@ fn main() {
         digest.update(relative.as_bytes());
         digest.update([0]);
         digest.update(fs::read(path).unwrap());
+        digest.update([0]);
+    }
+    let mut features = env::vars_os()
+        .filter_map(|(name, _)| {
+            name.to_str()?
+                .strip_prefix("CARGO_FEATURE_")
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    features.sort();
+    for feature in features {
+        digest.update(feature.as_bytes());
         digest.update([0]);
     }
     println!(
