@@ -1636,7 +1636,7 @@ fn words_on_row(lines: &[PairLine<'_>], index: usize) -> bool {
         })
 }
 
-fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate]) -> Vec<Candidate> {
+fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate], first_page: u32) -> Vec<Candidate> {
     let mut ref_pages: HashMap<u32, HashSet<u32>> = HashMap::new();
     for candidate in refs
         .iter()
@@ -1719,7 +1719,9 @@ fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate]) -> Vec<Candidate> 
                 continue;
             }
             let bare = body.trim().is_empty();
-            if !(bare && line.page <= SYMBOL_START_PAGE_LIMIT) && body.trim().chars().count() < 4 {
+            if !(bare && line.page - first_page < SYMBOL_START_PAGE_LIMIT)
+                && body.trim().chars().count() < 4
+            {
                 continue;
             }
         }
@@ -1808,7 +1810,7 @@ fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate]) -> Vec<Candidate> 
             if cues::layout_is_citation_continuation(body_stripped) {
                 score -= 1.2;
             }
-        } else if !(token.form == "symbol" && line.page <= SYMBOL_START_PAGE_LIMIT) {
+        } else if !(token.form == "symbol" && line.page - first_page < SYMBOL_START_PAGE_LIMIT) {
             score -= 0.9;
         }
         if line.note_column_fit {
@@ -3308,8 +3310,10 @@ fn build_pairs<'a>(
     include_audit: bool,
 ) -> (Vec<Pair>, Vec<PairLine<'a>>, Option<Value>) {
     let lines = build_lines(pages, protected_citation_spans);
+    // Source page numbers remain physical; introductory symbols belong to this document's start.
+    let first_page = pages.iter().map(|page| page.number).min().unwrap_or(1);
     let refs = extract_refs(&lines);
-    let labels = extract_labels(&lines, &refs);
+    let labels = extract_labels(&lines, &refs, first_page);
     let (segments, backbone_summary) = select_segments(&labels, &lines, include_audit);
     let mut segments: Vec<Vec<Candidate>> = segments
         .into_iter()
@@ -3662,7 +3666,8 @@ fn build_pairs<'a>(
         });
         let reference = options.first().copied().cloned();
         if reference.is_none()
-            && !(lines[label.line].page <= SYMBOL_START_PAGE_LIMIT && label.zone_is_noteish(&lines))
+            && !(lines[label.line].page - first_page < SYMBOL_START_PAGE_LIMIT
+                && label.zone_is_noteish(&lines))
         {
             continue;
         }
