@@ -430,6 +430,35 @@ pub(crate) fn resolve_structure_candidates<'a>(
             });
         }
     }
+    // PDF list markup also carries legal paragraph counts. Another grammar's accepted reading
+    // at the same marker takes precedence over this source-role fallback.
+    if resolved.iter().any(|item| {
+        item.role.is_none()
+            && item.proof.rule == ResolutionRuleV2::InsufficientEvidence
+            && item
+                .proof
+                .observations
+                .contains(&CandidateObservationV2::SourceListItem)
+    }) {
+        let settled = resolved
+            .iter()
+            .filter(|item| item.role.is_some())
+            .map(|item| item.candidate.marker_range.start)
+            .collect::<HashSet<_>>();
+        for item in &mut resolved {
+            if item.role.is_none()
+                && item.proof.rule == ResolutionRuleV2::InsufficientEvidence
+                && !settled.contains(&item.candidate.marker_range.start)
+                && item
+                    .proof
+                    .observations
+                    .contains(&CandidateObservationV2::SourceListItem)
+            {
+                item.role = Some(ResolvedRole::ListItem);
+                item.proof.rule = ResolutionRuleV2::ListItemLayout;
+            }
+        }
+    }
     resolved.sort_by_key(|value| (value.candidate.range.start, value.candidate.range.end));
     Ok(resolved)
 }

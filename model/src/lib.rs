@@ -205,6 +205,8 @@ pub enum CandidateObservationV2 {
     BodyProseFlow,
     SectionHeading,
     ListItemLayout,
+    /// An explicit source list-item role covers the marker's complete source lines.
+    SourceListItem,
     /// A lead-in and clause syntax connect aligned sibling markers into a list.
     ListItemSyntax,
     CrossReference,
