@@ -54,6 +54,20 @@ impl NotePairSupportV2 {
         self.sequence_observed_pairs >= 3
             && 3 * self.sequence_observed_pairs >= self.sequence_labels
     }
+
+    pub fn supports_label_only(&self) -> bool {
+        self.note_region
+            && (self.sequence_observed_pairs >= 2
+                && self.sequence_labels <= 3 * self.sequence_observed_pairs
+                || self.sequence_note_labels >= 3
+                    && 4 * self.sequence_note_labels >= 3 * self.sequence_labels)
+    }
+
+    /// Plain numbers alone are not positive evidence for a note.
+    pub fn supports_note(&self) -> bool {
+        (self.observed_pair && (self.typographic_reference || self.note_region))
+            || self.supports_label_only()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

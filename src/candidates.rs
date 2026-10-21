@@ -596,29 +596,9 @@ pub fn resolve_structure_graph_with_assembler(
     for node in &nodes {
         *counters.entry(node.kind).or_default() += 1;
     }
-    // Compare each occurrence against its resolved structural reading. A ratio
-    // of overlapping numbers cannot distinguish notes from provisions or contents.
-    let competing_markers = resolved_candidates
-        .iter()
-        .filter(|candidate| {
-            candidate.role.is_some() || candidate.proof.rule == ResolutionRuleV2::DirectExclusion
-        })
-        .map(|candidate| candidate.candidate.marker_range)
-        .collect::<Vec<_>>();
     let note_pairs = note_pairs
         .iter()
-        .filter(|pair| {
-            // Observed digits alone may still belong to citations or counters.
-            // A pair needs independent typography or a note region to outrank
-            // a paragraph sequence. Repaired pairs need their own note-region witness
-            // and independent observed pairs in the same numbering restart.
-            (pair.support.observed_pair
-                && (pair.support.typographic_reference || pair.support.note_region))
-                || (pair.support.note_region && pair.support.corroborated_sequence())
-                || !competing_markers.iter().any(|range| {
-                    range.start <= pair.label.range.start && pair.label.range.end <= range.end
-                })
-        })
+        .filter(|pair| pair.support.supports_note())
         .collect::<Vec<_>>();
     // The candidates by where their markers start, each with the furthest marker end so far, so a
     // note's label finds the markers holding it without reading every candidate.

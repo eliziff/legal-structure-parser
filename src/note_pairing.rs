@@ -7,8 +7,8 @@ use legal_structure_model::layout::{
 };
 use legal_structure_model::{
     enumerator_interpretations, normalize_decimal_digit, normalize_note_symbol,
-    parse_heading_ladder, select_numeric_sequence, HeadingLadderStatus, NumericSequenceCandidate,
-    NumericSequencePolicy, ScalarText,
+    parse_heading_ladder, select_numeric_sequence, HeadingLadderStatus, NotePairSupportV2,
+    NumericSequenceCandidate, NumericSequencePolicy, ScalarText,
 };
 use regex::Regex;
 use serde_json::{json, Map, Value};
@@ -1233,7 +1233,11 @@ fn extract_refs(lines: &[PairLine<'_>]) -> Vec<Candidate> {
             });
         }
         for &(start, end) in &line.native_superscript_spans {
-            if seen.contains(&(start, end)) || start < label_end || line.protected(start, end) {
+            // A raised native call can follow a citation whose lexical span runs over it.
+            if seen.contains(&(start, end))
+                || start < label_end
+                || overlaps(&line.outline_spans, start, end)
+            {
                 continue;
             }
             let observed = chars_slice(&line_chars, start, end);
@@ -1756,15 +1760,15 @@ fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate], first_page: u32) -
         }
         // So is a bare or bracketed number opening a body line in the body's type with prose
         // beside it ("4  Where a compromise is proposed", "(8)  Any claim by"): a statute's
-        // section or subsection, or a judgment's paragraph. A note set in the body's type reads
-        // as a citation ("9 [1991] 2 S.C.R. 577", "6 Ibid., p. 8"), as an endnote list does.
+        // section or subsection, or a judgment's paragraph. A note set in the body's type opens
+        // as a citation ("9 [1991] 2 S.C.R. 577", "6 Ibid., p. 8"), not prose citing one later.
         if token.value.is_some()
             && matches!(token.form, "plain" | "paren")
             && line.zone == Zone::Body
             && !line.spans.is_empty()
             && !line.small_font
             && !body_stripped.is_empty()
-            && !cues::layout_has_citation_cue(body_stripped)
+            && !cues::layout_has_citation_cue(body_stripped.split_whitespace().next().unwrap_or(""))
         {
             continue;
         }
@@ -2533,6 +2537,12 @@ fn recover_out_of_order_labels(
 }
 
 fn endnote_mode(chain: &[Candidate], lines: &[PairLine<'_>]) -> bool {
+    if chain
+        .iter()
+        .any(|candidate| lines[candidate.line].note_region_mode == "endnote")
+    {
+        return true;
+    }
     if chain.len() < ENDNOTE_MIN_LABELS {
         return false;
     }
@@ -3966,8 +3976,8 @@ fn insert_shared_marker_fields(
     );
 }
 
-fn pair_markers(pairs: &[Pair], lines: &[PairLine<'_>]) -> Vec<Value> {
-    let mut ordered_pairs: Vec<&Pair> = pairs.iter().collect();
+fn pair_markers(pairs: &[(Pair, NotePairSupportV2)], lines: &[PairLine<'_>]) -> Vec<Value> {
+    let mut ordered_pairs = pairs.iter().map(|(pair, _)| pair).collect::<Vec<_>>();
     ordered_pairs.sort_by(|left, right| left.pair_id.cmp(&right.pair_id));
     let mut rows = Vec::<Value>::new();
     let mut marker_sequence = 0;
@@ -4105,7 +4115,7 @@ fn pair_markers(pairs: &[Pair], lines: &[PairLine<'_>]) -> Vec<Value> {
 
     let detached_pairs: HashMap<(usize, usize, usize, String), &Pair> = pairs
         .iter()
-        .flat_map(|pair| {
+        .flat_map(|(pair, _)| {
             pair.refs
                 .iter()
                 .filter(|candidate| candidate.form == "detached")
@@ -4161,7 +4171,7 @@ fn pair_markers(pairs: &[Pair], lines: &[PairLine<'_>]) -> Vec<Value> {
     let pair_indexes: HashMap<&str, usize> = pairs
         .iter()
         .enumerate()
-        .map(|(index, pair)| (pair.pair_id.as_str(), index))
+        .map(|(index, (pair, _))| (pair.pair_id.as_str(), index))
         .collect();
     let mut grouped_rows = vec![(None, Vec::new()); pairs.len()];
     for (row_index, row) in rows.iter().enumerate() {
@@ -4316,7 +4326,7 @@ fn refresh_summary(summary: &mut Value, markers: &[Value]) {
 fn materialize(
     pairs: Vec<Pair>,
     lines: &[PairLine<'_>],
-    pairing_audit: Option<PdfPairingAudit>,
+    pairing_summary: Option<Value>,
 ) -> PairingOutput {
     let mut occurrences: HashMap<String, usize> = HashMap::new();
     let continuation_pages: HashSet<u32> = lines
@@ -4347,9 +4357,49 @@ fn materialize(
                 .or_default() += 1;
         }
     }
-    for (index, pair) in pairs.iter().enumerate() {
+    let pairs = pairs
+        .into_iter()
+        .filter_map(|pair| {
+            let label_line = &lines[pair.label.line];
+            let support = NotePairSupportV2 {
+                sequence_id: pair.restart_sequence,
+                sequence_labels: pair.sequence_labels,
+                sequence_observed_pairs: if pair.label.value.is_some() {
+                    observed_sequences
+                        .get(&(pair.restart_sequence, pair.endnote))
+                        .copied()
+                        .unwrap_or(0)
+                } else {
+                    usize::from(observed_pair(&pair))
+                },
+                sequence_note_labels: if pair.label.value.is_some() {
+                    note_sequences
+                        .get(&(pair.restart_sequence, pair.endnote))
+                        .copied()
+                        .unwrap_or(0)
+                } else {
+                    usize::from(label_line.zone == Zone::Note && !label_line.region_witness_demoted)
+                },
+                observed_pair: observed_pair(&pair),
+                typographic_reference: pair.refs.iter().any(|reference| {
+                    !reference.repaired && matches!(reference.form, "sup" | "detached" | "symbol")
+                }),
+                note_region: label_line.zone == Zone::Note && !label_line.region_witness_demoted,
+            };
+            support.supports_note().then_some((pair, support))
+        })
+        .collect::<Vec<_>>();
+    let pairing_audit = pairing_summary.map(|mut summary| {
+        let markers = pair_markers(&pairs, lines);
+        refresh_summary(&mut summary, &markers);
+        PdfPairingAudit {
+            markers,
+            pairing_summary: summary,
+        }
+    });
+    for (index, (pair, support)) in pairs.iter().enumerate() {
         let label_line = &lines[pair.label.line];
-        let next = pairs.get(index + 1);
+        let next = pairs.get(index + 1).map(|(pair, _)| pair);
         let next_page = next.map(|value| lines[value.label.line].page);
         let mut allowed_pages = BTreeSet::new();
         allowed_pages.insert(label_line.page);
@@ -4531,31 +4581,7 @@ fn materialize(
         });
         pair_claims.push(NotePairClaim {
             pair_id: pair.pair_id.clone(),
-            support: legal_structure_model::NotePairSupportV2 {
-                sequence_id: pair.restart_sequence,
-                sequence_labels: pair.sequence_labels,
-                sequence_observed_pairs: if pair.label.value.is_some() {
-                    observed_sequences
-                        .get(&(pair.restart_sequence, pair.endnote))
-                        .copied()
-                        .unwrap_or(0)
-                } else {
-                    usize::from(observed_pair(pair))
-                },
-                sequence_note_labels: if pair.label.value.is_some() {
-                    note_sequences
-                        .get(&(pair.restart_sequence, pair.endnote))
-                        .copied()
-                        .unwrap_or(0)
-                } else {
-                    usize::from(label_line.zone == Zone::Note && !label_line.region_witness_demoted)
-                },
-                observed_pair: observed_pair(pair),
-                typographic_reference: pair.refs.iter().any(|reference| {
-                    !reference.repaired && matches!(reference.form, "sup" | "detached" | "symbol")
-                }),
-                note_region: label_line.zone == Zone::Note && !label_line.region_witness_demoted,
-            },
+            support: support.clone(),
             label: pair.label.note_id(),
             kind: if pair.endnote {
                 NotePairKind::Endnote
@@ -4595,14 +4621,9 @@ pub fn pair_footnotes(
 ) -> PairingOutput {
     let (mut pairs, lines, summary) = build_pairs(pages, protected_citation_spans, include_audit);
     let detached = merge_detached_references(&mut pairs, &lines);
-    let pairing_audit = summary.map(|mut summary| {
+    let summary = summary.map(|mut summary| {
         summary["detached_reference_count"] = json!(detached);
-        let markers = pair_markers(&pairs, &lines);
-        refresh_summary(&mut summary, &markers);
-        PdfPairingAudit {
-            markers,
-            pairing_summary: summary,
-        }
+        summary
     });
-    materialize(pairs, &lines, pairing_audit)
+    materialize(pairs, &lines, summary)
 }
