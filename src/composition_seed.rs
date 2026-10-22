@@ -63,12 +63,13 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
     endpoints.sort_unstable();
     endpoints.dedup();
     // Each unit's own membership (a heading's heading text), the most specific owning a span. A
-    // table cell is a unit too: its lines are one block, under any paragraph or item read inside it.
+    // table row is a unit too (the gold types a table one row at a time, cells joined): its lines
+    // are one block, under any paragraph or item read inside it.
     let mut candidates = Vec::new();
     for node in &structure.nodes {
         let heading = node.kind == NodeKind::Heading || node.role == Some(PrimaryRole::Heading);
         if node.role.is_none() && !heading && !matches!(node.kind, NodeKind::Prose | NodeKind::Paragraph | NodeKind::Section
-            | NodeKind::ListItem | NodeKind::Footnote | NodeKind::Endnote | NodeKind::Cell) {
+            | NodeKind::ListItem | NodeKind::Footnote | NodeKind::Endnote | NodeKind::Row) {
             continue;
         }
         let membership = if node.ranges.is_empty() { vec![node.range] } else { node.ranges.clone() };
