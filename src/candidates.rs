@@ -259,6 +259,22 @@ pub(crate) fn resolve_structure_candidates<'a>(
             )));
         }
     }
+    if std::env::var_os("LEGALPDF_CANDIDATE_TRACE").is_some() {
+        // One line per raw marker before resolution: which run read it, and where it sits.
+        let document = TRACE_DOCUMENT.with(|d| d.borrow().clone());
+        for run in runs {
+            for candidate in &run.markers {
+                let item = evidence_by_candidate.get(candidate.id.as_str());
+                let page = item.and_then(|i| i.page_indexes.first()).map_or(usize::MAX, |p| *p);
+                let first = item.and_then(|i| i.line_ids.first()).map_or("", String::as_str);
+                let label = candidate.label.replace(['\t', '\n'], " ");
+                eprintln!(
+                    "crun\t{document}\t{page}\t{first}\t{:?}\trooted={}\tconsecutive={}\t{}\t{label}",
+                    run.grammar, run.rooted, run.consecutive, run.markers.len()
+                );
+            }
+        }
+    }
     // A count of numbers printed with their period ("1.", "2.") that the count from 1 reads is the
     // text's numbered paragraphs, not its sections: a statute prints its sections' numbers bare.
     // Their sub-items are then lists.
