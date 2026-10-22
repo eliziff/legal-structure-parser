@@ -223,15 +223,22 @@ pub struct NumberedFootnotePairing {
 }
 
 /// The sentence of `text` that the reference `own` marks, with the line's reference markers (`anchors`, character
-/// ranges) left out: the sentence holding the marker, or the one it follows.
+/// ranges) left out: the sentence holding the marker, or the one it follows. `before` and `after` are the lines the
+/// text runs on from and into, with their own markers.
 #[cfg(all(feature = "citator", feature = "document-query"))]
-fn sentence_at_reference(text: &str, anchors: &[Anchor], own: &Anchor) -> Option<String> {
-    let (mut clean, mut at) = (String::with_capacity(text.len()), None);
+fn sentence_at_reference(text: &str, anchors: &[Anchor], own: &Anchor, before: Option<(&str, &[Anchor])>,
+    after: Option<(&str, &[Anchor])>) -> Option<String> {
+    let unmarked = |text: &str, anchors: &[Anchor]| text.chars().enumerate()
+        .filter(|(index, _)| !anchors.iter().any(|anchor| anchor.start <= *index && *index < anchor.end))
+        .map(|(_, character)| character).collect::<String>();
+    let mut clean = before.map(|(text, anchors)| format!("{} ", unmarked(text, anchors).trim_end())).unwrap_or_default();
+    let mut at = None;
     for (index, character) in text.chars().enumerate() {
         if index == own.start { at = Some(clean.encode_utf16().count()); }
         if !anchors.iter().any(|anchor| anchor.start <= index && index < anchor.end) { clean.push(character); }
     }
     let at = at.unwrap_or_else(|| clean.encode_utf16().count());
+    if let Some((text, anchors)) = after { clean = format!("{} {}", clean.trim_end(), unmarked(text, anchors)); }
     let units: Vec<u16> = clean.encode_utf16().collect();
     let [start, end] = crate::text_units(&clean, true).into_iter().take_while(|[start, _]| *start < at.max(1)).last()?;
     let sentence = String::from_utf16_lossy(&units[start..end]).trim().to_owned();
@@ -239,7 +246,8 @@ fn sentence_at_reference(text: &str, anchors: &[Anchor], own: &Anchor) -> Option
 }
 
 #[cfg(not(all(feature = "citator", feature = "document-query")))]
-fn sentence_at_reference(_: &str, _: &[Anchor], _: &Anchor) -> Option<String> { None }
+fn sentence_at_reference(_: &str, _: &[Anchor], _: &Anchor, _: Option<(&str, &[Anchor])>, _: Option<(&str, &[Anchor])>)
+    -> Option<String> { None }
 
 /// A journal article's flattened text paired by note pairing's plain-text mode: its pages are the
 /// export's, each opened by its "[page LABEL]" marker in page-map order; each page's notes are the
@@ -264,6 +272,10 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
     let mut built = Vec::with_capacity(pages.len());
     let mut protected = BTreeMap::new();
     let mut order = 0;
+    // Each body line's neighbours in reading order, past blank lines, note lists and page breaks.
+    let mut previous_body = HashMap::<String, String>::new();
+    let mut next_body = HashMap::<String, String>::new();
+    let mut last_body: Option<String> = None;
     for (page_index, page) in pages.iter().enumerate() {
         let lines = page.split('\n').collect::<Vec<_>>();
         // The page's notes open at the first of the numbered paragraphs it ends with.
@@ -289,6 +301,12 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
         let mut page_lines = Vec::with_capacity(lines.len());
         for (position, line) in lines.iter().enumerate() {
             let id = format!("p{page_index}l{position}");
+            if position < zone && !line.trim().is_empty() {
+                if let Some(previous) = last_body.replace(id.clone()) {
+                    previous_body.insert(id.clone(), previous.clone());
+                    next_body.insert(previous, id.clone());
+                }
+            }
             if line.bytes().any(|byte| byte.is_ascii_digit()) {
                 let characters = ScalarText::new(line);
                 let spans = cues::layout_protected_spans(line)
@@ -341,11 +359,17 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
     let pairing = pair_footnotes(&built, &protected, true);
     let line_text: HashMap<&str, &str> = built.iter()
         .flat_map(|page| page.lines.iter().map(|line| (line.id.as_str(), line.text.as_str()))).collect();
-    // A note's proposition: the sentence of its reference's line that the reference marks.
+    // A note's proposition: the sentence the reference marks. A line opening in the middle of a sentence (with a
+    // lowercase word) continues the body line before it, across a blank line, a note list or a page break.
+    let no_anchors = Vec::new();
+    let continues = |id: &str| line_text.get(id).and_then(|text| text.trim_start().chars().next()).is_some_and(char::is_lowercase);
     let proposition = |pair_id: &str, line_id: Option<&String>| {
         let line_id = line_id?.as_str();
         let anchors = pairing.anchors.get(line_id)?;
-        sentence_at_reference(line_text.get(line_id)?, anchors, anchors.iter().find(|anchor| anchor.pair_id == pair_id)?)
+        let line = |id: &String| Some((*line_text.get(id.as_str())?, pairing.anchors.get(id.as_str()).unwrap_or(&no_anchors).as_slice()));
+        sentence_at_reference(line_text.get(line_id)?, anchors, anchors.iter().find(|anchor| anchor.pair_id == pair_id)?,
+            previous_body.get(line_id).filter(|_| continues(line_id)).and_then(line),
+            next_body.get(line_id).filter(|next| continues(next)).and_then(line))
     };
     let summary = pairing.pairing_audit.as_ref().map(|audit| &audit.pairing_summary);
     let count = |name: &str| summary.and_then(|summary| summary[name].as_u64()).unwrap_or(0) as usize;
