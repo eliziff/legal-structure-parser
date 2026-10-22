@@ -17,6 +17,8 @@ mod note_pairing;
 mod text_notes;
 #[cfg(feature = "citator")]
 mod citator;
+#[cfg(feature = "citator-graph")]
+pub mod citator_graph;
 #[cfg(all(feature = "citator", feature = "document-query"))]
 mod text_units;
 #[cfg(all(feature = "citator", feature = "canlii"))]

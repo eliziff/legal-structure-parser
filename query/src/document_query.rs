@@ -440,6 +440,14 @@ pub struct DocumentAnchor<'a> {
     role: Option<legal_structure_model::PrimaryRole>,
 }
 
+impl DocumentAnchor<'_> {
+    pub fn kind(&self) -> DocumentKind { self.kind }
+    pub fn label(&self) -> &str { &self.label }
+    /// Its range in the document's text, in characters.
+    pub fn range(&self) -> (usize, usize) { (self.start, self.end) }
+    pub fn parent_label(&self) -> Option<&str> { self.parent_label.as_deref() }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentViewerSlice<'a> {

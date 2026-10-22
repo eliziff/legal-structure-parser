@@ -6,7 +6,7 @@
 use crate::note_pairing::pair_footnotes;
 use crate::{Block, NodeKind, Note, NoteKindV2, NoteReference, ScalarRange, ScalarText};
 use legal_citations::cues;
-use legal_structure_model::layout::{Line, Page, PdfSourceSpan};
+use legal_structure_model::layout::{Anchor, Line, Page, PdfSourceSpan};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The notes of a text whose note list may open at `note_start` (a scalar offset at a line's start),
@@ -218,7 +218,28 @@ pub struct NumberedFootnotePairing {
     pub crossrefs: usize,
     pub crossrefs_unresolved: usize,
     pub pages: usize,
+    /// Each page's printed label, by page index; none for matter before the first marker.
+    pub page_labels: Vec<Option<String>>,
 }
+
+/// The sentence of `text` that the reference `own` marks, with the line's reference markers (`anchors`, character
+/// ranges) left out: the sentence holding the marker, or the one it follows.
+#[cfg(all(feature = "citator", feature = "document-query"))]
+fn sentence_at_reference(text: &str, anchors: &[Anchor], own: &Anchor) -> Option<String> {
+    let (mut clean, mut at) = (String::with_capacity(text.len()), None);
+    for (index, character) in text.chars().enumerate() {
+        if index == own.start { at = Some(clean.encode_utf16().count()); }
+        if !anchors.iter().any(|anchor| anchor.start <= index && index < anchor.end) { clean.push(character); }
+    }
+    let at = at.unwrap_or_else(|| clean.encode_utf16().count());
+    let units: Vec<u16> = clean.encode_utf16().collect();
+    let [start, end] = crate::text_units(&clean, true).into_iter().take_while(|[start, _]| *start < at.max(1)).last()?;
+    let sentence = String::from_utf16_lossy(&units[start..end]).trim().to_owned();
+    (!sentence.is_empty()).then_some(sentence)
+}
+
+#[cfg(not(all(feature = "citator", feature = "document-query")))]
+fn sentence_at_reference(_: &str, _: &[Anchor], _: &Anchor) -> Option<String> { None }
 
 /// A journal article's flattened text paired by note pairing's plain-text mode: its pages are the
 /// export's, each opened by its "[page LABEL]" marker in page-map order; each page's notes are the
@@ -226,16 +247,20 @@ pub struct NumberedFootnotePairing {
 /// into the words before them.
 pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFootnotePairing {
     let mut pages = Vec::with_capacity(page_labels.len());
-    let mut from = 0;
+    let mut labels = Vec::with_capacity(page_labels.len());
+    let (mut from, mut current) = (0, None);
     for label in page_labels {
         let marker = format!("[page {label}]");
         let Some(at) = text[from..].find(&marker).map(|at| from + at) else { continue };
         if from > 0 || !text[..at].trim().is_empty() {
             pages.push(&text[from..at]);
+            labels.push(current.clone());
         }
         from = at + marker.len();
+        current = Some(label.clone());
     }
     pages.push(&text[from..]);
+    labels.push(current);
     let mut built = Vec::with_capacity(pages.len());
     let mut protected = BTreeMap::new();
     let mut order = 0;
@@ -314,6 +339,14 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
         });
     }
     let pairing = pair_footnotes(&built, &protected, true);
+    let line_text: HashMap<&str, &str> = built.iter()
+        .flat_map(|page| page.lines.iter().map(|line| (line.id.as_str(), line.text.as_str()))).collect();
+    // A note's proposition: the sentence of its reference's line that the reference marks.
+    let proposition = |pair_id: &str, line_id: Option<&String>| {
+        let line_id = line_id?.as_str();
+        let anchors = pairing.anchors.get(line_id)?;
+        sentence_at_reference(line_text.get(line_id)?, anchors, anchors.iter().find(|anchor| anchor.pair_id == pair_id)?)
+    };
     let summary = pairing.pairing_audit.as_ref().map(|audit| &audit.pairing_summary);
     let count = |name: &str| summary.and_then(|summary| summary[name].as_u64()).unwrap_or(0) as usize;
     let notes = pairing
@@ -326,7 +359,7 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
             ref_page_index: note.reference_page.map(|page| page as usize - 1),
             body: note.body.clone(),
             truncated: note.warnings.iter().any(|warning| warning.contains("truncat")),
-            proposition: Some(note.sentence_proposition.clone()),
+            proposition: proposition(&note.pair_id, note.reference_line_id.as_ref()),
             passage: Some(note.passage_since_prior_note.clone()),
         })
         .collect::<Vec<_>>();
@@ -340,6 +373,7 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
         crossrefs: pairing.footnotes.iter().map(|note| note.crossrefs.len()).sum(),
         crossrefs_unresolved: pairing.footnotes.iter().flat_map(|note| &note.crossrefs).filter(|crossref| !crossref.resolved).count(),
         pages: built.len(),
+        page_labels: labels,
         notes,
     }
 }
