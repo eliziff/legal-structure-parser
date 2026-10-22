@@ -203,6 +203,11 @@ fn smallest_container(
 }
 
 #[cfg(feature = "structure-inference")]
+thread_local! {
+    /// The document being resolved, for the candidate trace.
+    static TRACE_DOCUMENT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
 pub(crate) fn resolve_structure_candidates<'a>(
     runs: &'a [StructureCandidateRun],
     evidence: &'a [CandidateEvidenceV2],
@@ -422,6 +427,17 @@ pub(crate) fn resolve_structure_candidates<'a>(
             } else {
                 (None, ResolutionRuleV2::InsufficientEvidence)
             };
+            if std::env::var_os("LEGALPDF_CANDIDATE_TRACE").is_some() {
+                // One line per candidate: where it is, what it became and why.
+                let first = item.and_then(|i| i.line_ids.first()).map(String::as_str).unwrap_or("");
+                let page = item.and_then(|i| i.page_indexes.first()).copied().unwrap_or(usize::MAX);
+                let snippet: String = candidate.label.replace(['\t', '\n'], " ");
+                let document = TRACE_DOCUMENT.with(|d| d.borrow().clone());
+                eprintln!(
+                    "ctrace\t{document}\t{page}\t{first}\t{:?}\t{:?}\t{:?}\trooted={}\tconsecutive={}\t{:?}\t{snippet}",
+                    role, rule, run.grammar, run.rooted, run.consecutive, observations
+                );
+            }
             resolved.push(ResolvedCandidate {
                 candidate,
                 role,
@@ -504,6 +520,7 @@ pub fn resolve_structure_graph_with_assembler(
     mut diagnostics: Vec<StructureDiagnostic>,
     assembler: &mut dyn FnMut(&mut [StructureNode]),
 ) -> Result<DocumentStructure, EngineError> {
+    TRACE_DOCUMENT.with(|d| *d.borrow_mut() = source_sha256.clone().unwrap_or_else(|| document_id.clone()));
     let scalar_text = ScalarText::new(text);
     let scalar_len = scalar_text.len();
     let mut node_ids = HashSet::new();
