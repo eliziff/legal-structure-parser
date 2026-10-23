@@ -699,6 +699,23 @@ pub fn parsed(
         .map(|(n, l)| (l.id.clone(), n))
         .collect();
     let mut groups = prepared.groups;
+    // A tagger's node states its region; the parser-output remap of marked text to list items
+    // (parser_list_item) is for the parser's own nodes.
+    let tagged: HashMap<&str, &str> = structure.nodes.iter()
+        .filter(|n| n.origin_id == crate::graph::ORIGIN)
+        .map(|n| (n.id.as_str(), match n.kind {
+            legal_structure_model::NodeKind::ListItem => "list_item",
+            legal_structure_model::NodeKind::Heading => "heading",
+            legal_structure_model::NodeKind::Quote => "quote",
+            legal_structure_model::NodeKind::Footnote | legal_structure_model::NodeKind::Endnote => "note",
+            _ => "text",
+        }))
+        .collect();
+    for group in &mut groups {
+        if let Some(region) = group.attributes.get("native_id").and_then(Value::as_str).and_then(|id| tagged.get(id)) {
+            group.attributes.insert("region".into(), json!(region));
+        }
+    }
     // The structure leaves running heads, folios and print margins out of every node, and names
     // each page's folio line; such a line in the page's outer bands is furniture.
     let folios: HashSet<&str> = structure

@@ -227,7 +227,7 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
         ids.push(anchor(candidate, piece));
         page_of.push(p);
         features.push(values.into_iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<f64>>());
-        texts.push(json!([text.chars().take(48).collect::<String>(), own.region_type, own.note_region_mode, families[k]]));
+        texts.push(json!([text.chars().take(240).collect::<String>(), own.region_type, own.note_region_mode, families[k]]));
         tier0_rows.push(row(&tier0[k]));
         gold_rows.push(gold[k].as_ref().map_or(json!(null), row));
     }
