@@ -668,16 +668,20 @@ pub fn parsed(
     }
     let mut lines = Vec::new();
     let mut composition = Vec::new();
-    for (id, text, page, start, end) in &sources {
+    for (k, (id, text, page, start, end)) in sources.iter().enumerate() {
         // A line the extraction does not place has no box and no band.
         let (bbox, band) = boxes
             .get(id.as_str())
             .map_or(([0.0; 4], None), |(bbox, band)| (*bbox, Some(*band)));
+        // The parser's reading order is its text order, so the alignment's page-local diff follows it,
+        // as it follows the gold's typed order on the other side; box geometry would interleave the
+        // columns of a two-column page.
+        let _ = bbox;
         lines.push(Line {
             id: id.clone(),
             page: *page,
             text: text.chars().collect(),
-            spatial: (*page, (bbox[1] + bbox[3]) / 2.0, bbox[0]),
+            spatial: (*page, k as f64, 0.0),
             page_band: band,
         });
         composition.push(CompositionLine {
