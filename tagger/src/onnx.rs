@@ -97,6 +97,13 @@ impl Tagger {
         Ok(labels::decode(&state, &pieces, &predicted, source_sha256))
     }
 
+    /// The parse's structure graph re-labelled in place: the tagger's units replace the parser's
+    /// paragraph-level nodes (see `graph::retag`).
+    pub fn retag(&mut self, structure: &mut DocumentStructure, pages: &[Page], source_sha256: &str, hybrid: bool) -> Result<(), String> {
+        let gold = self.tag(pages, structure, source_sha256, hybrid)?;
+        crate::graph::retag(structure, &gold)
+    }
+
     /// Each piece's labels from the model (tier 0's where the pages do not place the piece).
     pub fn predict(&mut self, pages: &[Page], state: &State, pieces: &[Piece], tier0: &[Label], hybrid: bool) -> Result<Vec<Label>, String> {
         let none: Vec<Option<Label>> = vec![None; pieces.len()];

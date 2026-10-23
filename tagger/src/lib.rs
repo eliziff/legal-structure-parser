@@ -3,6 +3,7 @@
 //! labels carried onto a candidate, and decoding of labels back into units with parents by the
 //! hierarchy rule. `state` holds the gold's projection and the parser's replay as one `State`.
 pub mod alignment;
+pub mod graph;
 pub mod labels;
 #[cfg(feature = "onnx")]
 pub mod onnx;
