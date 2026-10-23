@@ -65,6 +65,10 @@ pub struct SourceLinksRequest {
     pub block_text: String,
     #[serde(default)]
     pub quotes: Vec<String>,
+    /// The citation's pinpoints (`par12`, `sec6subsec1`, `sec6(1)(c)`): a passage cited without a quotation is
+    /// linked at them, as a citation's pinpoint is (`cited_passage_link`).
+    #[serde(default)]
+    pub pinpoints: Vec<String>,
     pub verified_pdf: Option<VerifiedPdf>,
 }
 
@@ -93,12 +97,30 @@ pub struct SourceLinks {
 
 /// Every link a passage of an A2AJ document can take, planned against `structure` (the document's text).
 pub fn source_links(query: &DocumentQuery, structure: &DocumentStructure, request: &SourceLinksRequest) -> SourceLinks {
-    let anchor_on = |page: &str| request.locator.as_ref()
-        .and_then(|locator| source_anchor(page, &locator.kind, &locator.label));
-    let link = |page: &str, verified_pdf: Option<VerifiedPdf>| passage_link(query, structure, &PassageLinkRequest {
-        url: page.to_owned(), anchor: anchor_on(page), block_text: request.block_text.clone(),
-        quotes: request.quotes.clone(), prefer_independent_html_blocks: false, verified_pdf,
-    });
+    // A pinpoint cited without a quotation: its paragraph's or provision's anchor in the engine's form (`par12`,
+    // `sec6subsec1`; a provision's part, "6(1)(c)", is anchored at its provision and painted from `pinpoints`), as the
+    // measured routing linked it.
+    let pinpoint = request.quotes.is_empty().then_some(request.locator.as_ref()).flatten()
+        .and_then(|locator| match locator.kind.as_str() {
+            "paragraph" => Some(("paragraph", locator.label.clone())),
+            "section" => {
+                let label = locator.label.strip_prefix("sec").unwrap_or(&locator.label);
+                let provision = label.split('(').next().unwrap_or(label).trim();
+                (!provision.is_empty()).then(|| ("section", format!("sec{provision}")))
+            }
+            _ => None,
+        });
+    let anchor_on = |page: &str| match &pinpoint {
+        Some((kind, engine)) => source_anchor(page, kind, engine),
+        None => request.locator.as_ref().and_then(|locator| source_anchor(page, &locator.kind, &locator.label)),
+    };
+    let link = |page: &str, verified_pdf: Option<VerifiedPdf>| match &pinpoint {
+        Some((kind, engine)) => pinpoint_link(query, structure, page, kind, engine, &request.pinpoints),
+        None => passage_link(query, structure, &PassageLinkRequest {
+            url: page.to_owned(), anchor: anchor_on(page), block_text: request.block_text.clone(),
+            quotes: request.quotes.clone(), prefer_independent_html_blocks: false, verified_pdf,
+        }),
+    };
     let laws = request.doc_type == "laws";
     let language = if request.language.is_empty() { "en" } else { &request.language };
     let publisher = request.url.as_deref().and_then(|page| link(page, request.verified_pdf.clone()));
@@ -121,6 +143,19 @@ pub fn source_links(query: &DocumentQuery, structure: &DocumentStructure, reques
         (None, None) => law_web.as_ref(),
     }.cloned();
     SourceLinks { publisher, canlii, law_web, best }
+}
+
+/// A pinpoint linked on `page` as a citation's pinpoint is (`cited_passage_link`: the cited paragraph or provision,
+/// the part its pinpoints name, painted where it plans whole), at the anchor that page prints for it, or its words
+/// alone where the page prints none.
+fn pinpoint_link(query: &DocumentQuery, structure: &DocumentStructure, page: &str, kind: &str, engine: &str,
+    pinpoints: &[String]) -> Option<PassageLink> {
+    let page = page.split('#').next().unwrap_or(page);
+    let linked = cited_passage_link(query, structure, &format!("{page}#{engine}"), pinpoints)?;
+    let (base, fragment) = linked.split_once('#').unwrap_or((&linked, ""));
+    let directives = fragment.strip_prefix(engine).unwrap_or("");
+    let fragment = format!("{}{directives}", source_anchor(base, kind, engine).unwrap_or_default());
+    Some(PassageLink { target: if fragment.is_empty() { base.to_owned() } else { format!("{base}#{fragment}") }, plan: None })
 }
 
 fn append_directives(url: &str, directives: &[String]) -> String {
