@@ -657,24 +657,32 @@ pub fn decode(candidate: &State, pieces: &[Piece], labels: &[Label], source_sha2
     let mut head: Vec<usize> = Vec::new();
     let mut unit_at: HashMap<String, usize> = HashMap::new();
     let mut open: [Option<usize>; 5] = [None; 5];
+    // The page each unit last took a piece on: a piece continues a unit of its region on its page or
+    // the page before (the gold's own convention, hierarchy.py `units`); a piece the model reads as
+    // continuing a unit left further back opens a unit of its own.
+    let mut unit_page: Vec<usize> = Vec::new();
     for (k, piece) in pieces.iter().enumerate() {
         let label = &labels[k];
         if label.region == 0 {
             continue;
         }
         let s = stream(label.region);
+        let page = candidate.lines[piece.line].page;
+        let near = |u: usize| page <= unit_page[u] + 1;
         let resumed = if label.start == 2 { label.continues.as_deref().and_then(|a| unit_at.get(a).copied()) } else { None };
         let u = match (label.start, resumed, open[s]) {
-            (2, Some(u), _) => u,
-            (0 | 2, _, Some(u)) if unit_region[u] == label.region => u,
+            (2, Some(u), _) if near(u) => u,
+            (0 | 2, _, Some(u)) if unit_region[u] == label.region && near(u) => u,
             _ => {
                 units.push(Unit { lines: Vec::new(), parent: None, level: (label.level > 0).then_some(label.level), starts_document: label.document });
                 unit_region.push(label.region);
+                unit_page.push(page);
                 head.push(k);
                 unit_at.insert(anchor(candidate, piece), units.len() - 1);
                 units.len() - 1
             }
         };
+        unit_page[u] = page;
         open[s] = Some(u);
         let region = REGIONS[unit_region[u]];
         let line = &candidate.lines[piece.line];
