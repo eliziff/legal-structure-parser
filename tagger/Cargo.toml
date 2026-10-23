@@ -1,0 +1,21 @@
+[package]
+name = "legal-structure-tagger"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The structure tagger's labels over a parse: pieces, features, labels, decoding into units by the hierarchy rule, and the gold's own projection"
+
+[workspace]
+
+[dependencies]
+diff-match-patch-rs = "0.5.1"
+legalpdf = { package = "legal-pdf-parser", path = "../../legal-pdf-parser", features = ["ocr"] }
+legal-pdf-core = { path = "../../legal-pdf-parser/legal-pdf-core", features = ["structure-analysis"] }
+legal-structure = { path = ".." }
+legal-structure-model = { path = "../model" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+regex = "1"
+
+[patch.crates-io]
+hayro-jpeg2000 = { git = "https://github.com/LaurenzV/hayro.git", rev = "ff7e2e407f6b9c429b44dc29a851180727892b6c" }
