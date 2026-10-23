@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 /// Names of the numeric features, in row order.
-pub const FEATURES: [&str; 59] = [
+pub const FEATURES: [&str; 61] = [
     "x0", "y0", "x1", "y1", "height", "gap_above", "gap_below", "indent", "right_gap", "width", "centre",
     "size", "bold", "italic", "superscript", "monospace", "size_change", "font_change", "underlined",
     "length", "upper", "digits", "punctuation", "spaces", "starts_digit", "starts_upper", "starts_lower",
@@ -19,6 +19,7 @@ pub const FEATURES: [&str; 59] = [
     "excluded", "label_candidate", "note_mode", "piece_start", "piece_share", "page_offgrid", "page_measured",
     "marker", "ordinal", "prefix_depth",
     "style_share", "look_share", "look_lines", "look_pages", "look_length", "size_rank", "doc_size", "body_style",
+    "ink", "ink_measured",
 ];
 
 fn median(mut values: Vec<f64>) -> f64 {
@@ -229,6 +230,7 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
         left: f64,
         right: f64,
         size: f64,
+        ink: f64,
     }
     let stats: Vec<PageStats> = pages.iter().map(|page| {
         let mut order: Vec<usize> = (0..page.lines.len()).collect();
@@ -240,6 +242,7 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
             left: quantile(page.lines.iter().map(|l| l.bbox[0]).collect(), 0.1),
             right: quantile(page.lines.iter().map(|l| l.bbox[2]).collect(), 0.9),
             size: median(sizes),
+            ink: median(page.lines.iter().map(|l| l.ink).filter(|ink| *ink > 0.0).collect()),
             order,
             rank,
         }
@@ -313,6 +316,11 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
         let (look_features, look_id) = looks.features(own);
         values.extend(look_features);
         look_ids.push(look_id);
+        // Ink against the page's typical line: weight where the text layer carries no font flags.
+        values.extend([
+            if stats.ink > 0.0 && own.ink > 0.0 { (own.ink / stats.ink).min(3.0) } else { 0.0 },
+            f64::from(u8::from(own.ink > 0.0)),
+        ]);
         debug_assert_eq!(values.len(), FEATURES.len());
         ids.push(anchor(candidate, piece));
         page_of.push(p);

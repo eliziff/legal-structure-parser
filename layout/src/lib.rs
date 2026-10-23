@@ -156,6 +156,11 @@ pub struct Line {
     pub detached_references: Vec<DetachedReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ocr: Option<OcrEvidence>,
+    /// The dark share of the line's box in the page's 150 dpi render, where the page was rendered
+    /// (a scan whose text layer is kept); 0 where not measured. Weight evidence for a text layer
+    /// whose fonts carry no flags.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ink: f64,
     #[serde(default)]
     pub exclude_from_body: bool,
     #[serde(default)]
@@ -171,6 +176,10 @@ pub struct Line {
     pub region_type: String,
     #[serde(default = "native_source")]
     pub source: String,
+}
+
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
 }
 
 fn unknown_region() -> String {
