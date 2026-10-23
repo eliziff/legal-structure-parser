@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 /// Names of the numeric features, in row order.
-pub const FEATURES: [&str; 51] = [
+pub const FEATURES: [&str; 59] = [
     "x0", "y0", "x1", "y1", "height", "gap_above", "gap_below", "indent", "right_gap", "width", "centre",
     "size", "bold", "italic", "superscript", "monospace", "size_change", "font_change", "underlined",
     "length", "upper", "digits", "punctuation", "spaces", "starts_digit", "starts_upper", "starts_lower",
@@ -18,6 +18,7 @@ pub const FEATURES: [&str; 51] = [
     "ocr", "confidence", "page_quality", "page_position", "line_position", "first_on_page", "last_on_page",
     "excluded", "label_candidate", "note_mode", "piece_start", "piece_share", "page_offgrid", "page_measured",
     "marker", "ordinal", "prefix_depth",
+    "style_share", "look_share", "look_lines", "look_pages", "look_length", "size_rank", "doc_size", "body_style",
 ];
 
 fn median(mut values: Vec<f64>) -> f64 {
@@ -50,7 +51,8 @@ fn dominant(line: &PdfLine) -> Option<(&str, f64)> {
     for span in &line.spans {
         *weight.entry((span.font.as_str(), span.size.to_bits())).or_default() += span.text.chars().count();
     }
-    weight.into_iter().max_by_key(|(_, n)| *n).map(|((font, size), _)| (font, f64::from_bits(size)))
+    // Ties broken by name and size so the same line always reads the same way (the map's order is not stable).
+    weight.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))).map(|((font, size), _)| (font, f64::from_bits(size)))
 }
 
 /// How many distinct line sizes within [0.8, 1.25] of the page's median fall off the half-point
@@ -73,6 +75,89 @@ fn off_grid_sizes(page: &Page) -> usize {
     let mut seen = 0;
     let median = sizes.iter().find(|size| { seen += characters[*size]; seen * 2 >= total }).copied().unwrap_or(0);
     sizes.iter().filter(|&&size| size * 100 >= median * 80 && size * 100 <= median * 125 && size % 5 != 0).count()
+}
+
+/// A line's style (dominant font and half-point size) and look (style plus bold, italic and letter
+/// case): lines set the same way across a document share one. Headings of one level share a look
+/// and body text the document's commonest style; how common a line's look is across the whole
+/// document is evidence no page-local measure carries.
+type Style = (String, i64);
+type Look = (Style, bool, bool, bool);
+
+fn look_of(line: &PdfLine) -> Option<Look> {
+    let (font, size) = dominant(line)?;
+    let letters: Vec<char> = line.text.chars().filter(|c| c.is_alphabetic()).collect();
+    let caps = !letters.is_empty() && letters.iter().filter(|c| c.is_uppercase()).count() * 10 >= letters.len() * 9;
+    Some(((font.to_owned(), (size * 2.0).round() as i64), flagged(line, 16) > 0.5, flagged(line, 2) > 0.5, caps))
+}
+
+/// Document-wide tallies behind the look features.
+struct Looks {
+    style_chars: HashMap<Style, usize>,
+    look_chars: HashMap<Look, usize>,
+    look_lines: HashMap<Look, usize>,
+    look_pages: HashMap<Look, std::collections::HashSet<usize>>,
+    look_ids: HashMap<Look, usize>,
+    size_rank: HashMap<i64, f64>,
+    body: Option<Style>,
+    chars: usize,
+    lines: usize,
+    page_count: usize,
+    median_length: f64,
+}
+
+impl Looks {
+    fn tally(pages: &[Page]) -> Looks {
+        let mut looks = Looks {
+            style_chars: HashMap::new(), look_chars: HashMap::new(), look_lines: HashMap::new(), look_pages: HashMap::new(),
+            look_ids: HashMap::new(), size_rank: HashMap::new(), body: None, chars: 0, lines: 0, page_count: pages.len().max(1), median_length: 1.0,
+        };
+        let mut lengths = Vec::new();
+        for (p, page) in pages.iter().enumerate() {
+            for line in &page.lines {
+                let Some(look) = look_of(line) else { continue };
+                let count = line.text.trim().chars().count();
+                lengths.push(count as f64);
+                looks.chars += count;
+                looks.lines += 1;
+                *looks.style_chars.entry(look.0.clone()).or_default() += count;
+                *looks.look_chars.entry(look.clone()).or_default() += count;
+                *looks.look_lines.entry(look.clone()).or_default() += 1;
+                looks.look_pages.entry(look.clone()).or_default().insert(p);
+                let next = looks.look_ids.len();
+                looks.look_ids.entry(look).or_insert(next);
+            }
+        }
+        looks.median_length = median(lengths).max(1.0);
+        looks.body = looks.style_chars.iter().max_by_key(|(_, n)| **n).map(|(style, _)| style.clone());
+        let mut sizes: Vec<i64> = looks.style_chars.keys().map(|(_, size)| *size).collect();
+        sizes.sort_unstable();
+        sizes.dedup();
+        let span = (sizes.len().max(2) - 1) as f64;
+        looks.size_rank = sizes.iter().rev().enumerate().map(|(rank, &size)| (size, rank as f64 / span)).collect();
+        looks
+    }
+
+    /// The eight look features of a line, and its look's id in the document.
+    fn features(&self, line: &PdfLine) -> ([f64; 8], i64) {
+        let Some(look) = look_of(line).filter(|look| self.look_lines.contains_key(look)) else { return ([0.0; 8], -1) };
+        let chars = self.chars.max(1) as f64;
+        let lines = self.look_lines[&look] as f64;
+        let body_size = self.body.as_ref().map_or(0, |(_, size)| *size);
+        (
+            [
+                self.style_chars[&look.0] as f64 / chars,
+                self.look_chars[&look] as f64 / chars,
+                (1.0 + lines).ln() / (1.0 + self.lines as f64).ln().max(1.0),
+                self.look_pages[&look].len() as f64 / self.page_count as f64,
+                (self.look_chars[&look] as f64 / lines / self.median_length).min(3.0),
+                self.size_rank[&look.0 .1],
+                if body_size > 0 { (look.0 .1 as f64 / body_size as f64).min(4.0) } else { 0.0 },
+                f64::from(u8::from(self.body.as_ref() == Some(&look.0))),
+            ],
+            self.look_ids[&look] as i64,
+        )
+    }
 }
 
 fn text_shape(text: &str) -> [f64; 15] {
@@ -174,6 +259,8 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
         label.level, u8::from(label.marker), pointer(&label.continues)]);
     let (markers, families) = markers(candidate, pieces, tier0);
     let off_grid: Vec<usize> = pages.iter().map(off_grid_sizes).collect();
+    let looks = Looks::tally(pages);
+    let mut look_ids = Vec::new();
     for &k in &kept {
         let piece = &pieces[k];
         let line = &candidate.lines[piece.line];
@@ -223,6 +310,9 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
             f64::from(u8::from(off_grid[p] >= 5)),
         ]);
         values.extend(markers[k]);
+        let (look_features, look_id) = looks.features(own);
+        values.extend(look_features);
+        look_ids.push(look_id);
         debug_assert_eq!(values.len(), FEATURES.len());
         ids.push(anchor(candidate, piece));
         page_of.push(p);
@@ -231,5 +321,5 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
         tier0_rows.push(row(&tier0[k]));
         gold_rows.push(gold[k].as_ref().map_or(json!(null), row));
     }
-    json!({"ids": ids, "pages": page_of, "features": features, "text": texts, "tier0": tier0_rows, "gold": gold_rows})
+    json!({"ids": ids, "pages": page_of, "features": features, "text": texts, "tier0": tier0_rows, "gold": gold_rows, "look": look_ids})
 }
