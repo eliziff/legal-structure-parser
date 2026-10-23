@@ -53,19 +53,27 @@ fn placed(structure: &DocumentStructure) -> Result<HashMap<String, Placed>, Stri
     Ok(out)
 }
 
+/// The node a unit of a region becomes; notes and tables stay the parser's. The region itself is
+/// kept on the node (`grammar: region:<name>`) so the replay reads it back exactly.
 fn kind_of(region: &str) -> Option<(NodeKind, PrimaryRole)> {
     Some(match region {
         "text" => (NodeKind::Paragraph, PrimaryRole::Text),
         "list_item" => (NodeKind::ListItem, PrimaryRole::Text),
         "heading" => (NodeKind::Heading, PrimaryRole::Heading),
         "quote" => (NodeKind::Quote, PrimaryRole::Text),
-        "contents" => (NodeKind::Paragraph, PrimaryRole::Text),
+        "contents" => (NodeKind::Prose, PrimaryRole::Text),
         "caption" => (NodeKind::Paragraph, PrimaryRole::Caption),
         "headnote" => (NodeKind::Paragraph, PrimaryRole::Headnote),
-        "marginal_note" => (NodeKind::Paragraph, PrimaryRole::MarginalNote),
-        // Notes, tables, furniture and page labels stay the parser's.
+        "marginal_note" => (NodeKind::Prose, PrimaryRole::MarginalNote),
+        "furniture" => (NodeKind::Prose, PrimaryRole::Furniture),
+        "page_label" => (NodeKind::Prose, PrimaryRole::PageLabel),
         _ => return None,
     })
+}
+
+/// The region a tagger node carries, from `grammar: region:<name>`.
+pub fn region_of(node: &StructureNode) -> Option<&str> {
+    node.grammar.as_deref().and_then(|g| g.strip_prefix("region:"))
 }
 
 /// Whether the parser's node gives way to the tagger's units.
@@ -120,6 +128,7 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
         let parent_id = unit.parent.and_then(|p| node_id.get(p).cloned().flatten());
         let mut node = StructureNode::new(id, kind, hull, ORIGIN, Derivation::Model, parent_id);
         node.role = Some(role);
+        node.grammar = Some(format!("region:{}", regions[u]));
         node.ranges = ranges.clone();
         node.page_indexes = pages.into_iter().collect();
         node.line_ids = line_ids;
@@ -149,6 +158,31 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
         for (k, pair) in ranges.windows(2).enumerate() {
             continuations.push(SourceContinuation { kind: kind_of_link, from: last_char[k], to: pair[1].start, separator: Some(" ".to_owned()) });
         }
+        nodes.push(node);
+    }
+    // A line no unit covers (the model read it as no region) is furniture: outside the body, as the
+    // decoded units leave it, rather than an unowned block the composition would make of it.
+    let mut covered: BTreeSet<&str> = BTreeSet::new();
+    for unit in &gold.units {
+        for &t in &unit.lines {
+            for span in &gold.typed[t].spans {
+                covered.insert(span.line_id.as_str());
+            }
+        }
+    }
+    let mut extra = 0;
+    for (id, line) in &lines {
+        if covered.contains(id.as_str()) || line.offsets.len() < 2 {
+            continue;
+        }
+        extra += 1;
+        let range = ScalarRange { start: line.start, end: *line.offsets.last().unwrap() };
+        let mut node = StructureNode::new(format!("tag-none-{extra:06}"), NodeKind::Prose, range, ORIGIN, Derivation::Model, None);
+        node.role = Some(PrimaryRole::Furniture);
+        node.grammar = Some("region:furniture".to_owned());
+        node.ranges = vec![range];
+        node.page_indexes = vec![line.page];
+        node.line_ids = vec![id.clone()];
         nodes.push(node);
     }
     // The parser's paragraph-level nodes go; what stays loses any parent that went.

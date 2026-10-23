@@ -703,13 +703,7 @@ pub fn parsed(
     // (parser_list_item) is for the parser's own nodes.
     let tagged: HashMap<&str, &str> = structure.nodes.iter()
         .filter(|n| n.origin_id == crate::graph::ORIGIN)
-        .map(|n| (n.id.as_str(), match n.kind {
-            legal_structure_model::NodeKind::ListItem => "list_item",
-            legal_structure_model::NodeKind::Heading => "heading",
-            legal_structure_model::NodeKind::Quote => "quote",
-            legal_structure_model::NodeKind::Footnote | legal_structure_model::NodeKind::Endnote => "note",
-            _ => "text",
-        }))
+        .filter_map(|n| crate::graph::region_of(n).map(|region| (n.id.as_str(), region)))
         .collect();
     for group in &mut groups {
         if let Some(region) = group.attributes.get("native_id").and_then(Value::as_str).and_then(|id| tagged.get(id)) {
