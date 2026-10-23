@@ -26,7 +26,7 @@ pub struct StatuteOutlineEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// The entry's own text, before any entry under it, without its label or the source's
-    /// emphasis marks: a line to each of its paragraphs.
+    /// emphasis marks: a line to each of its paragraphs. A heading's is the text after its line.
     pub text: String,
     /// The entry's span in the input, in UTF-16 code units, covering everything under it; a
     /// provision's span opens with its marginal note.
@@ -168,17 +168,16 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
             .map(|entry| entry.level + 1).last().unwrap_or(0);
         entries.push(Entry {
             start: marginal.as_ref().map_or(node.range.start, |(start, _)| *start),
-            content: node.range.start, end: node.range.end, kind, level: heading_level + tokens.len(),
+            content: node.range.start, end: chars.len(), kind, level: heading_level + tokens.len(),
             label: printed, title: marginal.map(|(_, title)| title), heading: false,
         });
     }
     entries.sort_by_key(|entry| (entry.start, entry.level));
-    // An entry closes where the next one not under it opens.
+    // An entry closes where the next one not under it opens, so text the structure reads as no
+    // provision (a formula's lettered terms repeating "(a)") stays with the provision before it.
     for index in 0..entries.len() {
         let level = entries[index].level;
-        if let Some(next) = entries[index + 1..].iter().find(|next| next.level <= level) {
-            entries[index].end = entries[index].end.min(next.start);
-        }
+        entries[index].end = entries[index + 1..].iter().find(|next| next.level <= level).map_or(chars.len(), |next| next.start);
     }
     // The words before the first entry, without the document's title ("# Criminal Code") or a line
     // naming it by its citation.
@@ -194,7 +193,8 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
     Ok(preamble.into_iter().chain(entries.iter().enumerate().map(|(index, entry)| {
         // The entry's own text runs to the first entry under it.
         let own_end = entries.get(index + 1).filter(|next| next.start < entry.end).map_or(entry.end, |next| next.start);
-        let own = if entry.heading { String::new() } else { slice(entry.content, own_end.max(entry.content)) };
+        // A heading's text is what follows its line, as a schedule's body does.
+        let own = slice(entry.content, own_end.max(entry.content));
         let own = plain(&own);
         // A subsection may repeat its section's number ("5(1) The director ...").
         let own = own.strip_prefix(entry.label.as_str())
