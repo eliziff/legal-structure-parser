@@ -65,8 +65,14 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
     // Each unit's own membership (a heading's heading text), the most specific owning a span. A
     // table row is a unit too (the gold types a table one row at a time, cells joined): its lines
     // are one block, under any paragraph or item read inside it.
+    // A tagger's graph owns its text through the tagger's units; the parser's section containers
+    // (statute provisions, kept for lookups) then stay out of block ownership.
+    let tagged = structure.origins.iter().any(|origin| origin.id == "legal-structure-tagger.v1");
     let mut candidates = Vec::new();
     for node in &structure.nodes {
+        if tagged && node.kind == NodeKind::Section {
+            continue;
+        }
         let heading = node.kind == NodeKind::Heading || node.role == Some(PrimaryRole::Heading);
         if node.role.is_none() && !heading && !matches!(node.kind, NodeKind::Prose | NodeKind::Paragraph | NodeKind::Section
             | NodeKind::ListItem | NodeKind::Footnote | NodeKind::Endnote | NodeKind::Row) {
