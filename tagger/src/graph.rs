@@ -276,30 +276,56 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
         }
         nodes.push(node);
     }
-    // A line no unit covers (the model read it as no region) is furniture: outside the body, as the
-    // decoded units leave it, rather than an unowned block the composition would make of it.
-    let mut covered: BTreeSet<&str> = BTreeSet::new();
+    // Text no unit covers (the model read it as no region: a whole line, or a piece inside a line at
+    // a column seam) is furniture: outside the body, as the decoded units leave it, rather than an
+    // unowned block the composition would make of it. Span by span, so a covered line's leftover
+    // piece is covered too.
+    let mut covered: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
     for unit in &gold.units {
         for &t in &unit.lines {
             for span in &gold.typed[t].spans {
-                covered.insert(span.line_id.as_str());
+                covered.entry(span.line_id.as_str()).or_default().push((span.start, span.end));
             }
         }
     }
+    let text_units: Vec<u16> = structure.text.encode_utf16().collect();
     let mut extra = 0;
-    for (id, line) in &lines {
-        if covered.contains(id.as_str()) || line.offsets.len() < 2 {
+    let mut ordered: Vec<(&String, &Placed)> = lines.iter().collect();
+    ordered.sort_by_key(|(_, line)| line.start);
+    for (id, line) in ordered {
+        let chars = line.offsets.len() - 1;
+        if chars == 0 {
             continue;
         }
-        extra += 1;
-        let range = ScalarRange { start: line.start, end: *line.offsets.last().unwrap() };
-        let mut node = StructureNode::new(format!("tag-none-{extra:06}"), NodeKind::Prose, range, ORIGIN, Derivation::Model, None);
-        node.role = Some(PrimaryRole::Furniture);
-        node.grammar = Some("region:furniture".to_owned());
-        node.ranges = vec![range];
-        node.page_indexes = vec![line.page];
-        node.line_ids = vec![id.clone()];
-        nodes.push(node);
+        let mut spans = covered.get(id.as_str()).cloned().unwrap_or_default();
+        spans.sort_unstable();
+        let mut gaps: Vec<(usize, usize)> = Vec::new();
+        let mut at = 0;
+        for (start, end) in spans {
+            let start = start.min(chars);
+            if start > at {
+                gaps.push((at, start));
+            }
+            at = at.max(end.min(chars));
+        }
+        if at < chars {
+            gaps.push((at, chars));
+        }
+        for (a, b) in gaps {
+            let range = ScalarRange { start: line.offsets[a], end: line.offsets[b] };
+            let blank = String::from_utf16_lossy(&text_units[range.start.min(text_units.len())..range.end.min(text_units.len())]).trim().is_empty();
+            if range.start >= range.end || blank {
+                continue;
+            }
+            extra += 1;
+            let mut node = StructureNode::new(format!("tag-none-{extra:06}"), NodeKind::Prose, range, ORIGIN, Derivation::Model, None);
+            node.role = Some(PrimaryRole::Furniture);
+            node.grammar = Some("region:furniture".to_owned());
+            node.ranges = vec![range];
+            node.page_indexes = vec![line.page];
+            node.line_ids = vec![id.clone()];
+            nodes.push(node);
+        }
     }
     // The parser's paragraph-level nodes go; what stays loses any parent that went.
     let kept_ids: BTreeSet<String> = structure.nodes.iter().filter(|n| !replaced(n)).map(|n| n.id.clone()).collect();
