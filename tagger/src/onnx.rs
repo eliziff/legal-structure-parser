@@ -7,7 +7,7 @@ use crate::labels::{self, Label, Piece, REGIONS};
 use crate::rows;
 use crate::state::{self, ExtractionPage, Gold, State};
 use legal_structure_model::DocumentStructure;
-use legalpdf::Page;
+use legal_pdf_core::model::Page;
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use ort::value::TensorRef;
 use regex::Regex;

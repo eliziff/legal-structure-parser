@@ -5,7 +5,7 @@
 //! from the parser's pages and structure or from the gold, never decided here.
 use crate::labels::{anchor, Label, Locator, Piece};
 use crate::state::State;
-use legalpdf::Page;
+use legal_pdf_core::model::{Line as PdfLine, Page};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -37,7 +37,7 @@ fn quantile(mut values: Vec<f64>, q: f64) -> f64 {
 }
 
 /// Each span's share of the line's characters with a flag set.
-fn flagged(line: &legalpdf::Line, flag: u32) -> f64 {
+fn flagged(line: &PdfLine, flag: u32) -> f64 {
     let total: usize = line.spans.iter().map(|s| s.text.chars().count()).sum();
     if total == 0 {
         return 0.0;
@@ -45,7 +45,7 @@ fn flagged(line: &legalpdf::Line, flag: u32) -> f64 {
     line.spans.iter().filter(|s| s.flags & flag != 0).map(|s| s.text.chars().count()).sum::<usize>() as f64 / total as f64
 }
 
-fn dominant(line: &legalpdf::Line) -> Option<(&str, f64)> {
+fn dominant(line: &PdfLine) -> Option<(&str, f64)> {
     let mut weight: HashMap<(&str, u64), usize> = HashMap::new();
     for span in &line.spans {
         *weight.entry((span.font.as_str(), span.size.to_bits())).or_default() += span.text.chars().count();
@@ -56,7 +56,7 @@ fn dominant(line: &legalpdf::Line) -> Option<(&str, f64)> {
 /// How many distinct line sizes within [0.8, 1.25] of the page's median fall off the half-point
 /// grid: a recognizer's box heights spread over many, a typeset page's sizes sit on it. Five or
 /// more is the parser's recognized-layer test (main dev: 46 of 227 recognized pages, 1 of 435 typeset).
-fn off_grid_sizes(page: &legalpdf::Page) -> usize {
+fn off_grid_sizes(page: &Page) -> usize {
     let mut characters: HashMap<i64, usize> = HashMap::new();
     for line in page.lines.iter().filter(|line| !line.exclude_from_body) {
         let count = line.text.trim().chars().count();

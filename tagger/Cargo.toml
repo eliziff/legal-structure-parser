@@ -9,7 +9,6 @@ description = "The structure tagger's labels over a parse: pieces, features, lab
 
 [dependencies]
 diff-match-patch-rs = "0.5.1"
-legalpdf = { package = "legal-pdf-parser", path = "../../legal-pdf-parser", features = ["ocr"] }
 legal-pdf-core = { path = "../../legal-pdf-parser/legal-pdf-core", features = ["structure-analysis"] }
 legal-structure = { path = ".." }
 legal-structure-model = { path = "../model" }
