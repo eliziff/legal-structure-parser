@@ -199,8 +199,6 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
         let Some(id) = node_id[u].clone() else { continue };
         // The unit's spans as UTF-16 ranges in reading order, merged across the newline between lines.
         let mut ranges: Vec<ScalarRange> = Vec::new();
-        // The UTF-16 start of each range's last character: a continuation leaves from inside a line.
-        let mut last_char: Vec<usize> = Vec::new();
         let mut range_page: Vec<usize> = Vec::new();
         let mut pages = BTreeSet::new();
         let mut line_ids: Vec<String> = Vec::new();
@@ -212,15 +210,12 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
                 if start >= end {
                     continue;
                 }
-                let final_char = line.offsets[(span.end.min(last)).saturating_sub(1).max(span.start.min(last))];
                 match ranges.last_mut() {
                     Some(previous) if start <= previous.end + 1 && start >= previous.start => {
                         previous.end = previous.end.max(end);
-                        *last_char.last_mut().unwrap() = final_char;
                     }
                     _ => {
                         ranges.push(ScalarRange { start, end });
-                        last_char.push(final_char);
                         range_page.push(line.page);
                     }
                 }
@@ -265,13 +260,17 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
         // where the unit reads backwards through the extraction. A link's endpoint cuts the block, so
         // each part reads by its own first line, as the scorer's projection of the same units does.
         // Parts on one page with only untagged lines between (a margin line number) stay one block.
+        // A link's endpoints are the two parts' starts, as the parser's own links are: the composition
+        // cuts each line where an endpoint falls, so an endpoint inside a part would cut the part.
         let kind_of_link = match kind { NodeKind::Heading => ContinuationKind::Heading, NodeKind::ListItem => ContinuationKind::List, _ => ContinuationKind::Paragraph };
+        let mut part_start = first.start;
         for (k, pair) in ranges.windows(2).enumerate() {
             let apart = range_page[k] != range_page[k + 1]
                 || pair[1].start < pair[0].start
                 || other_between(u, pair[0].end, pair[1].start);
             if apart {
-                continuations.push(SourceContinuation { kind: kind_of_link, from: last_char[k], to: pair[1].start, separator: Some(" ".to_owned()) });
+                continuations.push(SourceContinuation { kind: kind_of_link, from: part_start, to: pair[1].start, separator: Some(" ".to_owned()) });
+                part_start = pair[1].start;
             }
         }
         nodes.push(node);
