@@ -5,8 +5,8 @@
 //! the gold has them. Consumers read the same node fields they read from tier 0.
 use crate::state::Gold;
 use legal_structure_model::{
-    ContinuationKind, Derivation, DocumentStructure, NodeKind, Origin, PrimaryRole, ScalarRange, SourceContinuation,
-    StructureNode,
+    ContinuationKind, Derivation, DocumentStructure, NodeKind, Note, NoteKindV2, NoteReference, Origin, PrimaryRole,
+    ScalarRange, SourceContinuation, StructureNode,
 };
 use std::collections::{BTreeSet, HashMap};
 
@@ -53,8 +53,9 @@ fn placed(structure: &DocumentStructure) -> Result<HashMap<String, Placed>, Stri
     Ok(out)
 }
 
-/// The node a unit of a region becomes; notes and tables stay the parser's. The region itself is
-/// kept on the node (`grammar: region:<name>`) so the replay reads it back exactly.
+/// The node a unit of a region becomes; tables stay the parser's and notes are written apart
+/// (`notes`). The region itself is kept on the node (`grammar: region:<name>`) so the replay
+/// reads it back exactly.
 fn kind_of(region: &str) -> Option<(NodeKind, PrimaryRole)> {
     Some(match region {
         "text" => (NodeKind::Paragraph, PrimaryRole::Text),
@@ -76,10 +77,96 @@ pub fn region_of(node: &StructureNode) -> Option<&str> {
     node.grammar.as_deref().and_then(|g| g.strip_prefix("region:"))
 }
 
-/// Whether the parser's node gives way to the tagger's units: everything but pages, sections and notes.
+/// Whether the parser's node gives way to the tagger's units: everything but pages and sections.
+/// The parser's footnotes give way to the tagger's notes (`notes`).
 fn replaced(node: &StructureNode) -> bool {
     matches!(node.kind, NodeKind::Paragraph | NodeKind::Prose | NodeKind::Heading | NodeKind::ListItem | NodeKind::List
-        | NodeKind::Quote | NodeKind::Table | NodeKind::Row | NodeKind::Cell)
+        | NodeKind::Quote | NodeKind::Table | NodeKind::Row | NodeKind::Cell | NodeKind::Footnote | NodeKind::Endnote)
+}
+
+/// The tagger's notes: one Footnote node and one note record per decoded note unit, its label the
+/// marker the decoder read on its first line, its body the unit's text, its references the pairs the
+/// decoder made from the parser's reference reading. The parser's footnote nodes and note records
+/// go: the model's notes read higher than the parser's on the main development set.
+fn notes(gold: &Gold, lines: &HashMap<String, Placed>, regions: &[&str]) -> (Vec<StructureNode>, Vec<Note>) {
+    let range_of = |span: &legal_structure::SourceSpan| -> Option<ScalarRange> {
+        let line = lines.get(&span.line_id)?;
+        let last = line.offsets.len() - 1;
+        let (start, end) = (line.offsets[span.start.min(last)], line.offsets[span.end.min(last)]);
+        (start < end).then_some(ScalarRange { start, end })
+    };
+    let mut references_of: HashMap<usize, Vec<legal_structure::SourceSpan>> = HashMap::new();
+    for pair in &gold.notes {
+        if let (Some(note), Some(r)) = (pair.note, pair.reference) {
+            if let Some(span) = gold.typed[pair.line].references.get(r).and_then(|reference| reference.spans.first()) {
+                references_of.entry(note).or_default().push(span.clone());
+            }
+        }
+    }
+    let mut nodes = Vec::new();
+    let mut records = Vec::new();
+    for (u, unit) in gold.units.iter().enumerate() {
+        if regions[u] != "note" {
+            continue;
+        }
+        let head = &gold.typed[unit.lines[0]];
+        let mut ranges: Vec<ScalarRange> = Vec::new();
+        let mut pages = BTreeSet::new();
+        let mut line_ids: Vec<String> = Vec::new();
+        for &t in &unit.lines {
+            for span in &gold.typed[t].spans {
+                let Some(range) = range_of(span) else { continue };
+                match ranges.last_mut() {
+                    Some(previous) if range.start <= previous.end + 1 && range.start >= previous.start => previous.end = previous.end.max(range.end),
+                    _ => ranges.push(range),
+                }
+                if let Some(line) = lines.get(&span.line_id) {
+                    pages.insert(line.page);
+                }
+                if line_ids.last() != Some(&span.line_id) {
+                    line_ids.push(span.line_id.clone());
+                }
+            }
+        }
+        let Some(&first) = ranges.first() else { continue };
+        let hull = ScalarRange { start: first.start, end: ranges.last().unwrap().end };
+        let id = format!("tag-note-{:06}", u + 1);
+        let label = head.markers.first().and_then(|m| m.first()).and_then(|m| range_of(m)).filter(|r| r.start >= hull.start && r.end <= hull.end);
+        let mut node = StructureNode::new(id.clone(), NodeKind::Footnote, hull, ORIGIN, Derivation::Model, None);
+        node.grammar = Some("region:note".to_owned());
+        node.ranges = ranges.clone();
+        node.page_indexes = pages.into_iter().collect();
+        node.line_ids = line_ids;
+        if let Some(label_range) = label {
+            node.marker_range = Some(label_range);
+            node.label = Some(head.text.split_whitespace().next().unwrap_or_default().to_owned());
+        }
+        let references: Vec<NoteReference> = references_of.get(&u).into_iter().flatten().filter_map(|span| {
+            let range = range_of(span)?;
+            let line = lines.get(&span.line_id)?;
+            Some(NoteReference { range, anchor: None, page_indexes: vec![line.page], line_ids: vec![span.line_id.clone()] })
+        }).collect();
+        let body_ranges: Vec<ScalarRange> = match label {
+            Some(l) => ranges.iter().filter_map(|r| {
+                let start = if r.start < l.end && l.start < r.end { l.end.max(r.start) } else { r.start };
+                (start < r.end).then_some(ScalarRange { start, end: r.end })
+            }).collect(),
+            None => ranges.clone(),
+        };
+        records.push(Note {
+            id: format!("note-{id}"),
+            node_id: Some(id),
+            kind: NoteKindV2::Footnote,
+            label_range: label.unwrap_or(ScalarRange { start: hull.start, end: hull.start }),
+            body_range: hull,
+            label_ranges: label.into_iter().collect(),
+            body_ranges,
+            primary_reference: references.first().map(|r| r.range),
+            references,
+        });
+        nodes.push(node);
+    }
+    (nodes, records)
 }
 
 /// The decoded units written into `structure`.
@@ -164,7 +251,10 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
             rows.push(row);
         }
         if let (Some(&start), Some(end)) = (table_ranges.first(), table_ranges.iter().map(|x| x.end).max()) {
-            let mut table = StructureNode::new(table_id, NodeKind::Table, ScalarRange { start: start.start, end }, ORIGIN, Derivation::Model, None);
+            // The table sits where its first row does in the hierarchy (under the nearest heading), so
+            // its rows' parent resolves there through it.
+            let table_parent = gold.units[first].parent.and_then(|p| node_id.get(p).cloned().flatten());
+            let mut table = StructureNode::new(table_id, NodeKind::Table, ScalarRange { start: start.start, end }, ORIGIN, Derivation::Model, table_parent);
             table.ranges = table_ranges;
             table.page_indexes = table_pages.into_iter().collect();
             table.line_ids = table_lines;
@@ -326,6 +416,10 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
             nodes.push(node);
         }
     }
+    // The tagger's notes replace the parser's.
+    let (note_nodes, note_records) = notes(gold, &lines, &regions);
+    nodes.extend(note_nodes);
+    structure.notes = note_records;
     // The parser's paragraph-level nodes go; what stays loses any parent that went.
     let kept_ids: BTreeSet<String> = structure.nodes.iter().filter(|n| !replaced(n)).map(|n| n.id.clone()).collect();
     structure.nodes.retain(|n| !replaced(n));
@@ -335,8 +429,8 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
         }
     }
     structure.nodes.extend(nodes);
-    let mut links: Vec<SourceContinuation> = structure.continuations.take().unwrap_or_default().into_iter()
-        .filter(|c| matches!(c.kind, ContinuationKind::Note)).collect();
+    // The parser's note continuations named its notes; the tagger's notes carry none.
+    let mut links: Vec<SourceContinuation> = Vec::new();
     links.extend(continuations);
     structure.continuations = Some(links);
     if !structure.origins.iter().any(|o| o.id == ORIGIN) {
