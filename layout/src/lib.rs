@@ -161,6 +161,10 @@ pub struct Line {
     /// whose fonts carry no flags.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub ink: f64,
+    /// The median horizontal run of dark pixels through the line's box in that render, in units of
+    /// the box's height: the stems' thickness, which bold type sets wider; 0 where not measured.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub weight: f64,
     #[serde(default)]
     pub exclude_from_body: bool,
     #[serde(default)]

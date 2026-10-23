@@ -55,6 +55,7 @@ pub(crate) fn text_note_blocks(
             ocr: None,
             exclude_from_body: false,
             ink: 0.0,
+            weight: 0.0,
             suppress_footnote_label: line[2] < note_start,
             paragraph_label_candidate: paragraph_labels.contains(&line[2]),
             note_region_mode: if line[2] >= note_start {
@@ -291,6 +292,7 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
                 ocr: None,
                 exclude_from_body: false,
                 ink: 0.0,
+                weight: 0.0,
                 suppress_footnote_label: !note,
                 paragraph_label_candidate: false,
                 note_region_mode: if note { "footnote".to_owned() } else { String::new() },
