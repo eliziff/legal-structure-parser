@@ -4,6 +4,8 @@
 //! hierarchy rule. `state` holds the gold's projection and the parser's replay as one `State`.
 pub mod alignment;
 pub mod labels;
+#[cfg(feature = "onnx")]
+pub mod onnx;
 pub mod rows;
 pub mod state;
 pub mod text_diff;
