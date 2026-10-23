@@ -76,9 +76,10 @@ pub fn region_of(node: &StructureNode) -> Option<&str> {
     node.grammar.as_deref().and_then(|g| g.strip_prefix("region:"))
 }
 
-/// Whether the parser's node gives way to the tagger's units.
+/// Whether the parser's node gives way to the tagger's units: everything but pages, sections and notes.
 fn replaced(node: &StructureNode) -> bool {
-    matches!(node.kind, NodeKind::Paragraph | NodeKind::Prose | NodeKind::Heading | NodeKind::ListItem | NodeKind::List | NodeKind::Quote)
+    matches!(node.kind, NodeKind::Paragraph | NodeKind::Prose | NodeKind::Heading | NodeKind::ListItem | NodeKind::List
+        | NodeKind::Quote | NodeKind::Table | NodeKind::Row | NodeKind::Cell)
 }
 
 /// The decoded units written into `structure`.
@@ -89,6 +90,90 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
         .map(|(u, _)| kind_of(regions[u]).map(|_| format!("tag-{:06}", u + 1))).collect();
     let mut nodes: Vec<StructureNode> = Vec::new();
     let mut continuations: Vec<SourceContinuation> = Vec::new();
+    // A span counted in characters of a line, as a UTF-16 range in the text.
+    let range_of = |span: &legal_structure::SourceSpan| -> Option<ScalarRange> {
+        let line = lines.get(&span.line_id)?;
+        let last = line.offsets.len() - 1;
+        let (start, end) = (line.offsets[span.start.min(last)], line.offsets[span.end.min(last)]);
+        (start < end).then_some(ScalarRange { start, end })
+    };
+    // Tables: a run of table units (the gold types a table one row at a time, cells joined) is one
+    // Table node with Row children and their Cell children, as the composition reads a grid.
+    let mut table_at: Vec<Option<usize>> = vec![None; gold.units.len()];
+    let mut tables = 0;
+    let mut u = 0;
+    while u < gold.units.len() {
+        if regions[u] != "table" {
+            u += 1;
+            continue;
+        }
+        let first = u;
+        while u < gold.units.len() && regions[u] == "table" {
+            table_at[u] = Some(tables);
+            u += 1;
+        }
+        tables += 1;
+        let table_id = format!("tag-table-{tables:06}");
+        let mut table_ranges: Vec<ScalarRange> = Vec::new();
+        let mut table_pages = BTreeSet::new();
+        let mut table_lines: Vec<String> = Vec::new();
+        let mut rows: Vec<StructureNode> = Vec::new();
+        let mut cells: Vec<StructureNode> = Vec::new();
+        for (r, unit_index) in (first..u).enumerate() {
+            let row_id = format!("tag-row-{tables:06}-{:04}", r + 1);
+            let head = &gold.typed[gold.units[unit_index].lines[0]];
+            let spans: Vec<&legal_structure::SourceSpan> = gold.units[unit_index].lines.iter().flat_map(|&t| gold.typed[t].spans.iter()).collect();
+            let row_ranges: Vec<ScalarRange> = spans.iter().filter_map(|s| range_of(s)).collect();
+            let Some(&row_first) = row_ranges.first() else { continue };
+            let hull = ScalarRange { start: row_first.start, end: row_ranges.iter().map(|x| x.end).max().unwrap() };
+            table_ranges.extend(row_ranges.iter().copied());
+            let mut row = StructureNode::new(row_id.clone(), NodeKind::Row, hull, ORIGIN, Derivation::Model, Some(table_id.clone()));
+            row.role = Some(PrimaryRole::Text);
+            row.grammar = Some("region:table".to_owned());
+            row.ranges = row_ranges.clone();
+            row.row = Some(r + 1);
+            for s in &spans {
+                if let Some(line) = lines.get(&s.line_id) {
+                    table_pages.insert(line.page);
+                    if !table_lines.contains(&s.line_id) {
+                        table_lines.push(s.line_id.clone());
+                    }
+                    row.page_indexes.push(line.page);
+                    if !row.line_ids.contains(&s.line_id) {
+                        row.line_ids.push(s.line_id.clone());
+                    }
+                }
+            }
+            row.page_indexes.sort_unstable();
+            row.page_indexes.dedup();
+            let grid: Vec<Vec<legal_structure::SourceSpan>> = match &head.cells {
+                Some(grid) if !grid.is_empty() => grid.clone(),
+                _ => vec![spans.iter().map(|s| (*s).clone()).collect()],
+            };
+            for (c, cell_spans) in grid.iter().enumerate() {
+                let ranges: Vec<ScalarRange> = cell_spans.iter().filter_map(|s| range_of(s)).collect();
+                let Some(&cell_first) = ranges.first() else { continue };
+                let cell_hull = ScalarRange { start: cell_first.start, end: ranges.iter().map(|x| x.end).max().unwrap() };
+                let mut cell = StructureNode::new(format!("{row_id}-c{:03}", c + 1), NodeKind::Cell, cell_hull, ORIGIN, Derivation::Model, Some(row_id.clone()));
+                cell.ranges = ranges;
+                cell.row = Some(r + 1);
+                cell.column = Some(c + 1);
+                cell.page_indexes = row.page_indexes.clone();
+                cells.push(cell);
+            }
+            rows.push(row);
+        }
+        if let (Some(&start), Some(end)) = (table_ranges.first(), table_ranges.iter().map(|x| x.end).max()) {
+            let mut table = StructureNode::new(table_id, NodeKind::Table, ScalarRange { start: start.start, end }, ORIGIN, Derivation::Model, None);
+            table.ranges = table_ranges;
+            table.page_indexes = table_pages.into_iter().collect();
+            table.line_ids = table_lines;
+            table.table_number = Some(tables);
+            nodes.push(table);
+            nodes.extend(rows);
+            nodes.extend(cells);
+        }
+    }
     for (u, unit) in gold.units.iter().enumerate() {
         let Some((kind, role)) = kind_of(regions[u]) else { continue };
         let Some(id) = node_id[u].clone() else { continue };
@@ -96,6 +181,7 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
         let mut ranges: Vec<ScalarRange> = Vec::new();
         // The UTF-16 start of each range's last character: a continuation leaves from inside a line.
         let mut last_char: Vec<usize> = Vec::new();
+        let mut range_page: Vec<usize> = Vec::new();
         let mut pages = BTreeSet::new();
         let mut line_ids: Vec<String> = Vec::new();
         for &t in &unit.lines {
@@ -115,6 +201,7 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
                     _ => {
                         ranges.push(ScalarRange { start, end });
                         last_char.push(final_char);
+                        range_page.push(line.page);
                     }
                 }
                 pages.insert(line.page);
@@ -154,9 +241,14 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
             node.locator_kind = Some("list_item".to_owned());
         }
         // Parts on different pages are one unit: the seam reads on as the parser's continuations do.
+        // Parts on one page (a margin line number or other furniture between a unit's lines) need no
+        // link: the composition keeps a node's membership on a page in one block, and a link's
+        // endpoint would cut it.
         let kind_of_link = match kind { NodeKind::Heading => ContinuationKind::Heading, NodeKind::ListItem => ContinuationKind::List, _ => ContinuationKind::Paragraph };
         for (k, pair) in ranges.windows(2).enumerate() {
-            continuations.push(SourceContinuation { kind: kind_of_link, from: last_char[k], to: pair[1].start, separator: Some(" ".to_owned()) });
+            if range_page[k] != range_page[k + 1] {
+                continuations.push(SourceContinuation { kind: kind_of_link, from: last_char[k], to: pair[1].start, separator: Some(" ".to_owned()) });
+            }
         }
         nodes.push(node);
     }
@@ -195,7 +287,7 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
     }
     structure.nodes.extend(nodes);
     let mut links: Vec<SourceContinuation> = structure.continuations.take().unwrap_or_default().into_iter()
-        .filter(|c| matches!(c.kind, ContinuationKind::Note | ContinuationKind::Table)).collect();
+        .filter(|c| matches!(c.kind, ContinuationKind::Note)).collect();
     links.extend(continuations);
     structure.continuations = Some(links);
     if !structure.origins.iter().any(|o| o.id == ORIGIN) {
