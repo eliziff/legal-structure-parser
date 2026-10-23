@@ -174,6 +174,26 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
             nodes.extend(cells);
         }
     }
+    // Every tagged unit's text ranges, sorted: a unit whose consecutive ranges another unit's range
+    // separates reads as parts, as the gold's projection reads it.
+    let mut occupied: Vec<(usize, usize)> = Vec::new();
+    for (u, unit) in gold.units.iter().enumerate() {
+        if kind_of(regions[u]).is_none() {
+            continue;
+        }
+        for &t in &unit.lines {
+            for span in &gold.typed[t].spans {
+                if let Some(range) = range_of(span) {
+                    occupied.push((range.start, u));
+                }
+            }
+        }
+    }
+    occupied.sort_unstable();
+    let other_between = |u: usize, from: usize, to: usize| -> bool {
+        let start = occupied.partition_point(|&(s, _)| s <= from);
+        occupied[start..].iter().take_while(|&&(s, _)| s < to).any(|&(_, v)| v != u)
+    };
     for (u, unit) in gold.units.iter().enumerate() {
         let Some((kind, role)) = kind_of(regions[u]) else { continue };
         let Some(id) = node_id[u].clone() else { continue };
@@ -240,13 +260,17 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
         } else if kind == NodeKind::ListItem {
             node.locator_kind = Some("list_item".to_owned());
         }
-        // Parts on different pages are one unit: the seam reads on as the parser's continuations do.
-        // Parts on one page (a margin line number or other furniture between a unit's lines) need no
-        // link: the composition keeps a node's membership on a page in one block, and a link's
-        // endpoint would cut it.
+        // Parts are one unit joined by a continuation: on different pages, where another tagged
+        // unit's text comes between (a second column, a note, a heading the unit resumes after), or
+        // where the unit reads backwards through the extraction. A link's endpoint cuts the block, so
+        // each part reads by its own first line, as the scorer's projection of the same units does.
+        // Parts on one page with only untagged lines between (a margin line number) stay one block.
         let kind_of_link = match kind { NodeKind::Heading => ContinuationKind::Heading, NodeKind::ListItem => ContinuationKind::List, _ => ContinuationKind::Paragraph };
         for (k, pair) in ranges.windows(2).enumerate() {
-            if range_page[k] != range_page[k + 1] {
+            let apart = range_page[k] != range_page[k + 1]
+                || pair[1].start < pair[0].start
+                || other_between(u, pair[0].end, pair[1].start);
+            if apart {
                 continuations.push(SourceContinuation { kind: kind_of_link, from: last_char[k], to: pair[1].start, separator: Some(" ".to_owned()) });
             }
         }
