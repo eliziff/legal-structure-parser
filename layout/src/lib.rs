@@ -479,6 +479,7 @@ pub trait LayoutAnalysis: Sync {
         protected_citation_spans: &BTreeMap<String, Vec<PdfSourceSpan>>,
         include_audit: bool,
     ) -> PairingOutput;
-    /// Restores note labels whose leading digits recognition dropped, from the note chain.
+    /// Restores the labels recognition misread from the runs they stand in: note labels whose
+    /// leading digits it dropped, from the note chain, and paragraph and item numbers.
     fn repair_label_dropouts(&self, pages: &mut [Page]);
 }

@@ -14,6 +14,8 @@ mod note_dropout;
 #[cfg(feature = "structure-inference")]
 mod note_pairing;
 #[cfg(feature = "structure-inference")]
+mod paragraph_numbers;
+#[cfg(feature = "structure-inference")]
 mod text_notes;
 #[cfg(feature = "citator")]
 mod citator;

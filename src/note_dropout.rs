@@ -80,7 +80,10 @@ fn chain(pages: &[Page]) -> (Vec<(usize, usize)>, HashSet<usize>, Vec<(usize, u3
 /// own recognition, or a scan's invisible recognition layer. Printed glyphs are exact.
 fn recognized(pages: &[Page], order: &[(usize, usize)], position: usize) -> bool {
     let (page, line) = order[position];
-    let line = &pages[page].lines[line];
+    recognized_line(&pages[page].lines[line])
+}
+
+pub(crate) fn recognized_line(line: &legal_structure_model::layout::Line) -> bool {
     line.source == "ocr"
         || line
             .spans
@@ -162,7 +165,7 @@ pub fn repair_label_dropouts(pages: &mut [Page]) -> usize {
 
 /// Write `label` over a line's characters `start..end`: the words after it move with it, and a word
 /// holding part of it ends where it ends.
-fn replace_label(
+pub(crate) fn replace_label(
     line: &mut legal_structure_model::layout::Line,
     start: usize,
     end: usize,
