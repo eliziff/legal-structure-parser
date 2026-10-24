@@ -1270,29 +1270,25 @@ impl Located<'_> {
         combined
     }
 
-    fn plausible_in(&mut self, quote: &str, text: &str) -> bool {
-        let region = self.reader.quote_region(quote, text, 400);
-        plausible_content_overlap(quote, if region.is_empty() { text } else { &region })
-    }
-
     fn scored(&mut self, quote: &str, candidates: &[Candidate], ranges: &[Block]) -> Vec<(f64, Candidate)> {
         let mut out = Vec::new();
         let quoted = self.reader.quoted(quote);
         for &candidate in candidates {
-            let text = self.block(ranges, candidate).text.clone();
-            let prepared = match candidate {
-                Candidate::Block(index) => match &self.prepared[index] {
-                    Some(prepared) => prepared.clone(),
-                    None => {
-                        let prepared = std::rc::Rc::new(self.reader.prepare(&text));
-                        self.prepared[index] = Some(prepared.clone());
-                        prepared
-                    }
-                },
-                Candidate::Range(_) => std::rc::Rc::new(self.reader.prepare(&text)),
+            // The block's text is read where it is: each quotation is scored against every block of a document.
+            let (text, kept) = match candidate {
+                Candidate::Block(index) => (self.blocks[index].text.as_str(), Some(&mut self.prepared[index])),
+                Candidate::Range(index) => (ranges[index].text.as_str(), None),
+            };
+            let prepared = match kept {
+                Some(Some(prepared)) => prepared.clone(),
+                Some(slot) => slot.insert(std::rc::Rc::new(self.reader.prepare(text))).clone(),
+                None => std::rc::Rc::new(self.reader.prepare(text)),
             };
             let score = prepared_score(&quoted, &prepared, MIN_MATCH);
-            if score >= MIN_MATCH && self.plausible_in(quote, &text) { out.push((score, candidate)); }
+            if score >= MIN_MATCH && {
+                let region = self.reader.quote_region(quote, text, 400);
+                plausible_content_overlap(quote, if region.is_empty() { text } else { &region })
+            } { out.push((score, candidate)); }
         }
         out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
             .then(self.block(ranges, a.1).start.cmp(&self.block(ranges, b.1).start)));
