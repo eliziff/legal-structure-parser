@@ -68,9 +68,18 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
     // A tagger's graph owns its text through the tagger's units; the parser's section containers
     // (statute provisions, kept for lookups) then stay out of block ownership.
     let tagged = structure.origins.iter().any(|origin| origin.id == "legal-structure-tagger.v1");
+    // A row is a container: what the parser reads inside it (a cell's paragraph, a heading) stays
+    // the row's, as the gold types a table one row at a time.
+    let rows: Vec<ScalarRange> = structure.nodes.iter().filter(|node| node.kind == NodeKind::Row)
+        .flat_map(|node| if node.ranges.is_empty() { vec![node.range] } else { node.ranges.clone() }).collect();
+    let in_row = |ranges: &[ScalarRange]| !ranges.is_empty()
+        && ranges.iter().all(|range| rows.iter().any(|row| row.start <= range.start && range.end <= row.end));
     let mut candidates = Vec::new();
     for node in &structure.nodes {
         if tagged && node.kind == NodeKind::Section {
+            continue;
+        }
+        if node.kind != NodeKind::Row && in_row(if node.ranges.is_empty() { std::slice::from_ref(&node.range) } else { &node.ranges }) {
             continue;
         }
         let heading = node.kind == NodeKind::Heading || node.role == Some(PrimaryRole::Heading);
@@ -188,7 +197,10 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
                 let overlap = quote.end.min(node.range.end).saturating_sub(quote.start.max(node.range.start));
                 overlap * 2 > node.range.end.saturating_sub(node.range.start)
             }));
-        let kind = if quoted { "quote".to_owned() } else { serde_json::to_value(role).unwrap().as_str().unwrap().to_owned() };
+        // A passage the parser read wholly as a contents list is contents, whatever its kind.
+        let contents = node.is_some_and(|node| node.grammar.as_deref() == Some("contents") && role == PrimaryRole::Text);
+        let kind = if quoted { "quote".to_owned() } else if contents { "contents".to_owned() }
+            else { serde_json::to_value(role).unwrap().as_str().unwrap().to_owned() };
         groups.push(CompositionBlock {
             id: crate::composition::anchor(&spans[0]),
             kind,

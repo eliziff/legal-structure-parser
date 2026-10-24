@@ -166,13 +166,13 @@ pub const V4: &str = "legal-structure-gold.v4";
 fn kind_of(region: &str) -> &str {
     match region {
         "heading" | "caption" | "headnote" | "marginal_note" | "furniture" | "page_label"
-        | "contents" => region,
+        | "line_label" | "contents" => region,
         _ => "text",
     }
 }
 
 fn own(region: &str) -> bool {
-    matches!(region, "furniture" | "page_label")
+    matches!(region, "furniture" | "page_label" | "line_label")
 }
 
 /// A v4 gold in the scorer's frame: one block per unit fragment (a unit's lines on one page,

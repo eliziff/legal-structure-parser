@@ -68,6 +68,7 @@ fn kind_of(region: &str) -> Option<(NodeKind, PrimaryRole)> {
         "marginal_note" => (NodeKind::Prose, PrimaryRole::MarginalNote),
         "furniture" => (NodeKind::Prose, PrimaryRole::Furniture),
         "page_label" => (NodeKind::Prose, PrimaryRole::PageLabel),
+        "line_label" => (NodeKind::Prose, PrimaryRole::LineLabel),
         _ => return None,
     })
 }

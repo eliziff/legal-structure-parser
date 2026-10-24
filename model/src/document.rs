@@ -84,6 +84,8 @@ pub enum PrimaryRole {
     MarginalNote,
     Furniture,
     PageLabel,
+    /// A transcript's printed line number: with the page label, the page and line a reader cites.
+    LineLabel,
     /// A judgment's front matter, as its source marks it: the bench, counsel, a date, the
     /// docket number and the court.
     Judges,
