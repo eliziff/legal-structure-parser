@@ -26,9 +26,13 @@ pub fn canlii_case_url(citations: &[String], language: &str, court: Option<&str>
         .find_map(|citation| url::url(&citation, language).filter(|page| url::is_canlii_url(page)))
 }
 
-/// The CanLII page of the first statute or regulation `text` cites.
-pub fn canlii_law_url(text: &str) -> Option<String> {
+/// The CanLII page, in `language` (`en`, `fr`), of the first statute or regulation `text` cites; `consolidated` where it
+/// is a statute in force as consolidated (an A2AJ legislation record), whose page is its consolidation.
+pub fn canlii_law_url(text: &str, language: &str, consolidated: bool) -> Option<String> {
+    let language = if language.starts_with("fr") { Language::Fr } else { Language::En };
     full_citations(text).into_iter()
         .filter(|citation| matches!(citation.authority, Authority::Statute | Authority::Regulation))
-        .find_map(|citation| url::url(&citation, Language::En).filter(|page| url::is_canlii_url(page)))
+        .find_map(|citation| if consolidated { url::canlii_consolidated_legislation(&citation, language) } else {
+            url::url(&citation, language).filter(|page| url::is_canlii_url(page))
+        })
 }

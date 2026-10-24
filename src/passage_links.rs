@@ -8,7 +8,7 @@ use regex::Regex;
 use std::sync::OnceLock;
 use legal_citations::reference_names::reference_name_ends;
 use legal_citations::url::{
-    canlii_a2aj_law_url, is_pdf_address, law_web_document, passage_locator, publisher_annotates_legal_references,
+    is_pdf_address, law_web_document, passage_locator, publisher_annotates_legal_references,
     publisher_glues_section_labels, publisher_may_repeat_passages, source_anchor, source_url,
 };
 use serde::{Deserialize, Serialize};
@@ -125,8 +125,7 @@ pub fn source_links(query: &DocumentQuery, structure: &DocumentStructure, reques
     let language = if request.language.is_empty() { "en" } else { &request.language };
     let publisher = request.url.as_deref().and_then(|page| link(page, request.verified_pdf.clone()));
     let canlii_page = if laws {
-        canlii_a2aj_law_url(&request.dataset, &request.citation, language)
-            .or_else(|| canlii_law_url(&request.citation))
+        canlii_law_url(&request.citation, language, true)
     } else {
         let citations = [Some(request.citation.clone()), request.alternate_citation.clone()].into_iter().flatten()
             .collect::<Vec<_>>();
