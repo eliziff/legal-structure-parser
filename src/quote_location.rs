@@ -75,16 +75,16 @@ fn byte_to_utf16(text: &str, byte: usize) -> usize {
 /// Each text's tokens, words and keys, read once per call.
 #[derive(Default)]
 struct Reader {
-    tokens: HashMap<String, std::sync::Arc<Vec<String>>>,
+    tokens: HashMap<String, std::rc::Rc<Vec<String>>>,
     exact: HashMap<String, String>,
     /// The source document's text (trimmed) by where it is, and what is read of it once for every quotation.
     whole: Option<(usize, usize)>,
-    whole_words: Option<std::sync::Arc<LongWords>>,
-    whole_positions: Option<std::sync::Arc<Vec<usize>>>,
+    whole_words: Option<std::rc::Rc<LongWords>>,
+    whole_positions: Option<std::rc::Rc<Vec<usize>>>,
     /// The document's text in UTF-16, as written and lower-cased.
-    whole_units: Option<std::sync::Arc<(Vec<u16>, Vec<u16>)>>,
+    whole_units: Option<std::rc::Rc<(Vec<u16>, Vec<u16>)>>,
     /// A long document's runs of letters and digits, where its anchor phrases are looked for.
-    whole_runs: std::sync::OnceLock<Option<std::sync::Arc<TextRuns>>>,
+    whole_runs: std::cell::OnceCell<Option<std::rc::Rc<TextRuns>>>,
 }
 
 /// A long source's lower-cased words and the set of them.
@@ -129,11 +129,11 @@ fn quote_tokens(text: &str) -> Vec<Token> {
 }
 
 impl Reader {
-    fn tokens(&mut self, text: &str) -> std::sync::Arc<Vec<String>> {
+    fn tokens(&mut self, text: &str) -> std::rc::Rc<Vec<String>> {
         if let Some(found) = self.tokens.get(text) { return found.clone(); }
         // Pure readings, so forgetting them changes nothing: a region search reads a new window at every step.
         if self.tokens.len() >= 8192 { self.tokens.clear(); }
-        let value = std::sync::Arc::new(quote_tokens(text).into_iter().map(|token| token.text).collect::<Vec<_>>());
+        let value = std::rc::Rc::new(quote_tokens(text).into_iter().map(|token| token.text).collect::<Vec<_>>());
         self.tokens.insert(text.to_owned(), value.clone());
         value
     }
@@ -501,7 +501,7 @@ fn token_positions(text: &str, source: &[String]) -> Vec<usize> {
 
 /// What every window of a source's tokens is checked against for one quotation, prepared once.
 struct Windows {
-    source: std::sync::Arc<Vec<String>>,
+    source: std::rc::Rc<Vec<String>>,
     /// The quotation's tokens short of trailing punctuation, and its exact key.
     core: Vec<String>,
     key: String,
@@ -516,7 +516,7 @@ struct Windows {
 }
 
 impl Windows {
-    fn new(source: std::sync::Arc<Vec<String>>, quoted: &[String], key: String) -> Self {
+    fn new(source: std::rc::Rc<Vec<String>>, quoted: &[String], key: String) -> Self {
         let core = strip_trailing(quoted);
         let anchored = exact_anchors(&key).map(|anchors| {
             // Each token as the window's key reads it: lower-cased (ASCII is compared case aside), and the long s as a
@@ -711,7 +711,7 @@ impl Reader {
         // finds only the first of them.
         let needles = if q_units.len() > 40 { vec![q.to_owned(), head] } else { vec![head] };
         let (units, found): (&[u16], Option<usize>) = if self.is_whole(text) {
-            whole = self.whole_units.get_or_insert_with(|| std::sync::Arc::new((text.encode_utf16().collect(),
+            whole = self.whole_units.get_or_insert_with(|| std::rc::Rc::new((text.encode_utf16().collect(),
                 text.to_lowercase().encode_utf16().collect()))).clone();
             // find_exact, the document's lower-cased text read once.
             let found = needles.iter().find_map(|needle| {
@@ -728,8 +728,8 @@ impl Reader {
             return slice16(&units, at.saturating_sub(window / 2), units.len().min(at + q_units.len() + window / 2));
         }
         if units.len() > LONG_SOURCE_CHARS {
-            let runs = if self.is_whole(text) { self.whole_runs.get_or_init(|| TextRuns::new(text).map(std::sync::Arc::new)).clone() }
-                else { TextRuns::new(text).map(std::sync::Arc::new) };
+            let runs = if self.is_whole(text) { self.whole_runs.get_or_init(|| TextRuns::new(text).map(std::rc::Rc::new)).clone() }
+                else { TextRuns::new(text).map(std::rc::Rc::new) };
             return long_source_region(q, text, units, runs.as_deref(), window);
         }
         if quoted.is_empty() { return text.to_owned(); }
@@ -738,7 +738,7 @@ impl Reader {
         let positions = match (&self.whole_positions, self.is_whole(text)) {
             (Some(positions), true) => positions.clone(),
             _ => {
-                let positions = std::sync::Arc::new(token_positions(text, &source));
+                let positions = std::rc::Rc::new(token_positions(text, &source));
                 if self.is_whole(text) { self.whole_positions = Some(positions.clone()); }
                 positions
             }
@@ -857,7 +857,7 @@ pub struct QuoteBlockInput {
 
 /// How a source's locators are read: a provider's text by every block its structure labels; a PDF by what it prints,
 /// its numbered paragraphs, provisions and page numbers; a statute's PDF with its provisions as its print reads them.
-#[derive(Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum QuoteSource {
     Text,
@@ -944,39 +944,8 @@ pub fn document_quote_blocks(
 /// first it prints.
 pub fn locate_source_quotes(source: QuoteSource, text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate],
     compare: bool) -> Vec<LocatedQuote> {
-    locate_source_quotes_kept(&mut QuoteLocator::default(), source, text, blocks, quotes, compare)
-}
-
-/// What locating quotations reads of a document's text and blocks, kept by its holder for every quotation located in
-/// that document later: each block's text and readings, the whole text's, and the reader's indexes of it.
-#[derive(Default)]
-pub struct QuoteLocator {
-    kept: HashMap<(QuoteSource, Option<QuoteBlockKind>), LocatorState>,
-}
-
-struct LocatorState {
-    /// The trimmed text the state was read from, by where it is.
-    whole: (usize, usize),
-    reader: Reader,
-    blocks: Vec<Block>,
-    prepared: Vec<Option<std::sync::Arc<Prepared>>>,
-    whole_prepared: Option<std::sync::Arc<Prepared>>,
-    /// The whole text as a quotation found nowhere in it is compared with it.
-    whole_compared: Option<ComparedText>,
-}
-
-/// [`locate_source_quotes`], reading what `locator` kept of the document where it is the same text and blocks.
-pub fn locate_source_quotes_kept(locator: &mut QuoteLocator, source: QuoteSource, text: &str,
-    blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate], compare: bool) -> Vec<LocatedQuote> {
     use QuoteBlockKind::{Page, Paragraph, Section};
-    let mut locate = |kind: Option<QuoteBlockKind>, blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate]| {
-        let kept = locator.kept.entry((source, kind));
-        let mut state = match kept { std::collections::hash_map::Entry::Occupied(found) => Some(found.remove()), _ => None };
-        let located = locate_quotes_kept(&mut state, text, blocks, quotes, compare);
-        if let Some(state) = state { locator.kept.insert((source, kind), state); }
-        located
-    };
-    if source == QuoteSource::Text { return locate(None, blocks, quotes); }
+    if source == QuoteSource::Text { return locate_quotes_in(text, blocks, quotes, compare); }
     let printed = |kind: QuoteBlockKind| blocks.iter().any(|block| block.kind == kind);
     let scheme = |scopes: &QuoteScopes| [(Paragraph, &scopes.paragraphs), (Page, &scopes.pages)].into_iter()
         .filter(|(_, asked)| !asked.is_empty()).map(|(kind, _)| kind)
@@ -989,7 +958,7 @@ pub fn locate_source_quotes_kept(locator: &mut QuoteLocator, source: QuoteSource
         if members.is_empty() { continue; }
         let kept = blocks.iter().filter(|block| Some(block.kind) == kind).cloned().collect::<Vec<_>>();
         let group = members.iter().map(|&at| quotes[at].clone()).collect::<Vec<_>>();
-        for (at, found) in members.into_iter().zip(locate(kind, &kept, &group)) { located[at] = Some(found); }
+        for (at, found) in members.into_iter().zip(locate_quotes_in(text, &kept, &group, compare)) { located[at] = Some(found); }
     }
     located.into_iter().map(|found| found.expect("every quotation is located")).collect()
 }
@@ -1138,8 +1107,8 @@ struct Located<'a> {
     source_text: ScalarText<'a>,
     blocks: Vec<Block>,
     /// Each block's readings, and the whole text's, prepared once for every quotation.
-    prepared: Vec<Option<std::sync::Arc<Prepared>>>,
-    whole: Option<std::sync::Arc<Prepared>>,
+    prepared: Vec<Option<std::rc::Rc<Prepared>>>,
+    whole: Option<std::rc::Rc<Prepared>>,
 }
 
 /// A text's readings a quotation is scored against (quote_match_score's of `source`), prepared once.
@@ -1149,15 +1118,15 @@ struct Prepared {
     key: String,
     lower: Vec<u16>,
     /// A long source's tokens are read only where a quotation's bracketed suffix is looked for in them.
-    tokens: std::sync::OnceLock<std::sync::Arc<Vec<String>>>,
+    tokens: std::cell::OnceCell<std::rc::Rc<Vec<String>>>,
     counts: HashMap<String, usize>,
     /// A long source's words, which a long source is scored by.
-    words: Option<std::sync::Arc<LongWords>>,
+    words: Option<std::rc::Rc<LongWords>>,
 }
 
 impl Prepared {
     fn tokens(&self) -> &[String] {
-        self.tokens.get_or_init(|| std::sync::Arc::new(token_texts(&self.text)))
+        self.tokens.get_or_init(|| std::rc::Rc::new(token_texts(&self.text)))
     }
 }
 
@@ -1191,9 +1160,9 @@ impl Reader {
     fn is_whole(&self, text: &str) -> bool {
         self.whole == Some((text.as_ptr() as usize, text.len()))
     }
-    fn long_words(&mut self, text: &str) -> std::sync::Arc<LongWords> {
-        if !self.is_whole(text) { return std::sync::Arc::new(long_words(text)); }
-        self.whole_words.get_or_insert_with(|| std::sync::Arc::new(long_words(text))).clone()
+    fn long_words(&mut self, text: &str) -> std::rc::Rc<LongWords> {
+        if !self.is_whole(text) { return std::rc::Rc::new(long_words(text)); }
+        self.whole_words.get_or_insert_with(|| std::rc::Rc::new(long_words(text))).clone()
     }
     fn quoted(&mut self, quote: &str) -> Quoted {
         let q = js_trim(quote);
@@ -1301,25 +1270,29 @@ impl Located<'_> {
         combined
     }
 
+    fn plausible_in(&mut self, quote: &str, text: &str) -> bool {
+        let region = self.reader.quote_region(quote, text, 400);
+        plausible_content_overlap(quote, if region.is_empty() { text } else { &region })
+    }
+
     fn scored(&mut self, quote: &str, candidates: &[Candidate], ranges: &[Block]) -> Vec<(f64, Candidate)> {
         let mut out = Vec::new();
         let quoted = self.reader.quoted(quote);
         for &candidate in candidates {
-            // The block's text is read where it is: each quotation is scored against every block of a document.
-            let (text, kept) = match candidate {
-                Candidate::Block(index) => (self.blocks[index].text.as_str(), Some(&mut self.prepared[index])),
-                Candidate::Range(index) => (ranges[index].text.as_str(), None),
-            };
-            let prepared = match kept {
-                Some(Some(prepared)) => prepared.clone(),
-                Some(slot) => slot.insert(std::sync::Arc::new(self.reader.prepare(text))).clone(),
-                None => std::sync::Arc::new(self.reader.prepare(text)),
+            let text = self.block(ranges, candidate).text.clone();
+            let prepared = match candidate {
+                Candidate::Block(index) => match &self.prepared[index] {
+                    Some(prepared) => prepared.clone(),
+                    None => {
+                        let prepared = std::rc::Rc::new(self.reader.prepare(&text));
+                        self.prepared[index] = Some(prepared.clone());
+                        prepared
+                    }
+                },
+                Candidate::Range(_) => std::rc::Rc::new(self.reader.prepare(&text)),
             };
             let score = prepared_score(&quoted, &prepared, MIN_MATCH);
-            if score >= MIN_MATCH && {
-                let region = self.reader.quote_region(quote, text, 400);
-                plausible_content_overlap(quote, if region.is_empty() { text } else { &region })
-            } { out.push((score, candidate)); }
+            if score >= MIN_MATCH && self.plausible_in(quote, &text) { out.push((score, candidate)); }
         }
         out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
             .then(self.block(ranges, a.1).start.cmp(&self.block(ranges, b.1).start)));
@@ -1365,7 +1338,7 @@ impl Located<'_> {
         let prepared = match &self.whole {
             Some(prepared) => prepared.clone(),
             None => {
-                let prepared = std::sync::Arc::new(self.reader.prepare(text));
+                let prepared = std::rc::Rc::new(self.reader.prepare(text));
                 self.whole = Some(prepared.clone());
                 prepared
             }
@@ -1531,53 +1504,31 @@ fn js_display(value: f64) -> String {
 /// Every quotation of `quotes` located in `text`, its blocks given by their UTF-16 offsets, and with `compare`,
 /// compared with the source's words where it was found (the whole text where it was not).
 pub fn locate_quotes_in(text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate], compare: bool) -> Vec<LocatedQuote> {
-    locate_quotes_kept(&mut None, text, blocks, quotes, compare)
-}
-
-/// [`locate_quotes_in`], from what `kept` holds of the same text and blocks, and leaving there what it read.
-fn locate_quotes_kept(kept: &mut Option<LocatorState>, text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate],
-    compare: bool) -> Vec<LocatedQuote> {
     let source_text = ScalarText::new(text);
-    let trimmed = js_trim(text);
-    let whole_at = (trimmed.as_ptr() as usize, trimmed.len());
-    let ranges_of = |block: &QuoteBlockInput| {
+    let blocks: Vec<Block> = blocks.iter().map(|block| {
         let mut ranges = block.ranges.clone();
         ScalarRange::normalize_union(&mut ranges);
-        ranges
-    };
-    // What was kept is read only for the same text and the same blocks.
-    let state = kept.take().filter(|state| state.whole == whole_at && state.blocks.len() == blocks.len()
-        && state.blocks.iter().zip(blocks).all(|(kept, block)| kept.label == block.label && kept.kind == block.kind
-            && kept.start == block.start && kept.end == block.end && kept.node_id == block.node_id
-            && kept.ancestor_ids == block.ancestor_ids && kept.ranges == ranges_of(block)));
-    let (reader, blocks, prepared, whole, mut compared) = match state {
-        Some(state) => (state.reader, state.blocks, state.prepared, state.whole_prepared, state.whole_compared),
-        None => {
-            let blocks: Vec<Block> = blocks.iter().map(|block| {
-                let ranges = ranges_of(block);
-                Block { node_id: block.node_id.clone(), ancestor_ids: block.ancestor_ids.clone(),
-                    kind: block.kind, label: block.label.clone(), start: block.start, end: block.end,
-                    text: source_text.membership_text_utf16(&ranges), ranges }
-            }).collect();
-            let prepared = vec![None; blocks.len()];
-            (Reader { whole: Some(whole_at), ..Reader::default() }, blocks, prepared, None, None)
-        }
-    };
-    let mut located = Located { reader, text, source_text, blocks, prepared, whole };
+        Block { node_id: block.node_id.clone(), ancestor_ids: block.ancestor_ids.clone(),
+            kind: block.kind, label: block.label.clone(), start: block.start, end: block.end,
+            text: source_text.membership_text_utf16(&ranges), ranges }
+    }).collect();
+    let prepared = vec![None; blocks.len()];
+    let trimmed = js_trim(text);
+    let reader = Reader { whole: Some((trimmed.as_ptr() as usize, trimmed.len())), ..Reader::default() };
+    let mut located = Located { reader, text, source_text, blocks, prepared, whole: None };
     // A quotation compared with the whole text reads its index and words, built once.
+    let mut whole: Option<ComparedText<'_>> = None;
     let out = quotes.iter().map(|item| {
         let found = located.locate(&item.quote, &item.scopes);
         let passage = [found.correction.region.as_str(), found.text.as_str()].into_iter().find(|value| !value.is_empty())
             .unwrap_or(text);
         let comparison = if !compare { None } else if passage == text {
-            Some(quote_text_comparison_in(&item.quote, compared.get_or_insert_with(|| ComparedText::new(text))))
+            Some(quote_text_comparison_in(&item.quote, whole.get_or_insert_with(|| ComparedText::new(text))))
         } else {
             Some(quote_text_comparison(&item.quote, passage))
         };
         LocatedQuote { comparison, found }
     }).collect::<Vec<_>>();
-    let Located { reader, blocks, prepared, whole, .. } = located;
-    *kept = Some(LocatorState { whole: whole_at, reader, blocks, prepared, whole_prepared: whole, whole_compared: compared });
     out
 }
 
@@ -1853,22 +1804,23 @@ pub fn quote_text_comparison(authored: &str, source: &str) -> QuoteComparison {
 
 /// What comparing a quotation with a text reads of the text: its word index and UTF-16 units, and its words where a
 /// verbatim repair is looked for, read once for every quotation compared with it.
-struct ComparedText {
-    page: legal_document_query::TextFragmentPage,
+struct ComparedText<'a> {
+    source: &'a str,
+    index: legal_document_query::TextFragmentIndex<'a>,
     units: Vec<u16>,
     words: std::cell::OnceCell<SourceWords>,
 }
 
-impl ComparedText {
-    fn new(source: &str) -> Self {
-        ComparedText { page: legal_document_query::TextFragmentPage::new(source.to_owned()),
-            units: source.encode_utf16().collect(), words: Default::default() }
+impl<'a> ComparedText<'a> {
+    fn new(source: &'a str) -> Self {
+        ComparedText { source, index: legal_document_query::text_fragment_index(source), units: source.encode_utf16().collect(),
+            words: Default::default() }
     }
 }
 
-fn quote_text_comparison_in(authored: &str, text: &ComparedText) -> QuoteComparison {
-    let (source, units) = (text.page.text(), &text.units);
-    let plan = legal_document_query::text_fragment_plan_in(source, &text.page, &[authored.to_owned()], false, false, false);
+fn quote_text_comparison_in(authored: &str, text: &ComparedText<'_>) -> QuoteComparison {
+    let (source, units) = (text.source, &text.units);
+    let plan = legal_document_query::text_fragment_plan_in(source, &text.index, &[authored.to_owned()], false, false, false);
     let matches = if plan.source_safe_complete { plan.source_word_intervals.iter().map(|interval| QuoteComparisonMatch {
         start: interval.start, end: interval.end, text: slice16(&units, interval.start, interval.end) }).collect() }
         else { Vec::new() };
