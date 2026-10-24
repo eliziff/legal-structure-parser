@@ -31,7 +31,7 @@ pub fn canlii_case_url(citations: &[String], language: &str, court: Option<&str>
 pub fn canlii_law_url(text: &str, language: &str, consolidated: bool) -> Option<String> {
     let language = if language.starts_with("fr") { Language::Fr } else { Language::En };
     full_citations(text).into_iter()
-        .filter(|citation| matches!(citation.authority, Authority::Statute | Authority::Regulation))
+        .filter(|citation| matches!(citation.authority, Authority::Statute | Authority::Regulation | Authority::Constitution))
         .find_map(|citation| if consolidated { url::canlii_consolidated_legislation(&citation, language) } else {
             url::url(&citation, language).filter(|page| url::is_canlii_url(page))
         })
