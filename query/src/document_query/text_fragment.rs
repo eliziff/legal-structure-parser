@@ -170,6 +170,10 @@ impl TextFragmentPage {
         Self { text, index, replay: OnceLock::new() }
     }
 
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
     fn search(&self) -> TextSearch<'_> {
         TextSearch {
             text: ScalarText::new(&self.text),
@@ -3931,26 +3935,13 @@ pub fn text_fragment_plan(
     publisher_may_annotate_legal_reference: bool,
     split_html_source_blocks: bool,
 ) -> TextFragmentPlan {
-    let document = TextFragmentIndex(TextSearch::new(
+    let document = TextSearch::new(
         document_text
             .filter(|text| !js_trim(text).is_empty())
             .unwrap_or(block_text),
-    ));
-    text_fragment_plan_in(
-        block_text,
-        &document,
-        quotes,
-        pdf,
-        publisher_may_annotate_legal_reference,
-        split_html_source_blocks,
-    )
-}
-
-/// A text's word index, built once for the plans of many quotations searched in it.
-pub struct TextFragmentIndex<'a>(TextSearch<'a>);
-
-pub fn text_fragment_index(text: &str) -> TextFragmentIndex<'_> {
-    TextFragmentIndex(TextSearch::new(text))
+    );
+    plan_in(block_text, FragmentText::Text(&document), quotes, pdf, publisher_may_annotate_legal_reference,
+        split_html_source_blocks)
 }
 
 /// The plan over a page's own text (`page`, the text a reader shows, as A2AJ Law Web's does): every seam prints as it
@@ -3968,16 +3959,28 @@ pub fn source_text_fragment_plan(block_text: &str, page: &TextFragmentPage, quot
     }
 }
 
-/// text_fragment_plan with its document text's index already built.
+/// text_fragment_plan over a text whose word indexes are already built (`page`), for the plans of many quotations.
 pub fn text_fragment_plan_in(
     block_text: &str,
-    document: &TextFragmentIndex<'_>,
+    page: &TextFragmentPage,
     quotes: &[String],
     pdf: bool,
     publisher_may_annotate_legal_reference: bool,
     split_html_source_blocks: bool,
 ) -> TextFragmentPlan {
-    let source = FragmentText::Text(&document.0);
+    let search = page.search();
+    plan_in(block_text, FragmentText::Text(&search), quotes, pdf, publisher_may_annotate_legal_reference,
+        split_html_source_blocks)
+}
+
+fn plan_in(
+    block_text: &str,
+    source: FragmentText<'_>,
+    quotes: &[String],
+    pdf: bool,
+    publisher_may_annotate_legal_reference: bool,
+    split_html_source_blocks: bool,
+) -> TextFragmentPlan {
     let base = build_fragment_plan(
         block_text,
         source,
