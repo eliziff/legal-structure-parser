@@ -85,7 +85,9 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
             else if matches!(node.kind, NodeKind::Paragraph | NodeKind::ListItem) { 2 } else { 3 };
         candidates.push((node, ranges, size, priority));
     }
-    let quote_ranges: Vec<ScalarRange> = structure.nodes.iter().filter(|node| node.kind == NodeKind::Quote)
+    // A display quotation is a passage, not a reproduced document: long quotation nodes (a book of
+    // authorities' reprinted decisions) type nothing.
+    let quote_ranges: Vec<ScalarRange> = structure.nodes.iter().filter(|node| node.kind == NodeKind::Quote && node.line_ids.len() <= 60)
         .flat_map(|node| if node.ranges.is_empty() { vec![node.range] } else { node.ranges.clone() }).collect();
     let rank = |index: usize| (candidates[index].2, candidates[index].3, index);
     let mut owner_endpoints = HashMap::<usize, Vec<usize>>::new();
@@ -179,8 +181,9 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
         let mut seen = HashSet::new();
         // A paragraph set inside a display quotation is another text's words: a quote block, as the
         // gold types quoted paragraphs one at a time.
-        let quoted = node.is_some_and(|node| !matches!(node.kind, NodeKind::Heading | NodeKind::Footnote | NodeKind::Endnote)
-            && node.role != Some(PrimaryRole::Heading)
+        // Enumerated items keep their kind inside a quotation, as the gold types them.
+        let quoted = node.is_some_and(|node| !matches!(node.kind, NodeKind::Heading | NodeKind::Footnote | NodeKind::Endnote | NodeKind::ListItem)
+            && node.role != Some(PrimaryRole::Heading) && node.locator_kind.as_deref() != Some("list_item") && node.marker_range.is_none()
             && quote_ranges.iter().any(|quote| {
                 let overlap = quote.end.min(node.range.end).saturating_sub(quote.start.max(node.range.start));
                 overlap * 2 > node.range.end.saturating_sub(node.range.start)
