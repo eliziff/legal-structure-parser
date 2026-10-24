@@ -55,8 +55,12 @@ pub fn resolve_composition_annotations(mut request: CompositionAnnotationsReques
     for annotation in ordered {
         if consumed.contains(&annotation.id) { continue; }
         let mut parts = vec![annotation];
+        consumed.insert(annotation.id.clone());
+        // A part two chains claim (two notes continuing into one part, or a chain that turns back) stays
+        // with the chain that reached it first in reading order; the other chain ends there rather than
+        // failing the document.
         while let Some(next) = next_of.get(&parts.last().unwrap().id).and_then(|id| by_id.get(id.as_str()).copied()) {
-            if !consumed.insert(next.id.clone()) { return Err("Annotation continuation cycle".into()); }
+            if !consumed.insert(next.id.clone()) { break; }
             parts.push(next);
         }
         let mut merged = annotation.clone();

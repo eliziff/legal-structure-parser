@@ -585,24 +585,22 @@ pub fn resolve_structure_graph_with_assembler(
             .map(|candidate| candidate.id.as_str())
             .collect::<HashSet<_>>();
         for candidate in &run.markers {
-            if !all_candidate_ids.insert(candidate.id.as_str())
-                || !candidate.range.valid(scalar_len)
-                || !candidate.marker_range.valid(scalar_len)
-                || candidate.marker_range.start < candidate.range.start
-                || candidate.marker_range.end > candidate.range.end
-                || candidate.content_start < candidate.marker_range.end
-                || candidate.content_start > candidate.range.end
-                || candidate.range.start < run.range.start
-                || candidate.range.end > run.range.end
-                || candidate.parent_candidate_id.as_deref() == Some(candidate.id.as_str())
-                || candidate
-                    .parent_candidate_id
-                    .as_deref()
-                    .is_some_and(|parent| !local_ids.contains(parent))
-            {
+            let faults: Vec<&str> = [
+                (!all_candidate_ids.insert(candidate.id.as_str()), "duplicate id"),
+                (!candidate.range.valid(scalar_len), "range outside the text"),
+                (!candidate.marker_range.valid(scalar_len), "marker range outside the text"),
+                (candidate.marker_range.start < candidate.range.start || candidate.marker_range.end > candidate.range.end, "marker outside its range"),
+                (candidate.content_start < candidate.marker_range.end || candidate.content_start > candidate.range.end, "content start outside marker..range end"),
+                (candidate.range.start < run.range.start || candidate.range.end > run.range.end, "range outside its run"),
+                (candidate.parent_candidate_id.as_deref() == Some(candidate.id.as_str()), "parent is itself"),
+                (candidate.parent_candidate_id.as_deref().is_some_and(|parent| !local_ids.contains(parent)), "parent outside its run"),
+            ].iter().filter(|(failed, _)| *failed).map(|(_, name)| *name).collect();
+            if !faults.is_empty() {
                 return Err(EngineError::invalid(format!(
-                    "candidate '{}' has invalid ranges or parent identity",
-                    candidate.id
+                    "candidate '{}' ({}) has invalid ranges or parent identity: {} (range {}..{}, marker {}..{}, content {}, run {}..{}, parent {:?})",
+                    candidate.id, candidate.label, faults.join(", "), candidate.range.start, candidate.range.end,
+                    candidate.marker_range.start, candidate.marker_range.end, candidate.content_start,
+                    run.range.start, run.range.end, candidate.parent_candidate_id
                 )));
             }
         }
