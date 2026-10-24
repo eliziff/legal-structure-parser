@@ -85,6 +85,8 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
             else if matches!(node.kind, NodeKind::Paragraph | NodeKind::ListItem) { 2 } else { 3 };
         candidates.push((node, ranges, size, priority));
     }
+    let quote_ranges: Vec<ScalarRange> = structure.nodes.iter().filter(|node| node.kind == NodeKind::Quote)
+        .flat_map(|node| if node.ranges.is_empty() { vec![node.range] } else { node.ranges.clone() }).collect();
     let rank = |index: usize| (candidates[index].2, candidates[index].3, index);
     let mut owner_endpoints = HashMap::<usize, Vec<usize>>::new();
     for &offset in &endpoints {
@@ -175,14 +177,30 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
             }
         }
         let mut seen = HashSet::new();
+        // A paragraph set inside a display quotation is another text's words: a quote block, as the
+        // gold types quoted paragraphs one at a time.
+        let quoted = node.is_some_and(|node| !matches!(node.kind, NodeKind::Heading | NodeKind::Footnote | NodeKind::Endnote)
+            && node.role != Some(PrimaryRole::Heading)
+            && quote_ranges.iter().any(|quote| {
+                let overlap = quote.end.min(node.range.end).saturating_sub(quote.start.max(node.range.start));
+                overlap * 2 > node.range.end.saturating_sub(node.range.start)
+            }));
+        let kind = if quoted { "quote".to_owned() } else { serde_json::to_value(role).unwrap().as_str().unwrap().to_owned() };
         groups.push(CompositionBlock {
             id: crate::composition::anchor(&spans[0]),
-            kind: serde_json::to_value(role).unwrap().as_str().unwrap().to_owned(),
+            kind,
             line_ids: spans.iter().filter(|span| seen.insert(span.line_id.clone())).map(|span| span.line_id.clone()).collect(),
             spans,
             attributes,
             document: None,
         });
+    }
+    if std::env::var_os("LEGALPDF_PHASE_TIMING").is_some() {
+        let mut kinds = std::collections::BTreeMap::<&str, usize>::new();
+        for group in &groups { *kinds.entry(group.kind.as_str()).or_default() += 1; }
+        let quotes = structure.nodes.iter().filter(|n| n.kind == NodeKind::Quote).count();
+        let quote_candidates = candidates.iter().filter(|(n, ..)| n.kind == NodeKind::Quote).count();
+        eprintln!("composition	blocks {kinds:?}	quote nodes {quotes}	quote candidates {quote_candidates}");
     }
     let source_anchor = |offset: usize| -> Result<String, String> {
         let (line, _, scalar_start) = lines.iter().find(|(_, range, _)| range.start <= offset && offset < range.end)
