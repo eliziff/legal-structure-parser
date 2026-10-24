@@ -11,7 +11,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{atomic::{AtomicBool, Ordering}, OnceLock};
+use std::sync::{atomic::AtomicBool, OnceLock};
 
 mod search;
 mod source_text;
@@ -576,8 +576,6 @@ pub struct DocumentQuery {
     source_page: OnceLock<TextFragmentPage>,
     /// Where the names of legal references end in the document's text (UTF-16, sorted).
     legal_reference_ends: OnceLock<Vec<usize>>,
-    /// Whether the page planned for prints a section's number against its first word (set_page_glues_labels).
-    page_glues_labels: AtomicBool,
 }
 
 impl Default for DocumentQuery {
@@ -609,16 +607,8 @@ impl DocumentQuery {
         });
     }
 
-    /// Tells the plans that follow whether their page prints a section's number against its first word ("57An
-    /// application"): a browser finds no word boundary before that word, so a passage opening a section starts at
-    /// its second.
-    pub fn set_page_glues_labels(&self, glued: bool) {
-        self.page_glues_labels.store(glued, Ordering::Relaxed);
-    }
-
     pub fn new() -> Self {
         Self {
-            page_glues_labels: AtomicBool::new(false),
             searched: AtomicBool::new(false),
             coordinates: OnceLock::new(),
             lines: OnceLock::new(),

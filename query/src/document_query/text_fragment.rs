@@ -15,9 +15,10 @@ impl DocumentQuery {
         publisher_may_annotate_legal_reference: bool,
         split_html_source_blocks: bool,
         page_may_repeat_passages: bool,
+        page_glues_labels: bool,
     ) -> TextFragmentPlan {
         let text = self.text(document);
-        let source = FragmentText::Document(self, document, &text);
+        let source = FragmentText::Document(self, document, &text, page_glues_labels);
         let base = build_fragment_plan(
             block_text,
             source,
@@ -58,6 +59,7 @@ impl DocumentQuery {
         publisher_may_annotate_legal_reference: bool,
         first_block_only: bool,
         page_may_repeat_passages: bool,
+        page_glues_labels: bool,
     ) -> Option<TextFragmentPlan> {
         let resolve = |locator: &str| {
             let label = self.requested_label(document, kind, locator);
@@ -77,7 +79,7 @@ impl DocumentQuery {
         }
         let selected = self.read_range(document, kind, start, end, 0)?;
         let text = self.text(document);
-        let source = FragmentText::Document(self, document, &text);
+        let source = FragmentText::Document(self, document, &text, page_glues_labels);
         let mut ranges = selected.selected.into_iter()
             .take(if first_block_only { 1 } else { usize::MAX })
             .flat_map(|block| block.block.ranges)
@@ -179,7 +181,8 @@ impl TextFragmentPage {
 
 #[derive(Clone, Copy)]
 enum FragmentText<'a> {
-    Document(&'a DocumentQuery, &'a DocumentStructure, &'a ScalarText<'a>),
+    /// A document's text, on a page that prints a section's number against its first word ("57An application") or not.
+    Document(&'a DocumentQuery, &'a DocumentStructure, &'a ScalarText<'a>, bool),
     Text(&'a TextSearch<'a>),
 }
 
@@ -194,24 +197,24 @@ impl<'a> FragmentText<'a> {
         }
     }
 
-    /// Whether the page prints a section's number against its first word (DocumentQuery::set_page_glues_labels).
+    /// Whether the page prints a section's number against its first word.
     fn glues_labels(self) -> bool {
         match self {
-            Self::Document(query, ..) => query.page_glues_labels.load(Ordering::Relaxed),
+            Self::Document(.., glued) => glued,
             Self::Text(_) => false,
         }
     }
 
     fn tokens(self) -> &'a [search::WordOffset] {
         match self {
-            Self::Document(query, document, text) => &query.index_with_text(document, text).tokens,
+            Self::Document(query, document, text, _) => &query.index_with_text(document, text).tokens,
             Self::Text(query) => &query.index.tokens,
         }
     }
 
     fn phrase_spans(self, words: &[String], options: PhraseOptions) -> Vec<PhraseSpan> {
         match self {
-            Self::Document(query, document, text) => {
+            Self::Document(query, document, text, _) => {
                 query.phrase_spans_with_text(document, words, options, text)
             }
             Self::Text(query) => {
@@ -227,27 +230,27 @@ impl<'a> FragmentText<'a> {
     /// The whole text.
     fn value(self) -> &'a str {
         match self {
-            Self::Document(_, _, text) => text.value,
+            Self::Document(_, _, text, _) => text.value,
             Self::Text(query) => query.text.value,
         }
     }
 
     fn try_slice(self, start: usize, end: usize) -> Option<&'a str> {
         match self {
-            Self::Document(_, _, text) => text.slice_utf16(start..end),
+            Self::Document(_, _, text, _) => text.slice_utf16(start..end),
             Self::Text(query) => query.text.slice_utf16(start..end),
         }
     }
 
     fn utf16_len(self) -> usize {
         match self {
-            Self::Document(_, _, text) => text.utf16_len(),
+            Self::Document(_, _, text, _) => text.utf16_len(),
             Self::Text(query) => query.text.utf16_len(),
         }
     }
 
     fn paragraph_marker_length(self, start: usize) -> usize {
-        let Self::Document(_, document, _) = self else {
+        let Self::Document(_, document, ..) = self else {
             return 0;
         };
         document
@@ -737,7 +740,7 @@ struct BrowserReplay<'a> {
 impl<'a> BrowserReplay<'a> {
     fn new(document: FragmentText<'a>, preserve_punctuation_spacing: bool) -> Self {
         let index = match document {
-            FragmentText::Document(query, _, _) => {
+            FragmentText::Document(query, ..) => {
                 std::borrow::Cow::Borrowed(query.replay.get_or_init(|| ReplayIndex::new(document)))
             }
             FragmentText::Text(search) => {
@@ -2980,26 +2983,30 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         } else {
             Vec::new()
         };
-        let mut contexts = vec![(None, None)];
-        contexts.extend(prefixes.iter().cloned().map(|prefix| (Some(prefix), None)));
-        contexts.extend(suffixes.iter().cloned().map(|suffix| (None, Some(suffix))));
-        contexts.extend(prefixes.into_iter().flat_map(|prefix| {
-            suffixes
-                .iter()
-                .cloned()
-                .map(move |suffix| (Some(prefix.clone()), Some(suffix)))
-        }));
-
-        contexts
-            .into_iter()
-            .filter_map(|(prefix, suffix)| {
-                let prefix = prefix.as_ref().map_or("", |term| term.text.as_str());
-                let suffix = suffix.as_ref().map_or("", |term| term.text.as_str());
-                let replay = self.replay.replay_exact(&target_term, prefix, suffix, true);
-                (replay.count == 1 && selects(piece, replay.first))
-                    .then(|| text_directive(&target, prefix, suffix))
-            })
-            .min_by_key(String::len)
+        // The shortest directive that selects the piece, of no context, each prefix, each suffix, then each pair, the
+        // first offered where lengths tie. A context adds its own length to the directive's, so the contexts are
+        // replayed shortest first until one selects the piece: a line of hundreds of words offers tens of thousands.
+        let (prefixes, suffixes) = ([None].into_iter().chain(prefixes.iter().map(Some)).collect::<Vec<_>>(),
+            [None].into_iter().chain(suffixes.iter().map(Some)).collect::<Vec<_>>());
+        let length = |term: Option<&LexicalTerm>, prefix: bool| term.map_or(0, |term| encoded_context(&term.text, prefix).len());
+        let (prefix_lengths, suffix_lengths) = (prefixes.iter().map(|term| length(*term, true)).collect::<Vec<_>>(),
+            suffixes.iter().map(|term| length(*term, false)).collect::<Vec<_>>());
+        let (more_prefixes, more_suffixes) = (prefixes.len() - 1, suffixes.len() - 1);
+        let mut order = (0..prefixes.len()).flat_map(|at| (0..suffixes.len()).map(move |to| (at, to))).map(|(at, to)| {
+            let offered = match (at, to) {
+                (at, 0) => at,
+                (0, to) => more_prefixes + to,
+                (at, to) => more_prefixes + more_suffixes + (at - 1) * more_suffixes + to,
+            };
+            (prefix_lengths[at] + suffix_lengths[to], offered, at, to)
+        }).collect::<Vec<_>>();
+        order.sort_unstable();
+        order.into_iter().find_map(|(_, _, at, to)| {
+            let prefix = prefixes[at].map_or("", |term| term.text.as_str());
+            let suffix = suffixes[to].map_or("", |term| term.text.as_str());
+            let replay = self.replay.replay_exact(&target_term, prefix, suffix, true);
+            (replay.count == 1 && selects(piece, replay.first)).then(|| text_directive(&target, prefix, suffix))
+        })
     }
 
     fn starts_across_sentence_opening_capital(&self, piece: MaximalCorePiece) -> bool {
@@ -4492,6 +4499,7 @@ mod tests {
             block,
             &[quote.to_owned()],
             true,
+            false,
             false,
             false,
             false,

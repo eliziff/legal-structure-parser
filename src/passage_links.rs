@@ -43,10 +43,10 @@ pub struct PassageLink {
     pub plan: Option<TextFragmentPlan>,
 }
 
-/// A passage of an A2AJ document, for every link it can take (`source_links`).
+/// A passage of an A2AJ document, for the link it is routed to (`source_link`).
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SourceLinksRequest {
+pub struct SourceLinkRequest {
     /// The publisher's page A2AJ names for the document, where it names one.
     pub url: Option<String>,
     /// The A2AJ dataset (`SCC`, `LEGISLATION-ON`), the document's citation and its other one.
@@ -78,25 +78,13 @@ pub struct SourceLocator {
     pub label: String,
 }
 
-/// A passage's links: each page it can be linked on, and the one routed best.
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SourceLinks {
-    /// On the publisher's page A2AJ names.
-    pub publisher: Option<PassageLink>,
-    /// On the document's CanLII page.
-    pub canlii: Option<PassageLink>,
-    /// On A2AJ Law Web's reader, where the passage plans whole there.
-    pub law_web: Option<String>,
-    /// The publisher's link where its page prints an anchor for the pinpoint (the anchor is where a link lands when
-    /// its words do not paint), else CanLII's; the page that exists where only one does. Measured 2026-10-18 on
-    /// 3,904 passages judged on both pages: publisher always 99.08% painted on the words / 99.28% on the words or
-    /// at the anchor; CanLII always 98.13 / 99.46; this rule 99.15 / 99.54.
-    pub best: Option<String>,
-}
-
-/// Every link a passage of an A2AJ document can take, planned against `structure` (the document's text).
-pub fn source_links(query: &DocumentQuery, structure: &DocumentStructure, request: &SourceLinksRequest) -> SourceLinks {
+/// The link a passage of an A2AJ document is routed to, planned against `structure` (the document's text): on the
+/// publisher's page A2AJ names where that page prints an anchor for the pinpoint (the anchor is where a link lands
+/// when its words do not paint), else on the document's CanLII page; the page that exists where only one does; else
+/// on A2AJ Law Web's reader, where the passage plans whole there. Measured 2026-10-18 on 3,904 passages judged on
+/// both pages: publisher always 99.08% painted on the words / 99.28% on the words or at the anchor; CanLII always
+/// 98.13 / 99.46; this rule 99.15 / 99.54. Only the page linked is planned.
+pub fn source_link(query: &DocumentQuery, structure: &DocumentStructure, request: &SourceLinkRequest) -> Option<String> {
     // A pinpoint cited without a quotation: its paragraph's or provision's anchor in the engine's form (`par12`,
     // `sec6subsec1`; a provision's part, "6(1)(c)", is anchored at its provision and painted from `pinpoints`), as the
     // measured routing linked it.
@@ -123,25 +111,24 @@ pub fn source_links(query: &DocumentQuery, structure: &DocumentStructure, reques
     };
     let laws = request.doc_type == "laws";
     let language = if request.language.is_empty() { "en" } else { &request.language };
-    let publisher = request.url.as_deref().and_then(|page| link(page, request.verified_pdf.clone()));
-    let canlii_page = if laws {
-        canlii_law_url(&request.citation, language, true)
-    } else {
-        let citations = [Some(request.citation.clone()), request.alternate_citation.clone()].into_iter().flatten()
-            .collect::<Vec<_>>();
-        canlii_case_url(&citations, language, Some(&request.dataset))
+    let publisher = || request.url.as_deref().and_then(|page| link(page, request.verified_pdf.clone()));
+    let canlii = || {
+        let page = if laws {
+            canlii_law_url(&request.citation, language, true)
+        } else {
+            let citations = [Some(request.citation.clone()), request.alternate_citation.clone()].into_iter()
+                .flatten().collect::<Vec<_>>();
+            canlii_case_url(&citations, language, Some(&request.dataset))
+        };
+        page.as_deref().and_then(|page| link(page, None))
     };
-    let canlii = canlii_page.as_deref().and_then(|page| link(page, None));
-    let law_web = law_web_link(query, structure, &request.citation, if laws { "laws" } else { "cases" },
-        &request.block_text, &request.quotes);
-    let publisher_anchored = request.url.as_deref().and_then(anchor_on).is_some();
-    let best = match (&publisher, &canlii) {
-        (Some(publisher), Some(canlii)) => Some(if publisher_anchored { &publisher.target } else { &canlii.target }),
-        (Some(publisher), None) => Some(&publisher.target),
-        (None, Some(canlii)) => Some(&canlii.target),
-        (None, None) => law_web.as_ref(),
-    }.cloned();
-    SourceLinks { publisher, canlii, law_web, best }
+    let routed = if request.url.as_deref().and_then(anchor_on).is_some() {
+        publisher().or_else(canlii)
+    } else {
+        canlii().or_else(publisher)
+    };
+    routed.map(|link| link.target).or_else(|| law_web_link(query, structure, &request.citation,
+        if laws { "laws" } else { "cases" }, &request.block_text, &request.quotes))
 }
 
 /// A pinpoint linked on `page` as a citation's pinpoint is (`cited_passage_link`: the cited paragraph or provision,
@@ -178,9 +165,8 @@ pub fn passage_link(query: &DocumentQuery, structure: &DocumentStructure, reques
         if annotated {
             query.read_legal_reference_ends(structure, reference_name_ends);
         }
-        query.set_page_glues_labels(publisher_glues_section_labels(url));
         let fragments = |split: bool| query.text_fragment_plan(structure, &request.block_text, &request.quotes, pdf,
-            annotated, split, publisher_may_repeat_passages(url));
+            annotated, split, publisher_may_repeat_passages(url), publisher_glues_section_labels(url));
         let whole = fragments(false);
         let value = whole.directives.first().and_then(|directive| directive.strip_prefix("text=")).unwrap_or("");
         let simple_range = whole.directives.len() == 1 && value.split(',').count() == 2
@@ -230,10 +216,10 @@ pub fn cited_passage_link(query: &DocumentQuery, structure: &DocumentStructure, 
     if annotated {
         query.read_legal_reference_ends(structure, reference_name_ends);
     }
-    query.set_page_glues_labels(publisher_glues_section_labels(&url));
     let kind = if section { DocumentKind::Section } else { DocumentKind::Paragraph };
     let plan = |target: &str| query.range_fragment_plan(structure, kind, target, target, pdf, annotated, section,
-        publisher_may_repeat_passages(&url)).filter(|plan| plan.source_safe_complete && !plan.directives.is_empty());
+        publisher_may_repeat_passages(&url), publisher_glues_section_labels(&url))
+        .filter(|plan| plan.source_safe_complete && !plan.directives.is_empty());
     // A part the pinpoint names is painted or nothing is: the provision's opening block in its place would paint the
     // wrong part (measured 2026-10-18, 13 links).
     let planned = match locator.part.as_deref() { Some(part) => plan(part), None => plan(&locator.label) };

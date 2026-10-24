@@ -105,8 +105,8 @@ pub use provider_text::{
 #[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
 mod passage_links;
 #[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
-pub use passage_links::{cited_passage_link, law_web_link, passage_link, source_links, PassageLink, PassageLinkRequest,
-    SourceLinks, SourceLinksRequest, SourceLocator, VerifiedPdf};
+pub use passage_links::{cited_passage_link, law_web_link, passage_link, source_link, PassageLink, PassageLinkRequest,
+    SourceLinkRequest, SourceLocator, VerifiedPdf};
 #[cfg(all(feature = "citator", feature = "document-query"))]
 pub use journal_titles::{journal_title_choice, journal_title_searches, JournalTitleHit, JournalTitleSearch};
 #[cfg(feature = "document-query")]
