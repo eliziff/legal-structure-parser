@@ -311,7 +311,7 @@ pub fn parsed_regions(state: &State) -> Regions {
     let mut found: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
     for group in &state.groups {
         let kind = match group.kind.as_str() { "prose" => "text", "header" | "footer" => "furniture", other => other };
-        let list = kind == "text" && crate::state::parser_list_item(state, group);
+        let list = kind == "text" && crate::state::parser_list_item(group);
         for span in spans_of(state, &group.spans, &group.line_ids) {
             let Some(&n) = state.index.get(&span.line_id) else { continue };
             let held = holders.get(span.line_id.as_str())

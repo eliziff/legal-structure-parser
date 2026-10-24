@@ -153,30 +153,10 @@ pub struct NotePair {
     pub note: Option<usize>,
 }
 
-/// The gold's convention for a numbered unit of the parser's: enumerated clauses and items
-/// ("1.", "2.1", "(a)", "iv.", bullets) are list items; a bracketed paragraph number ("[12]"), a
-/// bare statute section number ("12", before its "(1)") or a parenthesized subsection number
-/// ("(2)", "(1.1)") opens running text.
-pub fn parser_list_item(state: &State, block: &CompositionBlock) -> bool {
-    let locator = block.attributes.get("locator_kind").and_then(Value::as_str);
-    if locator == Some("list_item") {
-        return true;
-    }
-    if !matches!(locator, Some("paragraph" | "section" | "clause" | "subclause")) {
-        return false;
-    }
-    let spans: Vec<SourceSpan> =
-        serde_json::from_value(block.attributes.get("marker").cloned().unwrap_or_default()).unwrap_or_default();
-    let Some(first) = spans.first() else { return false };
-    let Some(&n) = state.index.get(&first.line_id) else { return false };
-    let chars = &state.lines[n].text;
-    let text: String = chars[first.start.min(chars.len())..first.end.min(chars.len())].iter().collect();
-    let marker = text.trim();
-    let inner = marker.trim_start_matches(['(', '[']).trim_end_matches([')', ']']);
-    let digits = !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit() || c == '.') && !inner.ends_with('.');
-    let bare = digits && !inner.contains('.') && !marker.starts_with('(') && !marker.ends_with('.');
-    let subsection = digits && marker.starts_with('(') && marker.ends_with(')') && inner.matches('.').count() <= 1;
-    !(marker.is_empty() || marker.starts_with('[') || bare || subsection)
+/// A numbered unit of the parser's is a list item when the parser located it as one; numbered
+/// paragraphs, sections and clauses are running text, as in the gold, however the number is written.
+pub fn parser_list_item(block: &CompositionBlock) -> bool {
+    block.attributes.get("locator_kind").and_then(Value::as_str) == Some("list_item")
 }
 
 pub const V4: &str = "legal-structure-gold.v4";
@@ -703,8 +683,8 @@ pub fn parsed(
         .map(|(n, l)| (l.id.clone(), n))
         .collect();
     let mut groups = prepared.groups;
-    // A tagger's node states its region; the parser-output remap of marked text to list items
-    // (parser_list_item) is for the parser's own nodes.
+    // A tagger's node states its region; reading list items off the locator (parser_list_item) is
+    // for the parser's own nodes.
     let tagged: HashMap<&str, &str> = structure.nodes.iter()
         .filter(|n| n.origin_id == crate::graph::ORIGIN)
         .filter_map(|n| crate::graph::region_of(n).map(|region| (n.id.as_str(), region)))
