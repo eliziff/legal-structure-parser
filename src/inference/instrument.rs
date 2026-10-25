@@ -125,11 +125,16 @@ pub(super) enum InstrumentMarkerKind {
     Dot,
 }
 
+/// An item's marker at the start of `value`: a bracketed number, letter or numeral ("(a)", "(12)",
+/// "(iv)"), or a letter or numeral before a stop or bracket ("a.", "iv)"). A capital letter alone
+/// ("A." of a contract's recitals) is one too: the runs that read markers take only a count of them,
+/// so a name's initial ("J. Smith") numbers nothing.
 pub(super) fn any_instrument_marker(value: &str) -> Option<(&str, usize, InstrumentMarkerKind)> {
+    let capital = |token: &str| token.len() == 1 && token.bytes().all(|byte| byte.is_ascii_uppercase());
     if !value
         .as_bytes()
         .first()
-        .is_some_and(|byte| *byte == b'(' || byte.is_ascii_lowercase())
+        .is_some_and(|byte| *byte == b'(' || byte.is_ascii_alphabetic())
     {
         return None;
     }
@@ -175,7 +180,7 @@ pub(super) fn any_instrument_marker(value: &str) -> Option<(&str, usize, Instrum
     }
     let delimiter = value.split_whitespace().next()?.rfind([')', '.'])?;
     let token = &value[..delimiter];
-    if !valid_letters(token, false) {
+    if !valid_letters(token, false) && !capital(token) {
         return None;
     }
     let after = &value[delimiter + 1..];

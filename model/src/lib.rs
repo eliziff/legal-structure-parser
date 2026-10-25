@@ -21,6 +21,7 @@ pub use legal_layout::{NotePairSupportV2, ScalarRange};
 pub mod locator;
 pub mod numeric_sequence;
 pub mod text;
+pub mod transcript;
 
 pub use analysis::{install_structure_analysis, structure_analysis, StructureAnalysis};
 pub use legal_layout::{CitationSpan, LayoutAnalysis, NumberingMarker};

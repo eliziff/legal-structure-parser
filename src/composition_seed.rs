@@ -154,6 +154,8 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
     }
     let anchors: HashMap<_, _> = parts.iter().rev().filter_map(|(owner, spans)| owner.map(|index|
         (candidates[index].0.id.as_str(), crate::composition::anchor(&spans[0])))).collect();
+    // A transcript (its lines numbered) reads by speakers' turns.
+    let transcript = structure.nodes.iter().any(|node| node.role == Some(PrimaryRole::LineLabel));
     let mut groups = Vec::new();
     for (owner, spans) in parts {
         let node = owner.map(|index| candidates[index].0);
@@ -190,6 +192,17 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
                     (found.start < found.end).then_some(found)
                 }).collect::<Vec<_>>();
                 if !markers.is_empty() { attributes.insert("marker".into(), json!(markers)); }
+            }
+        }
+        // A transcript's turn opens with its speaker's label ("Q.", "MR. SMITH:").
+        if transcript && role == PrimaryRole::Text {
+            let first = &spans[0];
+            if let Some((line, _, _)) = lines.iter().find(|(line, _, _)| line.id == first.line_id) {
+                let opening: String = line.text.chars().skip(first.start).take(first.end - first.start).collect();
+                if let Some((start, end)) = legal_structure_model::transcript::speaker_label(&opening) {
+                    let at = |bytes: usize| first.start + opening[..bytes].chars().count();
+                    attributes.insert("speaker".into(), json!([SourceSpan { line_id: first.line_id.clone(), start: at(start), end: at(end) }]));
+                }
             }
         }
         let mut seen = HashSet::new();

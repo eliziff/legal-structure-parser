@@ -68,6 +68,12 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
         } else {
             decimal_prefix(value, 4).and_then(|(number, length)| {
                 let rest = &value[length..];
+                // An ordinal numbers too, as older papers print their articles: "1st.", "2d.", "4th.".
+                let ordinal = ["st", "nd", "rd", "th", "d"].iter().find_map(|suffix| rest.strip_prefix(suffix))
+                    .filter(|after| after.starts_with('.') && after[1..].chars().next().is_some_and(char::is_whitespace));
+                if let Some(after) = ordinal {
+                    return Some((number, MarkerStyle::Dot, value.len() - after.len() + 1));
+                }
                 if rest.starts_with('.')
                     && (rest[1..].chars().next().is_some_and(char::is_whitespace)
                         || (rest.len() == 1 && line.byte_end < text.value.len()))

@@ -32,26 +32,40 @@ pub struct Stats {
     pub candidate_character_coverage: f64,
 }
 
-fn surface(state: &State, rows: &[usize]) -> (Vec<char>, Vec<(usize, usize, usize)>) {
+fn surface(texts: &[Vec<char>], rows: &[usize]) -> (Vec<char>, Vec<(usize, usize, usize)>) {
     let mut text = Vec::new();
     let mut spans = Vec::new();
     for &n in rows {
         let start = text.len();
-        text.extend(&state.lines[n].text);
+        text.extend(&texts[n]);
         spans.push((start, text.len(), n));
     }
     (text, spans)
 }
 
+/// A line's characters as they print: a symbol font's bullets, which a text layer gives as the
+/// font's private-use code points (Symbol's U+F0B7, Wingdings' U+F0A7 and U+F0D8), as the bullets
+/// they draw. One character for one, so positions hold.
+fn printed(text: &[char]) -> Vec<char> {
+    text.iter().map(|&c| match c {
+        '\u{f0b7}' => '\u{2022}',
+        '\u{f0a7}' => '\u{25aa}',
+        '\u{f0d8}' => '\u{27a2}',
+        other => other,
+    }).collect()
+}
+
 pub fn align(reference: &State, candidate: &State) -> Result<Alignment, String> {
     let started = Instant::now();
+    let reference_text: Vec<Vec<char>> = reference.lines.iter().map(|l| printed(&l.text)).collect();
+    let candidate_text: Vec<Vec<char>> = candidate.lines.iter().map(|l| printed(&l.text)).collect();
     let mut mappings = vec![Vec::new(); candidate.lines.len()];
     let mut used = HashSet::new();
     let mut shared = 0;
     for (c, line) in candidate.lines.iter().enumerate() {
         if let Some(&r) = reference.index.get(&line.id) {
             let target = &reference.lines[r];
-            if target.page == line.page && target.text == line.text {
+            if target.page == line.page && reference_text[r] == candidate_text[c] {
                 mappings[c].push((0, line.text.len(), r, 0, target.text.len()));
                 used.insert(r);
                 shared += 1;
@@ -77,13 +91,13 @@ pub fn align(reference: &State, candidate: &State) -> Result<Alignment, String> 
         let mut by_text: HashMap<&[char], Vec<usize>> = HashMap::new();
         let mut counts: HashMap<&[char], usize> = HashMap::new();
         for &r in &a {
-            by_text.entry(&reference.lines[r].text).or_default().push(r);
+            by_text.entry(&reference_text[r]).or_default().push(r);
         }
         for &c in &b {
-            *counts.entry(&candidate.lines[c].text).or_default() += 1;
+            *counts.entry(&candidate_text[c]).or_default() += 1;
         }
         for &c in &b {
-            let text = candidate.lines[c].text.as_slice();
+            let text = candidate_text[c].as_slice();
             if let Some(targets) = by_text.get(text) {
                 if !text.is_empty() && targets.len() == 1 && counts[text] == 1 {
                     mappings[c].push((0, text.len(), targets[0], 0, text.len()));
@@ -105,8 +119,8 @@ pub fn align(reference: &State, candidate: &State) -> Result<Alignment, String> 
                 .partial_cmp(&candidate.lines[y].spatial)
                 .unwrap()
         });
-        let (left, spans_a) = surface(reference, &a);
-        let (right, spans_b) = surface(candidate, &b);
+        let (left, spans_a) = surface(&reference_text, &a);
+        let (right, spans_b) = surface(&candidate_text, &b);
         let (mut ia, mut ib) = (0, 0);
         for (mut x, mut y, mut remaining) in text_diff::matching_blocks(&left, &right)? {
             while remaining > 0 {

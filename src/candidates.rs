@@ -474,6 +474,15 @@ pub(crate) fn resolve_structure_candidates<'a>(
             .count()
             > 3 * run.markers.len()
     };
+    // Whether a candidate numbers anything, read over the whole document (the witnesses measured
+    // against the structure gold, batch 7: 32,096 candidates). A number its count goes on from or
+    // to is a marker: a paragraph's, a list's, a quoted text's (99.6% where prose follows it, 89%
+    // with no other witness); one that counts nothing is a stray (an address, a year, a citation:
+    // 23%). The page's furniture and a transcript's line numbers are never markers (0%), the
+    // parser's composed reading of a paragraph nearly always is (99%), and a table's or a form's
+    // cell is not without prose after it. The local witnesses that read lists (layout, syntax, a
+    // composed list reading) add nothing to a count, so they decide only what a marker is.
+    let counted = counted_markers(runs);
     let mut resolved = Vec::new();
     let mut spans = Vec::with_capacity(runs.len());
     for run in runs {
@@ -488,24 +497,18 @@ pub(crate) fn resolve_structure_candidates<'a>(
                     .filter(|observation| seen_observations.insert(*observation))
                     .collect()
             });
-            let excluded = observations.iter().any(|observation| {
-                matches!(
-                    observation,
-                    CandidateObservationV2::CrossReference
-                        | CandidateObservationV2::Furniture
-                        | CandidateObservationV2::TableOrForm
-                        | CandidateObservationV2::ContentsRow
-                        | CandidateObservationV2::IndexRow
-                        | CandidateObservationV2::TranscriptLineNumber
-                )
-            });
-            let quotation = observations.contains(&CandidateObservationV2::Quotation);
-            // Whether the marker numbers anything, and whether it opens a section; a numbered
-            // unit's kind here is provisional, the family's (`family_kinds`) is final.
-            let (role, rule) = if excluded {
-                (None, ResolutionRuleV2::DirectExclusion)
+            let seen = |observation: CandidateObservationV2| observations.contains(&observation);
+            let vetoed = seen(CandidateObservationV2::Furniture) || seen(CandidateObservationV2::TranscriptLineNumber);
+            let marker = !vetoed
+                && (counted.contains(&candidate.marker_range.start) || seen(CandidateObservationV2::ComposedParagraph))
+                && !(seen(CandidateObservationV2::TableOrForm) && !seen(CandidateObservationV2::BodyProseFlow));
+            let quotation = seen(CandidateObservationV2::Quotation);
+            // What a marker numbers; a numbered unit's kind here is provisional, the family's
+            // (`family_kinds`) is final.
+            let (role, rule) = if !marker {
+                (None, if vetoed { ResolutionRuleV2::DirectExclusion } else { ResolutionRuleV2::InsufficientEvidence })
             // The parser's composed reading of the marker's line decides first where it has one.
-            } else if observations.contains(&CandidateObservationV2::ComposedParagraph)
+            } else if seen(CandidateObservationV2::ComposedParagraph)
                 && !quotation
                 && run.grammar != CandidateGrammar::Enumerator
             {
@@ -513,19 +516,17 @@ pub(crate) fn resolve_structure_candidates<'a>(
                     Some(ResolvedRole::NumberedParagraph),
                     ResolutionRuleV2::RootedNumericProse,
                 )
-            } else if observations.contains(&CandidateObservationV2::ComposedListItem) {
+            } else if seen(CandidateObservationV2::ComposedListItem) {
                 (
                     Some(ResolvedRole::ListItem),
                     ResolutionRuleV2::ListItemLayout,
                 )
+            // A number a statute's sections claim is theirs, not a paragraph's.
             } else if run.grammar == CandidateGrammar::Numeric
-                && !quotation
-                && run.rooted
-                && run.consecutive
-                && !provision_starts.contains(&candidate.marker_range.start)
-                && !sectioned(run)
-                && observations.contains(&CandidateObservationV2::BodyProseFlow)
+                && (provision_starts.contains(&candidate.marker_range.start) || sectioned(run))
             {
+                (None, ResolutionRuleV2::InsufficientEvidence)
+            } else if run.grammar == CandidateGrammar::Numeric {
                 (
                     Some(ResolvedRole::NumberedParagraph),
                     ResolutionRuleV2::RootedNumericProse,
@@ -543,22 +544,16 @@ pub(crate) fn resolve_structure_candidates<'a>(
                     Some(ResolvedRole::Section),
                     ResolutionRuleV2::HierarchySection,
                 )
-            } else if observations.contains(&CandidateObservationV2::ListItemSyntax) {
+            } else if seen(CandidateObservationV2::ListItemSyntax) {
                 (
                     Some(ResolvedRole::ListItem),
                     ResolutionRuleV2::ListItemSyntax,
                 )
-            } else if matches!(
-                run.grammar,
-                CandidateGrammar::Hierarchy | CandidateGrammar::Enumerator
-            ) && observations.contains(&CandidateObservationV2::ListItemLayout)
-            {
+            } else {
                 (
                     Some(ResolvedRole::ListItem),
                     ResolutionRuleV2::ListItemLayout,
                 )
-            } else {
-                (None, ResolutionRuleV2::InsufficientEvidence)
             };
             if std::env::var_os("LEGALPDF_CANDIDATE_TRACE").is_some() {
                 // One line per candidate: where it is, what it became and why.
@@ -581,39 +576,69 @@ pub(crate) fn resolve_structure_candidates<'a>(
         }
         spans.push(run_start..resolved.len());
     }
-    // PDF list markup also says a marker numbers something. Another grammar's accepted reading
-    // at the same marker takes precedence over this source-role fallback; the family then
-    // decides its kind as it does every other's.
-    if resolved.iter().any(|item| {
-        item.role.is_none()
-            && item.proof.rule == ResolutionRuleV2::InsufficientEvidence
-            && item
-                .proof
-                .observations
-                .contains(&CandidateObservationV2::SourceListItem)
-    }) {
-        let settled = resolved
-            .iter()
-            .filter(|item| item.role.is_some())
-            .map(|item| item.candidate.marker_range.start)
-            .collect::<HashSet<_>>();
-        for item in &mut resolved {
-            if item.role.is_none()
-                && item.proof.rule == ResolutionRuleV2::InsufficientEvidence
-                && !settled.contains(&item.candidate.marker_range.start)
-                && item
-                    .proof
-                    .observations
-                    .contains(&CandidateObservationV2::SourceListItem)
-            {
-                item.role = Some(ResolvedRole::ListItem);
-                item.proof.rule = ResolutionRuleV2::ListItemLayout;
-            }
-        }
-    }
     family_kinds(runs, &spans, &mut resolved);
     resolved.sort_by_key(|value| (value.candidate.range.start, value.candidate.range.end));
     Ok(resolved)
+}
+
+/// The marker positions whose number counts in the document: read in order, each one the next of
+/// its count after the last of that count read before it, and that last one with it. A count is a
+/// family (its wrapping, kind of numeral, a decimal's leading numbers, a division's word); bullets
+/// of one glyph count each other.
+fn counted_markers(runs: &[StructureCandidateRun]) -> HashSet<usize> {
+    let mut positions: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
+    for candidate in runs.iter().flat_map(|run| &run.markers) {
+        let labels = positions.entry(candidate.marker_range.start).or_default();
+        if !labels.contains(&candidate.label.as_str()) {
+            labels.push(candidate.label.as_str());
+        }
+    }
+    let mut last: HashMap<String, (u32, usize)> = HashMap::new();
+    let mut counted = HashSet::new();
+    for (&start, labels) in &positions {
+        for (family, value) in labels.iter().flat_map(|label| marker_readings(label)) {
+            if let Some(&(prior, at)) = last.get(&family) {
+                if family.ends_with("bullet") || prior + 1 == value {
+                    counted.insert(at);
+                    counted.insert(start);
+                }
+            }
+            last.insert(family, (value, start));
+        }
+    }
+    counted
+}
+
+/// A marker's readings as counts, (family, value): "(a)", "12.", "[12]", "iv)", "3.05" (its count
+/// is 3's), "1st." (an ordinal), "ARTICLE 4" (a division's), "•". A letter that is also a roman
+/// numeral ("i", "v") reads both ways.
+fn marker_readings(label: &str) -> Vec<(String, u32)> {
+    let label = label.trim();
+    if let Some((word, rest)) = label.split_once(char::is_whitespace) {
+        if word.chars().all(char::is_alphabetic) {
+            return marker_readings(rest).into_iter().map(|(family, value)| (format!("{}:{family}", word.to_lowercase()), value)).collect();
+        }
+    }
+    let core = label.trim_start_matches(['(', '[']).trim_end_matches([')', ']', '.']);
+    let digits = core.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    if !digits.is_empty() && digits.len() < core.len() && digits.bytes().all(|b| b.is_ascii_digit())
+        && matches!(&core[digits.len()..], "st" | "nd" | "rd" | "th" | "d")
+    {
+        return digits.parse().map(|value| vec![("ordinal".to_owned(), value)]).unwrap_or_default();
+    }
+    let mut found: Vec<(String, u32)> = Vec::new();
+    for letter in [true, false] {
+        let Some((family, value)) = marker_family(label, |_: Family, _: u32, _: bool| letter) else { continue };
+        let mut key = format!("{}:{}", family.wrap, family.count);
+        if family.count.contains('.') {
+            let parts: Vec<&str> = core.trim_start_matches('*').split('.').collect();
+            key = format!("{key}@{}", parts[..parts.len().saturating_sub(1)].join("."));
+        }
+        if !found.iter().any(|(f, v)| *f == key && *v == value) {
+            found.push((key, value));
+        }
+    }
+    found
 }
 
 #[cfg(feature = "structure-inference")]
