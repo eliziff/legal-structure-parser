@@ -157,6 +157,34 @@ pub struct Unit {
     pub depth: Option<usize>,
     #[serde(default)]
     pub starts_document: bool,
+    /// On a document's first unit, what the document is, as the document pass gave it.
+    #[serde(default)]
+    pub document_type: Option<String>,
+}
+
+/// The documents whose numbered body units are provisions.
+const INSTRUMENTS: [&str; 2] = ["contract", "legislation"];
+
+/// Each unit's region as scored: the region of its first typed line, except that in an authored
+/// gold a body unit (text or list item) opening with a printed number in a document typed contract
+/// or legislation is a provision, and nothing else is. The page pass is never asked which body
+/// units are provisions; it follows from the document's type and the unit's number, which two
+/// authorings agree on far more often than on that call. A gold with no document types (the
+/// tagger's decoded one) keeps its regions as given.
+pub fn regions(gold: &Gold) -> Vec<&str> {
+    let typed = gold.units.iter().any(|u| u.document_type.is_some());
+    let mut instrument = false;
+    gold.units.iter().map(|unit| {
+        if let Some(kind) = &unit.document_type {
+            instrument = INSTRUMENTS.contains(&kind.as_str());
+        }
+        let region = gold.typed[unit.lines[0]].region.as_str();
+        if !typed || !matches!(region, "text" | "list_item" | "provision") {
+            return region;
+        }
+        let numbered = unit.lines.iter().any(|&n| !gold.typed[n].markers.is_empty());
+        if instrument && numbered { "provision" } else if region == "provision" { "text" } else { region }
+    }).collect()
 }
 
 #[derive(Deserialize)]
@@ -302,10 +330,7 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
         parts[u].last_mut().unwrap().push(span.clone());
         last[u] = Some((line, span));
     }
-    let region: Vec<&str> = units
-        .iter()
-        .map(|u| typed[u.lines[0]].region.as_str())
-        .collect();
+    let region = regions(gold);
     // The gold's hierarchy is the levels the model gave: a heading's level, and a body unit's
     // depth. The scorer reads them as given; nothing derives a tree.
     let mut groups = Vec::new();

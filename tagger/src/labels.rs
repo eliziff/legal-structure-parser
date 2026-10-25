@@ -346,12 +346,12 @@ impl Regions {
     }
 }
 
-/// The gold's regions: each unit's spans take the region of its first typed item.
+/// The gold's regions: each unit's spans take the unit's region as scored (`state::regions`).
 pub fn gold_regions(gold: &Gold, state: &State) -> Regions {
     let mut found: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
-    for unit in &gold.units {
-        let Some(&head) = unit.lines.first() else { continue };
-        let region = index_of(&REGIONS, &gold.typed[head].region);
+    for (unit, scored) in gold.units.iter().zip(crate::state::regions(gold)) {
+        if unit.lines.is_empty() { continue }
+        let region = index_of(&REGIONS, scored);
         for &t in &unit.lines {
             for span in &gold.typed[t].spans {
                 if let Some(&n) = state.index.get(&span.line_id) {
@@ -765,7 +765,7 @@ pub fn decode(candidate: &State, pieces: &[Piece], labels: &[Label], source_sha2
             (2, Some(u), _) if near(u) => u,
             (0 | 2, _, Some(u)) if unit_region[u] == label.region && near(u) => u,
             _ => {
-                units.push(Unit { lines: Vec::new(), parent: None, level: None, depth: None, starts_document: label.document });
+                units.push(Unit { lines: Vec::new(), parent: None, level: None, depth: None, starts_document: label.document, document_type: None });
                 unit_region.push(label.region);
                 unit_page.push(page);
                 head.push(k);
