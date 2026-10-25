@@ -238,6 +238,34 @@ fn own(region: &str) -> bool {
 /// A v4 gold in the scorer's frame: one block per unit fragment (a unit's lines on one page,
 /// unbroken), parents, markers, continuations, notes with their references, tables and documents.
 /// The gold's reading order is the order the model typed its lines in.
+/// A transcript's line number printed at the start of the line it numbers is a label of its own, as
+/// a line holding only its number is (line_label): the unit's text starts after it. Each typed
+/// line's spans so cut, with the labels cut from them.
+pub fn line_labels(gold: &Gold) -> Vec<(Vec<SourceSpan>, Vec<SourceSpan>)> {
+    let index: HashMap<&str, usize> = gold.lines.iter().enumerate().map(|(n, l)| (l.id.as_str(), n)).collect();
+    gold.typed.iter().map(|item| {
+        let (mut labels, mut spans) = (Vec::new(), item.spans.clone());
+        for number in &item.line_number {
+            let Some(&n) = index.get(number.line_id.as_str()) else { continue };
+            let line = &gold.lines[n];
+            let text: Vec<char> = line.corrected.as_deref().unwrap_or(&line.text).chars().collect();
+            let blank = |a: usize, b: usize| text.get(a..b).is_some_and(|gap| gap.iter().all(|c| c.is_whitespace()));
+            let Some(span) = spans.iter_mut().find(|s| s.line_id == number.line_id && s.start <= number.start && blank(s.start, number.start)) else {
+                continue;
+            };
+            let mut rest = number.end;
+            while rest < span.end && text.get(rest).is_some_and(|c| c.is_whitespace()) {
+                rest += 1;
+            }
+            if rest < span.end {
+                span.start = rest;
+                labels.push(number.clone());
+            }
+        }
+        (labels, spans)
+    }).collect()
+}
+
 pub fn projected(gold: &Gold) -> Result<State, String> {
     if gold.schema_version != V4 {
         return Err("Expected a legal-structure-gold.v4 file".into());
@@ -248,13 +276,14 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
         .enumerate()
         .map(|(n, l)| (l.id.clone(), n))
         .collect();
+    let cut = line_labels(gold);
     // Reading order: the typed order; a line never typed keeps its place after the typed line
     // before it in the extraction.
     let mut typed_order = Vec::new();
     let mut seen = HashSet::new();
     let mut span_rank: HashMap<(usize, usize), usize> = HashMap::new();
-    for item in &gold.typed {
-        for span in &item.spans {
+    for (labels, spans) in &cut {
+        for span in labels.iter().chain(spans) {
             if seen.insert(span.line_id.as_str()) {
                 typed_order.push(span.line_id.as_str());
             }
@@ -315,7 +344,7 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
     let mut placed: Vec<((usize, usize), usize, &SourceSpan)> = units
         .iter()
         .enumerate()
-        .flat_map(|(u, unit)| unit.lines.iter().flat_map(move |&n| typed[n].spans.iter().map(move |s| (u, s))))
+        .flat_map(|(u, unit)| unit.lines.iter().flat_map(|&n| cut[n].1.iter()).map(move |s| (u, s)))
         .map(|(u, s)| (at(s), u, s))
         .collect();
     placed.sort_by_key(|&(_, u, span)| (rank_key(span), u));
@@ -386,7 +415,9 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
             }
             // Line numbers and speaker labels the unit's lines print, on its first part.
             if k == 0 {
-                for (key, found) in [("line_number", unit.lines.iter().flat_map(|&n| typed[n].line_number.iter()).cloned().collect::<Vec<_>>()),
+                for (key, found) in [("line_number", unit.lines.iter()
+                                         .flat_map(|&n| typed[n].line_number.iter().filter(|s| !cut[n].0.contains(s)).cloned().collect::<Vec<_>>())
+                                         .collect::<Vec<_>>()),
                                      ("speaker", unit.lines.iter().flat_map(|&n| typed[n].speaker.iter()).cloned().collect())] {
                     if !found.is_empty() {
                         attrs.insert(key.into(), json!(found));
@@ -442,6 +473,17 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
                     .insert(left, link(right, None, "list"));
             }
         }
+    }
+    // The line numbers cut from the lines they number, each a label of its own.
+    for label in cut.iter().flat_map(|(labels, _)| labels) {
+        groups.push(CompositionBlock {
+            id: String::new(),
+            kind: "line_label".into(),
+            line_ids: vec![label.line_id.clone()],
+            spans: vec![label.clone()],
+            attributes: Map::from_iter([("region".to_owned(), json!("line_label"))]),
+            document: None,
+        });
     }
     // Documents: the first block opens the source's own; each unit holding a document start opens
     // another under it.

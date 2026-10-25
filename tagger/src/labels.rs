@@ -346,14 +346,21 @@ impl Regions {
     }
 }
 
-/// The gold's regions: each unit's spans take the unit's region as scored (`state::regions`).
+/// The gold's regions: each unit's spans take the unit's region as scored (`state::regions`), the
+/// line numbers cut from the lines they number (`state::line_labels`) theirs.
 pub fn gold_regions(gold: &Gold, state: &State) -> Regions {
     let mut found: HashMap<usize, Vec<(usize, usize, usize)>> = HashMap::new();
+    let cut = crate::state::line_labels(gold);
+    for label in cut.iter().flat_map(|(labels, _)| labels) {
+        if let Some(&n) = state.index.get(&label.line_id) {
+            found.entry(n).or_default().push((label.start, label.end, index_of(&REGIONS, "line_label")));
+        }
+    }
     for (unit, scored) in gold.units.iter().zip(crate::state::regions(gold)) {
         if unit.lines.is_empty() { continue }
         let region = index_of(&REGIONS, scored);
         for &t in &unit.lines {
-            for span in &gold.typed[t].spans {
+            for span in &cut[t].1 {
                 if let Some(&n) = state.index.get(&span.line_id) {
                     found.entry(n).or_default().push((span.start, span.end, region));
                 }
