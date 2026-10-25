@@ -51,6 +51,10 @@ fn index_of(values: &[&str], value: &str) -> usize {
 }
 
 /// Units of one stream run on past the units of the others that interrupt them.
+/// Regions that run as streams of their own: body, notes, marginal notes, furniture, page labels
+/// and line labels.
+const STREAMS: usize = 6;
+
 fn stream(region: usize) -> usize {
     match REGIONS[region] {
         "note" => 1,
@@ -203,7 +207,7 @@ pub fn labels(state: &State, region: &dyn Fn(&Piece) -> usize) -> Result<(Vec<Pi
     }
     let region_of: HashMap<usize, usize> = first.iter().map(|(&u, &k)| (u, region(&pieces[k]))).collect();
     let mut result = vec![Label::default(); pieces.len()];
-    let mut open: [Option<usize>; 5] = [None; 5];
+    let mut open: [Option<usize>; STREAMS] = [None; STREAMS];
     for k in 0..pieces.len() {
         let Some(u) = unit[k] else { continue };
         let r = region_of[&u];
@@ -657,7 +661,7 @@ pub fn decode(candidate: &State, pieces: &[Piece], labels: &[Label], source_sha2
     let mut unit_region: Vec<usize> = Vec::new();
     let mut head: Vec<usize> = Vec::new();
     let mut unit_at: HashMap<String, usize> = HashMap::new();
-    let mut open: [Option<usize>; 5] = [None; 5];
+    let mut open: [Option<usize>; STREAMS] = [None; STREAMS];
     // The page each unit last took a piece on: a piece continues a unit of its region on its page or
     // the page before (the gold's own convention, hierarchy.py `units`); a piece the model reads as
     // continuing a unit left further back opens a unit of its own.
@@ -675,7 +679,7 @@ pub fn decode(candidate: &State, pieces: &[Piece], labels: &[Label], source_sha2
             (2, Some(u), _) if near(u) => u,
             (0 | 2, _, Some(u)) if unit_region[u] == label.region && near(u) => u,
             _ => {
-                units.push(Unit { lines: Vec::new(), parent: None, level: (label.level > 0).then_some(label.level), starts_document: label.document });
+                units.push(Unit { lines: Vec::new(), parent: None, level: (label.level > 0).then_some(label.level), depth: None, starts_document: label.document });
                 unit_region.push(label.region);
                 unit_page.push(page);
                 head.push(k);
@@ -722,6 +726,8 @@ pub fn decode(candidate: &State, pieces: &[Piece], labels: &[Label], source_sha2
             markers: marker.map(|m| vec![m]).unwrap_or_default(),
             references: own_references.into_iter().map(|s| Reference { spans: vec![s] }).collect(),
             cells: row_cells,
+            line_number: Vec::new(),
+            speaker: Vec::new(),
         });
     }
     let regions: Vec<&str> = unit_region.iter().map(|&r| REGIONS[r]).collect();

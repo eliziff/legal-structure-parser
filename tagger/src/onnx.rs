@@ -5,7 +5,7 @@
 //! product read the same numbers.
 use crate::labels::{self, Label, Piece, REGIONS};
 use crate::rows;
-use crate::state::{self, ExtractionPage, Gold, State};
+use crate::state::{self, Gold, State};
 use legal_structure_model::DocumentStructure;
 use legal_pdf_core::model::Page;
 use ort::session::{builder::GraphOptimizationLevel, Session};
@@ -87,10 +87,7 @@ impl Tagger {
     /// levels, with parents by the hierarchy rule. With `hybrid`, notes, note references and document
     /// starts stay tier 0's (their pairs are its own).
     pub fn tag(&mut self, pages: &[Page], structure: &DocumentStructure, source_sha256: &str, hybrid: bool) -> Result<Gold, String> {
-        let boxes: Vec<ExtractionPage> = pages.iter().map(|p| ExtractionPage {
-            width: p.width, height: p.height, lines: p.lines.iter().map(|l| (l.id.clone(), l.bbox)).collect(),
-        }).collect();
-        let state = state::parsed(structure, &boxes)?;
+        let state = state::parsed(structure)?;
         let regions = labels::parsed_regions(&state);
         let (pieces, tier0) = labels::labels(&state, &|p| regions.of(p))?;
         let predicted = self.predict(pages, &state, &pieces, &tier0, hybrid)?;

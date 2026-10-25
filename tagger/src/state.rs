@@ -17,7 +17,6 @@ pub struct Line {
     pub text: Vec<char>,
     /// (page, middle, left): the gold's reading position stands for its geometry.
     pub spatial: (usize, f64, f64),
-    pub page_band: Option<f64>,
 }
 
 pub struct State {
@@ -128,6 +127,12 @@ pub struct Typed {
     pub references: Vec<Reference>,
     #[serde(default)]
     pub cells: Option<Vec<Vec<SourceSpan>>>,
+    /// A transcript line number printed on the line it numbers, which the extraction read into it.
+    #[serde(default)]
+    pub line_number: Vec<SourceSpan>,
+    /// The label that opens a speaker's turn on this line ("Q.", "MR. SMITH:").
+    #[serde(default)]
+    pub speaker: Vec<SourceSpan>,
 }
 
 #[derive(Deserialize)]
@@ -139,9 +144,17 @@ pub struct Reference {
 #[derive(Deserialize)]
 pub struct Unit {
     pub lines: Vec<usize>,
+    /// The tagger's decoded tree (`labels::decode`), which its graph is built on; a gold has none
+    /// and the scorer reads none.
+    #[serde(default)]
     pub parent: Option<usize>,
+    /// A heading's level, as the model gave it: 1 the outermost in its document.
     #[serde(default)]
     pub level: Option<usize>,
+    /// A body unit's depth, as the model gave it: 1 directly under the headings, 2 inside a unit
+    /// of depth 1; a unit sits inside the nearest unit before it of a smaller depth.
+    #[serde(default)]
+    pub depth: Option<usize>,
     #[serde(default)]
     pub starts_document: bool,
 }
@@ -235,7 +248,6 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
             page: l.page,
             text: l.corrected.as_deref().unwrap_or(&l.text).chars().collect(),
             spatial: (l.page, position[n] as f64, 0.0),
-            page_band: None,
         })
         .collect();
     let at = |span: &SourceSpan| (position[index[&span.line_id]], span.start);
@@ -292,43 +304,8 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
         .iter()
         .map(|u| typed[u.lines[0]].region.as_str())
         .collect();
-    // The gold's parents are the hierarchy rule's own (CONVENTIONS section 2). A gold written
-    // before the rule, or by another one, is refused here rather than rescored or converted.
-    {
-        let texts: Vec<String> = units.iter().map(|u| typed[u.lines[0]].text.split_whitespace().collect::<Vec<_>>().join(" ")).collect();
-        let levels: Vec<usize> = units.iter().map(|u| u.level.unwrap_or(0)).collect();
-        let starts: Vec<bool> = units.iter().map(|u| u.starts_document).collect();
-        let expected = crate::labels::assemble(&region, &texts, &levels, &starts);
-        let differing = units.iter().zip(&expected).filter(|(u, e)| crate::labels::ranked(typed[u.lines[0]].region.as_str()) && u.parent != **e).count();
-        if differing > 0 {
-            return Err(format!("{differing} unit parents do not follow the hierarchy rule: the gold needs author.py's hierarchy pass"));
-        }
-    }
-    let heads: Vec<Option<String>> = parts
-        .iter()
-        .map(|found| found.first().map(|spans| anchor(&spans[0])))
-        .collect();
-    // The scored hierarchy is the rule over the units the source shows: a typed unit without a
-    // span (a line the OCR layer never produced) cannot be named by any parser, so the units
-    // under it fall where the rule puts them without it.
-    let shown: Vec<usize> = (0..units.len()).filter(|&u| heads[u].is_some()).collect();
-    let scored_parent: Vec<Option<usize>> = {
-        let regions: Vec<&str> = shown.iter().map(|&u| region[u]).collect();
-        // The opening text as the source shows it (the decoder reads the same): the first three
-        // spans of the unit's typed lines, joined.
-        let texts: Vec<String> = shown.iter().map(|&u| units[u].lines.iter().flat_map(|&t| typed[t].spans.iter()).take(3).map(|span| {
-            let text = &lines[index[&span.line_id]].text;
-            text[span.start.min(text.len())..span.end.min(text.len())].iter().collect::<String>()
-        }).collect::<Vec<_>>().join(" ")).collect();
-        let levels: Vec<usize> = shown.iter().map(|&u| units[u].level.unwrap_or(0)).collect();
-        let starts: Vec<bool> = shown.iter().map(|&u| units[u].starts_document).collect();
-        let parents = crate::labels::assemble(&regions, &texts, &levels, &starts);
-        let mut result = vec![None; units.len()];
-        for (i, &u) in shown.iter().enumerate() {
-            result[u] = parents[i].map(|p| shown[p]);
-        }
-        result
-    };
+    // The gold's hierarchy is the levels the model gave: a heading's level, and a body unit's
+    // depth. The scorer reads them as given; nothing derives a tree.
     let mut groups = Vec::new();
     let mut annotations = Vec::new();
     let mut continuations = CompositionLinks::new();
@@ -336,19 +313,21 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
     let trace = std::env::var("LEGALPDF_ASSEMBLE_TRACE").is_ok_and(|p| gold.source_sha256.starts_with(&p));
     for (u, unit) in units.iter().enumerate() {
         let first = &typed[unit.lines[0]];
-        let marker: Vec<SourceSpan> = first.markers.iter().flatten().cloned().collect();
+        // Every printed marker the unit opens with, on whichever of its lines ("6", then "(1) Every lot").
+        let marker: Vec<SourceSpan> = unit.lines.iter().flat_map(|&n| typed[n].markers.iter().flatten()).cloned().collect();
         if trace {
             eprintln!("projected u{u} {} parts={} heads={:?} marker={}", region[u], parts[u].len(),
                 parts[u].iter().map(|p| anchor(&p[0])).collect::<Vec<_>>(), marker.first().map_or(String::new(), anchor));
         }
-        let parent = scored_parent[u].and_then(|p| heads[p].clone());
         for (k, spans) in parts[u].iter().enumerate() {
             let mut attrs = Map::new();
             attrs.insert("region".into(), json!(region[u]));
-            attrs.insert(
-                "parent".into(),
-                parent.clone().map_or(Value::Null, Value::String),
-            );
+            if let Some(level) = unit.level.filter(|_| region[u] == "heading") {
+                attrs.insert("heading_level".into(), json!(level));
+            }
+            if let Some(depth) = unit.depth.filter(|_| region[u] != "heading") {
+                attrs.insert("depth".into(), json!(depth));
+            }
             if region[u] == "list_item" {
                 attrs.insert("locator_kind".into(), json!("list_item"));
                 attrs.insert(
@@ -360,6 +339,15 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
                 attrs.insert("marker".into(), json!(marker));
             } else if k == 0 && !marker.is_empty() && region[u] == "heading" {
                 attrs.insert("marker".into(), json!(marker));
+            }
+            // Line numbers and speaker labels the unit's lines print, on its first part.
+            if k == 0 {
+                for (key, found) in [("line_number", unit.lines.iter().flat_map(|&n| typed[n].line_number.iter()).cloned().collect::<Vec<_>>()),
+                                     ("speaker", unit.lines.iter().flat_map(|&n| typed[n].speaker.iter()).cloned().collect())] {
+                    if !found.is_empty() {
+                        attrs.insert(key.into(), json!(found));
+                    }
+                }
             }
             groups.push(CompositionBlock {
                 id: String::new(),
@@ -556,18 +544,8 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
     })
 }
 
-/// One page of the parser's extraction, as the export carries it: its size and its lines' boxes.
-pub struct ExtractionPage {
-    pub width: f64,
-    pub height: f64,
-    pub lines: Vec<(String, [f64; 4])>,
-}
-
 /// A parser structure in the scorer's frame, through the same composition the apps read.
-pub fn parsed(
-    structure: &DocumentStructure,
-    extraction: &[ExtractionPage],
-) -> Result<State, String> {
+pub fn parsed(structure: &DocumentStructure) -> Result<State, String> {
     if structure.offset_unit != "utf16" {
         return Err("Expected the native UTF-16 structure contract".into());
     }
@@ -620,23 +598,6 @@ pub fn parsed(
             }
         }
     }
-    let mut boxes: HashMap<&str, ([f64; 4], f64)> = HashMap::new();
-    for page in extraction {
-        for (id, bbox) in &page.lines {
-            boxes.insert(
-                id.as_str(),
-                (
-                    [
-                        1000.0 * bbox[0] / page.width,
-                        1000.0 * bbox[1] / page.height,
-                        1000.0 * bbox[2] / page.width,
-                        1000.0 * bbox[3] / page.height,
-                    ],
-                    (bbox[1] + bbox[3]) / 2.0 / page.height,
-                ),
-            );
-        }
-    }
     if sources
         .iter()
         .map(|s| s.0.as_str())
@@ -649,20 +610,14 @@ pub fn parsed(
     let mut lines = Vec::new();
     let mut composition = Vec::new();
     for (k, (id, text, page, start, end)) in sources.iter().enumerate() {
-        // A line the extraction does not place has no box and no band.
-        let (bbox, band) = boxes
-            .get(id.as_str())
-            .map_or(([0.0; 4], None), |(bbox, band)| (*bbox, Some(*band)));
         // The parser's reading order is its text order, so the alignment's page-local diff follows it,
         // as it follows the gold's typed order on the other side; box geometry would interleave the
         // columns of a two-column page.
-        let _ = bbox;
         lines.push(Line {
             id: id.clone(),
             page: *page,
             text: text.chars().collect(),
             spatial: (*page, k as f64, 0.0),
-            page_band: band,
         });
         composition.push(CompositionLine {
             id: id.clone(),
@@ -692,36 +647,6 @@ pub fn parsed(
     for group in &mut groups {
         if let Some(region) = group.attributes.get("native_id").and_then(Value::as_str).and_then(|id| tagged.get(id)) {
             group.attributes.insert("region".into(), json!(region));
-        }
-    }
-    // The structure leaves running heads, folios and print margins out of every node, and names
-    // each page's folio line; such a line in the page's outer bands is furniture.
-    let folios: HashSet<&str> = structure
-        .nodes
-        .iter()
-        .filter(|n| n.kind == legal_structure_model::NodeKind::Page)
-        .filter_map(|n| n.anchor.as_deref())
-        .collect();
-    for group in &mut groups {
-        if !matches!(group.kind.as_str(), "prose" | "text")
-            || group.attributes.contains_key("native_id")
-        {
-            continue;
-        }
-        if group.line_ids.iter().any(|id| folios.contains(id.as_str())) {
-            group.kind = "page_label".into();
-        } else if !group.line_ids.is_empty() {
-            let bands: Option<Vec<f64>> = group
-                .line_ids
-                .iter()
-                .map(|id| lines[index[id]].page_band)
-                .collect();
-            if let Some(bands) = bands {
-                let middle = bands.iter().sum::<f64>() / bands.len() as f64;
-                if !(0.15..=0.85).contains(&middle) {
-                    group.kind = "furniture".into();
-                }
-            }
         }
     }
     // A PDF parser's constituents are sections under the package's own document.

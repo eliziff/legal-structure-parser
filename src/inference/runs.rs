@@ -171,13 +171,17 @@ pub(crate) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
     runs
 }
 
+/// The glyphs that open a list item, Symbol and Wingdings bullets among them (a symbol font's
+/// text extracts to private-use code points: U+F0B7 is Symbol's bullet).
+pub(crate) const BULLETS: &[char] = &[
+    '\u{2022}', '\u{25cf}', '\u{25aa}', '\u{25e6}', '\u{2023}', '\u{2043}', '\u{25a0}', '\u{25a1}',
+    '\u{25cb}', '\u{27a2}', '\u{2713}', '\u{00b7}', '\u{f0b7}', '\u{f0a7}', '\u{f0d8}', '\u{2013}',
+    '\u{2014}', '-', '*',
+];
+
 /// Items opened by the same bullet at a line's start, one run for each bullet: a glyph and
 /// its text, or the glyph alone on a line its text follows. Each item runs to the next item.
 pub(crate) fn raw_bullet_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateRun> {
-    const BULLETS: &[char] = &[
-        '\u{2022}', '\u{25cf}', '\u{25aa}', '\u{25e6}', '\u{2023}', '\u{2043}', '\u{25a0}',
-        '\u{25a1}', '\u{f0b7}', '\u{f0a7}', '\u{f0d8}', '\u{2013}', '\u{2014}', '-', '*',
-    ];
     let mut by_glyph = BTreeMap::<char, Vec<(usize, usize)>>::new();
     for line in lines(text) {
         let trimmed = line.text.trim_start_matches(instrument_space);

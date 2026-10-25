@@ -202,6 +202,119 @@ fn smallest_container(
     best.map(|(_, index)| index)
 }
 
+/// The kind a numbering's family fixes, as the structure gold's numbering rule does: numbers,
+/// decimals ("1.01") and bare capitals ("A." recitals) are the document's own numbered
+/// paragraphs; letters, roman numerals, bullets and a bracketed capital are a list's items.
+fn family_kind(label: &str) -> ResolvedRole {
+    let token = label.trim().trim_start_matches('*');
+    let bare = token.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '.' | ':' | '-'));
+    let bracketed = token.starts_with(['(', '[']);
+    let digits = bare.starts_with(|c: char| c.is_ascii_digit()) && bare.chars().all(|c| c.is_ascii_digit() || c == '.');
+    let capital = !bracketed && bare.chars().count() == 1 && bare.chars().all(|c| c.is_ascii_uppercase());
+    if digits || capital {
+        ResolvedRole::NumberedParagraph
+    } else {
+        ResolvedRole::ListItem
+    }
+}
+
+/// Whether a marker opens its count: 1, a, A, i, I.
+fn opens_count(label: &str) -> bool {
+    let bare = label.trim().trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '.' | ':' | '-'));
+    matches!(bare, "1" | "a" | "A" | "i" | "I")
+}
+
+/// Each run's numbered paragraphs and items take its family's kind. The candidate's own evidence
+/// decides whether a marker numbers anything (exclusions, prose flow, composed readings); the
+/// family decides what, once for the run. A count of numbers that opens inside another run's
+/// numbered paragraph (it fits before that run's next marker, or within its last paragraph) is a
+/// list: an order's 1. 2. 3. after "[45] ... I order:". A parallel translation's count, which
+/// interleaves with the run, fits inside no one paragraph of it. A provision ladder's markers
+/// that number prose rather than sections take their own families' kinds: a decimal clause is a
+/// numbered paragraph wherever it stands, and any other count under a parent marker opens inside
+/// its parent's paragraph, so is a list.
+fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>], resolved: &mut [ResolvedCandidate<'_>]) {
+    let own = |item: &ResolvedCandidate<'_>| {
+        !item.proof.observations.contains(&CandidateObservationV2::Quotation)
+            && matches!(item.role, Some(ResolvedRole::NumberedParagraph | ResolvedRole::ListItem))
+    };
+    let kinds: Vec<Option<ResolvedRole>> = runs
+        .iter()
+        .map(|run| run.markers.first().filter(|_| run.grammar != CandidateGrammar::Hierarchy).map(|marker| family_kind(&marker.label)))
+        .collect();
+    // A list's marker its own evidence left unread ("- I was not", an item a scan set apart) is an
+    // item all the same where others of its run are: the run, not the line, says it is a list.
+    let unread = |item: &ResolvedCandidate<'_>| {
+        item.role.is_none()
+            && item.proof.rule == ResolutionRuleV2::InsufficientEvidence
+            && !item.proof.observations.contains(&CandidateObservationV2::Quotation)
+    };
+    let items: Vec<Vec<usize>> = spans
+        .iter()
+        .zip(&kinds)
+        .map(|(span, kind)| {
+            let listed = *kind == Some(ResolvedRole::ListItem) && span.clone().any(|i| own(&resolved[i]));
+            span.clone().filter(|&i| own(&resolved[i]) || listed && unread(&resolved[i])).collect()
+        })
+        .collect();
+    // "1.01", "3.2.4": digits with a point between them.
+    let decimal = |label: &str| {
+        let bare = label.trim().trim_start_matches('*').trim_end_matches(['.', ')']);
+        bare.contains('.') && bare.split('.').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+    };
+    for (k, _) in runs.iter().enumerate().filter(|(_, run)| run.grammar == CandidateGrammar::Hierarchy) {
+        for &i in &items[k] {
+            let candidate = resolved[i].candidate;
+            let kind = if decimal(&candidate.label)
+                || (candidate.level == 0 && family_kind(&candidate.label) == ResolvedRole::NumberedParagraph)
+            {
+                ResolvedRole::NumberedParagraph
+            } else {
+                ResolvedRole::ListItem
+            };
+            if resolved[i].role != Some(kind) {
+                resolved[i].role = Some(kind);
+                resolved[i].proof.rule = if kind == ResolvedRole::NumberedParagraph {
+                    ResolutionRuleV2::RootedNumericProse
+                } else {
+                    ResolutionRuleV2::ListItemLayout
+                };
+            }
+        }
+    }
+    // Each paragraph run's markers and paragraph ends, in reading order.
+    let outer: Vec<(usize, Vec<(usize, usize)>)> = (0..runs.len())
+        .filter(|&k| kinds[k] == Some(ResolvedRole::NumberedParagraph))
+        .map(|k| (k, items[k].iter().map(|&i| (resolved[i].candidate.marker_range.start, resolved[i].candidate.range.end)).collect()))
+        .collect();
+    for (k, kind) in kinds.iter().enumerate() {
+        let (Some(mut kind), Some(&first), Some(&last)) = (*kind, items[k].first(), items[k].last()) else {
+            continue;
+        };
+        if kind == ResolvedRole::NumberedParagraph && opens_count(&resolved[first].candidate.label) {
+            let (opens, closes) = (resolved[first].candidate.marker_range.start, resolved[last].candidate.marker_range.start);
+            let inside = outer.iter().filter(|(other, _)| *other != k).any(|(_, marks)| {
+                let at = marks.partition_point(|(start, _)| *start < opens);
+                at > 0 && marks.get(at).map_or(opens < marks[at - 1].1, |next| next.0 > closes)
+            });
+            if inside {
+                kind = ResolvedRole::ListItem;
+            }
+        }
+        let rule = if kind == ResolvedRole::NumberedParagraph {
+            ResolutionRuleV2::RootedNumericProse
+        } else {
+            ResolutionRuleV2::ListItemLayout
+        };
+        for &i in &items[k] {
+            if resolved[i].role != Some(kind) {
+                resolved[i].role = Some(kind);
+                resolved[i].proof.rule = rule;
+            }
+        }
+    }
+}
+
 #[cfg(feature = "structure-inference")]
 thread_local! {
     /// The document being resolved, for the candidate trace.
@@ -362,7 +475,9 @@ pub(crate) fn resolve_structure_candidates<'a>(
             > 3 * run.markers.len()
     };
     let mut resolved = Vec::new();
+    let mut spans = Vec::with_capacity(runs.len());
     for run in runs {
+        let run_start = resolved.len();
         for candidate in &run.markers {
             let item = evidence_by_candidate.get(candidate.id.as_str()).copied();
             let mut seen_observations = HashSet::new();
@@ -385,6 +500,8 @@ pub(crate) fn resolve_structure_candidates<'a>(
                 )
             });
             let quotation = observations.contains(&CandidateObservationV2::Quotation);
+            // Whether the marker numbers anything, and whether it opens a section; a numbered
+            // unit's kind here is provisional, the family's (`family_kinds`) is final.
             let (role, rule) = if excluded {
                 (None, ResolutionRuleV2::DirectExclusion)
             // The parser's composed reading of the marker's line decides first where it has one.
@@ -462,9 +579,11 @@ pub(crate) fn resolve_structure_candidates<'a>(
                 line_ids: item.map_or(&[], |item| item.line_ids.as_slice()),
             });
         }
+        spans.push(run_start..resolved.len());
     }
-    // PDF list markup also carries legal paragraph counts. Another grammar's accepted reading
-    // at the same marker takes precedence over this source-role fallback.
+    // PDF list markup also says a marker numbers something. Another grammar's accepted reading
+    // at the same marker takes precedence over this source-role fallback; the family then
+    // decides its kind as it does every other's.
     if resolved.iter().any(|item| {
         item.role.is_none()
             && item.proof.rule == ResolutionRuleV2::InsufficientEvidence
@@ -492,6 +611,7 @@ pub(crate) fn resolve_structure_candidates<'a>(
             }
         }
     }
+    family_kinds(runs, &spans, &mut resolved);
     resolved.sort_by_key(|value| (value.candidate.range.start, value.candidate.range.end));
     Ok(resolved)
 }
@@ -1406,6 +1526,7 @@ pub fn resolve_structure_graph_with_assembler(
     }
 
     let candidate_ids = candidate_node_ids.iter().map(|(candidate, index)| (*candidate, nodes[*index].id.clone())).collect::<HashMap<_, _>>();
+    join_broken_paragraphs(&mut nodes, &scalar_text);
     assembler(&mut nodes);
     for diagnostic in &mut diagnostics {
         diagnostic.node_ids.sort();
@@ -1457,6 +1578,75 @@ pub fn resolve_structure_graph_with_assembler(
     ))
 }
 
+/// A numbered paragraph the page's geometry broke in two (a page break, a wide gap, a line cut
+/// mid-word) goes on in the prose unit that follows it in reading order, past the page's notes and
+/// furniture, when the follower opens in lower case or the paragraph broke off on a comma, hyphen
+/// or dash: one paragraph, as the text runs. The follower's own unit is gone, its children the
+/// paragraph's.
+fn join_broken_paragraphs(nodes: &mut Vec<StructureNode>, text: &ScalarText<'_>) {
+    let flow = |node: &StructureNode| match node.kind {
+        NodeKind::Paragraph | NodeKind::ListItem | NodeKind::Heading | NodeKind::Quote | NodeKind::Table => true,
+        NodeKind::Prose => matches!(node.role, None | Some(PrimaryRole::Text | PrimaryRole::Caption | PrimaryRole::Heading)),
+        _ => false,
+    };
+    let mut order = (0..nodes.len()).filter(|&index| flow(&nodes[index])).collect::<Vec<_>>();
+    order.sort_by_key(|&index| (nodes[index].range.start, nodes[index].range.end));
+    let mut absorbed = HashMap::<String, String>::new();
+    let mut slot = 0;
+    while slot < order.len() {
+        let head = order[slot];
+        let numbered = nodes[head].kind == NodeKind::Paragraph
+            && nodes[head].marker_range.is_some()
+            && nodes[head].grammar.as_deref() == Some("numeric");
+        let mut next = slot + 1;
+        while numbered && next < order.len() {
+            let follower = &nodes[order[next]];
+            let plain = follower.kind == NodeKind::Prose
+                && follower.marker_range.is_none()
+                && matches!(follower.role, None | Some(PrimaryRole::Text))
+                && follower.origin_id.starts_with("legalpdf.")
+                && !matches!(follower.grammar.as_deref(), Some("contents" | "translation"));
+            if !plain {
+                break;
+            }
+            let last = nodes[head].ranges.last().copied().unwrap_or(nodes[head].range);
+            // Broken off: on a comma, a hyphen or a dash. A bare unpunctuated end is no witness: the
+            // gold keeps such a paragraph apart from a capitalized follower as often as not.
+            let broken = text.slice(last.start..last.end)
+                .is_some_and(|words| words.trim_end().ends_with([',', '-', '\u{2013}', '\u{2014}', '(']));
+            let lower = text.slice(follower.range.start..follower.range.end)
+                .and_then(|words| words.trim_start().chars().next())
+                .is_some_and(char::is_lowercase);
+            if !broken && !lower {
+                break;
+            }
+            let follower = nodes[order[next]].clone();
+            let paragraph = &mut nodes[head];
+            if paragraph.ranges.is_empty() {
+                paragraph.ranges.push(paragraph.range);
+            }
+            paragraph.ranges.extend(if follower.ranges.is_empty() { vec![follower.range] } else { follower.ranges.clone() });
+            paragraph.range.end = paragraph.range.end.max(follower.range.end);
+            paragraph.line_ids.extend(follower.line_ids.iter().cloned());
+            paragraph.page_indexes.extend(follower.page_indexes.iter().copied());
+            paragraph.page_indexes.sort_unstable();
+            paragraph.page_indexes.dedup();
+            absorbed.insert(follower.id.clone(), paragraph.id.clone());
+            next += 1;
+        }
+        slot = next.max(slot + 1);
+    }
+    if absorbed.is_empty() {
+        return;
+    }
+    nodes.retain(|node| !absorbed.contains_key(&node.id));
+    for node in nodes.iter_mut() {
+        if let Some(parent) = node.parent_id.as_ref().and_then(|parent| absorbed.get(parent)) {
+            node.parent_id = Some(parent.clone());
+        }
+    }
+}
+
 /// How a marker counts: its brackets, and whether it counts in digits, dotted digits, letters or
 /// roman numerals of either case, or is a bullet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1499,7 +1689,7 @@ fn marker_family(
     letter: impl Fn(Family, u32, bool) -> bool,
 ) -> Option<(Family, u32)> {
     let text = marker.trim();
-    if text.chars().count() == 1 && "•-–—*▪◦●○■□➢✓·o".contains(text) {
+    if text.chars().count() == 1 && (text == "o" || text.chars().all(|c| inference::BULLETS.contains(&c))) {
         return Some((
             Family {
                 wrap: "•",

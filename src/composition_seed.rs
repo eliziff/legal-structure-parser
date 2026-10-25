@@ -70,10 +70,15 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
     let tagged = structure.origins.iter().any(|origin| origin.id == "legal-structure-tagger.v1");
     // A row is a container: what the parser reads inside it (a cell's paragraph, a heading) stays
     // the row's, as the gold types a table one row at a time.
-    let rows: Vec<ScalarRange> = structure.nodes.iter().filter(|node| node.kind == NodeKind::Row)
+    let mut rows: Vec<ScalarRange> = structure.nodes.iter().filter(|node| node.kind == NodeKind::Row)
         .flat_map(|node| if node.ranges.is_empty() { vec![node.range] } else { node.ranges.clone() }).collect();
+    rows.sort_by_key(|row| (row.start, row.end));
+    // The row part a range opens in is the last to open at or before it; parts do not overlap.
     let in_row = |ranges: &[ScalarRange]| !ranges.is_empty()
-        && ranges.iter().all(|range| rows.iter().any(|row| row.start <= range.start && range.end <= row.end));
+        && ranges.iter().all(|range| {
+            let at = rows.partition_point(|row| row.start <= range.start);
+            at > 0 && range.end <= rows[at - 1].end
+        });
     let mut candidates = Vec::new();
     for node in &structure.nodes {
         if tagged && node.kind == NodeKind::Section {
@@ -188,11 +193,10 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
             }
         }
         let mut seen = HashSet::new();
-        // A paragraph set inside a display quotation is another text's words: a quote block, as the
-        // gold types quoted paragraphs one at a time.
-        // Enumerated items keep their kind inside a quotation, as the gold types them.
-        let quoted = node.is_some_and(|node| !matches!(node.kind, NodeKind::Heading | NodeKind::Footnote | NodeKind::Endnote | NodeKind::ListItem)
-            && node.role != Some(PrimaryRole::Heading) && node.locator_kind.as_deref() != Some("list_item") && node.marker_range.is_none()
+        // A paragraph or item set inside a display quotation is another text's words, numbered or
+        // not: a quote block, as the gold types quoted paragraphs one at a time.
+        let quoted = node.is_some_and(|node| !matches!(node.kind, NodeKind::Heading | NodeKind::Footnote | NodeKind::Endnote)
+            && node.role != Some(PrimaryRole::Heading)
             && quote_ranges.iter().any(|quote| {
                 let overlap = quote.end.min(node.range.end).saturating_sub(quote.start.max(node.range.start));
                 overlap * 2 > node.range.end.saturating_sub(node.range.start)
