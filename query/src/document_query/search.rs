@@ -180,10 +180,6 @@ pub(super) fn quote_text(value: &str) -> String {
     normalized
 }
 
-pub(super) fn quote_words(quote: &str) -> Vec<String> {
-    lowercase_words(&quote_text(quote))
-}
-
 pub(super) fn indexed_phrase_spans(
     index: &SearchIndex,
     text: &ScalarText<'_>,

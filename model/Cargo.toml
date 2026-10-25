@@ -8,6 +8,7 @@ repository = "https://github.com/eliziff/legal-structure-parser"
 
 [dependencies]
 legal-layout = { path = "../layout" }
+legal-text = { path = "../../common-law-cite/crates/legal-text" }
 regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }

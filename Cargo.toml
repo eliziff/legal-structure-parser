@@ -6,10 +6,10 @@ license = "MIT"
 description = "Fast deterministic legal-document structure detection and queries"
 repository = "https://github.com/eliziff/legal-structure-parser"
 readme = "README.md"
-exclude = ["data/grammar-corpus.json", "data/manifest.json", "grammar/**", "experiments/**"]
+exclude = ["experiments/**"]
 
 [workspace]
-members = ["grammar", "layout", "model", "python", "query"]
+members = ["layout", "model", "python", "query"]
 default-members = ["."]
 resolver = "2"
 
@@ -32,7 +32,10 @@ structure-inference = ["dep:legal-citations"]
 document-query = ["dep:legal-document-query"]
 citator = ["dep:legal-citations"]
 # The note-up graph built from the local A2AJ store (src/citator_graph.rs, the citator-graph bin).
-citator-graph = ["citator", "provider-text", "document-query", "dep:rusqlite"]
+citator-graph = ["citator", "provider-text", "document-query", "a2aj-store"]
+# A document of A2AJ's, read from its API's records or from the local store (src/a2aj.rs).
+a2aj-reader = ["provider-text", "citator", "canlii", "dep:url"]
+a2aj-store = ["a2aj-reader", "dep:rusqlite"]
 quote-verification = ["document-query"]
 native-markup = ["structure-inference"]
 provider-text = ["structure-inference"]
@@ -49,6 +52,7 @@ serde_json = { version = "1.0", features = ["preserve_order"] }
 sha2 = "0.10"
 unicode-normalization = "0.1"
 rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
+url = { version = "2.5", optional = true }
 
 [[bin]]
 name = "citator-graph"

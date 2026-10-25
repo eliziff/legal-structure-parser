@@ -822,7 +822,7 @@ mod provision_reference_tests {
     use crate::locator::normalize_numbered_section_locator;
 
     const ACACIA_EXTERNAL: &str =
-        "â€œGroupâ€ has the meaning ascribed to such term under Section 13(d) of the Exchange Act.";
+        "“Group” has the meaning ascribed to such term under Section 13(d) of the Exchange Act.";
     const ACACIA_INTERNAL: &str =
         "in fulfilling its obligations under this Agreement, including under Section 5.3.";
     const ACACIA_LIST: &str =

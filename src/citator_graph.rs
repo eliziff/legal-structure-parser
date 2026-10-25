@@ -12,6 +12,7 @@
 //! note-up: the decisions citing it, and the passages, judicial and academic, that say what it stands for.
 //! Offsets and lengths are UTF-16 code units, as Beaver counts them.
 
+use crate::a2aj::{Document, Language, Source, StoreRow};
 use crate::{
     caselaw_citation_lookup_key, classify_citator_excerpt, pair_numbered_footnotes, provider_text_document_structure,
     DocumentKind, DocumentQuery, ProviderTextInput, ProviderTextSourceKind,
@@ -117,13 +118,6 @@ fn parallel<J: Send, R: Send>(
     })
 }
 
-fn text(value: ValueRef) -> Option<String> {
-    match value {
-        ValueRef::Text(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()).filter(|value| !value.trim().is_empty()),
-        _ => None,
-    }
-}
-
 // ---- Decisions ---------------------------------------------------------------------------------------------------
 
 struct Case {
@@ -218,24 +212,20 @@ fn case_edges(case: &Case) -> (Vec<Edge>, u64, u64) {
 }
 
 /// A curated citation list, in the scanned text's language, else the other; an empty list is the provider's.
-fn provider_list(cells: &HashMap<&str, Option<String>>, base: &str, language: &str) -> Vec<String> {
-    let other = if language == "en" { "fr" } else { "en" };
-    for candidate in [language, other] {
-        let Some(value) = cells.get(format!("{base}_{candidate}").as_str()).cloned().flatten() else { continue };
-        return serde_json::from_str::<Vec<serde_json::Value>>(&value).unwrap_or_default().into_iter()
-            .filter_map(|item| item.as_str().map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()))
-            .collect();
-    }
-    Vec::new()
+fn provider_list(document: &Document<StoreRow>, base: &str, language: Language) -> rusqlite::Result<Vec<String>> {
+    Ok(document.language_field(base, language)?.map(|value| serde_json::from_str::<Vec<serde_json::Value>>(&value)
+        .unwrap_or_default().into_iter()
+        .filter_map(|item| item.as_str().map(|value| value.trim().to_owned()).filter(|value| !value.is_empty()))
+        .collect()).unwrap_or_default())
 }
 
-const CASE_COLUMNS: [&str; 18] = ["id", "dataset", "citation_en", "citation_fr", "citation2_en", "citation2_fr", "name_en",
+const CASE_COLUMNS: [&str; 17] = ["dataset", "citation_en", "citation_fr", "citation2_en", "citation2_fr", "name_en",
     "name_fr", "document_date_en", "document_date_fr", "url_en", "url_fr", "unofficial_text_en", "unofficial_text_fr",
     "cases_cited_en", "cases_cited_fr", "cases_citing_en", "cases_citing_fr"];
 
 fn build_cases(graph: &Connection, options: &GraphOptions, summary: &mut GraphSummary, started: Instant) -> GraphResult<()> {
     let courts: Vec<String> = options.courts.iter().map(|court| court.trim().to_uppercase()).filter(|court| !court.is_empty()).collect();
-    let query = format!("SELECT {} FROM document WHERE doc_type = 'cases'{} ORDER BY dataset, id{}", CASE_COLUMNS.join(", "),
+    let query = format!("SELECT id, {} FROM document WHERE doc_type = 'cases'{} ORDER BY dataset, id{}", CASE_COLUMNS.join(", "),
         if courts.is_empty() { String::new() } else { format!(" AND UPPER(dataset) IN ({})", vec!["?"; courts.len()].join(", ")) },
         options.limit.map_or(String::new(), |limit| format!(" LIMIT {limit}")));
     let store_path = options.store.clone();
@@ -252,31 +242,32 @@ fn build_cases(graph: &Connection, options: &GraphOptions, summary: &mut GraphSu
         let mut rows = statement.query(params_from_iter(courts.iter()))?;
         let (mut seen, mut sequence) = (HashSet::new(), 0);
         while let Some(row) = rows.next()? {
-            let cells: HashMap<&str, Option<String>> = CASE_COLUMNS.iter().enumerate()
-                .map(|(index, column)| Ok((*column, text(row.get_ref(index)?))))
-                .collect::<rusqlite::Result<_>>()?;
-            let field = |name: &str| cells.get(name).cloned().flatten();
-            let either = |name: &str| field(&format!("{name}_en")).or_else(|| field(&format!("{name}_fr")));
-            let english = field("unofficial_text_en");
-            let language = if english.is_some() { "en" } else { "fr" };
-            let Some(body) = english.or_else(|| field("unofficial_text_fr")) else { counted.lock().unwrap().0 += 1; continue };
-            let identity = either("url").map(|url| format!("u:{url}")).or_else(|| field("citation_en").map(|citation| format!("c:{citation}")));
+            // Read as the store writes it: an edge's offset is into the store's text.
+            let cells = StoreRow::from_query(row, 1, &CASE_COLUMNS)?;
+            let document = Document::new(&cells, Source::Store).as_written();
+            let language = document.text_language(Language::En)?;
+            let Some(body) = document.language_field("unofficial_text", language)? else { counted.lock().unwrap().0 += 1; continue };
+            let url = document.language_field("url", Language::En)?;
+            let identity = match &url { Some(url) => Some(format!("u:{url}")), None => document.field("citation_en")?.map(|citation| format!("c:{citation}")) };
             if identity.is_some_and(|identity| !seen.insert(identity)) { counted.lock().unwrap().1 += 1; continue; }
             sequence += 1;
+            let mut own = HashSet::new();
+            for column in ["citation_en", "citation2_en", "citation_fr", "citation2_fr"] {
+                own.extend(document.field(column)?.and_then(|citation| key_of(&citation)));
+            }
             let case = Case {
                 sequence,
                 store_id: row.get(0)?,
-                dataset: field("dataset").unwrap_or_default(),
-                citation: either("citation"),
-                name: either("name"),
-                date: either("document_date").map(|date| date.chars().take(10).collect()),
-                url: either("url"),
-                language,
+                dataset: document.field("dataset")?.unwrap_or_default(),
+                citation: document.language_field("citation", Language::En)?,
+                name: document.language_field("name", Language::En)?,
+                date: document.date(Language::En)?,
+                url,
+                language: language.code(),
                 text: body,
-                own: ["citation_en", "citation2_en", "citation_fr", "citation2_fr"].iter()
-                    .filter_map(|name| field(name).and_then(|citation| key_of(&citation))).collect(),
-                provider_cited: provider_list(&cells, "cases_cited", language),
-                provider_citing: provider_list(&cells, "cases_citing", language),
+                own,
+                provider_cited: provider_list(&document, "cases_cited", language)?,
+                provider_citing: provider_list(&document, "cases_citing", language)?,
             };
             if jobs.send(case).is_err() { break; }
         }
@@ -320,6 +311,14 @@ fn build_cases(graph: &Connection, options: &GraphOptions, summary: &mut GraphSu
 }
 
 // ---- Journal commentary ------------------------------------------------------------------------------------------
+
+/// A journal store cell's text; None where it is not text or only white space.
+fn text(value: ValueRef) -> Option<String> {
+    match value {
+        ValueRef::Text(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()).filter(|value| !value.trim().is_empty()),
+        _ => None,
+    }
+}
 
 /// Reporter readings that are really access dates or volume/issue numbers.
 static NOT_A_REPORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(

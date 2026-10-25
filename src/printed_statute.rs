@@ -592,7 +592,7 @@ pub fn statute_currency(pages: &[String]) -> Option<String> {
     let mut text = String::new();
     let mut space = false;
     for character in pages.iter().take(3).map(String::as_str).collect::<Vec<_>>().join("\n").chars() {
-        if character == '\u{feff}' || (character != '\u{85}' && character.is_whitespace()) {
+        if crate::javascript_whitespace(character) {
             space = true;
             continue;
         }

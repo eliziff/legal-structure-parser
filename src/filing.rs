@@ -1,6 +1,7 @@
 //! A filing's cover and a judgment's front matter, read from their lines: the parties a cover's
 //! BETWEEN block names in the roles it prints, the party a document is filed by ("BOOK OF
 //! AUTHORITIES OF THE APPLICANT"), and what a front-matter line of a judgment is.
+use crate::trim_javascript_whitespace as trim;
 use regex::Regex;
 use serde::Serialize;
 use std::sync::LazyLock;
@@ -34,10 +35,6 @@ static COVER_ROLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(
     r"(?i)^(?:applicants?|respondents?|appellants?|plaintiffs?|defendants?|petitioners?|interven(?:er|or)s?|moving part(?:y|ies)|responding part(?:y|ies))\s*:?$",
 ).unwrap());
 
-/// ECMAScript's `trim`: Unicode white space, line terminators and the BOM, not U+0085.
-fn trim(line: &str) -> &str {
-    line.trim_matches(|character: char| character == '\u{feff}' || (character != '\u{85}' && character.is_whitespace()))
-}
 
 /// The cover of a filing, from the text of its opening page; `title`, where the cover's record title
 /// is already known, names whose document it is in place of its "DOCUMENT:" line.

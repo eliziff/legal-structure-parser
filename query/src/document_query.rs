@@ -17,7 +17,7 @@ mod search;
 mod source_text;
 mod text_fragment;
 pub use source_text::TextStatistics;
-use search::{quote_text, quote_words, PhraseOptions, PhraseSpan};
+use search::{quote_text, PhraseOptions, PhraseSpan};
 pub use search::{tokenize_source_text, DocumentWordSpan};
 pub use text_fragment::{
     sentence_end, source_text_fragment_plan, text_fragment_plan, text_fragment_plan_in,
@@ -1729,7 +1729,7 @@ impl DocumentQuery {
                             .unwrap_or_else(|| format!("R{row}C{column}")),
                     ),
                     display_value: Some(node.display_value.clone().unwrap_or_else(|| {
-                        text.membership_text_utf16(&document.query_ranges(node))
+                        crate::text::membership_text_utf16(&text, &document.query_ranges(node))
                     })),
                     start: range.start,
                     end: range.end,
@@ -1746,7 +1746,7 @@ impl DocumentQuery {
     ) -> MaterializedDocumentBlock {
         let block = self.block(document, position);
         MaterializedDocumentBlock {
-            text: text.membership_text_utf16(&block.ranges),
+            text: crate::text::membership_text_utf16(&text, &block.ranges),
             block,
         }
     }

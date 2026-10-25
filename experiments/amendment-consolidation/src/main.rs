@@ -1,10 +1,10 @@
 mod delete_renumber;
 
 use legal_structure::{
-    analyze_instrument, normalize_document_locator, utf16_len, AuthoritativeTableCell, DocumentKind,
+    analyze_instrument, equal_fold, javascript_whitespace, normalize_document_locator, trim_javascript_whitespace as js_trim, utf16_len, AuthoritativeTableCell, DocumentKind,
     DocumentStructure, NodeKind, ScalarText, StructureNode,
 };
-use legal_grammar_tables::{
+use legal_grammar::{
     compile_ecmascript_pattern, compile_table_entry, expand_pattern, load_tables, CompiledGrammar,
 };
 use regex::{Captures, Regex};
@@ -16,14 +16,6 @@ use std::{
     io::{self, Read},
     sync::OnceLock,
 };
-fn javascript_whitespace(character: char) -> bool {
-    character == '\u{feff}' || (character != '\u{0085}' && character.is_whitespace())
-}
-fn js_trim(value: &str) -> &str { value.trim_matches(javascript_whitespace) }
-fn equal_fold(left: &str, right: &str) -> bool {
-    if left.is_ascii() && right.is_ascii() { left.eq_ignore_ascii_case(right) }
-    else { left.to_lowercase() == right.to_lowercase() }
-}
 fn op(kind: &str, target: String, raw: &str) -> Value {
     json!({ "kind": kind, "target": target, "raw": raw })
 }
@@ -82,7 +74,7 @@ fn grammars() -> &'static Grammars {
             ),
             fr_head: compile(
                 &format!(
-                    r"(?:les?\s+|la\s+|l['Ã¢â‚¬â„¢]\s?|aux?\s+|du\s+|de\s+la\s+|de\s+l['Ã¢â‚¬â„¢]\s?){fr}(?:\s+(?:de|du|des|de\s+la|de\s+l['Ã¢â‚¬â„¢]\s?)\s?.{{0,200}}?)?,?\s+(?:est|sont)\s+(remplacÃƒÂ©e?s?|abrogÃƒÂ©e?s?|modifiÃƒÂ©e?s?)"
+                    r"(?:les?\s+|la\s+|l['’]\s?|aux?\s+|du\s+|de\s+la\s+|de\s+l['’]\s?){fr}(?:\s+(?:de|du|des|de\s+la|de\s+l['’]\s?)\s?.{{0,200}}?)?,?\s+(?:est|sont)\s+(remplacée?s?|abrogée?s?|modifiée?s?)"
                 ),
                 "i",
             ),
@@ -148,7 +140,7 @@ fn quotes(value: &str) -> Vec<Quote> {
     let mut found = Vec::new();
     let mut cursor = 0;
     while cursor < value.len() {
-        let mut open = [("Ã¢â‚¬Å“", "Ã¢â‚¬Â"), ("``", "''"), ("Ã¢â‚¬Ëœ", "Ã¢â‚¬â„¢"), ("\"", "\"")]
+        let mut open = [("“", "”"), ("``", "''"), ("‘", "’"), ("\"", "\"")]
             .into_iter()
             .filter_map(|(left, right)| {
                 value[cursor..]
@@ -176,21 +168,21 @@ fn quotes(value: &str) -> Vec<Quote> {
 }
 fn end_of_typographic_run(body: &str, coordinates: &ScalarText<'_>, open: usize) -> Option<usize> {
     let limit_utf16 = coordinates.utf16_at_byte(open).unwrap() + 60_000;
-    let mut cursor = open + 'Ã¢â‚¬Å“'.len_utf8();
+    let mut cursor = open + '“'.len_utf8();
     let mut close = None;
     loop {
-        let Some(next) = body[cursor..].find('Ã¢â‚¬Â').map(|at| cursor + at) else {
+        let Some(next) = body[cursor..].find('”').map(|at| cursor + at) else {
             break;
         };
         if coordinates.utf16_at_byte(next).unwrap() > limit_utf16 {
             break;
         }
         close = Some(next);
-        let tail = &body[next + 'Ã¢â‚¬Â'.len_utf8()..];
+        let tail = &body[next + '”'.len_utf8()..];
         let mut count = 0;
         let mut reopened = false;
         for character in tail.chars() {
-            if character == 'Ã¢â‚¬Å“' {
+            if character == '“' {
                 reopened = true;
                 break;
             }
@@ -202,14 +194,14 @@ fn end_of_typographic_run(body: &str, coordinates: &ScalarText<'_>, open: usize)
         if !reopened {
             break;
         }
-        cursor = next + 'Ã¢â‚¬Â'.len_utf8();
+        cursor = next + '”'.len_utf8();
     }
     close
 }
 fn typographic_block(body: &str) -> Option<String> {
-    let open = body.find('Ã¢â‚¬Å“')?;
+    let open = body.find('“')?;
     let close = end_of_typographic_run(body, &ScalarText::new(body), open)?;
-    Some(body[open + 'Ã¢â‚¬Å“'.len_utf8()..close].to_owned())
+    Some(body[open + '“'.len_utf8()..close].to_owned())
 }
 fn quoted_block(body: &str) -> Option<String> {
     typographic_block(body)
@@ -220,7 +212,7 @@ fn mask_quoted_runs(body: &str) -> String {
     let mut bytes = body.as_bytes().to_vec();
     let coordinates = ScalarText::new(body);
     let mut cursor = 0;
-    while let Some(open) = body[cursor..].find('Ã¢â‚¬Å“').map(|at| cursor + at) {
+    while let Some(open) = body[cursor..].find('“').map(|at| cursor + at) {
         let Some(close) = end_of_typographic_run(body, &coordinates, open) else {
             cursor = open + 3;
             continue;
@@ -267,7 +259,7 @@ fn unquoted_block(body: &str) -> Option<String> {
         if saw_text
             && cached!(
                 UNQUOTED_HEADING,
-                r"^(?:[A-ZÃƒâ‚¬-ÃƒÅ¾][\wÃƒÂ -ÃƒÂ¿Ã¢â‚¬â„¢'-]*)(?:\s+(?:[a-zÃƒÂ -ÃƒÂ¿]{2,12}|[A-ZÃƒâ‚¬-ÃƒÅ¾][\wÃƒÂ -ÃƒÂ¿Ã¢â‚¬â„¢'-]*)){1,5}$",
+                r"^(?:[A-ZÀ-Þ][\wà-ÿ’'-]*)(?:\s+(?:[a-zà-ÿ]{2,12}|[A-ZÀ-Þ][\wà-ÿ’'-]*)){1,5}$",
                 ""
             )
             .is_match(trimmed)
@@ -648,14 +640,14 @@ fn parse_amendment_instructions(text: &str) -> Value {
         let scoped = if head.french {
             cached!(
                 FR_SCOPED,
-                r"(?:\bpassage\s+d[eu]\b|\bdÃƒÂ©finitions?\s+d(?:e|u|es)\b).{0,80}$",
+                r"(?:\bpassage\s+d[eu]\b|\bdéfinitions?\s+d(?:e|u|es)\b).{0,80}$",
                 "is"
             )
             .is_match(&text[prefix_start..head.start])
         } else {
             cached!(
                 SCOPED,
-                r"\b(?:portion|heading|marginal\s+note|description|title)\s+of\s*$|\bdefinitions?\s+[\w'Ã¢â‚¬â„¢\s-]{0,60}in\s*$",
+                r"\b(?:portion|heading|marginal\s+note|description|title)\s+of\s*$|\bdefinitions?\s+[\w'’\s-]{0,60}in\s*$",
                 "i"
             )
             .is_match(&text[prefix_start..head.start])
@@ -663,7 +655,7 @@ fn parse_amendment_instructions(text: &str) -> Value {
         if scoped {
             unparsed.push(miss(
                 raw,
-                "scoped amendment (portion/heading) Ã¢â‚¬â€ not applied",
+                "scoped amendment (portion/heading) — not applied",
             ));
             continue;
         }

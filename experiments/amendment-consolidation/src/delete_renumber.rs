@@ -1,5 +1,5 @@
 use crate::equal_fold;
-use legal_grammar_tables::compile_ecmascript_pattern;
+use legal_grammar::compile_ecmascript_pattern;
 use legal_structure::{
     analyze_instrument, normalize_document_locator, utf16_len, AuthoritativeTableCell,
     DocumentKind, DocumentStructure, InstrumentCrossReferenceReason,

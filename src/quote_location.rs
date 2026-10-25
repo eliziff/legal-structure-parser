@@ -5,6 +5,7 @@
 //! and lower-casing are ECMAScript's. A source's quotations are located in one call, the source's text read once.
 
 use crate::quote_verification::QuoteSupport;
+use crate::{javascript_whitespace as js_space, trim_javascript_whitespace as js_trim, utf16_len, JS_WHITESPACE_CLASS};
 use legal_structure_model::{ScalarRange, ScalarText};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -44,17 +45,6 @@ fn is_dash(c: char) -> bool {
 }
 fn is_word_char(c: char) -> bool {
     c.is_alphabetic() || c.is_numeric()
-}
-/// ECMAScript's String.prototype.trim: its whitespace and line terminators.
-fn js_trim(text: &str) -> &str {
-    text.trim_matches(js_space)
-}
-fn js_space(c: char) -> bool {
-    matches!(c, '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'..='\u{200a}'
-        | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}')
-}
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
 }
 /// `text.slice(start, end)` in UTF-16 units.
 fn slice16(text: &[u16], start: usize, end: usize) -> String {
@@ -907,9 +897,9 @@ pub fn document_quote_blocks(
     let statute = provisions.is_some();
     printed.extend(provisions.unwrap_or_default());
     let numbered_pages = pdf && blocks.iter().any(|block| block.kind == DocumentKind::Page && !block.aliases.is_empty());
-    static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:paras?\.?|par|¶)[{JS_SPACE}]*([0-9])")).unwrap());
-    static PAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:pages?|pp?\.?)[{JS_SPACE}]*([0-9])")).unwrap());
-    static SECTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:sections?|ss?\.|sec)[{JS_SPACE}]*([0-9])")).unwrap());
+    static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:paras?\.?|par|¶){JS_WHITESPACE_CLASS}*([0-9])")).unwrap());
+    static PAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:pages?|pp?\.?){JS_WHITESPACE_CLASS}*([0-9])")).unwrap());
+    static SECTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:sections?|ss?\.|sec){JS_WHITESPACE_CLASS}*([0-9])")).unwrap());
     printed.extend(blocks.into_iter().filter_map(|block| {
         let (kind, prefix) = match block.kind {
             DocumentKind::Paragraph if !pdf => (QuoteBlockKind::Paragraph, &*PARAGRAPH),
@@ -1295,7 +1285,7 @@ impl Located<'_> {
                 combined.push(Block { node_id: None, ancestor_ids: Vec::new(), kind, label,
                     start: ranges.first().map_or(members[0].start, |range| range.start),
                     end: ranges.last().map_or(members[members.len() - 1].end, |range| range.end),
-                    text: self.source_text.membership_text_utf16(&ranges), ranges });
+                    text: crate::text::membership_text_utf16(&self.source_text, &ranges), ranges });
             }
         }
         combined
@@ -1470,7 +1460,7 @@ impl Located<'_> {
         for pair in pages.windows(2) {
             let mut ranges = pair.iter().flat_map(|block| block.ranges.iter().copied()).collect();
             ScalarRange::normalize_union(&mut ranges);
-            let text = self.source_text.membership_text_utf16(&ranges);
+            let text = crate::text::membership_text_utf16(&self.source_text, &ranges);
             if !quote_words(quote).is_empty()
                 && self.reader.quote_match_score(quote, &text, 0.0) >= STRONG_MATCH {
                 let tail = |label: &str| label.split(' ').next_back().unwrap_or("").to_owned();
@@ -1557,7 +1547,7 @@ fn locate_quotes_kept(kept: &mut Option<LocatorState>, text: &str, blocks: &[Quo
                 let ranges = ranges_of(block);
                 Block { node_id: block.node_id.clone(), ancestor_ids: block.ancestor_ids.clone(),
                     kind: block.kind, label: block.label.clone(), start: block.start, end: block.end,
-                    text: source_text.membership_text_utf16(&ranges), ranges }
+                    text: crate::text::membership_text_utf16(&source_text, &ranges), ranges }
             }).collect();
             let prepared = vec![None; blocks.len()];
             (Reader { whole: Some(whole_at), ..Reader::default() }, blocks, prepared, None, None)
@@ -1584,7 +1574,6 @@ fn locate_quotes_kept(kept: &mut Option<LocatorState>, text: &str, blocks: &[Quo
 // The quotation rewritten to the source's words, and what differs: Beaver's authoritiesDiscrepancy.ts (editorialQuote,
 // verbatimRepair, quoteTextComparison, ported from the pinned Authorities oracle) and quoteCheck.ts (correctedQuote).
 
-const JS_SPACE: &str = r"\t\n\x0B\x0C\r \u{a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}";
 const DOUBLE_QUOTE_CHARS: &str = "\"\u{201c}\u{201d}\u{ab}\u{bb}\u{201e}";
 static MARKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\p{M}+").unwrap());
 static BLANKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[ \t\r\n\x0C\x0B]+").unwrap());
@@ -1593,11 +1582,11 @@ static BRACKETED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[[^\]]+\]").u
 static CLOSER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[)\]},.;:!?]$").unwrap());
 static OPENER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[(\[{]$").unwrap());
 static LEADING_QUOTES: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(&format!("^[{DOUBLE_QUOTE_CHARS}{JS_SPACE}]+")).unwrap());
+    LazyLock::new(|| Regex::new(&format!("^[{DOUBLE_QUOTE_CHARS}{JS_WHITESPACE_CLASS}]+")).unwrap());
 static TRAILING_QUOTES: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(&format!("[{DOUBLE_QUOTE_CHARS}{JS_SPACE}]+$")).unwrap());
+    LazyLock::new(|| Regex::new(&format!("[{DOUBLE_QUOTE_CHARS}{JS_WHITESPACE_CLASS}]+$")).unwrap());
 static PUNCTUATION_TAIL: LazyLock<Regex> = LazyLock::new(||
-    Regex::new(&format!(r"^(?:[{JS_SPACE}]*(?:\.\.\.|[.,;:!?\u{{2026}}]))+[{JS_SPACE}]*$")).unwrap());
+    Regex::new(&format!(r"^(?:{JS_WHITESPACE_CLASS}*(?:\.\.\.|[.,;:!?\u{{2026}}]))+{JS_WHITESPACE_CLASS}*$")).unwrap());
 
 fn token_texts(text: &str) -> Vec<String> {
     quote_tokens(text).into_iter().map(|token| token.text).collect()

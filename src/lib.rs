@@ -21,6 +21,8 @@ mod text_notes;
 mod citator;
 #[cfg(feature = "citator-graph")]
 pub mod citator_graph;
+#[cfg(feature = "a2aj-reader")]
+pub mod a2aj;
 #[cfg(all(feature = "citator", feature = "document-query"))]
 mod text_units;
 #[cfg(all(feature = "citator", feature = "canlii"))]
@@ -120,9 +122,9 @@ pub use quote_location::{
 pub use quote_verification::*;
 pub use reading_order::{document_reading_order, ReadingOrderUnit};
 pub(crate) use tables::AuthoritativeTables;
-pub(crate) use text::javascript_whitespace;
+pub use text::javascript_whitespace;
 pub use text::{
-    last_scalars, normalize_decimal_digit, normalize_javascript_whitespace, normalize_note_symbol,
+    equal_fold, last_scalars, normalize_decimal_digit, normalize_javascript_whitespace, normalize_note_symbol,
     trim_javascript_whitespace, utf16_len, utf16_prefix_ceil, ScalarText, JS_WHITESPACE_CLASS,
 };
 
@@ -359,11 +361,11 @@ mod inference;
 #[cfg(feature = "structure-inference")]
 mod candidates;
 mod derive;
-#[cfg(all(feature = "structure-inference", feature = "document-query"))]
+#[cfg(all(feature = "provider-text", feature = "document-query"))]
 mod outline;
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
 mod printed_statute;
-#[cfg(all(feature = "structure-inference", feature = "document-query"))]
+#[cfg(all(feature = "provider-text", feature = "document-query"))]
 pub use outline::{document_outline, OutlineEntry};
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
 pub use printed_statute::{statute_currency, PrintedLine, PrintedStatute, ProvisionPlacement};

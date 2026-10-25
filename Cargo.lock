@@ -532,6 +532,7 @@ dependencies = [
  "fancy-regex",
  "flate2",
  "legal-grammar",
+ "legal-text",
  "num-bigint",
  "regex",
  "roxmltree",
@@ -599,6 +600,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "unicode-normalization",
+ "url",
 ]
 
 [[package]]
@@ -606,6 +608,7 @@ name = "legal-structure-model"
 version = "0.1.0"
 dependencies = [
  "legal-layout",
+ "legal-text",
  "regex",
  "serde",
  "serde_json",
@@ -620,6 +623,10 @@ dependencies = [
  "legal-structure",
  "pyo3",
 ]
+
+[[package]]
+name = "legal-text"
+version = "0.1.0"
 
 [[package]]
 name = "libc"
