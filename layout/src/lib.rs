@@ -80,6 +80,10 @@ pub struct Word {
     /// A rule is drawn under the word: painted in the PDF, or dark on a recognized page's image.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub underlined: bool,
+    /// The word's stroke weight in the page's 300 dpi render, as its line's `weight` is measured;
+    /// 0 where not measured. A bold word in a line of plain words (a run-in title) shows here.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub weight: f64,
 }
 
 /// Span flag: the text is drawn invisibly, as a scan's recognition layer is.
@@ -156,7 +160,7 @@ pub struct Line {
     pub detached_references: Vec<DetachedReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ocr: Option<OcrEvidence>,
-    /// The dark share of the line's box in the page's 150 dpi render, where the page was rendered
+    /// The dark share of the line's box in the page's 300 dpi render, where the page was rendered
     /// (a scan whose text layer is kept); 0 where not measured. Weight evidence for a text layer
     /// whose fonts carry no flags.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -165,6 +169,11 @@ pub struct Line {
     /// the box's height: the stems' thickness, which bold type sets wider; 0 where not measured.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub weight: f64,
+    /// The height of the line's capitals and ascenders over its baseline in that render, in points:
+    /// its type's size where a recognized page names none (a box's height swings with descenders
+    /// and capitals); 0 where not measured.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cap_height: f64,
     #[serde(default)]
     pub exclude_from_body: bool,
     #[serde(default)]
@@ -381,8 +390,18 @@ pub struct PairingOutput {
     pub pairing_audit: Option<PdfPairingAudit>,
 }
 
+/// Capitals stand about seven tenths of the type size in common text faces (Times 0.66, Arial
+/// 0.72), so a measured capital height reads as a type size.
+pub const CAP_HEIGHT_SHARE: f64 = 0.7;
+
+/// A line's type size: on a scanned page, from the capital height measured on its image (its box
+/// grows with descenders and its text layer's sizes are guesses), to the half point, as near as a
+/// pixel of a 300 dpi render measures it; otherwise its spans' median size.
 pub fn line_font_size(line: &Line) -> f64 {
     const INLINE_SPANS: usize = 32;
+    if line.cap_height > 0.0 {
+        return (2.0 * line.cap_height / CAP_HEIGHT_SHARE).round() / 2.0;
+    }
     let exclude_superscripts = line
         .spans
         .iter()

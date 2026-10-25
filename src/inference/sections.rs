@@ -284,9 +284,13 @@ pub(super) fn section_mark(
             .len();
     let content = &rest[spaces..];
     let accepted = match family {
+        // A number whose next group is three digits is one amount set with spaced thousands
+        // ("1 687 106,60 USD", "12 500 $"), not a section and its text.
         SectionFamily::Bare => {
             content.is_empty()
-                || (spaces > 0 && bare_content_starts(content))
+                || (spaces > 0
+                    && bare_content_starts(content)
+                    && !cached_regex!(GROUPED, r"^\d{3}(?:[^\d]|$)").is_match(content))
                 || (spaces == 0 && content.starts_with('('))
         }
         SectionFamily::DotTerm => {

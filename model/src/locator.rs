@@ -84,13 +84,18 @@ pub fn normalize_compact_numbered_section_locator(compact: &str) -> String {
     }
 }
 
-/// Parse a numeric printed paragraph or page locator using its canonical spelling grammar.
+/// Parse a numeric printed paragraph, page or transcript line locator using its canonical
+/// spelling grammar.
 pub fn parse_ordinal(kind: &str, raw: &str) -> Option<usize> {
     static PAGE: OnceLock<Regex> = OnceLock::new();
     static PARAGRAPH: OnceLock<Regex> = OnceLock::new();
+    static LINE: OnceLock<Regex> = OnceLock::new();
     use unicode_normalization::UnicodeNormalization;
     let value = raw.nfkc().collect::<String>();
-    let captures = if kind == "page" {
+    let captures = if kind == "line" {
+        LINE.get_or_init(|| Regex::new(r"(?i)^(?:(?:lines?|ll?\.?)[\s:_=-]*)?0*(\d{1,6})$").unwrap())
+            .captures(value.trim())
+    } else if kind == "page" {
         PAGE.get_or_init(|| {
             Regex::new(r"(?i)^#?\s*\[?\s*(?:(?:pages?|pp?\.?)[\s:_=-]*)?0*(\d{1,6})\s*\]?$")
                 .unwrap()
