@@ -166,13 +166,20 @@ pub struct Unit {
 const INSTRUMENTS: [&str; 2] = ["contract", "legislation"];
 
 /// Each unit's region as scored: the region of its first typed line, except that in an authored
-/// gold a body unit (text or list item) opening with a printed number in a document typed contract
-/// or legislation is a provision, and nothing else is. The page pass is never asked which body
-/// units are provisions; it follows from the document's type and the unit's number, which two
-/// authorings agree on far more often than on that call. A gold with no document types (the
+/// gold a body unit (text or list item) opening with a printed number or letter (not a bullet) in
+/// a document typed contract or legislation is a provision. The page pass is never asked which
+/// body units are provisions; it follows from the document's type and the unit's number, which
+/// two authorings agree on far more often than on that call. A provision the page pass read in
+/// any other document is an instrument set out in it, a quote. A gold with no document types (the
 /// tagger's decoded one) keeps its regions as given.
 pub fn regions(gold: &Gold) -> Vec<&str> {
     let typed = gold.units.iter().any(|u| u.document_type.is_some());
+    let texts: HashMap<&str, Vec<char>> = gold.lines.iter()
+        .map(|l| (l.id.as_str(), l.corrected.as_deref().unwrap_or(&l.text).chars().collect()))
+        .collect();
+    let printed = |span: &SourceSpan| texts.get(span.line_id.as_str())
+        .and_then(|t| t.get(span.start..span.end.min(t.len())))
+        .is_some_and(|marker| marker.iter().any(|c| c.is_alphanumeric()));
     let mut instrument = false;
     gold.units.iter().map(|unit| {
         if let Some(kind) = &unit.document_type {
@@ -182,8 +189,13 @@ pub fn regions(gold: &Gold) -> Vec<&str> {
         if !typed || !matches!(region, "text" | "list_item" | "provision") {
             return region;
         }
-        let numbered = unit.lines.iter().any(|&n| !gold.typed[n].markers.is_empty());
-        if instrument && numbered { "provision" } else if region == "provision" { "text" } else { region }
+        let numbered = unit.lines.iter().any(|&n| gold.typed[n].markers.iter().flatten().any(printed));
+        match (instrument, numbered, region) {
+            (true, true, _) => "provision",
+            (true, false, "provision") => "text",
+            (false, _, "provision") => "quote",
+            _ => region,
+        }
     }).collect()
 }
 
