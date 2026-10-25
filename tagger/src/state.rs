@@ -165,12 +165,16 @@ pub struct Unit {
 /// The documents whose numbered body units are provisions.
 const INSTRUMENTS: [&str; 2] = ["contract", "legislation"];
 
+/// The documents that set out others' instruments.
+const QUOTING: [&str; 3] = ["judgment", "submission", "article"];
+
 /// Each unit's region as scored: the region of its first typed line, except that in an authored
 /// gold a body unit (text or list item) opening with a printed number or letter (not a bullet) in
 /// a document typed contract or legislation is a provision. The page pass is never asked which
 /// body units are provisions; it follows from the document's type and the unit's number, which
-/// two authorings agree on far more often than on that call. A provision the page pass read in
-/// any other document is an instrument set out in it, a quote. A gold with no document types (the
+/// two authorings agree on far more often than on that call. A provision the page pass read in a
+/// judgment, submission or article is an instrument set out in it, a quote; elsewhere (a schedule
+/// split from its contract, a practice direction) it stands. A gold with no document types (the
 /// tagger's decoded one) keeps its regions as given.
 pub fn regions(gold: &Gold) -> Vec<&str> {
     let typed = gold.units.iter().any(|u| u.document_type.is_some());
@@ -180,10 +184,11 @@ pub fn regions(gold: &Gold) -> Vec<&str> {
     let printed = |span: &SourceSpan| texts.get(span.line_id.as_str())
         .and_then(|t| t.get(span.start..span.end.min(t.len())))
         .is_some_and(|marker| marker.iter().any(|c| c.is_alphanumeric()));
-    let mut instrument = false;
+    let (mut instrument, mut quoting) = (false, false);
     gold.units.iter().map(|unit| {
         if let Some(kind) = &unit.document_type {
             instrument = INSTRUMENTS.contains(&kind.as_str());
+            quoting = QUOTING.contains(&kind.as_str());
         }
         let region = gold.typed[unit.lines[0]].region.as_str();
         if !typed || !matches!(region, "text" | "list_item" | "provision") {
@@ -193,7 +198,7 @@ pub fn regions(gold: &Gold) -> Vec<&str> {
         match (instrument, numbered, region) {
             (true, true, _) => "provision",
             (true, false, "provision") => "text",
-            (false, _, "provision") => "quote",
+            (false, _, "provision") if quoting => "quote",
             _ => region,
         }
     }).collect()
