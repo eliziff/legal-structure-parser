@@ -164,9 +164,9 @@ impl Tagger {
         let heading = REGIONS.iter().position(|r| *r == "heading").unwrap_or(3);
         let note = REGIONS.iter().position(|r| *r == "note").unwrap_or(5);
         let column = |name: &str| heads.iter().position(|(h, _, _)| h == name);
-        let (c_region, c_start, c_document, c_reference, c_level, c_marker) = (
+        let (c_region, c_start, c_document, c_reference, c_level, c_marker, c_depth) = (
             column("region").ok_or("model without a region head")?, column("start").ok_or("model without a start head")?,
-            column("document"), column("reference"), column("level"), column("marker"),
+            column("document"), column("reference"), column("level"), column("marker"), column("depth"),
         );
         let mut result = tier0.to_vec();
         let mut latest: HashMap<usize, usize> = HashMap::new();
@@ -179,6 +179,7 @@ impl Tagger {
                 start,
                 continues: None,
                 level: if region == heading && start == 1 { c_level.map_or(0, |h| c[h]) } else { 0 },
+                depth: if region != heading && start == 1 && labels::ranked(REGIONS[region]) { c_depth.map_or(0, |h| c[h]) } else { 0 },
                 marker: start == 1 && c_marker.is_some_and(|h| c[h] == 1),
                 document: c_document.is_some_and(|h| c[h] == 1),
                 reference: c_reference.is_some_and(|h| c[h] == 1),

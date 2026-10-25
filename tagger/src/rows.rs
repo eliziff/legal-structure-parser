@@ -261,7 +261,7 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
     let row_of: HashMap<String, i64> = kept.iter().enumerate().map(|(row, &k)| (anchor(candidate, &pieces[k]), row as i64)).collect();
     let pointer = |name: &Option<String>| name.as_deref().and_then(|a| row_of.get(a)).copied().unwrap_or(-1);
     let row = |label: &Label| json!([label.region, label.start, u8::from(label.document), u8::from(label.reference),
-        label.level, u8::from(label.marker), pointer(&label.continues)]);
+        label.level, u8::from(label.marker), pointer(&label.continues), label.depth]);
     let (markers, families) = markers(candidate, pieces, tier0);
     let off_grid: Vec<usize> = pages.iter().map(off_grid_sizes).collect();
     let looks = Looks::tally(pages);

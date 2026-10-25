@@ -34,9 +34,12 @@ pub struct Label {
     /// On a resuming piece, the first piece (line@offset) of the unit it resumes.
     pub continues: Option<String>,
     /// On a heading's first piece, its step from the heading before it in its document (`step`);
-    /// 0 elsewhere. Parents are not labelled: they follow from regions and the levels the steps
-    /// rebuild by the hierarchy rule (`assemble`).
+    /// 0 elsewhere. Parents are not labelled: they follow from regions and the levels and depths
+    /// the steps rebuild by the hierarchy rule (`assemble`).
     pub level: usize,
+    /// On a ranked body unit's first piece, its depth's step from the body unit before it in its
+    /// document (`step`), as the scorer reads depths; 0 elsewhere.
+    pub depth: usize,
     /// On a unit's first piece: the unit opens with an enumerator the gold marks.
     pub marker: bool,
     pub document: bool,
@@ -47,26 +50,21 @@ pub fn anchor(state: &State, piece: &Piece) -> String {
     format!("{}@{}", state.lines[piece.line].id, piece.start)
 }
 
-/// A heading's level as a step from the heading before it in its document, as the scorer reads
-/// levels: 1 the first, 2 the same, 3 to 5 down one to three, 6 to 9 up one to four. A heading read
-/// one level off at the top of a document then costs one step, not every level below it.
+/// Levels and depths run 1 to `DEEPEST`; a step between two of them is one of `STEPS` classes.
+pub const DEEPEST: usize = 9;
+pub const STEPS: usize = 2 * DEEPEST + 1;
+
+/// A heading's level (or a body unit's depth) as a step from the one before it in its document, as
+/// the scorer reads them, the first stepping from 1: 10 plus the change (2 up eight, 10 the same,
+/// 18 down eight). A heading read one level off at the top of a document then costs one step, not
+/// every level below it.
 pub fn step(previous: Option<usize>, level: usize) -> usize {
-    match previous {
-        None => 1,
-        Some(p) if level == p => 2,
-        Some(p) if level > p => 2 + (level - p).min(3),
-        Some(p) => 5 + (p - level).min(4),
-    }
+    DEEPEST + 1 + level.clamp(1, DEEPEST) - previous.unwrap_or(1)
 }
 
-/// The level a step leads to from the heading before it.
+/// The level (or depth) a step leads to from the one before it.
 pub fn stepped(previous: Option<usize>, step: usize) -> usize {
-    match (previous, step) {
-        (Some(p), 2) => p,
-        (Some(p), 3..=5) => p + step - 2,
-        (Some(p), 6..=9) => p.saturating_sub(step - 5).max(1),
-        _ => 1,
-    }
+    (previous.unwrap_or(1) + step.clamp(2, STEPS - 1)).saturating_sub(DEEPEST + 1).clamp(1, DEEPEST)
 }
 
 fn index_of(values: &[&str], value: &str) -> usize {
@@ -119,6 +117,10 @@ pub fn pieces(state: &State) -> Vec<Piece> {
         let found = &mut cuts[n];
         found.sort_unstable();
         found.dedup();
+        // A line with no characters is one empty piece: the gold types empty lines too.
+        if found.len() == 1 {
+            result.push((rank, Piece { line: n, start: 0, end: 0 }));
+        }
         result.extend(found.windows(2).map(|w| (rank, Piece { line: n, start: w[0], end: w[1] })));
     }
     // Reading order at the span level where the state has one: columns sharing a source line
@@ -269,7 +271,7 @@ pub fn labels(state: &State, region: &dyn Fn(&Piece) -> usize) -> Result<(Vec<Pi
             continue;
         }
         if let Some(given) = holder[k].and_then(|g| state.groups[g].attributes.get("heading_level")).and_then(Value::as_u64) {
-            result[k].level = (given as usize).clamp(1, 9);
+            result[k].level = (given as usize).clamp(1, DEEPEST);
             continue;
         }
         let (mut level, mut at, mut seen) = (1, parent_of.get(&u).copied(), HashSet::new());
@@ -277,7 +279,25 @@ pub fn labels(state: &State, region: &dyn Fn(&Piece) -> usize) -> Result<(Vec<Pi
             level += usize::from(REGIONS[region_of[&p]] == "heading");
             at = parent_of.get(&p).copied();
         }
-        result[k].level = level.min(9);
+        result[k].level = level.min(DEEPEST);
+    }
+    // Body depths: the depth a gold gives, else (a parse) one plus the body ancestors, as the scorer
+    // reads a tree.
+    for (&u, &k) in &first {
+        let region = REGIONS[region_of[&u]];
+        if region == "heading" || !ranked(region) {
+            continue;
+        }
+        if let Some(given) = holder[k].and_then(|g| state.groups[g].attributes.get("depth")).and_then(Value::as_u64) {
+            result[k].depth = (given as usize).clamp(1, DEEPEST);
+            continue;
+        }
+        let (mut depth, mut at, mut seen) = (1, parent_of.get(&u).copied(), HashSet::new());
+        while let Some(p) = at.filter(|p| seen.insert(*p)) {
+            depth += usize::from(REGIONS[region_of[&p]] != "heading");
+            at = parent_of.get(&p).copied();
+        }
+        result[k].depth = depth.min(DEEPEST);
     }
     for a in &annotations {
         // A document under another opens on its first piece; the source's own needs no label.
@@ -295,16 +315,21 @@ pub fn labels(state: &State, region: &dyn Fn(&Piece) -> usize) -> Result<(Vec<Pi
             }
         }
     }
-    // Levels as steps, in reading order, each document's first heading stepping from nothing.
-    let mut previous = None;
+    // Levels and depths as steps, in reading order, each document's first stepping from nothing.
+    let (mut heading, mut body) = (None, None);
     for label in &mut result {
         if label.document {
-            previous = None;
+            (heading, body) = (None, None);
         }
         if label.level > 0 {
             let level = label.level;
-            label.level = step(previous, level);
-            previous = Some(level);
+            label.level = step(heading, level);
+            heading = Some(level);
+        }
+        if label.depth > 0 {
+            let depth = label.depth;
+            label.depth = step(body, depth);
+            body = Some(depth);
         }
     }
     Ok((pieces, result))
@@ -316,7 +341,7 @@ pub struct Regions(HashMap<usize, Vec<(usize, usize, usize)>>);
 impl Regions {
     pub fn of(&self, piece: &Piece) -> usize {
         self.0.get(&piece.line)
-            .and_then(|found| found.iter().find(|&&(a, b, _)| a <= piece.start && piece.end <= b && a < b))
+            .and_then(|found| found.iter().find(|&&(a, b, _)| a <= piece.start && piece.end <= b && (a < b || piece.start == piece.end)))
             .map_or(0, |&(_, _, r)| r)
     }
 }
@@ -407,6 +432,7 @@ pub fn carry(reference: &State, gold_pieces: &[Piece], gold: &[Label], candidate
             label.start = source.start;
             label.continues = source.continues.as_deref().and_then(moved);
             label.level = source.level;
+            label.depth = source.depth;
             label.marker = source.marker;
             label.document = source.document;
         }
@@ -531,10 +557,13 @@ pub fn ranked(region: &str) -> bool {
     RANKED.contains(&region)
 }
 
-pub fn assemble(regions: &[&str], texts: &[String], levels: &[usize], starts_document: &[bool]) -> Vec<Option<usize>> {
+/// A body unit with a depth (`depths`, 0 where none) sits inside the nearest earlier body unit of a
+/// smaller depth under the same heading, else under the heading.
+pub fn assemble(regions: &[&str], texts: &[String], levels: &[usize], depths: &[usize], starts_document: &[bool]) -> Vec<Option<usize>> {
     let mut parents = vec![None; regions.len()];
     let mut heading_stack: Vec<(usize, usize)> = Vec::new();
     let mut list_stack: Vec<(String, usize, Option<usize>)> = Vec::new();
+    let mut body_stack: Vec<(usize, usize)> = Vec::new();
     let (mut prev, mut open_letter): (Option<usize>, Option<char>) = (None, None);
     for u in 0..regions.len() {
         let region = regions[u];
@@ -544,10 +573,23 @@ pub fn assemble(regions: &[&str], texts: &[String], levels: &[usize], starts_doc
         if starts_document[u] {
             heading_stack.clear();
             list_stack.clear();
+            body_stack.clear();
             prev = None;
             open_letter = None;
         }
         let top = heading_stack.last().map(|&(_, h)| h);
+        if region != "heading" && depths[u] > 0 {
+            while body_stack.last().is_some_and(|&(d, _)| d >= depths[u]) {
+                body_stack.pop();
+            }
+            parents[u] = body_stack.last().map(|&(_, b)| b).or(top);
+            body_stack.push((depths[u], u));
+            prev = Some(u);
+            continue;
+        }
+        if region == "heading" {
+            body_stack.clear();
+        }
         let parent = match region {
             "heading" => {
                 let level = levels[u].max(1);
@@ -651,19 +693,24 @@ pub fn decode(candidate: &State, pieces: &[Piece], labels: &[Label], source_sha2
     let piece_at = |span: &SourceSpan| candidate.index.get(&span.line_id).and_then(|&n| locate.at(n, span.start));
     // A block's marker, reachable from every piece the block holds: the decoded unit opens on
     // whichever of them reads first.
-    let mut markers: HashMap<usize, Vec<SourceSpan>> = HashMap::new();
-    for group in &candidate.groups {
-        let found = span_list(group.attributes.get("marker"));
-        if found.is_empty() {
-            continue;
-        }
-        for span in spans_of(candidate, &group.spans, &group.line_ids) {
-            let Some(&n) = candidate.index.get(&span.line_id) else { continue };
-            for k in locate.within(n, span.start, span.end).collect::<Vec<_>>() {
-                markers.entry(k).or_insert_with(|| found.clone());
+    // Likewise a block's transcript line numbers and speaker labels.
+    let by_piece = |key: &str| {
+        let mut found_at: HashMap<usize, Vec<SourceSpan>> = HashMap::new();
+        for group in &candidate.groups {
+            let found = span_list(group.attributes.get(key));
+            if found.is_empty() {
+                continue;
+            }
+            for span in spans_of(candidate, &group.spans, &group.line_ids) {
+                let Some(&n) = candidate.index.get(&span.line_id) else { continue };
+                for k in locate.within(n, span.start, span.end).collect::<Vec<_>>() {
+                    found_at.entry(k).or_insert_with(|| found.clone());
+                }
             }
         }
-    }
+        found_at
+    };
+    let (markers, line_numbers, speakers) = (by_piece("marker"), by_piece("line_number"), by_piece("speaker"));
     let mut note_labels: HashMap<usize, Vec<SourceSpan>> = HashMap::new();
     let mut references: HashMap<usize, Vec<SourceSpan>> = HashMap::new();
     for a in candidate.annotations.iter().filter(|a| a.kind == "note") {
@@ -765,8 +812,8 @@ pub fn decode(candidate: &State, pieces: &[Piece], labels: &[Label], source_sha2
             markers: marker.map(|m| vec![m]).unwrap_or_default(),
             references: own_references.into_iter().map(|s| Reference { spans: vec![s] }).collect(),
             cells: row_cells,
-            line_number: Vec::new(),
-            speaker: Vec::new(),
+            line_number: if head[u] == k { line_numbers.get(&k).cloned().unwrap_or_default() } else { Vec::new() },
+            speaker: if head[u] == k { speakers.get(&k).cloned().unwrap_or_default() } else { Vec::new() },
         });
     }
     let regions: Vec<&str> = unit_region.iter().map(|&r| REGIONS[r]).collect();
@@ -781,20 +828,25 @@ pub fn decode(candidate: &State, pieces: &[Piece], labels: &[Label], source_sha2
         typed[units[u].lines[0]].text = text.clone();
     }
     let starts: Vec<bool> = units.iter().map(|unit| unit.starts_document).collect();
-    // Each heading's level from its step, each document's first heading stepping from nothing.
-    let mut levels = vec![0; units.len()];
-    let mut previous = None;
+    // Each heading's level and each body unit's depth from its step, each document's first stepping
+    // from nothing.
+    let (mut levels, mut depths) = (vec![0; units.len()], vec![0; units.len()]);
+    let (mut heading, mut body) = (None, None);
     for u in 0..units.len() {
         if starts[u] {
-            previous = None;
+            (heading, body) = (None, None);
         }
         if regions[u] == "heading" && labels[head[u]].level > 0 {
-            levels[u] = stepped(previous, labels[head[u]].level);
-            previous = Some(levels[u]);
+            levels[u] = stepped(heading, labels[head[u]].level);
+            heading = Some(levels[u]);
             units[u].level = Some(levels[u]);
+        } else if regions[u] != "heading" && ranked(regions[u]) && labels[head[u]].depth > 0 {
+            depths[u] = stepped(body, labels[head[u]].depth);
+            body = Some(depths[u]);
+            units[u].depth = Some(depths[u]);
         }
     }
-    for (u, parent) in assemble(&regions, &texts, &levels, &starts).into_iter().enumerate() {
+    for (u, parent) in assemble(&regions, &texts, &levels, &depths, &starts).into_iter().enumerate() {
         units[u].parent = parent;
     }
     if std::env::var("LEGALPDF_ASSEMBLE_TRACE").is_ok_and(|prefix| source_sha256.starts_with(&prefix)) {
