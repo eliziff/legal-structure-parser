@@ -12,9 +12,9 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-pub const REGIONS: [&str; 14] = [
+pub const REGIONS: [&str; 16] = [
     "none", "text", "list_item", "heading", "quote", "note", "table", "contents", "caption", "headnote", "marginal_note",
-    "furniture", "page_label", "line_label",
+    "furniture", "page_label", "line_label", "title", "note_quote",
 ];
 pub const STARTS: [&str; 3] = ["inside", "unit", "resume"];
 
@@ -57,7 +57,7 @@ const STREAMS: usize = 6;
 
 fn stream(region: usize) -> usize {
     match REGIONS[region] {
-        "note" => 1,
+        "note" | "note_quote" => 1,
         "marginal_note" => 2,
         "furniture" => 3,
         "page_label" => 4,

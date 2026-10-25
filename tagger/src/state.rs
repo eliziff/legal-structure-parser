@@ -178,8 +178,10 @@ pub const V4: &str = "legal-structure-gold.v4";
 /// tables inside their annotations, list items with a list_item locator).
 fn kind_of(region: &str) -> &str {
     match region {
-        "heading" | "caption" | "headnote" | "marginal_note" | "furniture" | "page_label"
+        "title" | "heading" | "caption" | "headnote" | "marginal_note" | "furniture" | "page_label"
         | "line_label" | "contents" => region,
+        // A block quotation inside a note is scored as note until the parser tells them apart.
+        "note_quote" => "note",
         _ => "text",
     }
 }
