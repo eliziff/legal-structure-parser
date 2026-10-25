@@ -1,0 +1,5 @@
+[build]
+# This workspace resolves its dependencies with its own Cargo.lock: its builds keep their own
+# target folder, so they never leave a differently resolved build in the shared one the native
+# consumers link from.
+target-dir = "target"

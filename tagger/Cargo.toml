@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 description = "The structure tagger's labels over a parse: pieces, features, labels, decoding into units by the hierarchy rule, and the gold's own projection"
-
-[workspace]
+# A member of the repository's workspace of native consumers, not of legal-structure's own.
+workspace = "../.."
 
 [dependencies]
 diff-match-patch-rs = "0.5.1"
@@ -19,6 +19,3 @@ ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "
 
 [features]
 onnx = ["dep:ort"]
-
-[patch.crates-io]
-hayro-jpeg2000 = { git = "https://github.com/LaurenzV/hayro.git", rev = "ff7e2e407f6b9c429b44dc29a851180727892b6c" }
