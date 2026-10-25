@@ -33,8 +33,9 @@ pub struct Label {
     pub start: usize,
     /// On a resuming piece, the first piece (line@offset) of the unit it resumes.
     pub continues: Option<String>,
-    /// On a heading's first piece, its level, 1 the outermost in its document; 0 elsewhere. Parents
-    /// are not labelled: they follow from regions and levels by the hierarchy rule (`assemble`).
+    /// On a heading's first piece, its step from the heading before it in its document (`step`);
+    /// 0 elsewhere. Parents are not labelled: they follow from regions and the levels the steps
+    /// rebuild by the hierarchy rule (`assemble`).
     pub level: usize,
     /// On a unit's first piece: the unit opens with an enumerator the gold marks.
     pub marker: bool,
@@ -44,6 +45,28 @@ pub struct Label {
 
 pub fn anchor(state: &State, piece: &Piece) -> String {
     format!("{}@{}", state.lines[piece.line].id, piece.start)
+}
+
+/// A heading's level as a step from the heading before it in its document, as the scorer reads
+/// levels: 1 the first, 2 the same, 3 to 5 down one to three, 6 to 9 up one to four. A heading read
+/// one level off at the top of a document then costs one step, not every level below it.
+pub fn step(previous: Option<usize>, level: usize) -> usize {
+    match previous {
+        None => 1,
+        Some(p) if level == p => 2,
+        Some(p) if level > p => 2 + (level - p).min(3),
+        Some(p) => 5 + (p - level).min(4),
+    }
+}
+
+/// The level a step leads to from the heading before it.
+pub fn stepped(previous: Option<usize>, step: usize) -> usize {
+    match (previous, step) {
+        (Some(p), 2) => p,
+        (Some(p), 3..=5) => p + step - 2,
+        (Some(p), 6..=9) => p.saturating_sub(step - 5).max(1),
+        _ => 1,
+    }
 }
 
 fn index_of(values: &[&str], value: &str) -> usize {
@@ -240,9 +263,13 @@ pub fn labels(state: &State, region: &dyn Fn(&Piece) -> usize) -> Result<(Vec<Pi
             parent_of.insert(u, p);
         }
     }
-    // Heading levels: one plus the heading ancestors (the gold's levels rebuilt its parents).
+    // Heading levels: the level a gold gives, else (a parse) one plus the heading ancestors.
     for (&u, &k) in &first {
         if REGIONS[region_of[&u]] != "heading" {
+            continue;
+        }
+        if let Some(given) = holder[k].and_then(|g| state.groups[g].attributes.get("heading_level")).and_then(Value::as_u64) {
+            result[k].level = (given as usize).clamp(1, 9);
             continue;
         }
         let (mut level, mut at, mut seen) = (1, parent_of.get(&u).copied(), HashSet::new());
@@ -266,6 +293,18 @@ pub fn labels(state: &State, region: &dyn Fn(&Piece) -> usize) -> Result<(Vec<Pi
                     result[k].reference = true;
                 }
             }
+        }
+    }
+    // Levels as steps, in reading order, each document's first heading stepping from nothing.
+    let mut previous = None;
+    for label in &mut result {
+        if label.document {
+            previous = None;
+        }
+        if label.level > 0 {
+            let level = label.level;
+            label.level = step(previous, level);
+            previous = Some(level);
         }
     }
     Ok((pieces, result))
@@ -679,7 +718,7 @@ pub fn decode(candidate: &State, pieces: &[Piece], labels: &[Label], source_sha2
             (2, Some(u), _) if near(u) => u,
             (0 | 2, _, Some(u)) if unit_region[u] == label.region && near(u) => u,
             _ => {
-                units.push(Unit { lines: Vec::new(), parent: None, level: (label.level > 0).then_some(label.level), depth: None, starts_document: label.document });
+                units.push(Unit { lines: Vec::new(), parent: None, level: None, depth: None, starts_document: label.document });
                 unit_region.push(label.region);
                 unit_page.push(page);
                 head.push(k);
@@ -741,8 +780,20 @@ pub fn decode(candidate: &State, pieces: &[Piece], labels: &[Label], source_sha2
     for (u, text) in texts.iter().enumerate() {
         typed[units[u].lines[0]].text = text.clone();
     }
-    let levels: Vec<usize> = head.iter().map(|&k| labels[k].level).collect();
     let starts: Vec<bool> = units.iter().map(|unit| unit.starts_document).collect();
+    // Each heading's level from its step, each document's first heading stepping from nothing.
+    let mut levels = vec![0; units.len()];
+    let mut previous = None;
+    for u in 0..units.len() {
+        if starts[u] {
+            previous = None;
+        }
+        if regions[u] == "heading" && labels[head[u]].level > 0 {
+            levels[u] = stepped(previous, labels[head[u]].level);
+            previous = Some(levels[u]);
+            units[u].level = Some(levels[u]);
+        }
+    }
     for (u, parent) in assemble(&regions, &texts, &levels, &starts).into_iter().enumerate() {
         units[u].parent = parent;
     }

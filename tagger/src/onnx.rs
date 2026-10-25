@@ -25,7 +25,6 @@ pub struct Meta {
     pub heads: Vec<(String, usize, usize)>,
     pub regions: Vec<String>,
     pub labels: usize,
-    pub text_chars: usize,
     pub window: usize,
     pub context: usize,
     /// Reader vocabularies: the parser's region type, note mode and numbering family, by name;
@@ -55,11 +54,9 @@ fn language(text: &str) -> f32 {
     (f - e) / (f + e).max(1.0)
 }
 
-/// The trainer's `chars`: each of the first `n` characters as a code in 1..=2048, 0 padding.
-fn chars(text: &str, n: usize) -> Vec<i64> {
-    let mut codes: Vec<i64> = text.chars().take(n).map(|c| ((c as u32).min(0x2FFF) % 2048) as i64 + 1).collect();
-    codes.resize(n, 0);
-    codes
+/// The trainer's `chars`: each character of a piece's whole text as a code in 1..=2048.
+fn chars(text: &str) -> Vec<i64> {
+    text.chars().map(|c| ((c as u32).min(0x2FFF) % 2048) as i64 + 1).collect()
 }
 
 fn argmax(values: &[f32]) -> usize {
@@ -110,9 +107,8 @@ impl Tagger {
         let kept: Vec<usize> = ids.iter().map(|id| by_anchor.get(id.as_str().unwrap_or_default()).copied().ok_or("row names an absent piece")).collect::<Result<_, _>>()?;
         let n = kept.len();
         let width = self.meta.features.len();
-        let text_chars = self.meta.text_chars;
         let mut features = vec![0f32; n * (width + 1)];
-        let mut text = vec![0i64; n * text_chars];
+        let mut text: Vec<Vec<i64>> = vec![Vec::new(); n];
         let mut reader = vec![0i64; n * 3];
         let mut tier = vec![0i64; n * self.meta.labels];
         let as_f = |v: &Value| v.as_f64().unwrap_or(0.0) as f32;
@@ -126,7 +122,7 @@ impl Tagger {
             let tuple = tuple.as_array().unwrap();
             let piece_text = tuple[0].as_str().unwrap_or_default();
             features[r * (width + 1) + width] = language(piece_text);
-            text[r * text_chars..(r + 1) * text_chars].copy_from_slice(&chars(piece_text, text_chars));
+            text[r] = chars(piece_text);
             for (k, vocab) in self.meta.vocabs.iter().enumerate() {
                 reader[r * 3 + k] = tuple.get(k + 1).and_then(Value::as_str).and_then(|v| vocab.get(v)).copied().unwrap_or(0);
             }
@@ -145,7 +141,13 @@ impl Tagger {
             let length = hi - lo;
             let f = TensorRef::from_array_view(([1usize, length, width + 1], &features[lo * (width + 1)..hi * (width + 1)])).map_err(|e| e.to_string())?;
             let t0 = TensorRef::from_array_view(([1usize, length, self.meta.labels], &tier[lo * self.meta.labels..hi * self.meta.labels])).map_err(|e| e.to_string())?;
-            let tx = TensorRef::from_array_view(([1usize, length, text_chars], &text[lo * text_chars..hi * text_chars])).map_err(|e| e.to_string())?;
+            // The window's pieces' text, each padded with 0 to the window's longest.
+            let text_chars = text[lo..hi].iter().map(Vec::len).max().unwrap_or(0).max(1);
+            let mut window_text = vec![0i64; length * text_chars];
+            for (r, codes) in text[lo..hi].iter().enumerate() {
+                window_text[r * text_chars..r * text_chars + codes.len()].copy_from_slice(codes);
+            }
+            let tx = TensorRef::from_array_view(([1usize, length, text_chars], &window_text[..])).map_err(|e| e.to_string())?;
             let rd = TensorRef::from_array_view(([1usize, length, 3], &reader[lo * 3..hi * 3])).map_err(|e| e.to_string())?;
             let outputs = self.session.run(ort::inputs!["features" => f, "tier0" => t0, "text" => tx, "reader" => rd]).map_err(|e| format!("tagger run: {e}"))?;
             for (h, (name, _, count)) in heads.iter().enumerate() {
