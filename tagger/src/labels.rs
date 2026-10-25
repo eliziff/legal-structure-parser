@@ -12,9 +12,9 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-pub const REGIONS: [&str; 16] = [
+pub const REGIONS: [&str; 17] = [
     "none", "text", "list_item", "heading", "quote", "note", "table", "contents", "caption", "headnote", "marginal_note",
-    "furniture", "page_label", "line_label", "title", "note_quote",
+    "furniture", "page_label", "line_label", "title", "note_quote", "provision",
 ];
 pub const STARTS: [&str; 3] = ["inside", "unit", "resume"];
 
@@ -381,7 +381,7 @@ pub fn carry(reference: &State, gold_pieces: &[Piece], gold: &[Label], candidate
 
 /// The units the hierarchy orders (CONVENTIONS section 2); notes, marginal notes, contents and
 /// furniture stay outside it.
-const RANKED: [&str; 7] = ["text", "list_item", "heading", "quote", "table", "caption", "headnote"];
+const RANKED: [&str; 8] = ["text", "provision", "list_item", "heading", "quote", "table", "caption", "headnote"];
 const WORD_OUTER: [&str; 7] = ["PART", "PARTIE", "BOOK", "LIVRE", "TITLE", "TITRE", "VOLUME"];
 const WORD_INNER: [&str; 16] = ["ARTICLE", "CHAPTER", "CHAPITRE", "DIVISION", "SECTION", "SCHEDULE", "ANNEX", "ANNEXE",
     "APPENDIX", "TAB", "RULE", "RÈGLE", "REGLE", "CLAUSE", "FORM", "FORMULE"];
@@ -521,8 +521,8 @@ pub fn assemble(regions: &[&str], texts: &[String], levels: &[usize], starts_doc
                 open_letter = None;
                 parent
             }
-            "text" | "table" | "caption" | "headnote" => {
-                if region == "text" {
+            "text" | "provision" | "table" | "caption" | "headnote" => {
+                if matches!(region, "text" | "provision") {
                     list_stack.clear();
                     open_letter = None;
                 }
@@ -701,7 +701,7 @@ pub fn decode(candidate: &State, pieces: &[Piece], labels: &[Label], source_sha2
         } else if region == "note" {
             note_labels.get(&k).cloned()
         } else {
-            markers.get(&k).cloned().or_else(|| (label.marker && matches!(region, "text" | "list_item")).then(read_marker).flatten())
+            markers.get(&k).cloned().or_else(|| (label.marker && matches!(region, "text" | "provision" | "list_item")).then(read_marker).flatten())
         };
         let mut own_references: Vec<SourceSpan> = if label.reference {
             references.get(&k).into_iter().flatten().filter(|s| own(s)).cloned().collect()

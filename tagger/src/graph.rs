@@ -59,6 +59,7 @@ fn placed(structure: &DocumentStructure) -> Result<HashMap<String, Placed>, Stri
 fn kind_of(region: &str) -> Option<(NodeKind, PrimaryRole)> {
     Some(match region {
         "text" => (NodeKind::Paragraph, PrimaryRole::Text),
+        "provision" => (NodeKind::Paragraph, PrimaryRole::Text),
         "list_item" => (NodeKind::ListItem, PrimaryRole::Text),
         "heading" => (NodeKind::Heading, PrimaryRole::Heading),
         "quote" => (NodeKind::Quote, PrimaryRole::Text),

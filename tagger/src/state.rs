@@ -167,7 +167,7 @@ pub struct NotePair {
 }
 
 /// A numbered unit of the parser's is a list item when the parser located it as one; numbered
-/// paragraphs, sections and clauses are running text, as in the gold, however the number is written.
+/// paragraphs, sections and clauses are not, however the number is written.
 pub fn parser_list_item(block: &CompositionBlock) -> bool {
     block.attributes.get("locator_kind").and_then(Value::as_str) == Some("list_item")
 }
@@ -336,7 +336,7 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
                     "marker".into(),
                     json!(if k == 0 { marker.clone() } else { Vec::new() }),
                 );
-            } else if k == 0 && !marker.is_empty() && matches!(region[u], "text" | "quote") {
+            } else if k == 0 && !marker.is_empty() && matches!(region[u], "text" | "provision" | "quote") {
                 attrs.insert("locator_kind".into(), json!("paragraph"));
                 attrs.insert("marker".into(), json!(marker));
             } else if k == 0 && !marker.is_empty() && region[u] == "heading" {
