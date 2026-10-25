@@ -746,6 +746,9 @@ pub fn parsed(structure: &DocumentStructure) -> Result<State, String> {
     if let Some(root) = roots.into_iter().next() {
         let first = root.line_ids[0].clone();
         annotations.push(root);
+        // One document opens on a line: a constituent opening where the root or an earlier
+        // constituent opens is that document (as the gold's projection reads its starts).
+        let mut opened: HashSet<String> = HashSet::from([first.clone()]);
         for node in structure.nodes.iter().filter(|n| {
             n.kind == legal_structure_model::NodeKind::Section
                 && n.grammar
@@ -753,6 +756,9 @@ pub fn parsed(structure: &DocumentStructure) -> Result<State, String> {
                     .is_some_and(|g| g.starts_with("constituent_"))
                 && !n.line_ids.is_empty()
         }) {
+            if !opened.insert(node.line_ids[0].clone()) {
+                continue;
+            }
             let kind = &node.grammar.as_deref().unwrap()["constituent_".len()..];
             let relationship = match kind {
                 "exhibit" => "exhibit",
