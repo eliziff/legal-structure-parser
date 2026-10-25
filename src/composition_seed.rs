@@ -62,12 +62,29 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
         .flat_map(|link| [link.from, link.to]).collect::<Vec<_>>();
     endpoints.sort_unstable();
     endpoints.dedup();
-    // Each unit's own membership (a heading's heading text), the most specific owning a span.
+    // Each unit's own membership (a heading's heading text), the most specific owning a span. A
+    // table row is a unit too (the gold types a table one row at a time, cells joined): its lines
+    // are one block, under any paragraph or item read inside it.
+    // A tagger's graph owns its text through the tagger's units; the parser's section containers
+    // (statute provisions, kept for lookups) then stay out of block ownership.
+    let tagged = structure.origins.iter().any(|origin| origin.id == "legal-structure-tagger.v1");
+    // A row is a container: what the parser reads inside it (a cell's paragraph, a heading) stays
+    // the row's, as the gold types a table one row at a time.
+    let rows: Vec<ScalarRange> = structure.nodes.iter().filter(|node| node.kind == NodeKind::Row)
+        .flat_map(|node| if node.ranges.is_empty() { vec![node.range] } else { node.ranges.clone() }).collect();
+    let in_row = |ranges: &[ScalarRange]| !ranges.is_empty()
+        && ranges.iter().all(|range| rows.iter().any(|row| row.start <= range.start && range.end <= row.end));
     let mut candidates = Vec::new();
     for node in &structure.nodes {
+        if tagged && node.kind == NodeKind::Section {
+            continue;
+        }
+        if node.kind != NodeKind::Row && in_row(if node.ranges.is_empty() { std::slice::from_ref(&node.range) } else { &node.ranges }) {
+            continue;
+        }
         let heading = node.kind == NodeKind::Heading || node.role == Some(PrimaryRole::Heading);
         if node.role.is_none() && !heading && !matches!(node.kind, NodeKind::Prose | NodeKind::Paragraph | NodeKind::Section
-            | NodeKind::ListItem | NodeKind::Footnote | NodeKind::Endnote) {
+            | NodeKind::ListItem | NodeKind::Footnote | NodeKind::Endnote | NodeKind::Row) {
             continue;
         }
         let membership = if node.ranges.is_empty() { vec![node.range] } else { node.ranges.clone() };
@@ -77,6 +94,10 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
             else if matches!(node.kind, NodeKind::Paragraph | NodeKind::ListItem) { 2 } else { 3 };
         candidates.push((node, ranges, size, priority));
     }
+    // A display quotation is a passage, not a reproduced document: long quotation nodes (a book of
+    // authorities' reprinted decisions) type nothing.
+    let quote_ranges: Vec<ScalarRange> = structure.nodes.iter().filter(|node| node.kind == NodeKind::Quote && node.line_ids.len() <= 60)
+        .flat_map(|node| if node.ranges.is_empty() { vec![node.range] } else { node.ranges.clone() }).collect();
     let rank = |index: usize| (candidates[index].2, candidates[index].3, index);
     let mut owner_endpoints = HashMap::<usize, Vec<usize>>::new();
     for &offset in &endpoints {
@@ -167,14 +188,34 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
             }
         }
         let mut seen = HashSet::new();
+        // A paragraph set inside a display quotation is another text's words: a quote block, as the
+        // gold types quoted paragraphs one at a time.
+        // Enumerated items keep their kind inside a quotation, as the gold types them.
+        let quoted = node.is_some_and(|node| !matches!(node.kind, NodeKind::Heading | NodeKind::Footnote | NodeKind::Endnote | NodeKind::ListItem)
+            && node.role != Some(PrimaryRole::Heading) && node.locator_kind.as_deref() != Some("list_item") && node.marker_range.is_none()
+            && quote_ranges.iter().any(|quote| {
+                let overlap = quote.end.min(node.range.end).saturating_sub(quote.start.max(node.range.start));
+                overlap * 2 > node.range.end.saturating_sub(node.range.start)
+            }));
+        // A passage the parser read wholly as a contents list is contents, whatever its kind.
+        let contents = node.is_some_and(|node| node.grammar.as_deref() == Some("contents") && role == PrimaryRole::Text);
+        let kind = if quoted { "quote".to_owned() } else if contents { "contents".to_owned() }
+            else { serde_json::to_value(role).unwrap().as_str().unwrap().to_owned() };
         groups.push(CompositionBlock {
             id: crate::composition::anchor(&spans[0]),
-            kind: serde_json::to_value(role).unwrap().as_str().unwrap().to_owned(),
+            kind,
             line_ids: spans.iter().filter(|span| seen.insert(span.line_id.clone())).map(|span| span.line_id.clone()).collect(),
             spans,
             attributes,
             document: None,
         });
+    }
+    if std::env::var_os("LEGALPDF_PHASE_TIMING").is_some() {
+        let mut kinds = std::collections::BTreeMap::<&str, usize>::new();
+        for group in &groups { *kinds.entry(group.kind.as_str()).or_default() += 1; }
+        let quotes = structure.nodes.iter().filter(|n| n.kind == NodeKind::Quote).count();
+        let quote_candidates = candidates.iter().filter(|(n, ..)| n.kind == NodeKind::Quote).count();
+        eprintln!("composition	blocks {kinds:?}	quote nodes {quotes}	quote candidates {quote_candidates}");
     }
     let source_anchor = |offset: usize| -> Result<String, String> {
         let (line, _, scalar_start) = lines.iter().find(|(_, range, _)| range.start <= offset && offset < range.end)

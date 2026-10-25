@@ -204,6 +204,35 @@ pub fn citation_lookup_key(text: &str) -> String {
     legal_citations::key::key_for_text(text).unwrap_or_default()
 }
 
+/// The decision a Canadian reporter citation names, for a store that does not index the reporter to find by its style
+/// of cause: the style as written, the citation's year, and the neutral codes of the court the citation names
+/// (`(Ont CA)`, or the one court its reporter reports). None where the text is not one such citation with its style,
+/// year and court. A volume's bracketed year is taken as the decision's: allowing the year before let the 1993 Haig v
+/// Canada name the 1992 one.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ReporterDecision {
+    pub name: String,
+    pub year: i32,
+    pub courts: Vec<String>,
+}
+
+pub fn reporter_decision(text: &str) -> Option<ReporterDecision> {
+    let citations = legal_citations::extract(text, &Options { resolve: false, parallel: false, ..Default::default() });
+    let [citation] = citations.iter().filter(|citation| citation.form == Form::Full).collect::<Vec<_>>()[..]
+        else { return None };
+    if citation.format != Some(Format::Reporter) || citation.authority != Authority::Case || citation.is_ambiguous() {
+        return None;
+    }
+    let name = citation.style.as_ref()?.text.trim().to_owned();
+    let year = citation.fields.year_number?;
+    let court = legal_citations::registry::registry().court(&citation.court.as_ref()?.id)?;
+    if !(court.jurisdiction == "ca" || court.jurisdiction.starts_with("ca-")) || court.neutral.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some(ReporterDecision { name, year,
+        courts: court.neutral.iter().map(|code| code.to_uppercase()).collect() })
+}
+
 pub fn caselaw_citation_lookup_key(text: &str) -> Result<String, &'static str> {
     legal_citations::key::key_for_text(text).map_err(|error| match error {
         legal_citations::key::KeyError::NoCitation => "no citation was found",

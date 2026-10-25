@@ -203,6 +203,11 @@ fn smallest_container(
 }
 
 #[cfg(feature = "structure-inference")]
+thread_local! {
+    /// The document being resolved, for the candidate trace.
+    static TRACE_DOCUMENT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
 pub(crate) fn resolve_structure_candidates<'a>(
     runs: &'a [StructureCandidateRun],
     evidence: &'a [CandidateEvidenceV2],
@@ -252,6 +257,22 @@ pub(crate) fn resolve_structure_candidates<'a>(
                 "candidate '{}' has duplicate evidence",
                 item.candidate_id
             )));
+        }
+    }
+    if std::env::var_os("LEGALPDF_CANDIDATE_TRACE").is_some() {
+        // One line per raw marker before resolution: which run read it, and where it sits.
+        let document = TRACE_DOCUMENT.with(|d| d.borrow().clone());
+        for run in runs {
+            for candidate in &run.markers {
+                let item = evidence_by_candidate.get(candidate.id.as_str());
+                let page = item.and_then(|i| i.page_indexes.first()).map_or(usize::MAX, |p| *p);
+                let first = item.and_then(|i| i.line_ids.first()).map_or("", String::as_str);
+                let label = candidate.label.replace(['\t', '\n'], " ");
+                eprintln!(
+                    "crun\t{document}\t{page}\t{first}\t{:?}\trooted={}\tconsecutive={}\t{}\t{label}",
+                    run.grammar, run.rooted, run.consecutive, run.markers.len()
+                );
+            }
         }
     }
     // A count of numbers printed with their period ("1.", "2.") that the count from 1 reads is the
@@ -422,6 +443,17 @@ pub(crate) fn resolve_structure_candidates<'a>(
             } else {
                 (None, ResolutionRuleV2::InsufficientEvidence)
             };
+            if std::env::var_os("LEGALPDF_CANDIDATE_TRACE").is_some() {
+                // One line per candidate: where it is, what it became and why.
+                let first = item.and_then(|i| i.line_ids.first()).map(String::as_str).unwrap_or("");
+                let page = item.and_then(|i| i.page_indexes.first()).copied().unwrap_or(usize::MAX);
+                let snippet: String = candidate.label.replace(['\t', '\n'], " ");
+                let document = TRACE_DOCUMENT.with(|d| d.borrow().clone());
+                eprintln!(
+                    "ctrace\t{document}\t{page}\t{first}\t{:?}\t{:?}\t{:?}\trooted={}\tconsecutive={}\t{:?}\t{snippet}",
+                    role, rule, run.grammar, run.rooted, run.consecutive, observations
+                );
+            }
             resolved.push(ResolvedCandidate {
                 candidate,
                 role,
@@ -504,6 +536,7 @@ pub fn resolve_structure_graph_with_assembler(
     mut diagnostics: Vec<StructureDiagnostic>,
     assembler: &mut dyn FnMut(&mut [StructureNode]),
 ) -> Result<DocumentStructure, EngineError> {
+    TRACE_DOCUMENT.with(|d| *d.borrow_mut() = source_sha256.clone().unwrap_or_else(|| document_id.clone()));
     let scalar_text = ScalarText::new(text);
     let scalar_len = scalar_text.len();
     let mut node_ids = HashSet::new();
@@ -552,24 +585,22 @@ pub fn resolve_structure_graph_with_assembler(
             .map(|candidate| candidate.id.as_str())
             .collect::<HashSet<_>>();
         for candidate in &run.markers {
-            if !all_candidate_ids.insert(candidate.id.as_str())
-                || !candidate.range.valid(scalar_len)
-                || !candidate.marker_range.valid(scalar_len)
-                || candidate.marker_range.start < candidate.range.start
-                || candidate.marker_range.end > candidate.range.end
-                || candidate.content_start < candidate.marker_range.end
-                || candidate.content_start > candidate.range.end
-                || candidate.range.start < run.range.start
-                || candidate.range.end > run.range.end
-                || candidate.parent_candidate_id.as_deref() == Some(candidate.id.as_str())
-                || candidate
-                    .parent_candidate_id
-                    .as_deref()
-                    .is_some_and(|parent| !local_ids.contains(parent))
-            {
+            let faults: Vec<&str> = [
+                (!all_candidate_ids.insert(candidate.id.as_str()), "duplicate id"),
+                (!candidate.range.valid(scalar_len), "range outside the text"),
+                (!candidate.marker_range.valid(scalar_len), "marker range outside the text"),
+                (candidate.marker_range.start < candidate.range.start || candidate.marker_range.end > candidate.range.end, "marker outside its range"),
+                (candidate.content_start < candidate.marker_range.end || candidate.content_start > candidate.range.end, "content start outside marker..range end"),
+                (candidate.range.start < run.range.start || candidate.range.end > run.range.end, "range outside its run"),
+                (candidate.parent_candidate_id.as_deref() == Some(candidate.id.as_str()), "parent is itself"),
+                (candidate.parent_candidate_id.as_deref().is_some_and(|parent| !local_ids.contains(parent)), "parent outside its run"),
+            ].iter().filter(|(failed, _)| *failed).map(|(_, name)| *name).collect();
+            if !faults.is_empty() {
                 return Err(EngineError::invalid(format!(
-                    "candidate '{}' has invalid ranges or parent identity",
-                    candidate.id
+                    "candidate '{}' ({}) has invalid ranges or parent identity: {} (range {}..{}, marker {}..{}, content {}, run {}..{}, parent {:?})",
+                    candidate.id, candidate.label, faults.join(", "), candidate.range.start, candidate.range.end,
+                    candidate.marker_range.start, candidate.marker_range.end, candidate.content_start,
+                    run.range.start, run.range.end, candidate.parent_candidate_id
                 )));
             }
         }

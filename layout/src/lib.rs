@@ -156,6 +156,15 @@ pub struct Line {
     pub detached_references: Vec<DetachedReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ocr: Option<OcrEvidence>,
+    /// The dark share of the line's box in the page's 150 dpi render, where the page was rendered
+    /// (a scan whose text layer is kept); 0 where not measured. Weight evidence for a text layer
+    /// whose fonts carry no flags.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ink: f64,
+    /// The median horizontal run of dark pixels through the line's box in that render, in units of
+    /// the box's height: the stems' thickness, which bold type sets wider; 0 where not measured.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub weight: f64,
     #[serde(default)]
     pub exclude_from_body: bool,
     #[serde(default)]
@@ -171,6 +180,10 @@ pub struct Line {
     pub region_type: String,
     #[serde(default = "native_source")]
     pub source: String,
+}
+
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
 }
 
 fn unknown_region() -> String {
@@ -470,6 +483,7 @@ pub trait LayoutAnalysis: Sync {
         protected_citation_spans: &BTreeMap<String, Vec<PdfSourceSpan>>,
         include_audit: bool,
     ) -> PairingOutput;
-    /// Restores note labels whose leading digits recognition dropped, from the note chain.
+    /// Restores the labels recognition misread from the runs they stand in: note labels whose
+    /// leading digits it dropped, from the note chain, and paragraph and item numbers.
     fn repair_label_dropouts(&self, pages: &mut [Page]);
 }
