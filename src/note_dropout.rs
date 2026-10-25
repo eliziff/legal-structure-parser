@@ -91,6 +91,12 @@ pub(crate) fn recognized_line(line: &legal_structure_model::layout::Line) -> boo
             .any(|span| span.flags & legal_structure_model::layout::INVISIBLE != 0)
 }
 
+/// Whether the page reads the line as a running head or footer, where its folio sits.
+fn folio_region(pages: &[Page], order: &[(usize, usize)], position: usize) -> bool {
+    let (page, line) = order[position];
+    matches!(pages[page].lines[line].region_type.as_str(), "header" | "footer")
+}
+
 /// Whether a line starts where its neighbouring labels start, within a line's height.
 fn aligned(
     pages: &[Page],
@@ -114,7 +120,7 @@ fn aligned(
 /// Restore the dropped leading digits of note labels in place, and the labels recognition misread
 /// within a run of them; returns how many lines it repaired.
 pub fn repair_label_dropouts(pages: &mut [Page]) -> usize {
-    let (order, _, supported) = chain(pages);
+    let (order, edges, supported) = chain(pages);
     let text = |position: usize| {
         let (page, line) = order[position];
         pages[page].lines[line].text.trim()
@@ -126,8 +132,13 @@ pub fn repair_label_dropouts(pages: &mut [Page]) -> usize {
             continue;
         }
         let expected = (value + 1).to_string();
-        for position in (before + 1..after).filter(|&position| recognized(pages, &order, position))
-        {
+        // A page's edges and its running heads and folios are no labels: a page's folio "2"
+        // between notes 11 and 13 would otherwise read as 12.
+        for position in (before + 1..after).filter(|&position| {
+            !edges.contains(&position)
+                && !folio_region(pages, &order, position)
+                && recognized(pages, &order, position)
+        }) {
             let Some(kept) = label().captures(text(position)).map(|c| c[1].to_owned()) else {
                 continue;
             };
@@ -326,6 +337,7 @@ fn repair_label_runs(pages: &mut [Page]) -> usize {
         let lines = (before + 1..after)
             .filter(|position| {
                 !edges.contains(position)
+                    && !folio_region(pages, &order, *position)
                     && recognized(pages, &order, *position)
                     && aligned(pages, &order, *position, [before, after])
             })
