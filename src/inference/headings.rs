@@ -158,21 +158,18 @@ pub(crate) fn may_head(line: &str) -> bool {
 }
 
 /// What follows a line, read for whether the line heads it: without the number of the paragraph it
-/// opens ("[11] The court ...", "11. The court ...", "(a) The court ...").
+/// opens ("[11] The court ...").
 pub(crate) fn after_marker(following: &str) -> &str {
     let following = following.trim_start();
     following
         .strip_prefix('[')
         .and_then(|rest| rest.split_once(']'))
         .filter(|(number, _)| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
-        .map(|(_, rest)| rest)
-        .or_else(|| following.split_once(char::is_whitespace).filter(|(token, _)| heading_enumerator(token)).map(|(_, rest)| rest))
-        .unwrap_or(following)
+        .map_or(following, |(_, rest)| rest)
 }
 
 /// A line standing between paragraphs read as the heading of what follows it (`following`): its path
-/// a level at a time ("IV. Analysis A. The Right ..."), or a sentence heading as one level. The
-/// grammar every reader of a judgment's text shares, a PDF's included.
+/// a level at a time ("IV. Analysis A. The Right ..."), or a sentence heading as one level.
 pub(crate) fn heading_between(line: &str, following: &str) -> Option<Vec<String>> {
     if !may_head(line) {
         return None;

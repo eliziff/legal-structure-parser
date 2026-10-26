@@ -514,9 +514,6 @@ pub trait LayoutAnalysis: Sync {
     fn heading_text_plausible(&self, text: &str) -> bool;
     /// [`Self::heading_text_plausible`], or a title set apart in bold naming a case by its parties.
     fn styled_heading_text_plausible(&self, text: &str) -> bool;
-    /// Whether a line standing between paragraphs heads the one after it (`following`, its first
-    /// line), by the heading grammar the engine reads a judgment's text with.
-    fn heading_between(&self, line: &str, following: &str) -> bool;
     fn has_citation_cue(&self, text: &str) -> bool;
     fn has_citation_signal(&self, text: &str) -> bool;
     fn is_citation_continuation(&self, text: &str) -> bool;

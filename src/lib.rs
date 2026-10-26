@@ -24,7 +24,6 @@ mod text_units;
 #[cfg(all(feature = "citator", feature = "canlii"))]
 mod canlii;
 mod assembly;
-mod definitions;
 mod filing;
 pub use filing::{filing_cover, FiledBy, FilingCover, PartyGroup};
 use legal_structure_model::document;
@@ -53,7 +52,6 @@ pub use citator::*;
 pub use text_units::text_units;
 #[cfg(all(feature = "citator", feature = "canlii"))]
 pub use canlii::{canlii_case_url, canlii_court_route, canlii_law_url};
-pub use definitions::*;
 pub(crate) use document::node_depths;
 pub use document::{
     CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,

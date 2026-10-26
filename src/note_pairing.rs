@@ -437,93 +437,6 @@ fn core_line_label(text: &str) -> Option<String> {
     )
 }
 
-fn folded_words(text: &str) -> String {
-    text.to_lowercase()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn annotate_edge_furniture(lines: &mut [PairLine<'_>]) {
-    static PAGE_LABEL: OnceLock<Regex> = OnceLock::new();
-    let page_label = PAGE_LABEL
-        .get_or_init(|| Regex::new(r"^\s*(?:[-–—]\s*)?(\d{1,4})(?:\s*[-–—])?\s*$").unwrap());
-    let mut by_page = BTreeMap::<u32, Vec<usize>>::new();
-    for (index, line) in lines.iter().enumerate() {
-        by_page.entry(line.page).or_default().push(index);
-    }
-    let mut top_counts = HashMap::<String, usize>::new();
-    for indexes in by_page.values() {
-        let mut seen = HashSet::new();
-        for &index in indexes.iter().take(4) {
-            let key = folded_words(&lines[index].text);
-            if (3..=120).contains(&key.chars().count()) {
-                seen.insert(key);
-            }
-        }
-        for key in seen {
-            *top_counts.entry(key).or_default() += 1;
-        }
-    }
-    let repeated: HashSet<String> = top_counts
-        .into_iter()
-        .filter_map(|(key, count)| (count >= 2).then_some(key))
-        .collect();
-
-    let mut edge_numerals = Vec::<(usize, u32)>::new();
-    let mut offset_votes = HashMap::<i64, (usize, usize)>::new();
-    let mut vote_order = 0;
-    for (&page, indexes) in &by_page {
-        for &index in indexes
-            .iter()
-            .take(4)
-            .chain(indexes.iter().skip(indexes.len().saturating_sub(4)))
-        {
-            let Some(capture) = page_label.captures(&lines[index].text) else {
-                continue;
-            };
-            let Some(value) = capture
-                .get(1)
-                .and_then(|value| value.as_str().parse::<u32>().ok())
-            else {
-                continue;
-            };
-            edge_numerals.push((index, value));
-            let offset = i64::from(value) - i64::from(page);
-            let entry = offset_votes.entry(offset).or_insert((0, vote_order));
-            entry.0 += 1;
-            vote_order += 1;
-        }
-    }
-    let page_offset = offset_votes
-        .into_iter()
-        .max_by(|left, right| {
-            left.1
-                 .0
-                .cmp(&right.1 .0)
-                .then_with(|| right.1 .1.cmp(&left.1 .1))
-        })
-        .and_then(|(offset, (votes, _))| (votes >= 3).then_some(offset));
-
-    for indexes in by_page.values() {
-        for &index in indexes.iter().take(4) {
-            let key = folded_words(&lines[index].text);
-            if matches!(lines[index].zone, Zone::Body | Zone::Title) && repeated.contains(&key) {
-                lines[index].zone = Zone::Header;
-            }
-        }
-    }
-    if let Some(offset) = page_offset {
-        for (index, value) in edge_numerals {
-            if matches!(lines[index].zone, Zone::Body | Zone::Title)
-                && i64::from(value) - i64::from(lines[index].page) == offset
-            {
-                lines[index].zone = Zone::Number;
-            }
-        }
-    }
-}
-
 fn build_lines<'a>(
     pages: &'a [Page],
     protected_citation_spans: &'a BTreeMap<String, Vec<PdfSourceSpan>>,
@@ -624,12 +537,6 @@ fn build_lines<'a>(
             line.note_column_fit = true;
         }
     }
-    if !skipped("annotate_edge_furniture") {
-        annotate_edge_furniture(&mut lines);
-    }
-    if !skipped("annotate_hierarchical_outlines") {
-        annotate_hierarchical_outlines(&mut lines);
-    }
     lines
 }
 
@@ -669,114 +576,6 @@ fn isolated_inline_references(line: &Line) -> Vec<DetachedReference> {
         .collect()
 }
 
-fn annotate_hierarchical_outlines(lines: &mut [PairLine<'_>]) {
-    static OUTLINE: OnceLock<Regex> = OnceLock::new();
-    let regex = OUTLINE
-        .get_or_init(|| Regex::new(r"^\s*(\d{1,2}(?:\.\d{1,2}){0,3})([.)]?)(\s+)(\S.*)$").unwrap());
-    type OutlineCandidate = (usize, Vec<u32>, usize, usize);
-    let mut by_page: HashMap<u32, Vec<OutlineCandidate>> = HashMap::new();
-    for (index, line) in lines.iter().enumerate() {
-        let Some(captures) = regex.captures(&line.text) else {
-            continue;
-        };
-        let body = captures.get(4).map_or("", |value| value.as_str());
-        if !layout_cues::heading_text_plausible(body) {
-            continue;
-        }
-        let raw = captures.get(1).expect("outline value").as_str();
-        let parts: Vec<u32> = raw
-            .split('.')
-            .filter_map(|value| value.parse().ok())
-            .collect();
-        if parts.len() == 1
-            && captures
-                .get(2)
-                .map_or("", |value| value.as_str())
-                .is_empty()
-        {
-            continue;
-        }
-        let value_match = captures.get(1).expect("outline value");
-        let end_match = captures
-            .get(2)
-            .filter(|value| !value.as_str().is_empty())
-            .unwrap_or(value_match);
-        let start = line.text[..value_match.start()].chars().count();
-        let end = line.text[..end_match.end()].chars().count();
-        by_page
-            .entry(line.page)
-            .or_default()
-            .push((index, parts, start, end));
-    }
-    for values in by_page.values() {
-        if values.len() < 4
-            || values
-                .iter()
-                .filter(|(_, parts, _, _)| parts.len() > 1)
-                .count()
-                < 2
-        {
-            continue;
-        }
-        if values.windows(2).any(|pair| pair[1].1 <= pair[0].1) {
-            continue;
-        }
-        let mut seen = HashSet::new();
-        if values.iter().any(|(_, parts, _, _)| {
-            let missing = parts.len() > 1 && !seen.contains(&parts[..parts.len() - 1]);
-            seen.insert(parts.clone());
-            missing
-        }) {
-            continue;
-        }
-        let grammar = values
-            .iter()
-            .map(|(index, _, _, _)| {
-                let captures = regex
-                    .captures(&lines[*index].text)
-                    .expect("accepted outline capture");
-                let raw = captures.get(1).expect("outline value").as_str();
-                let punct = captures.get(2).map_or("", |value| value.as_str());
-                let effective_punct = if punct.is_empty() { "." } else { punct };
-                enumerator_interpretations(raw, effective_punct)
-            })
-            .collect::<Vec<_>>();
-        if parse_heading_ladder(
-            grammar
-                .iter()
-                .map(|interpretations| interpretations.as_slice()),
-        )
-        .status
-            != HeadingLadderStatus::ParsedClean
-        {
-            continue;
-        }
-        let page_width = values
-            .iter()
-            .map(|(index, _, _, _)| lines[*index].page_width)
-            .find(|width| *width != 0.0)
-            .unwrap_or(800.0);
-        let tolerance = 6.0_f64.max(page_width * 0.015);
-        let mut x0_by_depth = HashMap::<usize, Vec<f64>>::new();
-        for (index, parts, _, _) in values {
-            x0_by_depth
-                .entry(parts.len())
-                .or_default()
-                .push(lines[*index].bbox[0]);
-        }
-        if x0_by_depth.values().any(|positions| {
-            let minimum = positions.iter().copied().fold(f64::INFINITY, f64::min);
-            let maximum = positions.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            maximum - minimum > tolerance
-        }) {
-            continue;
-        }
-        for (index, _, start, end) in values {
-            lines[*index].outline_spans.push((*start, *end));
-        }
-    }
-}
-
 fn ref_zone_score(line: &PairLine<'_>) -> Option<(f64, bool)> {
     match line.zone {
         Zone::Body => Some((0.6, false)),
@@ -812,6 +611,16 @@ fn chars_at_line_end(values: &[char], end: usize) -> bool {
     tail[start..end]
         .iter()
         .all(|character| REF_PUNCTUATION.contains(*character) || QUOTES.contains(*character))
+}
+
+fn at_line_end(text: &str, end: usize) -> bool {
+    let text = ScalarText::new(text);
+    text.slice(end.min(text.len())..text.len())
+        .is_some_and(|tail| {
+            tail.trim()
+                .chars()
+                .all(|character| REF_PUNCTUATION.contains(character) || QUOTES.contains(character))
+        })
 }
 
 fn preceding_word(values: &[char], start: usize) -> String {
@@ -2166,6 +1975,77 @@ fn gap_repair_claim(
     None
 }
 
+fn sequence_position_rekey(
+    window: &[usize],
+    residual: &[u32],
+    lines: &[PairLine<'_>],
+    used_lines: &mut HashSet<usize>,
+) -> Vec<Candidate> {
+    if residual.is_empty() || residual.len() > 8 {
+        return Vec::new();
+    }
+    let residual_set: HashSet<u32> = residual.iter().copied().collect();
+    let mut qualifying = Vec::<(usize, String, usize, usize)>::new();
+    for &line_index in window {
+        if used_lines.contains(&line_index) {
+            continue;
+        }
+        let line = &lines[line_index];
+        let Some(token) = label_token(&line.text, provider_text(line)) else {
+            continue;
+        };
+        if !matches!(token.form, "plain" | "sup") {
+            continue;
+        }
+        let Some(value) = token.value else {
+            continue;
+        };
+        if residual_set.contains(&value) || value >= residual[0] {
+            return Vec::new();
+        }
+        let body = char_slice(&line.text, token.end, line.text.chars().count())
+            .trim_start_matches(|character: char| " .)]".contains(character))
+            .to_owned();
+        if body.chars().count() < 4 || cues::layout_is_citation_continuation(&body) {
+            continue;
+        }
+        if gap_line_score(line, &body) < 1.2 {
+            continue;
+        }
+        qualifying.push((line_index, token.observed, token.start, token.end));
+    }
+    if qualifying.len() != residual.len() {
+        return Vec::new();
+    }
+    residual
+        .iter()
+        .copied()
+        .zip(qualifying)
+        .map(|(value, (line, observed, start, end))| {
+            used_lines.insert(line);
+            Candidate {
+                line,
+                start,
+                end,
+                observed,
+                value: Some(value),
+                symbol: String::new(),
+                form: "plain",
+                score: if lines[line].zone == Zone::Note && !lines[line].region_witness_demoted {
+                    3.0
+                } else {
+                    0.6
+                },
+                reason: "sequence_position_rekey",
+                repaired: true,
+                repair_kind: "sequence_position_rekey",
+                requires_visual_cue: false,
+                flags: CandidateFlags::default(),
+            }
+        })
+        .collect()
+}
+
 fn repair_gaps(
     chain: Vec<Candidate>,
     lines: &[PairLine<'_>],
@@ -2216,7 +2096,8 @@ fn repair_gaps(
             .collect();
         let mut unclaimed: HashSet<u32> = (low..=high).collect();
         let mut last_value = low.saturating_sub(1);
-        for &line_index in &window {
+        let mut claims = Vec::<(usize, Candidate)>::new();
+        for (position, &line_index) in window.iter().enumerate() {
             if unclaimed.is_empty() {
                 break;
             }
@@ -2224,22 +2105,233 @@ fn repair_gaps(
                 gap_repair_claim(line_index, &lines[line_index], &unclaimed, last_value)
             {
                 let value = candidate.value.expect("gap value");
+                claims.push((position, candidate.clone()));
                 repairs.push(candidate);
                 unclaimed.remove(&value);
                 last_value = value;
                 used_lines.insert(line_index);
             }
         }
-        if let Some(holes) = &mut holes {
-            let mut residual = unclaimed.into_iter().collect::<Vec<_>>();
-            residual.sort_unstable();
-            holes.extend(residual.into_iter().map(|value| json!({"value": value, "reason": "no_confusable_glyph_in_window"})));
+        let mut previous_position = 0;
+        let mut previous_value = low.saturating_sub(1);
+        let mut intervals = Vec::<(Vec<usize>, u32, u32)>::new();
+        for (position, candidate) in claims {
+            let value = candidate.value.expect("gap value");
+            if value > previous_value + 1 {
+                intervals.push((
+                    window[previous_position..position].to_vec(),
+                    previous_value + 1,
+                    value - 1,
+                ));
+            }
+            previous_position = position + 1;
+            previous_value = value;
+        }
+        if previous_value < high {
+            intervals.push((
+                window[previous_position..].to_vec(),
+                previous_value + 1,
+                high,
+            ));
+        }
+        for (interval, interval_low, interval_high) in intervals {
+            let residual: Vec<u32> = (interval_low..=interval_high)
+                .filter(|value| unclaimed.contains(value))
+                .collect();
+            let rekeyed = if skipped("sequence_position_rekey") { Vec::new() } else { sequence_position_rekey(&interval, &residual, lines, used_lines) };
+            if rekeyed.is_empty() {
+                if let Some(holes) = &mut holes {
+                    for value in residual {
+                        holes.push(json!({
+                            "value": value,
+                            "reason": "no_confusable_glyph_in_window",
+                        }));
+                    }
+                }
+            } else {
+                for candidate in &rekeyed {
+                    if let Some(value) = candidate.value {
+                        unclaimed.remove(&value);
+                    }
+                }
+            }
+            repairs.extend(rekeyed);
         }
     }
     let mut result = chain;
     result.extend(repairs);
     result.sort_by_key(|candidate| candidate.value);
     (result, holes)
+}
+
+fn note_zone_column_split(lines: &[PairLine<'_>], page: u32) -> Option<f64> {
+    let candidates: Vec<&PairLine<'_>> = lines
+        .iter()
+        .filter(|line| {
+            line.page == page
+                && line.zone == Zone::Note
+                && line.page_width > 0.0
+                && line.page_height > 0.0
+                && (line.bbox[2] - line.bbox[0]) / line.page_width <= 0.55
+        })
+        .collect();
+    let boxed = lines
+        .iter()
+        .filter(|line| line.page == page && line.zone == Zone::Note)
+        .count();
+    if candidates.len() < 6 || boxed == 0 || 1.0 - candidates.len() as f64 / boxed as f64 > 0.40 {
+        return None;
+    }
+    let mut centers: Vec<f64> = candidates
+        .iter()
+        .map(|line| (line.bbox[0] + line.bbox[2]) / 2.0 / line.page_width)
+        .collect();
+    centers.sort_by(f64::total_cmp);
+    let (left, right) = centers
+        .windows(2)
+        .map(|pair| (pair[0], pair[1]))
+        .max_by(|left, right| (left.1 - left.0).total_cmp(&(right.1 - right.0)))?;
+    let split = (left + right) / 2.0;
+    if right - left < 0.12 || !(0.25..=0.75).contains(&split) {
+        return None;
+    }
+    let left_lines: Vec<&&PairLine<'_>> = candidates
+        .iter()
+        .filter(|line| (line.bbox[0] + line.bbox[2]) / 2.0 / line.page_width < split)
+        .collect();
+    let right_lines: Vec<&&PairLine<'_>> = candidates
+        .iter()
+        .filter(|line| (line.bbox[0] + line.bbox[2]) / 2.0 / line.page_width >= split)
+        .collect();
+    if left_lines.len() < 3 || right_lines.len() < 3 {
+        return None;
+    }
+    let left_y0 = left_lines
+        .iter()
+        .map(|line| line.bbox[1] / line.page_height)
+        .min_by(f64::total_cmp)?;
+    let left_y1 = left_lines
+        .iter()
+        .map(|line| line.bbox[3] / line.page_height)
+        .max_by(f64::total_cmp)?;
+    let right_y0 = right_lines
+        .iter()
+        .map(|line| line.bbox[1] / line.page_height)
+        .min_by(f64::total_cmp)?;
+    let right_y1 = right_lines
+        .iter()
+        .map(|line| line.bbox[3] / line.page_height)
+        .max_by(f64::total_cmp)?;
+    let span = left_y1.max(right_y1) - left_y0.min(right_y0);
+    let overlap = left_y1.min(right_y1) - left_y0.max(right_y0);
+    if span <= 0.0 || overlap.max(0.0) / span < 0.30 {
+        return None;
+    }
+    let left_widths: Vec<f64> = left_lines
+        .iter()
+        .map(|line| (line.bbox[2] - line.bbox[0]) / line.page_width)
+        .collect();
+    let right_widths: Vec<f64> = right_lines
+        .iter()
+        .map(|line| (line.bbox[2] - line.bbox[0]) / line.page_width)
+        .collect();
+    let (left_width, right_width) = (layout::median(left_widths), layout::median(right_widths));
+    let wide = left_width.max(right_width);
+    if wide > 0.0 && left_width.min(right_width) / wide < 0.60 {
+        None
+    } else {
+        Some(split)
+    }
+}
+
+fn recover_out_of_order_labels(
+    mut chain: Vec<Candidate>,
+    label_candidates: &[Candidate],
+    used_lines: &mut HashSet<usize>,
+    lines: &[PairLine<'_>],
+) -> Vec<Candidate> {
+    if chain.len() < 2 {
+        return chain;
+    }
+    let have: HashSet<u32> = chain
+        .iter()
+        .filter_map(|candidate| candidate.value)
+        .collect();
+    let Some(low) = have.iter().min().copied() else {
+        return chain;
+    };
+    let high = have.iter().max().copied().unwrap_or(low);
+    let min_page = chain
+        .iter()
+        .map(|candidate| lines[candidate.line].page)
+        .min()
+        .unwrap_or(0);
+    let max_page = chain
+        .iter()
+        .map(|candidate| lines[candidate.line].page)
+        .max()
+        .unwrap_or(0);
+    let mut by_value: HashMap<u32, Vec<Candidate>> = HashMap::new();
+    for candidate in label_candidates {
+        let Some(value) = candidate.value else {
+            continue;
+        };
+        let line = &lines[candidate.line];
+        let noteish = (line.zone == Zone::Note && !line.region_witness_demoted)
+            || ((line.note_column_fit || line.zone == Zone::Body)
+                && cues::layout_has_citation_cue(&line.text));
+        if candidate.symbol.is_empty()
+            && candidate.form == "plain"
+            && !have.contains(&value)
+            && low < value
+            && value < high
+            && !used_lines.contains(&candidate.line)
+            && (min_page..=max_page).contains(&line.page)
+            && noteish
+            && candidate.score >= 1.2
+        {
+            by_value.entry(value).or_default().push(candidate.clone());
+        }
+    }
+    let mut restored = Vec::new();
+    for options in by_value.values_mut() {
+        options.sort_by(|left, right| right.score.total_cmp(&left.score));
+        if options.len() > 1 && options[0].score - options[1].score < 0.3 {
+            continue;
+        }
+        let candidate = options[0].clone();
+        let Some(split) = note_zone_column_split(lines, lines[candidate.line].page) else {
+            continue;
+        };
+        let mut page_labels: Vec<&Candidate> = chain
+            .iter()
+            .filter(|entry| lines[entry.line].page == lines[candidate.line].page)
+            .collect();
+        page_labels.push(&candidate);
+        page_labels.sort_by_key(|entry| entry.value);
+        let mut prior: Option<(usize, f64)> = None;
+        let consistent = page_labels.into_iter().all(|entry| {
+            let line = &lines[entry.line];
+            let rank = (
+                usize::from((line.bbox[0] + line.bbox[2]) / 2.0 / line.page_width >= split),
+                line.bbox[1],
+            );
+            let valid = prior
+                .is_none_or(|value| rank.0 > value.0 || (rank.0 == value.0 && rank.1 > value.1));
+            prior = Some(rank);
+            valid
+        });
+        if consistent {
+            let mut candidate = candidate;
+            candidate.repaired = true;
+            candidate.repair_kind = "out_of_order_label";
+            used_lines.insert(candidate.line);
+            restored.push(candidate);
+        }
+    }
+    chain.extend(restored);
+    chain.sort_by_key(|candidate| candidate.value);
+    chain
 }
 
 fn endnote_mode(chain: &[Candidate], lines: &[PairLine<'_>]) -> bool {
@@ -2458,6 +2550,523 @@ fn select_refs(
     (result, drop_reasons)
 }
 
+fn truncated_value_match(observed: &str, expected: u32) -> bool {
+    let Some(digits) = observed
+        .chars()
+        .map(normalize_decimal_digit)
+        .collect::<Option<String>>()
+    else {
+        return false;
+    };
+    let expected = expected.to_string();
+    digits != expected && (expected.starts_with(&digits) || expected.ends_with(&digits))
+}
+
+fn repair_missing_refs(
+    chosen: &mut HashMap<u32, Candidate>,
+    backbone: &[Candidate],
+    refs: &[Candidate],
+    lines: &[PairLine<'_>],
+    endnote: bool,
+) -> BTreeMap<String, usize> {
+    let mut repair_counts = BTreeMap::<String, usize>::new();
+    let labels: HashMap<u32, &Candidate> = backbone
+        .iter()
+        .filter_map(|candidate| candidate.value.map(|value| (value, candidate)))
+        .collect();
+    let mut values: Vec<u32> = labels.keys().copied().collect();
+    values.sort_unstable();
+    let mut taken: HashSet<(usize, usize, usize)> = chosen
+        .values()
+        .map(|candidate| (candidate.line, candidate.start, candidate.end))
+        .collect();
+    let label_spans: HashSet<(usize, usize)> = backbone
+        .iter()
+        .map(|candidate| (candidate.line, candidate.start))
+        .collect();
+    for (index, value) in values.iter().copied().enumerate() {
+        if chosen.contains_key(&value) {
+            continue;
+        }
+        let floor = values[..index]
+            .iter()
+            .rev()
+            .find_map(|prior| chosen.get(prior).map(|candidate| candidate.pos(lines)));
+        let ceiling = values[index + 1..]
+            .iter()
+            .find_map(|next| chosen.get(next).map(|candidate| candidate.pos(lines)));
+        let in_window = |candidate: &Candidate| {
+            let position = candidate.pos(lines);
+            floor.is_none_or(|bound| position > bound)
+                && ceiling.is_none_or(|bound| position < bound)
+        };
+        let label = labels[&value];
+        let immediate_window = index > 0
+            && index + 1 < values.len()
+            && values[index - 1] == value - 1
+            && values[index + 1] == value + 1
+            && chosen.contains_key(&(value - 1))
+            && chosen.contains_key(&(value + 1));
+        let substitution_sites: Vec<&Candidate> = if immediate_window {
+            refs.iter()
+                .filter(|candidate| {
+                    candidate.symbol.is_empty()
+                        && candidate.value.is_some()
+                        && !candidate.requires_visual_cue
+                        && !taken.contains(&(candidate.line, candidate.start, candidate.end))
+                        && !label_spans.contains(&(candidate.line, candidate.start))
+                        && in_window(candidate)
+                        && (endnote
+                            || lines[label.line].page.abs_diff(lines[candidate.line].page) <= 1)
+                        && at_line_end(&lines[candidate.line].text, candidate.end)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let sole_substitution = (substitution_sites.len() == 1).then(|| {
+            let candidate = substitution_sites[0];
+            (candidate.line, candidate.start, candidate.end)
+        });
+        let mut best: Option<(f64, Candidate, &'static str)> = None;
+        for candidate in refs {
+            if !candidate.symbol.is_empty()
+                || candidate.value.is_none()
+                || candidate.requires_visual_cue
+                || taken.contains(&(candidate.line, candidate.start, candidate.end))
+                || label_spans.contains(&(candidate.line, candidate.start))
+                || !in_window(candidate)
+                || (!endnote && lines[label.line].page.abs_diff(lines[candidate.line].page) > 1)
+            {
+                continue;
+            }
+            let left = candidate
+                .start
+                .checked_sub(1)
+                .and_then(|position| lines[candidate.line].text.chars().nth(position));
+            let repair_kind = if candidate.value == Some(value) {
+                "window_rescued"
+            } else if confusable_variants(&candidate.observed).contains(&value) {
+                "confusable_value_repair"
+            } else if truncated_value_match(&candidate.observed, value)
+                && (chosen.contains_key(&value.saturating_sub(1))
+                    || labels.contains_key(&value.saturating_sub(1))
+                    || value == values[0])
+                && (chosen.contains_key(&(value + 1))
+                    || labels.contains_key(&(value + 1))
+                    || value == *values.last().unwrap())
+                && (at_line_end(&lines[candidate.line].text, candidate.end)
+                    || left.is_some_and(|character| "\"'’”)]»".contains(character)))
+                && !left.is_some_and(|character| character.is_uppercase())
+            {
+                "truncated_value_repair"
+            } else if sole_substitution == Some((candidate.line, candidate.start, candidate.end)) {
+                "sequence_window_substitution_repair"
+            } else {
+                continue;
+            };
+            let score = candidate.score - 0.8
+                + if lines[candidate.line].page == lines[label.line].page {
+                    1.0
+                } else {
+                    0.0
+                };
+            if score <= 0.0 || best.as_ref().is_some_and(|prior| prior.0 >= score) {
+                continue;
+            }
+            let mut repaired = candidate.clone();
+            if repair_kind != "window_rescued" {
+                repaired.value = Some(value);
+                repaired.repaired = true;
+                repaired.repair_kind = repair_kind;
+                repaired.score -= 0.8;
+            }
+            best = Some((score, repaired, repair_kind));
+        }
+        if let Some((_, candidate, repair_kind)) = best {
+            taken.insert((candidate.line, candidate.start, candidate.end));
+            chosen.insert(value, candidate);
+            *repair_counts.entry(repair_kind.to_owned()).or_default() += 1;
+        }
+    }
+    repair_counts
+}
+
+/// The stray glyphs a line's text could have made of a small raised number: one to three marks
+/// glued to the word or punctuation before them and followed by a space or the line's end
+/// ("importance.'", "Act,'=", "Trees\""). A lone apostrophe after a letter is elision or a
+/// possessive.
+fn glyph_sites(text: &[char]) -> Vec<(usize, usize)> {
+    const GLYPHS: &str = "'’‘\"”“`°=«";
+    let mut sites = Vec::new();
+    let mut position = 0;
+    while position < text.len() {
+        if !GLYPHS.contains(text[position]) {
+            position += 1;
+            continue;
+        }
+        let start = position;
+        while position < text.len() && position - start < 3 && GLYPHS.contains(text[position]) {
+            position += 1;
+        }
+        let end = position;
+        let glued = start
+            .checked_sub(1)
+            .map(|at| text[at])
+            .is_some_and(|character| {
+                ".,;:)".contains(character)
+                    || (character.is_alphabetic()
+                        && !(end - start == 1 && "'’‘".contains(text[start])))
+            });
+        if glued
+            && text
+                .get(end)
+                .is_none_or(|character| character.is_whitespace())
+        {
+            sites.push((start, end));
+        }
+    }
+    sites
+}
+
+/// Recognition reads a small raised number as a quotation mark, apostrophe or other
+/// stray glyph ("importance.'", "Act,'=", "Trees\""). Between two paired references,
+/// when the run of labels they skip finds exactly as many such glyphs, in order, glued
+/// to the text before them, those glyphs are the run's references.
+fn repair_glyph_refs(
+    chosen: &mut HashMap<u32, Candidate>,
+    backbone: &[Candidate],
+    lines: &[PairLine<'_>],
+    endnote: bool,
+) -> usize {
+    let label_lines: HashSet<usize> = backbone.iter().map(|candidate| candidate.line).collect();
+    let mut values: Vec<u32> = backbone
+        .iter()
+        .filter_map(|candidate| candidate.value)
+        .collect();
+    values.sort_unstable();
+    values.dedup();
+    let mut repaired = 0;
+    let mut index = 0;
+    while index < values.len() {
+        if chosen.contains_key(&values[index]) {
+            index += 1;
+            continue;
+        }
+        let first = index;
+        while index < values.len() && !chosen.contains_key(&values[index]) {
+            index += 1;
+        }
+        let missing = &values[first..index];
+        let (Some(floor_value), Some(&ceiling_value)) = (
+            first.checked_sub(1).map(|prior| values[prior]),
+            values.get(index),
+        ) else {
+            continue;
+        };
+        if missing.len() > 6
+            || missing
+                .iter()
+                .zip(missing.iter().skip(1))
+                .any(|(left, right)| right - left != 1)
+            || missing[0] != floor_value + 1
+            || ceiling_value != missing[missing.len() - 1] + 1
+        {
+            continue;
+        }
+        let floor = chosen[&floor_value].pos(lines);
+        let ceiling = chosen[&ceiling_value].pos(lines);
+        let mut sites = Vec::new();
+        for line_index in floor.0..=ceiling.0.min(lines.len().saturating_sub(1)) {
+            let line = &lines[line_index];
+            if line.zone != Zone::Body || label_lines.contains(&line_index) {
+                continue;
+            }
+            for (start, end) in glyph_sites(&chars(&line.text)) {
+                let site = (line_index, start);
+                if site > floor && site < ceiling {
+                    sites.push((line_index, start, end));
+                }
+            }
+        }
+        if sites.len() != missing.len() {
+            continue;
+        }
+        let label_pages: HashMap<u32, u32> = backbone
+            .iter()
+            .filter_map(|candidate| Some((candidate.value?, lines[candidate.line].page)))
+            .collect();
+        if !endnote
+            && missing
+                .iter()
+                .zip(&sites)
+                .any(|(value, site)| label_pages[value].abs_diff(lines[site.0].page) > 1)
+        {
+            continue;
+        }
+        for (&value, &(line, start, end)) in missing.iter().zip(&sites) {
+            chosen.insert(
+                value,
+                Candidate {
+                    line,
+                    start,
+                    end,
+                    observed: chars_slice(&chars(&lines[line].text), start, end),
+                    value: Some(value),
+                    symbol: String::new(),
+                    form: "glyph",
+                    score: 0.5,
+                    reason: "glyph_sequence_marker",
+                    repaired: true,
+                    repair_kind: "glyph_sequence_repair",
+                    requires_visual_cue: false,
+                    flags: CandidateFlags::default(),
+                },
+            );
+            repaired += 1;
+        }
+    }
+    repaired
+}
+
+/// A footnote's reference stands on its label's page. On each page, the notes with no reference
+/// fall between the references paired there (or the page's ends); where such a stretch of the
+/// page's text holds exactly as many places a small raised number could have been misread (a
+/// stray glyph, a lone letter glued after punctuation as in "Act.s", or a number no note claimed)
+/// as it lacks references, those places are the references, in order.
+fn repair_page_glyph_refs(
+    chosen: &mut HashMap<u32, Candidate>,
+    backbone: &[Candidate],
+    pool: &[Candidate],
+    lines: &[PairLine<'_>],
+    endnote: bool,
+) -> usize {
+    if endnote {
+        return 0;
+    }
+    let label_lines: HashSet<usize> = backbone.iter().map(|candidate| candidate.line).collect();
+    let mut missing_by_page = BTreeMap::<u32, Vec<u32>>::new();
+    for candidate in backbone {
+        if let Some(value) = candidate.value.filter(|value| !chosen.contains_key(value)) {
+            missing_by_page
+                .entry(lines[candidate.line].page)
+                .or_default()
+                .push(value);
+        }
+    }
+    let taken: HashSet<(usize, usize)> = chosen
+        .values()
+        .map(|candidate| (candidate.line, candidate.start))
+        .collect();
+    let mut repaired = 0;
+    for (page, mut missing) in missing_by_page {
+        missing.sort_unstable();
+        missing.dedup();
+        let anchors: Vec<(u32, (usize, usize))> = chosen
+            .iter()
+            .filter(|(_, candidate)| lines[candidate.line].page == page)
+            .map(|(value, candidate)| (*value, candidate.pos(lines)))
+            .collect();
+        // The stretch of the page each missing value's reference must stand in.
+        let window = |value: u32| {
+            let floor = anchors
+                .iter()
+                .filter(|(other, _)| *other < value)
+                .max_by_key(|(other, _)| *other)
+                .map(|(_, position)| *position);
+            let ceiling = anchors
+                .iter()
+                .filter(|(other, _)| *other > value)
+                .min_by_key(|(other, _)| *other)
+                .map(|(_, position)| *position);
+            (floor, ceiling)
+        };
+        let mut groups = Vec::<((Option<(usize, usize)>, Option<(usize, usize)>), Vec<u32>)>::new();
+        for value in missing {
+            let bounds = window(value);
+            match groups.last_mut() {
+                Some((prior, values)) if *prior == bounds => values.push(value),
+                _ => groups.push((bounds, vec![value])),
+            }
+        }
+        for ((floor, ceiling), values) in groups {
+            let inside = |position: (usize, usize)| {
+                floor.is_none_or(|bound| position > bound)
+                    && ceiling.is_none_or(|bound| position < bound)
+            };
+            let mut sites = Vec::<(usize, usize, usize)>::new();
+            for (line_index, line) in lines.iter().enumerate() {
+                if line.page != page || line.zone != Zone::Body || label_lines.contains(&line_index)
+                {
+                    continue;
+                }
+                let text = chars(&line.text);
+                let mut found = glyph_sites(&text);
+                // A lone letter glued after punctuation and standing before a space.
+                for at in 1..text.len() {
+                    if ".,;:)".contains(text[at - 1])
+                        && text[at].is_alphabetic()
+                        && text.get(at + 1).is_none_or(|next| next.is_whitespace())
+                        && (at < 2 || !text[at - 2].is_whitespace() && text[at - 2].is_alphabetic())
+                    {
+                        found.push((at, at + 1));
+                    }
+                }
+                found.extend(
+                    pool.iter()
+                        .filter(|candidate| {
+                            candidate.line == line_index
+                                && candidate.value.is_some()
+                                && candidate.symbol.is_empty()
+                                && !taken.contains(&(candidate.line, candidate.start))
+                        })
+                        .map(|candidate| (candidate.start, candidate.end)),
+                );
+                for (start, end) in found {
+                    if inside((line.idx, start)) && !taken.contains(&(line_index, start)) {
+                        sites.push((line_index, start, end));
+                    }
+                }
+            }
+            sites.sort_by_key(|(line, start, _)| (lines[*line].idx, *start));
+            sites.dedup_by_key(|(line, start, _)| (*line, *start));
+            if sites.len() != values.len() {
+                continue;
+            }
+            for (value, (line, start, end)) in values.into_iter().zip(sites) {
+                chosen.insert(
+                    value,
+                    Candidate {
+                        line,
+                        start,
+                        end,
+                        observed: chars_slice(&chars(&lines[line].text), start, end),
+                        value: Some(value),
+                        symbol: String::new(),
+                        form: "glyph",
+                        score: 0.5,
+                        reason: "page_glyph_marker",
+                        repaired: true,
+                        repair_kind: "page_glyph_repair",
+                        requires_visual_cue: false,
+                        flags: CandidateFlags::default(),
+                    },
+                );
+                repaired += 1;
+            }
+        }
+    }
+    repaired
+}
+
+fn rekey_same_value_ref_runs(
+    chosen: &mut HashMap<u32, Candidate>,
+    backbone: &[Candidate],
+    refs: &[Candidate],
+    lines: &[PairLine<'_>],
+    endnote: bool,
+) -> BTreeMap<String, usize> {
+    let mut repair_counts = BTreeMap::<String, usize>::new();
+    let labels: HashMap<u32, &Candidate> = backbone
+        .iter()
+        .filter_map(|candidate| candidate.value.map(|value| (value, candidate)))
+        .collect();
+    let mut values: Vec<u32> = labels.keys().copied().collect();
+    values.sort_unstable();
+    let mut taken: HashMap<(usize, usize, usize), u32> = chosen
+        .iter()
+        .map(|(value, candidate)| ((candidate.line, candidate.start, candidate.end), *value))
+        .collect();
+    for (w_index, w) in values.iter().copied().enumerate() {
+        if !chosen.contains_key(&w) {
+            continue;
+        }
+        let mut run = Vec::new();
+        let mut cursor = w_index;
+        while cursor > 0 {
+            let candidate = values[cursor - 1];
+            if candidate != w - run.len() as u32 - 1 || chosen.contains_key(&candidate) {
+                break;
+            }
+            run.push(candidate);
+            cursor -= 1;
+        }
+        if run.is_empty() {
+            continue;
+        }
+        run.reverse();
+        let floor = if cursor > 0 {
+            chosen
+                .get(&values[cursor - 1])
+                .map(|candidate| candidate.pos(lines))
+        } else {
+            None
+        };
+        if floor.is_none() && run[0] != values[0] {
+            continue;
+        }
+        let ceiling = values[w_index + 1..]
+            .iter()
+            .find_map(|value| chosen.get(value).map(|candidate| candidate.pos(lines)));
+        let mut sites = Vec::new();
+        let mut valid = true;
+        for candidate in refs {
+            if candidate.value != Some(w)
+                || !candidate.symbol.is_empty()
+                || candidate.requires_visual_cue
+                || !matches!(candidate.form, "tight" | "sup")
+                || candidate.score <= 0.0
+                || floor.is_some_and(|bound| candidate.pos(lines) <= bound)
+                || ceiling.is_some_and(|bound| candidate.pos(lines) >= bound)
+            {
+                continue;
+            }
+            if taken
+                .get(&(candidate.line, candidate.start, candidate.end))
+                .is_some_and(|owner| *owner != w)
+            {
+                valid = false;
+                break;
+            }
+            sites.push(candidate.clone());
+        }
+        if !valid || sites.len() != run.len() + 1 {
+            continue;
+        }
+        sites.sort_by_key(|candidate| candidate.pos(lines));
+        let mut targets = run;
+        targets.push(w);
+        if !endnote
+            && targets.iter().zip(&sites).any(|(value, candidate)| {
+                lines[labels[value].line]
+                    .page
+                    .abs_diff(lines[candidate.line].page)
+                    > 1
+            })
+        {
+            continue;
+        }
+        for (value, mut candidate) in targets.into_iter().zip(sites) {
+            let key = (candidate.line, candidate.start, candidate.end);
+            if chosen
+                .get(&value)
+                .is_some_and(|selected| (selected.line, selected.start, selected.end) == key)
+            {
+                continue;
+            }
+            candidate.repaired = true;
+            candidate.repair_kind = "sequence_position_rekey";
+            candidate.value = Some(value);
+            chosen.insert(value, candidate);
+            taken.insert(key, value);
+            *repair_counts
+                .entry("sequence_position_rekey".to_owned())
+                .or_default() += 1;
+        }
+    }
+    repair_counts
+}
+
 fn repeated_refs(
     chosen: &HashMap<u32, Candidate>,
     refs: &[Candidate],
@@ -2526,11 +3135,16 @@ fn build_pairs<'a>(
         .collect();
     let mut sequence_holes = include_audit.then(Vec::<Value>::new);
     for segment in &mut segments {
-        let (repaired, holes) = repair_gaps(std::mem::take(segment), &lines, &mut used, include_audit);
+        let (repaired, holes) =
+            repair_gaps(std::mem::take(segment), &lines, &mut used, include_audit);
         if let (Some(sequence_holes), Some(holes)) = (&mut sequence_holes, holes) {
             sequence_holes.extend(holes);
         }
-        *segment = repaired;
+        *segment = if skipped("recover_out_of_order_labels") {
+            repaired
+        } else {
+            recover_out_of_order_labels(repaired, &labels, &mut used, &lines)
+        };
     }
     segments.retain(|segment| !segment.is_empty());
     let endnote = segments
@@ -2594,6 +3208,37 @@ fn build_pairs<'a>(
         let (mut chosen, drops) = select_refs(segment, pool, &lines, endnote);
         for (reason, count) in drops {
             *ref_drop_reasons.entry(reason).or_default() += count;
+        }
+        // The labels' references read as themselves in a third of the run at least: notes, not
+        // numbered paragraphs, rows or fields that happen to find a number or two.
+        let clean = chosen
+            .values()
+            .filter(|candidate| !candidate.repaired)
+            .count();
+        let apparatus = clean >= 3 && 3 * clean >= segment.len();
+        if !skipped("repair_missing_refs") {
+            for (kind, count) in repair_missing_refs(&mut chosen, segment, pool, &lines, endnote) {
+                *ref_repair_counts.entry(kind).or_default() += count;
+            }
+        }
+        if !skipped("rekey_same_value_ref_runs") {
+            for (kind, count) in rekey_same_value_ref_runs(&mut chosen, segment, pool, &lines, endnote) {
+                *ref_repair_counts.entry(kind).or_default() += count;
+            }
+        }
+        let glyphs = if skipped("repair_glyph_refs") { 0 } else { repair_glyph_refs(&mut chosen, segment, &lines, endnote) };
+        if glyphs > 0 {
+            *ref_repair_counts
+                .entry("glyph_sequence_repair".to_owned())
+                .or_default() += glyphs;
+        }
+        if apparatus && !skipped("repair_page_glyph_refs") {
+            let glyphs = repair_page_glyph_refs(&mut chosen, segment, pool, &lines, endnote);
+            if glyphs > 0 {
+                *ref_repair_counts
+                    .entry("page_glyph_repair".to_owned())
+                    .or_default() += glyphs;
+            }
         }
 
         let paren_count = segment
@@ -2914,79 +3559,6 @@ fn build_pairs<'a>(
         })
     });
     (pairs, lines, summary)
-}
-
-fn merge_detached_references(pairs: &mut [Pair], lines: &[PairLine<'_>]) -> usize {
-    let mut existing: HashSet<(usize, usize, usize, String)> = pairs
-        .iter()
-        .flat_map(|pair| pair.refs.iter())
-        .map(|reference| {
-            (
-                reference.line,
-                reference.start,
-                reference.end,
-                reference.note_id(),
-            )
-        })
-        .collect();
-    let mut added = 0;
-    for (line_index, line) in lines.iter().enumerate() {
-        for detached in line.detached_references.iter() {
-            let raw = detached.note_id.as_str();
-            let value = numeric_value(raw);
-            let symbol = value.map_or_else(|| normalize_symbol(raw), |_| String::new());
-            if value.is_none() && symbol.is_empty() {
-                continue;
-            }
-            let note_id = value.map_or_else(|| symbol.clone(), |number| number.to_string());
-            let start = detached.start_offset;
-            let end = detached.end_offset;
-            let key = (line_index, start, end, note_id.clone());
-            if existing.contains(&key) {
-                continue;
-            }
-            let selected = pairs
-                .iter()
-                .enumerate()
-                .filter(|(_, pair)| {
-                    pair.label.note_id() == note_id
-                        && (lines[pair.label.line].page.abs_diff(line.page) <= 1 || pair.endnote)
-                })
-                .min_by_key(|(_, pair)| {
-                    let label_line = &lines[pair.label.line];
-                    (
-                        label_line.page.abs_diff(line.page),
-                        label_line.order < line.order,
-                        label_line.order.abs_diff(line.order),
-                    )
-                })
-                .map(|(index, _)| index);
-            let Some(pair_index) = selected else {
-                continue;
-            };
-            pairs[pair_index].refs.push(Candidate {
-                line: line_index,
-                start,
-                end,
-                observed: detached.selected_text.clone(),
-                value,
-                symbol,
-                form: "detached",
-                score: 1.5,
-                reason: "detached_pdf_superscript",
-                repaired: false,
-                repair_kind: "",
-                requires_visual_cue: false,
-                flags: CandidateFlags::default(),
-            });
-            pairs[pair_index]
-                .refs
-                .sort_by_key(|reference| reference.pos(lines));
-            existing.insert(key);
-            added += 1;
-        }
-    }
-    added
 }
 
 fn candidate_key(candidate: &Candidate) -> (usize, usize, usize) {
@@ -3781,11 +4353,6 @@ pub fn pair_footnotes(
     protected_citation_spans: &BTreeMap<String, Vec<PdfSourceSpan>>,
     include_audit: bool,
 ) -> PairingOutput {
-    let (mut pairs, lines, summary) = build_pairs(pages, protected_citation_spans, include_audit);
-    let detached = if skipped("merge_detached_references") { 0 } else { merge_detached_references(&mut pairs, &lines) };
-    let summary = summary.map(|mut summary| {
-        summary["detached_reference_count"] = json!(detached);
-        summary
-    });
+    let (pairs, lines, summary) = build_pairs(pages, protected_citation_spans, include_audit);
     materialize(pairs, &lines, summary)
 }

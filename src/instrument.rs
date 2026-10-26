@@ -1,15 +1,16 @@
 #[cfg(feature = "structure-inference")]
 use crate::{
-    definitions::{derive_definitions_bytes, DefinitionHit},
     instrument_contents::instrument_contents_outline_indexed,
     instrument_references::{
         find_provision_references, populate_instrument_node_metadata,
         resolve_instrument_references, FindProvisionReferencesOptions,
     },
     javascript_whitespace, node_depths, AuthoritativeTableCell, AuthoritativeTables, Block,
-    CoverageState, DefinedTerm, DefinitionOccurrence, DetectionProfile, DocumentInput,
+    CoverageState, DetectionProfile, DocumentInput,
     DocumentStructure, EngineError, NodeKind, ScalarRange, ScalarText,
 };
+#[cfg(feature = "structure-inference")]
+use legal_structure_model::{DefinedTerm, DefinitionOccurrence};
 #[cfg(feature = "structure-inference")]
 use regex::Regex;
 pub use legal_structure_model::{
@@ -513,4 +514,152 @@ pub fn analyze_instrument(
         table_cells,
         reconstruct_lineation,
     )
+}
+
+/// Defined terms: a quoted capitalized term in brackets ("the "Agreement"") or opening a list
+/// entry (""Agreement" means"), each with where it is defined and used, in byte offsets.
+#[cfg(feature = "structure-inference")]
+static PAREN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\(([^()]*)\)").unwrap());
+#[cfg(feature = "structure-inference")]
+static QUOTED: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#""([A-Z][A-Za-z0-9&' -]{0,79})""#).unwrap());
+#[cfg(feature = "structure-inference")]
+static LIST: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        &[
+            r#"^"([A-Z][A-Za-z0-9&'\- ]{0,79})""#,
+            crate::JS_WHITESPACE_CLASS,
+            r"+(?:means|shall mean|has the meaning|shall have the meaning)",
+        ]
+        .concat(),
+    )
+    .unwrap()
+});
+
+#[cfg(feature = "structure-inference")]
+#[derive(Clone, Copy)]
+pub(crate) struct DefinitionHit {
+    pub paragraph: usize,
+    pub start: usize,
+    pub end: usize,
+}
+
+#[cfg(feature = "structure-inference")]
+pub(crate) struct ByteDefinedTerm {
+    pub term: String,
+    pub definitions: Vec<DefinitionHit>,
+    pub uses: Vec<DefinitionHit>,
+}
+
+#[cfg(feature = "structure-inference")]
+fn bounded(text: &str, start: usize, end: usize) -> bool {
+    let bytes = text.as_bytes();
+    let left = bytes.get(start.wrapping_sub(1)).copied().unwrap_or(b' ');
+    let right = bytes.get(end).copied().unwrap_or(b' ');
+    !left.is_ascii_alphanumeric() && !right.is_ascii_lowercase() && !right.is_ascii_digit()
+}
+
+#[cfg(feature = "structure-inference")]
+pub(crate) fn derive_definitions_bytes(
+    document: &ScalarText<'_>,
+    paragraph_count: usize,
+    span: impl Fn(usize) -> (usize, usize),
+) -> Vec<ByteDefinedTerm> {
+    let text = document.value;
+    let mut terms = Vec::<(String, Vec<DefinitionHit>)>::new();
+    let mut term_indices = HashMap::<&str, usize>::new();
+    for paragraph in 0..paragraph_count {
+        let (base, end) = span(paragraph);
+        let text = &text[base..end];
+        if !text.contains('"') {
+            continue;
+        }
+        let mut found = Vec::new();
+        for content in PAREN.captures_iter(text).filter_map(|c| c.get(1)) {
+            if !(1..=200).contains(&crate::utf16_len(content.as_str())) {
+                continue;
+            }
+            found.extend(QUOTED.captures_iter(content.as_str()).map(|c| {
+                let term = c.get(1).unwrap();
+                (
+                    term.as_str(),
+                    content.start() + term.start(),
+                    content.start() + term.end(),
+                )
+            }));
+        }
+        if let Some(c) = LIST.captures(text).filter(|c| bounded(text, 0, c[0].len())) {
+            let term = c.get(1).unwrap();
+            found.push((term.as_str(), term.start(), term.end()));
+        }
+        let mut seen = HashSet::new();
+        for (term, start, end) in found.into_iter().filter(|(term, _, _)| seen.insert(*term)) {
+            let hit = DefinitionHit {
+                paragraph,
+                start: base + start,
+                end: base + end,
+            };
+            if let Some(&term_index) = term_indices.get(term) {
+                terms[term_index].1.push(hit);
+            } else {
+                term_indices.insert(term, terms.len());
+                terms.push((term.to_owned(), vec![hit]));
+            }
+        }
+    }
+
+    let mut uses = vec![Vec::<DefinitionHit>::new(); terms.len()];
+    if !terms.is_empty() {
+        let matcher = aho_corasick::AhoCorasick::new(terms.iter().flat_map(|(term, _)| {
+            [
+                std::borrow::Cow::Borrowed(term.as_bytes()),
+                std::borrow::Cow::Owned(
+                    term.strip_suffix('s')
+                        .map_or_else(|| format!("{term}s"), str::to_owned)
+                        .into_bytes(),
+                ),
+            ]
+        }))
+        .unwrap();
+        let mut pattern_ends = vec![0; terms.len() * 2];
+        for paragraph in 0..paragraph_count {
+            let (base, end) = span(paragraph);
+            let text = &text[base..end];
+            pattern_ends.fill(0);
+            for hit in matcher.find_overlapping_iter(text) {
+                let pattern_index = hit.pattern().as_usize();
+                if hit.start() < pattern_ends[pattern_index] {
+                    continue;
+                }
+                pattern_ends[pattern_index] = hit.end();
+                if !bounded(text, hit.start(), hit.end()) {
+                    continue;
+                }
+                let term_index = pattern_index / 2;
+                if terms[term_index]
+                    .1
+                    .binary_search_by_key(&paragraph, |defined| defined.paragraph)
+                    .is_err()
+                {
+                    uses[term_index].push(DefinitionHit {
+                        paragraph,
+                        start: base + hit.start(),
+                        end: base + hit.end(),
+                    });
+                }
+            }
+        }
+    }
+
+    terms
+        .into_iter()
+        .zip(uses)
+        .map(|((term, definitions), mut uses)| {
+            uses.sort_unstable_by_key(|hit| (hit.paragraph, hit.start, hit.end));
+            ByteDefinedTerm {
+                term,
+                definitions,
+                uses,
+            }
+        })
+        .collect()
 }

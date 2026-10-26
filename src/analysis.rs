@@ -52,11 +52,6 @@ impl LayoutAnalysis for EngineAnalysis {
     fn styled_heading_text_plausible(&self, text: &str) -> bool {
         crate::layout_cues::styled_heading_text_plausible(text)
     }
-
-    fn heading_between(&self, line: &str, following: &str) -> bool {
-        crate::inference::heading_between(line, following).is_some()
-    }
-
     fn has_citation_cue(&self, text: &str) -> bool {
         cues::layout_has_citation_cue(text)
     }
@@ -95,12 +90,8 @@ impl LayoutAnalysis for EngineAnalysis {
     }
 
     fn repair_label_dropouts(&self, pages: &mut [Page]) {
-        if !legal_structure_model::ablated("note_dropout") {
-            crate::note_dropout::repair_label_dropouts(pages);
-        }
-        if !legal_structure_model::ablated("paragraph_numbers") {
-            crate::paragraph_numbers::repair_paragraph_numbers(pages);
-        }
+        crate::note_dropout::repair_label_dropouts(pages);
+        crate::paragraph_numbers::repair_paragraph_numbers(pages);
     }
 }
 

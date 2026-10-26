@@ -805,8 +805,12 @@ pub fn parsed(structure: &DocumentStructure) -> Result<State, String> {
             // A later part is known by its first span, as the links to it name it.
             if k > 0 {
                 part.id = String::new();
-                if part.attributes.contains_key("marker") {
-                    part.attributes.insert("marker".into(), json!([]));
+                // The block's printed spans (its marker, a turn's speaker, a line's number) are the
+                // first part's, read once.
+                for key in ["marker", "speaker", "line_number"] {
+                    if part.attributes.contains_key(key) {
+                        part.attributes.insert(key.into(), json!([]));
+                    }
                 }
             }
             part.line_ids = unique_ids(&spans);
