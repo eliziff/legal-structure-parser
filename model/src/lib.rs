@@ -25,7 +25,7 @@ pub mod transcript;
 
 pub use analysis::{install_structure_analysis, structure_analysis, StructureAnalysis};
 pub use legal_layout::{ablated, CitationSpan, LayoutAnalysis, NumberingMarker, PARTY_ROLES};
-pub use definitions::{DefinedTerm, DefinitionOccurrence, DefinitionsResult};
+pub use definitions::{DefinedTerm, DefinitionOccurrence};
 pub use document::{
     CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,
     ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, PrimaryRole, SourceFragment, StructureDiagnostic, StructureNode,

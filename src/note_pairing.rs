@@ -1,4 +1,3 @@
-use crate::layout_cues;
 use legal_citations::cues;
 use legal_citations::cues::is_counter_noun as counter_noun;
 use legal_structure_model::layout::{
@@ -6,8 +5,7 @@ use legal_structure_model::layout::{
     NotePairKind, Page, PairingOutput, PdfPairingAudit, PdfSourceSpan, SourceAnchor,
 };
 use legal_structure_model::{
-    enumerator_interpretations, normalize_decimal_digit, normalize_note_symbol,
-    parse_heading_ladder, select_numeric_sequence, HeadingLadderStatus, NotePairSupportV2,
+    normalize_decimal_digit, normalize_note_symbol, select_numeric_sequence, NotePairSupportV2,
     NumericSequenceCandidate, NumericSequencePolicy, ScalarText,
 };
 use regex::Regex;

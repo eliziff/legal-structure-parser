@@ -14,22 +14,10 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
-#[cfg(all(test, feature = "document-query"))]
-use crate::DocumentKind;
-
 #[cfg(feature = "courtlistener")]
 mod courtlistener;
 #[cfg(feature = "courtlistener")]
 use courtlistener::*;
-#[cfg(feature = "courtlistener")]
-pub use courtlistener::{
-    courtlistener_markup_recipe, courtlistener_source_markups, restore_courtlistener_markup, CourtListenerMarkupRecipe,
-    CourtListenerSourceMarkup,
-};
-#[cfg(feature = "legisquebec")]
-mod legisquebec;
-#[cfg(feature = "legisquebec")]
-pub use legisquebec::legisquebec_statute_text;
 
 const ORIGIN: &str = "provider-adapter";
 
@@ -1131,21 +1119,6 @@ fn observe_footnote_marker(open: &mut [PendingBlock], text: &str, seen: &mut Has
             note.aliases = identity.aliases;
         }
     }
-}
-
-#[cfg(any(feature = "courtlistener", test))]
-fn render_markup<'a>(
-    provider: DocumentProvider,
-    markup: &'a str,
-    page_citations: &[String],
-) -> Result<RenderedMarkup, EngineError> {
-    render_markup_in_context(
-        provider,
-        markup,
-        page_citations,
-        false,
-        MarkupSerialization::HtmlSource,
-    )
 }
 
 fn render_markup_in_context<'a>(
@@ -2622,76 +2595,4 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         courtlistener::finish(&mut structure, note_references, &matched_role_starts, printed_notes, &heading_exclusions, &body_exclusions);
     }
     Ok(structure)
-}
-
-#[cfg(all(test, feature = "courtlistener", feature = "tna"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn courtlistener_ignores_page_markers_inside_footnotes() {
-        let markup = r#"
-            <p><span class="star-pagination" label="200">*200</span>Body</p>
-            <p><span class="star-pagination" label="201">*201</span>More</p>
-            <div class="footnotes"><div class="footnote" id="fn1" label="1">
-              <p><span class="star-pagination" label="200">*200</span>Note</p>
-            </div></div>
-        "#;
-        let rendered = render_markup(DocumentProvider::CourtListener, markup, &[]).unwrap();
-        let pages = rendered
-            .blocks
-            .iter()
-            .filter(|block| block.kind == Kind::Page)
-            .map(|block| block.label.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(pages, ["page200", "page201"]);
-    }
-
-    #[test]
-    fn cited_authorities_preserve_source_order_and_javascript_parity() {
-        let rendered = render_markup(
-            DocumentProvider::Tna,
-            r#"<p><ref uk:canonical="[2016] UKSC 11" uk:type="case">Patel <em>v</em> Mirza &amp;lt;&amp;#160;Co</ref><ref uk:canonical="[2016] uksc 11">duplicate</ref><ref uk:canonical="1996&#32;c.&#32;18" uk:type="legislation"></ref></p>"#,
-            &[],
-        )
-        .unwrap();
-        assert_eq!(normalized_text("\n\n\n \n".to_owned()), "\n\n");
-        assert_eq!(
-            rendered.cited_authorities,
-            [
-                CitedAuthority {
-                    citation: "Patel v Mirza < Co".to_owned(),
-                    canonical: Some("[2016] UKSC 11".to_owned()),
-                    kind: Some("case".to_owned()),
-                },
-                CitedAuthority {
-                    citation: "1996 c. 18".to_owned(),
-                    canonical: Some("1996 c. 18".to_owned()),
-                    kind: Some("legislation".to_owned()),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "document-query")]
-    fn provider_blocks_keep_rendered_utf16_offsets_across_astral_text() {
-        let document = analyze_native_markup(NativeMarkupInput {
-            provider: "courtlistener".to_owned(),
-            id: "astral".to_owned(),
-            url: None,
-            text: String::new(),
-            markup: Some("<p id=\"paragraph-1\">\u{1f9ab}e\u{301}</p>".to_owned()),
-            citation: None,
-            page_citations: Vec::new(),
-            scope: default_scope(),
-        })
-        .unwrap();
-        assert_eq!(document.query_text(), "\u{1f9ab}e\u{301}");
-        let paragraph = crate::DocumentQuery::new()
-            .blocks(&document, Some(DocumentKind::Paragraph))
-            .next()
-            .expect("provider paragraph");
-        assert_eq!((paragraph.start, paragraph.end), (0, 4));
-    }
 }

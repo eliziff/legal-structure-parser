@@ -18,11 +18,6 @@ pub struct DefinedTerm {
     pub uses: Vec<DefinitionOccurrence>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct DefinitionsResult {
-    pub terms: Vec<DefinedTerm>,
-}
-
 impl DefinitionOccurrence {
     pub fn at(&self, document: &ScalarText<'_>, start: usize, end: usize) -> Self {
         let mut hit = self.clone();

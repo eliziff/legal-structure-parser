@@ -74,11 +74,6 @@ pub struct NotePairSupportV2 {
 }
 
 impl NotePairSupportV2 {
-    pub fn corroborated_sequence(&self) -> bool {
-        self.sequence_observed_pairs >= 3
-            && 3 * self.sequence_observed_pairs >= self.sequence_labels
-    }
-
     pub fn supports_label_only(&self) -> bool {
         self.note_region
             && (self.sequence_observed_pairs >= 2

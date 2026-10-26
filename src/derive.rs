@@ -214,14 +214,7 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
     structure
 }
 
-#[cfg(all(feature = "structure-inference", test))]
-pub(crate) fn derive_structure_evidence(
-    evidence: DocumentInput,
-) -> Result<DocumentStructure, EngineError> {
-    Ok(infer_graph(evidence, None))
-}
-
-#[cfg(any(feature = "journal", test))]
+#[cfg(feature = "journal")]
 pub(crate) fn derive_native_structure_evidence(
     evidence: DocumentInput,
 ) -> Result<DocumentStructure, EngineError> {

@@ -16,12 +16,11 @@ resolver = "2"
 [features]
 # Every provider adapter is built by default; a jurisdiction's instantiation builds only its own.
 default = ["canada", "us", "uk", "journal", "local-pdf"]
-canada = ["a2aj", "canlii", "legisquebec"]
+canada = ["a2aj", "canlii"]
 us = ["courtlistener", "govinfo"]
 uk = ["tna", "govuk-et", "hansard"]
 a2aj = []
 canlii = []
-legisquebec = []
 courtlistener = []
 govinfo = []
 tna = []

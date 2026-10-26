@@ -74,13 +74,6 @@ pub use legal_structure_model::layout;
 pub use locator::{normalize_compact_numbered_section_locator, normalize_section_locator};
 #[cfg(feature = "native-markup")]
 pub use native_markup::{analyze_native_markup, NativeMarkupInput};
-#[cfg(all(feature = "native-markup", feature = "courtlistener"))]
-pub use native_markup::{
-    courtlistener_markup_recipe, courtlistener_source_markups, restore_courtlistener_markup, CourtListenerMarkupRecipe,
-    CourtListenerSourceMarkup,
-};
-#[cfg(all(feature = "native-markup", feature = "legisquebec"))]
-pub use native_markup::legisquebec_statute_text;
 pub use numeric_sequence::*;
 #[cfg(feature = "provider-text")]
 pub use provider_text::{
@@ -336,11 +329,7 @@ mod case_outline;
 #[cfg(feature = "provider-text")]
 pub use case_outline::{case_outline, CaseOutlineEntry};
 
-#[cfg(all(feature = "structure-inference", test))]
-pub(crate) use candidates::resolve_structure_candidates;
 #[cfg(feature = "structure-inference")]
 pub use candidates::{detect_structure_candidate_runs, resolve_structure_graph};
-#[cfg(any(feature = "journal", test))]
+#[cfg(feature = "journal")]
 pub(crate) use derive::derive_native_structure_evidence;
-#[cfg(all(feature = "structure-inference", test))]
-pub(crate) use derive::derive_structure_evidence;
