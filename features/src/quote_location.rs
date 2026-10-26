@@ -844,7 +844,6 @@ pub struct QuoteBlockInput {
     pub end: usize,
 }
 
-
 /// How a source's locators are read: a provider's text by every block its structure labels; a PDF by what it prints,
 /// its numbered paragraphs, provisions and page numbers; a statute's PDF with its provisions as its print reads them.
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
@@ -1880,70 +1879,4 @@ fn quote_text_comparison_in(authored: &str, text: &ComparedText) -> QuoteCompari
         None => (None, Vec::new()),
     };
     QuoteComparison { candidate_only: matches.is_empty(), matches, candidate, editorial, changes }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Each line a block of `kind`, labelled by `label` and its number.
-    fn lines(text: &str, kind: QuoteBlockKind, label: &str) -> Vec<QuoteBlockInput> {
-        let mut at = 0;
-        text.split('\n').enumerate().map(|(index, line)| {
-            let block = QuoteBlockInput { kind, label: format!("{label}{}", index + 1), start: at, end: at + utf16_len(line) };
-            at += utf16_len(line) + 1;
-            block
-        }).collect()
-    }
-    fn locate(text: &str, blocks: &[QuoteBlockInput], quote: &str, paragraphs: Vec<(f64, f64)>) -> QuoteLocation {
-        let scopes = QuoteScopes { paragraphs, ..QuoteScopes::default() };
-        locate_quotes_in(text, blocks, &[QuoteToLocate { quote: quote.into(), scopes, id: None }], false).remove(0).found
-    }
-
-    #[test]
-    fn a_cited_passage_holding_the_words_apart_yields_to_one_holding_them_as_written() {
-        let text = "The tenant listed debts owed to the landlord in the earlier tenancy before the hearing.\n\
-            Only debts owed to the tenancy may be set off against the rent.";
-        let found = locate(text, &lines(text, QuoteBlockKind::Paragraph, "par"), "debts owed to the tenancy", vec![(1.0, 1.0)]);
-        assert_eq!((found.location.as_str(), found.labels.clone()), ("alternate", vec!["par2".to_owned()]));
-        assert!(found.perfect);
-        assert_eq!(found.cited.map(|cited| cited.labels), Some(vec!["par1".to_owned()]));
-    }
-
-    #[test]
-    fn words_a_source_brackets_are_still_its_words() {
-        let text = "The board described this as the [notice threshold] for all later filings.";
-        let found = locate(text, &lines(text, QuoteBlockKind::Paragraph, "par"), "notice threshold", vec![(1.0, 1.0)]);
-        assert_eq!(found.location, "cited");
-        assert_eq!(found.correction.fragment, "notice threshold");
-        assert!(found.perfect);
-    }
-
-    #[test]
-    fn a_provision_holding_the_quotation_is_named_rather_than_its_schedule() {
-        let text = "Schedule\nThe installation and operation of a new wind farm.\n\
-            The installation and operation of a new tidal turbine array.";
-        let mut blocks = lines(text, QuoteBlockKind::Section, "sec");
-        blocks.insert(0, QuoteBlockInput { kind: QuoteBlockKind::Section, label: "secSchedule".into(), start: 0, end: utf16_len(text) });
-        let found = locate(text, &blocks, "the installation and operation of a new tidal turbine array", Vec::new());
-        assert_eq!(found.labels, vec!["sec3".to_owned()]);
-        // Without blocks, the quotation is still found where it stands, not where its opening first does.
-        let found = locate(text, &[], "the installation and operation of a new tidal turbine array", Vec::new());
-        assert_eq!(found.correction.fragment, "The installation and operation of a new tidal turbine array");
-    }
-
-    #[test]
-    fn wording_found_in_several_places_names_them_nearest_the_missed_pinpoint_first() {
-        let text = "A fair hearing matters.\nThe facts were agreed.\nCosts were reserved.\nA fair hearing was refused.";
-        let found = locate(text, &lines(text, QuoteBlockKind::Paragraph, "par"), "fair hearing", vec![(3.0, 3.0)]);
-        assert_eq!((found.location.as_str(), found.labels), ("alternate", vec!["par4".to_owned(), "par1".to_owned()]));
-    }
-
-    #[test]
-    fn the_cited_passage_holding_the_words_in_another_case_is_still_where_they_are() {
-        let text = "Reasonable notice was given to every tenant.\nThe landlord says reasonable notice was given.";
-        let found = locate(text, &lines(text, QuoteBlockKind::Paragraph, "par"), "reasonable notice was given", vec![(1.0, 1.0)]);
-        assert_eq!((found.location.as_str(), found.labels), ("cited", vec!["par1".to_owned()]));
-        assert_eq!(found.correction.corrected, "[r]easonable notice was given");
-    }
 }

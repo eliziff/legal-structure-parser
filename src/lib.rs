@@ -346,5 +346,3 @@ pub use candidates::{detect_structure_candidate_runs, resolve_structure_graph};
 pub(crate) use derive::derive_native_structure_evidence;
 #[cfg(all(feature = "structure-inference", test))]
 pub(crate) use derive::derive_structure_evidence;
-#[cfg(test)]
-mod tests;

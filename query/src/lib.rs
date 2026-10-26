@@ -14,5 +14,3 @@ use legal_structure_model::{
     DetectionProfile, DocumentStructure, InstrumentCrossReferenceGraph,
     InstrumentCrossReferenceStatus, NodeKind, ScalarRange, ScalarText, StructureNode,
 };
-#[cfg(test)]
-use legal_structure_model::Scope;

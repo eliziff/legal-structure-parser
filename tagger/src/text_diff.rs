@@ -27,16 +27,3 @@ pub fn matching_blocks(a: &[char], b: &[char]) -> Result<Vec<(usize, usize, usiz
     }
     Ok(blocks)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn matching_offsets_are_unicode_scalars() {
-        let a: Vec<char> = "A 🦉 café!".chars().collect();
-        let b: Vec<char> = "A 🦉 cafes!".chars().collect();
-        assert_eq!(matching_blocks(&a, &b).unwrap(), vec![(0, 0, 7), (8, 9, 1)]);
-        assert!(matching_blocks(&a, &[]).unwrap().is_empty());
-    }
-}

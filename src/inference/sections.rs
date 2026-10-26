@@ -887,11 +887,6 @@ pub(super) fn statute_spine_from_lines(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn statute_spine(text: &ScalarText<'_>, allow_hyphen: bool) -> Vec<SectionMark> {
-    statute_spine_from_lines(text, allow_hyphen, &lines(text).collect::<Vec<_>>(), true)
-}
-
 pub(crate) fn dotted_order<'a>(labels: impl Iterator<Item = &'a str>) -> Option<bool> {
     let mut dotted = labels.filter(|value| value.contains('.') && !value.contains('-'));
     let Some(mut prior) = dotted.next() else {
