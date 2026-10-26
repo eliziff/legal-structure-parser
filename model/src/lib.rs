@@ -39,7 +39,7 @@ pub use heading_ladder::{
     enumerator_interpretations, parse_heading_ladder, parse_heading_runs, EnumeratorInterpretation, HeadingAction,
     HeadingAssignment, HeadingFamilyStats, HeadingLadder, HeadingLadderStatus,
 };
-pub use fingerprint::{document_fingerprint, DocumentFingerprint, DocumentFingerprintCounts};
+pub use fingerprint::{document_fingerprint, serialization_sha256, DigestWriter, DocumentFingerprint, DocumentFingerprintCounts};
 pub use instrument::{
     InstrumentContentsEntry, InstrumentContentsOutline, InstrumentContentsReading,
     InstrumentContentsRefusal, InstrumentCrossReferenceCounts, InstrumentCrossReferenceEdge,

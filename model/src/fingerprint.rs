@@ -40,8 +40,9 @@ pub struct DocumentFingerprintCounts {
     pub diagnostics: usize,
 }
 
+/// A SHA-256 written to as serde writes JSON, so a value is hashed without its text being kept.
 #[derive(Default)]
-struct DigestWriter(Sha256);
+pub struct DigestWriter(pub Sha256);
 
 impl Write for DigestWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -54,7 +55,8 @@ impl Write for DigestWriter {
     }
 }
 
-fn serialization_sha256(value: &impl Serialize) -> String {
+/// The SHA-256 of a value's JSON, in hex: the key every cache and fingerprint of the stack uses.
+pub fn serialization_sha256(value: &impl Serialize) -> String {
     let mut writer = DigestWriter::default();
     serde_json::to_writer(&mut writer, value).expect("fingerprint serialization");
     format!("{:x}", writer.0.finalize())
