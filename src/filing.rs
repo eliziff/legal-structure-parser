@@ -32,7 +32,7 @@ pub struct FilingCover {
 
 /// A line that is a party role alone, as a cover prints it ("Applicant", "RESPONDENTS:").
 static COVER_ROLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r"(?i)^(?:applicants?|respondents?|appellants?|plaintiffs?|defendants?|petitioners?|interven(?:er|or)s?|moving part(?:y|ies)|responding part(?:y|ies))\s*:?$",
+    &format!(r"(?i)^(?:{})\s*:?$", legal_structure_model::PARTY_ROLES),
 ).unwrap());
 
 
@@ -118,9 +118,10 @@ pub(crate) enum FrontMatterLine {
 }
 
 pub(crate) fn front_matter_line(text: &str) -> FrontMatterLine {
-    static PARTY: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r"(?i)^(?:(?:the\s+)?(?:appellants?|respondents?|applicants?|plaintiffs?|defendants?|petitioners?|intervener?s?|intervenors?|complainants?|grievors?|fonctionnaires?\s+s.estimant\s+lésée?s?|employers?|employeurs?|plaignante?s?|intimée?s?|demandeurs?|demanderesses?|défendeurs?|défenderesses?|appelante?s?|requérante?s?|moving\s+part(?:y|ies)|responding\s+part(?:y|ies))(?:\s*\([^()]*\))?(?:\s+and\s+\S[^\n\r\u{2028}\u{2029}]*)?)$",
-    ).unwrap());
+    static PARTY: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(
+        r"(?i)^(?:(?:the\s+)?(?:{})(?:\s*\([^()]*\))?(?:\s+and\s+\S[^\n\r\u{{2028}}\u{{2029}}]*)?)$",
+        legal_structure_model::PARTY_ROLES,
+    )).unwrap());
     static LABELLED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[\p{L}\s]+:\s").unwrap());
     static COUNSEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i),\s+for\s+the\s").unwrap());
     if PARTY.is_match(trim(text)) {

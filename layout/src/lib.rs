@@ -12,6 +12,17 @@ mod stats;
 pub use measures::*;
 pub use stats::*;
 
+/// A party's role as a filing, a cover or a judgment prints it, in English or French ("Applicant",
+/// "Respondents", "Amicus Curiae", "Intimée"), as a regular expression's alternatives: the one
+/// vocabulary every reader of party labels, covers and front matter builds its pattern from.
+pub const PARTY_ROLES: &str = concat!(
+    r"applicants?|respondents?|appellants?|appellees?|plaintiffs?|defendants?|petitioners?|claimants?|complainants?",
+    r"|prosecutors?|accused|interven(?:er|or)s?|grievors?|employers?|amic(?:us|i)\s+curiae",
+    r"|(?:moving|responding|notice|third|interested|intervening|affected)\s+(?:part(?:y|ies)|persons?)",
+    r"|fonctionnaires?\s+s.estimant\s+lésée?s?|employeurs?|plaignante?s?|intimée?s?|demandeurs?|demanderesses?",
+    r"|défendeurs?|défenderesses?|appelante?s?|requérante?s?",
+);
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScalarRange {
