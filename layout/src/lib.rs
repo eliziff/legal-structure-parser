@@ -74,6 +74,12 @@ pub struct NotePairSupportV2 {
 }
 
 impl NotePairSupportV2 {
+    /// The pair stands in a run of labels whose references the text shows for a third of it at
+    /// least: the note sequence itself is the evidence, whatever region the lines were given.
+    pub fn corroborated_sequence(&self) -> bool {
+        self.sequence_observed_pairs >= 3 && 3 * self.sequence_observed_pairs >= self.sequence_labels
+    }
+
     pub fn supports_label_only(&self) -> bool {
         self.note_region
             && (self.sequence_observed_pairs >= 2
@@ -84,7 +90,7 @@ impl NotePairSupportV2 {
 
     /// Plain numbers alone are not positive evidence for a note.
     pub fn supports_note(&self) -> bool {
-        (self.observed_pair && (self.typographic_reference || self.note_region))
+        (self.observed_pair && (self.typographic_reference || self.note_region || self.corroborated_sequence()))
             || self.supports_label_only()
     }
 }
