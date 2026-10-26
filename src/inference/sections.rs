@@ -1177,25 +1177,7 @@ pub(super) fn drop_integer_spikes(marks: Vec<SectionMark>) -> Vec<SectionMark> {
         .collect()
 }
 
-pub(super) fn roman_value(value: &str) -> Option<u32> {
-    let mut total = 0i32;
-    let mut prior = 0;
-    for character in value.bytes().rev() {
-        let value = match character.to_ascii_lowercase() {
-            b'i' => 1,
-            b'v' => 5,
-            b'x' => 10,
-            b'l' => 50,
-            b'c' => 100,
-            b'd' => 500,
-            b'm' => 1000,
-            _ => return None,
-        };
-        total += if value < prior { -value } else { value };
-        prior = prior.max(value);
-    }
-    (total > 0).then_some(total as u32)
-}
+pub(super) use legal_structure_model::layout::roman_value;
 
 /// Where a provider's markdown opens a schedule between `from` and `end` ("## Schedule 1", "## SCHEDULE I —
 /// (Section 2)", "## Schedule Reference Generating Unit …"), else `end`: a provision ends where a schedule begins. A

@@ -1681,29 +1681,7 @@ struct Family {
 }
 
 fn roman_value(token: &str) -> Option<u32> {
-    let lower = token.to_ascii_lowercase();
-    if lower.is_empty() || !lower.chars().all(|c| "ivxlc".contains(c)) {
-        return None;
-    }
-    let digit = |c: char| match c {
-        'i' => 1,
-        'v' => 5,
-        'x' => 10,
-        'l' => 50,
-        _ => 100,
-    };
-    let values = lower.chars().map(digit).collect::<Vec<u32>>();
-    let mut total = 0;
-    for (index, value) in values.iter().enumerate() {
-        if values.get(index + 1).is_some_and(|next| next > value) {
-            total -= *value as i64;
-        } else {
-            total += *value as i64;
-        }
-    }
-    u32::try_from(total)
-        .ok()
-        .filter(|value| *value > 0 && *value < 90)
+    legal_structure_model::layout::roman_value(token).filter(|value| *value < 90)
 }
 
 /// A marker's family and the value it counts, read whole: "(a)", "1.", "iv)", "[12]", "2.3", "•".

@@ -13,7 +13,7 @@
 //! Offsets and lengths are UTF-16 code units, as Beaver counts them.
 
 use crate::a2aj::{Document, Language, Source, StoreRow};
-use crate::{
+use legal_structure::{
     caselaw_citation_lookup_key, classify_citator_excerpt, pair_numbered_footnotes, provider_text_document_structure,
     DocumentKind, DocumentQuery, ProviderTextInput, ProviderTextSourceKind,
 };
@@ -73,9 +73,10 @@ fn key_of(citation: &str) -> Option<String> {
     caselaw_citation_lookup_key(citation).ok().filter(|key| !key.is_empty())
 }
 
-/// The engine's case citations in `text`, with the name each form counts as.
+/// The engine's case citations in `text`, with the name each form counts as. Only full citations count, so short forms
+/// are not resolved (a fifth of the engine's time).
 fn case_citations(text: &str) -> Vec<Citation> {
-    legal_citations::extract(text, &Options::default()).into_iter()
+    legal_citations::extract(text, &Options { resolve: false, ..Options::default() }).into_iter()
         .filter(|citation| citation.form == Form::Full && citation.authority == Authority::Case && citation.key.is_some())
         .collect()
 }

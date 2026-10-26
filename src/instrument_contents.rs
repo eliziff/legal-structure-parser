@@ -233,27 +233,6 @@ fn instrument_contents_unit_end(value: &str) -> Option<usize> {
     None
 }
 
-fn instrument_roman_value(value: &str) -> Option<u32> {
-    let values = |character| match character {
-        'I' => Some(1),
-        'V' => Some(5),
-        'X' => Some(10),
-        'L' => Some(50),
-        'C' => Some(100),
-        'D' => Some(500),
-        'M' => Some(1000),
-        _ => None,
-    };
-    let mut characters = value.chars().peekable();
-    let mut total = 0i32;
-    while let Some(character) = characters.next() {
-        let current = values(character)?;
-        let next = characters.peek().copied().and_then(values).unwrap_or(0);
-        total += if current < next { -current } else { current };
-    }
-    u32::try_from(total).ok()
-}
-
 fn instrument_contents_region(
     text: &ScalarText<'_>,
     from_byte: usize,
@@ -320,7 +299,7 @@ fn instrument_contents_region(
                 let number = value
                     .parse::<u32>()
                     .ok()
-                    .or_else(|| instrument_roman_value(&value.to_ascii_uppercase()));
+                    .or_else(|| legal_structure_model::layout::roman_value(&value.to_ascii_uppercase()));
                 let Some(number) = number else { continue };
                 let lower = word.to_ascii_lowercase();
                 let prefix = match lower.as_str() {

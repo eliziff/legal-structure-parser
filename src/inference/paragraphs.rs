@@ -185,17 +185,8 @@ pub(super) fn word_count(value: &str, letters_only: bool) -> usize {
     count
 }
 
-pub(super) fn median(values: &mut [usize]) -> f64 {
-    if values.is_empty() {
-        return 0.0;
-    }
-    values.sort_unstable();
-    let middle = values.len() / 2;
-    if values.len() % 2 == 1 {
-        values[middle] as f64
-    } else {
-        (values[middle - 1] + values[middle]) as f64 / 2.0
-    }
+pub(super) fn median(values: &[usize]) -> f64 {
+    legal_structure_model::layout::median(values.iter().map(|&value| value as f64).collect())
 }
 
 pub(super) fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usize>>; 2]) -> [Vec<Marker>; 2] {

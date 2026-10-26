@@ -2,7 +2,7 @@
 //! running heads, folios and notes between them, as the instrument grammar reads them, and
 //! the lines and pages that print a cited provision.
 
-use crate::{
+use legal_structure::{
     analyze_instrument, DocumentLookupStatus, DocumentQuery, DocumentStructure, NodeKind, ScalarRange, ScalarText,
 };
 use std::collections::{HashMap, HashSet};
@@ -76,7 +76,7 @@ fn replace_reading(text: &mut String, runs: &mut Vec<SourceRun>, start: usize, e
 
 /// Restrict physical rows to each node's exact own source membership before
 /// reading provisions. Sharing a line never grants ownership of its other text.
-fn source_lines<'a>(node: &crate::StructureNode,
+fn source_lines<'a>(node: &legal_structure::StructureNode,
     lines: &HashMap<&str, PrintedLine<'a>>, fragments: &HashMap<&str, ScalarRange>) -> Vec<(PrintedLine<'a>, ScalarRange)> {
     let membership = if node.ranges.is_empty() { std::slice::from_ref(&node.range) } else { &node.ranges };
     node.line_ids.iter().filter_map(|id| Some((*lines.get(id.as_str())?, *fragments.get(id.as_str())?)))
@@ -273,11 +273,11 @@ impl PrintedStatute {
         let wanted = title(instrument);
         if wanted.is_empty() { return None; }
         let fragments = document.source_fragments.iter().map(|fragment| (fragment.id.as_str(), fragment.range)).collect::<HashMap<_, _>>();
-        let text_of = |node: &crate::StructureNode| source_lines(node, lines, &fragments).iter()
+        let text_of = |node: &legal_structure::StructureNode| source_lines(node, lines, &fragments).iter()
             .map(|(line, _)| line.text.trim()).collect::<Vec<_>>().join(" ");
-        let heading = |node: &crate::StructureNode| node.kind == NodeKind::Heading;
+        let heading = |node: &legal_structure::StructureNode| node.kind == NodeKind::Heading;
         // Another Act's title: a heading in capitals that ends in its year.
-        let act_title = |node: &crate::StructureNode| {
+        let act_title = |node: &legal_structure::StructureNode| {
             let text = text_of(node);
             let words = title(&text);
             !text.chars().any(char::is_lowercase) && words.iter().any(|word| word == "ACT" || word == "LOI")
@@ -500,7 +500,7 @@ impl PrintedStatute {
         let container = match kind {
             "part" | "division" => {
                 let number = locator.trim().trim_start_matches(|c: char| c.is_alphabetic() && !"IVXLCDM".contains(c)).trim();
-                let value = number.parse::<u32>().ok().or_else(|| roman(number))?;
+                let value = number.parse::<u32>().ok().or_else(|| legal_structure_model::layout::roman_value(number).filter(|_| number.chars().all(|c| c.is_ascii_uppercase())))?;
                 Some(format!("{}{value}", if kind == "part" { "part" } else { "div" }))
             }
             "schedule" => Some(format!("sched{}", locator.trim().to_lowercase())),
@@ -592,7 +592,7 @@ pub fn statute_currency(pages: &[String]) -> Option<String> {
     let mut text = String::new();
     let mut space = false;
     for character in pages.iter().take(3).map(String::as_str).collect::<Vec<_>>().join("\n").chars() {
-        if crate::javascript_whitespace(character) {
+        if legal_structure::javascript_whitespace(character) {
             space = true;
             continue;
         }
@@ -603,13 +603,4 @@ pub fn statute_currency(pages: &[String]) -> Option<String> {
     let found = CURRENCY.find(&text)?.as_str();
     let mut characters = found.chars();
     Some(characters.next().into_iter().flat_map(char::to_uppercase).chain(characters).collect())
-}
-
-/// A Roman numeral's value ("XXIII" is 23).
-fn roman(value: &str) -> Option<u32> {
-    let digit = |c: char| Some(match c { 'I' => 1, 'V' => 5, 'X' => 10, 'L' => 50, 'C' => 100, 'D' => 500, 'M' => 1000, _ => return None });
-    let digits = value.chars().map(digit).collect::<Option<Vec<u32>>>()?;
-    let total = digits.iter().enumerate().fold(0i64, |total, (at, value)|
-        if digits.get(at + 1).is_some_and(|next| next > value) { total - i64::from(*value) } else { total + i64::from(*value) });
-    (total > 0 && !digits.is_empty()).then_some(total as u32)
 }

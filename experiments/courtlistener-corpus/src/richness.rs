@@ -727,7 +727,7 @@ pub fn run(
     write_json(
         out.join("summary.json"),
         &json!({"schema":"courtlistener.rendition-richness.v3","records":count,
-        "engine_source_sha256":legal_structure::ENGINE_SOURCE_SHA256,"renditions":totals,
+        "engine_source_sha256":legal_structure::ENGINE_SOURCE_SHA256,"features_source_sha256":legal_structure_features::SOURCE_SHA256,"renditions":totals,
         "citation_context":citation_context.as_ref().map(|context|context.provenance()),
         "records_with_citation_context":records_with_citation_context,
         "retained_rendered_text":retain_rendered_text,
@@ -934,7 +934,7 @@ pub fn source_run(manifest: &Path, corpus_home: &Path, out: &Path) -> Result<()>
                 receipt["source_opinion_components"] =
                     json!(query.source_opinion_components(&doc));
                 receipt["document_outline"] =
-                    json!(legal_structure::document_outline(&doc, false, None));
+                    json!(legal_structure_features::document_outline(&doc, false, None));
                 receipt["native_pinpoint_queries"] = json!(pinpoint_queries(&doc, &query, Derivation::Native));
                 receipt["heuristic_pinpoint_queries"] = json!(pinpoint_queries(&doc, &query, Derivation::Heuristic));
                 if capture["paragraph_queries"] == true {
@@ -974,7 +974,7 @@ pub fn source_run(manifest: &Path, corpus_home: &Path, out: &Path) -> Result<()>
         &json!({"schema":"courtlistener.retained-source.v1",
         "records":records,"errors":errors,"markup_bytes":bytes,"plain_text_bytes":text_bytes,"observations":observations,
         "missing_requested_source_regions":missing_regions,
-        "engine_source_sha256":legal_structure::ENGINE_SOURCE_SHA256,
+        "engine_source_sha256":legal_structure::ENGINE_SOURCE_SHA256,"features_source_sha256":legal_structure_features::SOURCE_SHA256,
         "query_source_sha256":hash(include_bytes!("../../../query/src/document_query.rs")),
         "seconds":started.elapsed().as_secs_f64(),
         "scope":"Exact retained CAP casebody XML, HTML, plain text, or explicitly selected served-page headmatter; plain text uses the existing text-only engine input and has no source markup elements. DOM observations are independent of native output. Source IDs alone do not prove deployed link reliability."}),
@@ -1490,7 +1490,7 @@ pub fn web_run(
                     "markup_serialization":"browser_html",
                     "native_anchor_links":links,"opinion_boundary_link":boundary_link,"source_internal_links":internal_links,
                     "source_structures":source_structures,"source_note_links":source_note_links,"notes":doc.notes,
-                    "document_outline":legal_structure::document_outline(&doc, false, None),
+                    "document_outline":legal_structure_features::document_outline(&doc, false, None),
                     "source_markup":query.source_markup(&doc),
                     "source_opinion_components":query.source_opinion_components(&doc),
                     "native_pinpoint_queries":pinpoint_queries(&doc, &query, Derivation::Native),
@@ -1509,7 +1509,7 @@ pub fn web_run(
     write_json(
         out.join("summary.json"),
         &json!({"schema":"courtlistener.browser-richness.v1","htmls":captures.len(),"bodies":bodies,
-      "source_paragraph_ids":source_ids,"recovered_paragraph_ids":recovered_ids,"engine_source_sha256":legal_structure::ENGINE_SOURCE_SHA256,
+      "source_paragraph_ids":source_ids,"recovered_paragraph_ids":recovered_ids,"engine_source_sha256":legal_structure::ENGINE_SOURCE_SHA256,"features_source_sha256":legal_structure_features::SOURCE_SHA256,
       "query_source_sha256":hash(include_bytes!("../../../query/src/document_query.rs")),
       "citation_context":citation_context.as_ref().map(|context|context.provenance()),
       "pages_with_citation_context":pages_with_citation_context,

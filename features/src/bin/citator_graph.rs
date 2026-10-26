@@ -1,7 +1,7 @@
-//! Builds Beaver's citator graph from the local A2AJ and journal stores (see `legal_structure::citator_graph`).
+//! Builds Beaver's citator graph from the local A2AJ and journal stores (see `legal_structure_features::citator_graph`).
 //!
 //!   citator-graph [--store a2aj.sqlite] [--journals public_endpoint.db] [--out noteup.sqlite, beside the store] [--courts SCC,ONCA] [--limit N] [--threads N]
-use legal_structure::citator_graph::{build_citator_graph, default_journals, default_store, graph_path, GraphOptions};
+use legal_structure_features::citator_graph::{build_citator_graph, default_journals, default_store, graph_path, GraphOptions};
 use std::path::PathBuf;
 
 fn main() {

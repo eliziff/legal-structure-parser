@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 
 static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\p{L}\p{N}]+").unwrap());
 static NOT_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\p{L}\p{N}_\s]").unwrap());
-static BLANKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("{}+", crate::JS_WHITESPACE_CLASS)).unwrap());
+static BLANKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("{}+", legal_structure::JS_WHITESPACE_CLASS)).unwrap());
 
 /// A search of the index's names for an article titled `title`, in FTS5's query syntax.
 #[derive(Serialize)]

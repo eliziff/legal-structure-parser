@@ -1,6 +1,6 @@
 use crate::{
     instrument::{
-        instrument_roman, InstrumentCrossReferenceCounts, InstrumentCrossReferenceEdge,
+        InstrumentCrossReferenceCounts, InstrumentCrossReferenceEdge,
         InstrumentCrossReferenceGraph, InstrumentCrossReferenceReason,
         InstrumentCrossReferenceStatus, ProvisionReference, ProvisionReferenceShape,
     },
@@ -449,8 +449,8 @@ pub(super) fn populate_instrument_node_metadata(
         };
         let mut aliases = vec![display];
         if matches!(kind, "article" | "part") {
-            if let Ok(value) = body.parse::<usize>() {
-                aliases.push(format!("{word} {}", instrument_roman(value)).to_lowercase());
+            if let Ok(value) = body.parse::<u32>() {
+                aliases.push(format!("{word} {}", legal_structure_model::layout::roman_numeral(value)).to_lowercase());
             }
         }
         let label = label.to_lowercase();
@@ -525,9 +525,9 @@ fn node_keys(node: &ReferenceNode, label: String) -> Vec<String> {
         _ => None,
     };
     if let Some((word, value)) =
-        roman.and_then(|(word, value)| value.parse().ok().map(|n| (word, n)))
+        roman.and_then(|(word, value)| value.parse::<u32>().ok().map(|n| (word, n)))
     {
-        keys.push(format!("{word} {}", instrument_roman(value)).to_lowercase());
+        keys.push(format!("{word} {}", legal_structure_model::layout::roman_numeral(value)).to_lowercase());
     } else if matches!(node.kind, "section" | "subsection") {
         keys.push(node.label.replacen("sec", "section ", 1).to_lowercase());
     }

@@ -1,8 +1,9 @@
 //! A document's own outline: its headings and its top-level sections, in order.
 
-use crate::{
-    Derivation, DocumentStructure, NodeKind, PrimaryRole, PrintedStatute, ScalarText, StructureNode,
+use legal_structure::{
+    Derivation, DocumentStructure, NodeKind, PrimaryRole, ScalarText, StructureNode,
 };
+use crate::PrintedStatute;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
@@ -312,7 +313,7 @@ pub fn document_outline(
         .rendered_text
         .as_deref()
         .unwrap_or(&structure.text);
-    let paragraph = crate::case_outline(text)
+    let paragraph = legal_structure::case_outline(text)
         .ok()
         .and_then(|outline| outline.into_iter().find(|entry| entry.kind == "paragraph"))
         .map(|entry| entry.start);

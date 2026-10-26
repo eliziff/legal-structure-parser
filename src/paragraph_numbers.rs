@@ -48,31 +48,6 @@ fn wrap_of(token: &str) -> &'static str {
     }
 }
 
-fn roman(value: u32, upper: bool) -> String {
-    let mut rest = value;
-    let mut text = String::new();
-    for (unit, digits) in [
-        (90, "xc"),
-        (50, "l"),
-        (40, "xl"),
-        (10, "x"),
-        (9, "ix"),
-        (5, "v"),
-        (4, "iv"),
-        (1, "i"),
-    ] {
-        while rest >= unit {
-            text.push_str(digits);
-            rest -= unit;
-        }
-    }
-    if upper {
-        text.to_ascii_uppercase()
-    } else {
-        text
-    }
-}
-
 /// A family's marker for `value` as the family prints it: its wrapping around its count's numeral.
 fn render(family: &Family, value: u32) -> Option<(String, String)> {
     let (wrap, count) = family.0.split_once(':')?;
@@ -92,7 +67,8 @@ fn render(family: &Family, value: u32) -> Option<(String, String)> {
                 letter.to_string()
             }
         }
-        "i" | "I" => roman(value, count == "I"),
+        "i" => legal_structure_model::layout::roman_numeral(value),
+        "I" => legal_structure_model::layout::roman_numeral(value).to_ascii_uppercase(),
         _ => return None,
     };
     let (open, close) = match wrap {

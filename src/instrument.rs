@@ -200,31 +200,6 @@ pub(crate) struct ProvisionReference {
 }
 
 #[cfg(feature = "structure-inference")]
-pub(super) fn instrument_roman(mut value: usize) -> String {
-    let mut result = String::new();
-    for (amount, numeral) in [
-        (1000, "m"),
-        (900, "cm"),
-        (500, "d"),
-        (400, "cd"),
-        (100, "c"),
-        (90, "xc"),
-        (50, "l"),
-        (40, "xl"),
-        (10, "x"),
-        (9, "ix"),
-        (5, "v"),
-        (4, "iv"),
-        (1, "i"),
-    ] {
-        while value >= amount {
-            result.push_str(numeral);
-            value -= amount;
-        }
-    }
-    result
-}
-
 #[cfg(feature = "structure-inference")]
 pub(crate) fn cross_reference_graph(
     structure: &DocumentStructure,
@@ -247,8 +222,8 @@ fn instrument_reference_index<'a>(
             aliases.into_iter().filter_map(|(prefix, word)| {
                 label
                     .strip_prefix(prefix)
-                    .and_then(|value| value.parse().ok())
-                    .map(|value| format!("{word} {}", instrument_roman(value)))
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .map(|value| format!("{word} {}", legal_structure_model::layout::roman_numeral(value)))
             }),
         );
         for key in keys {

@@ -2,7 +2,7 @@ use crate::layout_cues;
 use legal_citations::cues;
 use legal_citations::cues::is_counter_noun as counter_noun;
 use legal_structure_model::layout::{
-    line_font_size, Anchor, DetachedReference, Diagnostic, Footnote, Line, NotePairClaim,
+    self, line_font_size, Anchor, DetachedReference, Diagnostic, Footnote, Line, NotePairClaim,
     NotePairKind, Page, PairingOutput, PdfPairingAudit, PdfSourceSpan, SourceAnchor,
 };
 use legal_structure_model::{
@@ -412,10 +412,8 @@ fn prose_like(text: &str) -> bool {
                 .any(|pair| pair[0].is_ascii_lowercase() && pair[1].is_ascii_digit()))
 }
 
-fn median(mut values: Vec<f64>) -> Option<f64> {
-    values.retain(|value| value.is_finite());
-    values.sort_by(f64::total_cmp);
-    values.get(values.len() / 2).copied()
+fn median(values: Vec<f64>) -> Option<f64> {
+    (!values.is_empty()).then(|| layout::median(values))
 }
 
 fn core_line_label(text: &str) -> Option<String> {
@@ -2426,18 +2424,15 @@ fn note_zone_column_split(lines: &[PairLine<'_>], page: u32) -> Option<f64> {
     if span <= 0.0 || overlap.max(0.0) / span < 0.30 {
         return None;
     }
-    let mut left_widths: Vec<f64> = left_lines
+    let left_widths: Vec<f64> = left_lines
         .iter()
         .map(|line| (line.bbox[2] - line.bbox[0]) / line.page_width)
         .collect();
-    let mut right_widths: Vec<f64> = right_lines
+    let right_widths: Vec<f64> = right_lines
         .iter()
         .map(|line| (line.bbox[2] - line.bbox[0]) / line.page_width)
         .collect();
-    left_widths.sort_by(f64::total_cmp);
-    right_widths.sort_by(f64::total_cmp);
-    let left_width = left_widths[left_widths.len() / 2];
-    let right_width = right_widths[right_widths.len() / 2];
+    let (left_width, right_width) = (layout::median(left_widths), layout::median(right_widths));
     let wide = left_width.max(right_width);
     if wide > 0.0 && left_width.min(right_width) / wide < 0.60 {
         None

@@ -569,16 +569,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "legal-grammar-tables"
-version = "0.1.0"
-dependencies = [
- "fancy-regex",
- "regex",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "legal-layout"
 version = "0.1.0"
 dependencies = [

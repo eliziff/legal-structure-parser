@@ -19,21 +19,11 @@ mod paragraph_numbers;
 mod text_notes;
 #[cfg(feature = "citator")]
 mod citator;
-#[cfg(feature = "citator-graph")]
-pub mod citator_graph;
-#[cfg(feature = "a2aj-reader")]
-pub mod a2aj;
 #[cfg(all(feature = "citator", feature = "document-query"))]
 mod text_units;
 #[cfg(all(feature = "citator", feature = "canlii"))]
 mod canlii;
 mod assembly;
-mod composition;
-pub use composition::*;
-mod composition_annotations;
-pub use composition_annotations::*;
-mod composition_seed;
-pub use composition_seed::*;
 mod definitions;
 mod filing;
 pub use filing::{filing_cover, FiledBy, FilingCover, PartyGroup};
@@ -54,13 +44,6 @@ mod native_markup;
 use legal_structure_model::numeric_sequence;
 #[cfg(feature = "provider-text")]
 mod provider_text;
-#[cfg(all(feature = "citator", feature = "document-query"))]
-mod journal_titles;
-#[cfg(feature = "document-query")]
-mod quote_location;
-#[cfg(feature = "document-query")]
-mod quote_verification;
-mod reading_order;
 mod tables;
 #[cfg(feature = "structure-inference")]
 pub use analysis::{EngineAnalysis, STRUCTURE_ANALYSIS};
@@ -106,21 +89,6 @@ pub use provider_text::{
     provider_text_document_structure, windows_1252_punctuation, ProviderSectionMap, ProviderTextInput,
     ProviderTextSourceKind,
 };
-#[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
-mod passage_links;
-#[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
-pub use passage_links::{cited_passage_link, law_web_link, passage_link, source_link, PassageLink, PassageLinkRequest,
-    SourceLinkRequest, SourceLocator, VerifiedPdf};
-#[cfg(all(feature = "citator", feature = "document-query"))]
-pub use journal_titles::{journal_title_choice, journal_title_searches, JournalTitleHit, JournalTitleSearch};
-#[cfg(feature = "document-query")]
-pub use quote_location::{
-    corrected_quote, document_quote_blocks, editorial_quote, locate_quotes_in, locate_source_quotes, locate_source_quotes_kept, quote_text_comparison,
-    verbatim_repair, LocatedQuote, QuoteBlockInput, QuoteLocator, QuoteSource, QuoteComparison, QuoteLocation, QuoteToLocate,
-};
-#[cfg(feature = "quote-verification")]
-pub use quote_verification::*;
-pub use reading_order::{document_reading_order, ReadingOrderUnit};
 pub(crate) use tables::AuthoritativeTables;
 pub use text::javascript_whitespace;
 pub use text::{
@@ -361,14 +329,6 @@ mod inference;
 #[cfg(feature = "structure-inference")]
 mod candidates;
 mod derive;
-#[cfg(all(feature = "provider-text", feature = "document-query"))]
-mod outline;
-#[cfg(all(feature = "structure-inference", feature = "document-query"))]
-mod printed_statute;
-#[cfg(all(feature = "provider-text", feature = "document-query"))]
-pub use outline::{document_outline, OutlineEntry};
-#[cfg(all(feature = "structure-inference", feature = "document-query"))]
-pub use printed_statute::{statute_currency, PrintedLine, PrintedStatute, ProvisionPlacement};
 #[cfg(feature = "provider-text")]
 mod statute_outline;
 #[cfg(feature = "provider-text")]

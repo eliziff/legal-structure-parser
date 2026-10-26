@@ -1,10 +1,7 @@
 //! The scorer's frame: source lines, reading order, blocks over exact source spans, annotations
 //! (notes, tables, documents) and continuations. The gold is projected into it from its typed
 //! lines and units; a parser structure through the composition the apps read.
-use legal_structure::{
-    CompositionAnnotation, CompositionBlock, CompositionLine, CompositionLink, CompositionLinks,
-    SourceSpan,
-};
+use legal_structure_features::{CompositionAnnotation, CompositionBlock, CompositionLine, CompositionLink, CompositionLinks, SourceSpan};
 use legal_structure_model::DocumentStructure;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -176,7 +173,12 @@ const QUOTING: [&str; 3] = ["judgment", "submission", "article"];
 /// judgment, submission or article is an instrument set out in it, a quote; elsewhere (a schedule
 /// split from its contract, a practice direction) it stands. A gold with no document types (the
 /// tagger's decoded one) keeps its regions as given.
+///
+/// STRUCTURE_GOLD_PROVISION_HEADINGS=N scores a consumer's reading instead: an instrument's
+/// provisions at depth N or shallower are its headings (a PDF export's outline of a contract).
 pub fn regions(gold: &Gold) -> Vec<&str> {
+    static AS_HEADINGS: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    let as_headings = *AS_HEADINGS.get_or_init(|| std::env::var("STRUCTURE_GOLD_PROVISION_HEADINGS").ok().and_then(|v| v.parse().ok()));
     let typed = gold.units.iter().any(|u| u.document_type.is_some());
     let texts: HashMap<&str, Vec<char>> = gold.lines.iter()
         .map(|l| (l.id.as_str(), l.corrected.as_deref().unwrap_or(&l.text).chars().collect()))
@@ -196,6 +198,7 @@ pub fn regions(gold: &Gold) -> Vec<&str> {
         }
         let numbered = unit.lines.iter().any(|&n| gold.typed[n].markers.iter().flatten().any(printed));
         match (instrument, numbered, region) {
+            (true, true, _) if as_headings.is_some_and(|deepest| unit.depth.is_some_and(|depth| depth <= deepest)) => "heading",
             (true, true, _) => "provision",
             (true, false, "provision") => "text",
             (false, _, "provision") if quoting => "quote",
@@ -395,7 +398,8 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
         for (k, spans) in parts[u].iter().enumerate() {
             let mut attrs = Map::new();
             attrs.insert("region".into(), json!(region[u]));
-            if let Some(level) = unit.level.filter(|_| region[u] == "heading") {
+            // A provision read as a heading (STRUCTURE_GOLD_PROVISION_HEADINGS) heads at its depth.
+            if let Some(level) = unit.level.or(unit.depth).filter(|_| region[u] == "heading") {
                 attrs.insert("heading_level".into(), json!(level));
             }
             if let Some(depth) = unit.depth.filter(|_| region[u] != "heading") {
@@ -712,8 +716,8 @@ pub fn parsed(structure: &DocumentStructure) -> Result<State, String> {
             evidence: BTreeMap::from([("range".to_owned(), json!({"start": start, "end": end}))]),
         });
     }
-    let prepared = legal_structure::structure_composition_blocks(
-        legal_structure::StructureCompositionBlocksRequest {
+    let prepared = legal_structure_features::structure_composition_blocks(
+        legal_structure_features::StructureCompositionBlocksRequest {
             structure: structure.clone(),
             lines: composition,
         },
@@ -735,6 +739,81 @@ pub fn parsed(structure: &DocumentStructure) -> Result<State, String> {
             group.attributes.insert("region".into(), json!(region));
         }
     }
+    // The parser's blocks in the gold's frame (`projected`): a block split at each page and at each
+    // line of another block that comes between, its parts linked as a unit's parts are. The
+    // composition keeps a paragraph that runs over a page as one block; the gold writes it as parts
+    // and a continuation; the two say the same.
+    let mut continuations = prepared.continuations;
+    let members_of = |g: &CompositionBlock| -> Vec<SourceSpan> {
+        if !g.spans.is_empty() {
+            return g.spans.iter().filter(|s| index.contains_key(&s.line_id)).cloned().collect();
+        }
+        g.line_ids.iter().filter_map(|id| index.get(id).map(|&n| SourceSpan { line_id: id.clone(), start: 0, end: lines[n].text.len() })).collect()
+    };
+    let mut held = vec![false; lines.len()];
+    for g in &groups {
+        for s in members_of(g) {
+            held[index[&s.line_id]] = true;
+        }
+    }
+    let mut before = vec![0usize; lines.len() + 1];
+    for (p, &h) in held.iter().enumerate() {
+        before[p + 1] = before[p] + usize::from(h);
+    }
+    let mut parted = Vec::with_capacity(groups.len());
+    for g in groups {
+        let mut spans = members_of(&g);
+        spans.sort_by_key(|s| (index[&s.line_id], s.start));
+        let mut parts: Vec<Vec<SourceSpan>> = Vec::new();
+        let mut last: Option<usize> = None;
+        for s in spans {
+            let line = index[&s.line_id];
+            let split = last.is_none_or(|previous| lines[previous].page != lines[line].page || line > previous + 1 && before[line] > before[previous + 1]);
+            if split {
+                parts.push(Vec::new());
+            }
+            parts.last_mut().expect("part").push(s);
+            last = Some(line);
+        }
+        let kind = match g.kind.as_str() {
+            "heading" => Some("heading"),
+            "note" => Some("note"),
+            "furniture" | "page_label" | "line_label" => None,
+            _ => Some("paragraph"),
+        };
+        if parts.len() <= 1 || kind.is_none() {
+            parted.push(g);
+            continue;
+        }
+        let kind = kind.expect("checked");
+        let list = parser_list_item(&g);
+        let heads: Vec<String> = parts.iter().map(|p| anchor(&p[0])).collect();
+        // A link the block already had onward leaves from its last part.
+        for layer in continuations.values_mut() {
+            if let Some(onward) = layer.remove(&heads[0]) {
+                layer.insert(heads[heads.len() - 1].clone(), onward);
+            }
+        }
+        for pair in heads.windows(2) {
+            continuations.entry(kind.into()).or_default().insert(pair[0].clone(), link(pair[1].clone(), Some(" "), kind));
+            if list {
+                continuations.entry("list".into()).or_default().insert(pair[0].clone(), link(pair[1].clone(), None, "list"));
+            }
+        }
+        for (k, spans) in parts.into_iter().enumerate() {
+            let mut part = g.clone();
+            if k > 0 {
+                part.id = if g.id.is_empty() { String::new() } else { format!("{}#{k}", g.id) };
+                if part.attributes.contains_key("marker") {
+                    part.attributes.insert("marker".into(), json!([]));
+                }
+            }
+            part.line_ids = unique_ids(&spans);
+            part.spans = spans;
+            parted.push(part);
+        }
+    }
+    let groups = parted;
     // A PDF parser's constituents are sections under the package's own document.
     let mut annotations = prepared.annotations;
     let roots: Vec<CompositionAnnotation> = annotations
@@ -780,6 +859,6 @@ pub fn parsed(structure: &DocumentStructure) -> Result<State, String> {
         span_rank: HashMap::new(),
         groups,
         annotations,
-        continuations: prepared.continuations,
+        continuations,
     })
 }

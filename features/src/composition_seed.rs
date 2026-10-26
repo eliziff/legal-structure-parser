@@ -1,9 +1,7 @@
 //! A parser structure as composition blocks and annotations over its source lines, for the
 //! structure gold to score it.
-use crate::{
-    CompositionAnnotation, CompositionBlock, CompositionLine, CompositionLink, CompositionLinks, DocumentStructure,
-    NodeKind, PrimaryRole, ScalarRange, ScalarText, SourceSpan,
-};
+use crate::{CompositionAnnotation, CompositionBlock, CompositionLine, CompositionLink, CompositionLinks, SourceSpan};
+use legal_structure::{DocumentStructure, NodeKind, PrimaryRole, ScalarRange, ScalarText};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};

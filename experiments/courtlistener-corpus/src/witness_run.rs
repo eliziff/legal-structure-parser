@@ -342,7 +342,7 @@ fn facts(doc: &DocumentStructure, semantic_digests: bool) -> Facts {
             document_fingerprint: document_fingerprint(doc),
             rendered_text_present: doc.rendered_text.is_some(),
             document_outline_sha256: hash(&serde_json::to_vec(
-                &legal_structure::document_outline(doc, false, None),
+                &legal_structure_features::document_outline(doc, false, None),
             ).expect("outline digest serialization")),
             source_opinion_components_sha256: hash(&serde_json::to_vec(&components)
                 .expect("source opinion digest serialization")),
@@ -547,7 +547,7 @@ pub(super) fn run(home: &Path, out: &Path, maximum: u64, bindings_path: Option<&
         "maximum_bytes":maximum,"observations_bytes":output.metadata()?.len(),"first_unpersisted_field":first_omitted,
         "failure":result.as_ref().err().map(ToString::to_string),"failed_witness":if result.is_err() {Some(current_witness)} else {None},
         "output_cap_reached":cap_stop,"renditions":totals,
-        "engine_source_sha256":legal_structure::ENGINE_SOURCE_SHA256,
+        "engine_source_sha256":legal_structure::ENGINE_SOURCE_SHA256,"features_source_sha256":legal_structure_features::SOURCE_SHA256,
         "query_source_sha256":hash(include_bytes!("../../../query/src/document_query.rs")),
         "main_source_sha256":hash(include_bytes!("main.rs")),
         "harness_source_sha256":hash(include_bytes!("witness_run.rs")),"seconds":started.elapsed().as_secs_f64(),

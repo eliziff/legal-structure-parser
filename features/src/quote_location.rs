@@ -5,7 +5,7 @@
 //! and lower-casing are ECMAScript's. A source's quotations are located in one call, the source's text read once.
 
 use crate::quote_verification::QuoteSupport;
-use crate::{javascript_whitespace as js_space, trim_javascript_whitespace as js_trim, utf16_len, JS_WHITESPACE_CLASS};
+use legal_structure::{javascript_whitespace as js_space, trim_javascript_whitespace as js_trim, utf16_len, JS_WHITESPACE_CLASS};
 use legal_structure_model::{ScalarRange, ScalarText};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -1285,7 +1285,7 @@ impl Located<'_> {
                 combined.push(Block { node_id: None, ancestor_ids: Vec::new(), kind, label,
                     start: ranges.first().map_or(members[0].start, |range| range.start),
                     end: ranges.last().map_or(members[members.len() - 1].end, |range| range.end),
-                    text: crate::text::membership_text_utf16(&self.source_text, &ranges), ranges });
+                    text: legal_structure_model::text::membership_text_utf16(&self.source_text, &ranges), ranges });
             }
         }
         combined
@@ -1460,7 +1460,7 @@ impl Located<'_> {
         for pair in pages.windows(2) {
             let mut ranges = pair.iter().flat_map(|block| block.ranges.iter().copied()).collect();
             ScalarRange::normalize_union(&mut ranges);
-            let text = crate::text::membership_text_utf16(&self.source_text, &ranges);
+            let text = legal_structure_model::text::membership_text_utf16(&self.source_text, &ranges);
             if !quote_words(quote).is_empty()
                 && self.reader.quote_match_score(quote, &text, 0.0) >= STRONG_MATCH {
                 let tail = |label: &str| label.split(' ').next_back().unwrap_or("").to_owned();
@@ -1547,7 +1547,7 @@ fn locate_quotes_kept(kept: &mut Option<LocatorState>, text: &str, blocks: &[Quo
                 let ranges = ranges_of(block);
                 Block { node_id: block.node_id.clone(), ancestor_ids: block.ancestor_ids.clone(),
                     kind: block.kind, label: block.label.clone(), start: block.start, end: block.end,
-                    text: crate::text::membership_text_utf16(&source_text, &ranges), ranges }
+                    text: legal_structure_model::text::membership_text_utf16(&source_text, &ranges), ranges }
             }).collect();
             let prepared = vec![None; blocks.len()];
             (Reader { whole: Some(whole_at), ..Reader::default() }, blocks, prepared, None, None)

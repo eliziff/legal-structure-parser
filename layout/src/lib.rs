@@ -7,6 +7,11 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
+mod measures;
+mod stats;
+pub use measures::*;
+pub use stats::*;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScalarRange {
@@ -80,6 +85,9 @@ pub struct Word {
     /// A rule is drawn under the word: painted in the PDF, or dark on a recognized page's image.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub underlined: bool,
+    /// A rule is drawn through the word, as a blackline strikes deleted text.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub struck: bool,
     /// The word's stroke weight in the page's 300 dpi render, as its line's `weight` is measured;
     /// 0 where not measured. A bold word in a line of plain words (a run-in title) shows here.
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -436,6 +444,7 @@ pub fn line_font_size(line: &Line) -> f64 {
         })
         .unwrap_or(0.0)
 }
+
 
 pub fn union_bbox(boxes: impl IntoIterator<Item = [f64; 4]>) -> [f64; 4] {
     let mut values = boxes.into_iter();

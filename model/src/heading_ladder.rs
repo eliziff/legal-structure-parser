@@ -7,31 +7,12 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 const MAX_COUNTER_VALUE: u32 = 200;
-const MAX_OUTLINE_DEPTH: usize = 4;
+/// Legal outlines run six deep: PART I, A., 1., (a), (i), (A).
+const MAX_OUTLINE_DEPTH: usize = 6;
 const FOOTNOTE_SUSPECT_MIN_VALUE: u32 = 15;
 
 fn roman_to_int(value: &str) -> Option<u32> {
-    let mut total = 0;
-    let mut prior = 0;
-    for character in value.to_uppercase().chars().rev() {
-        let current = match character {
-            'I' => 1,
-            'V' => 5,
-            'X' => 10,
-            'L' => 50,
-            'C' => 100,
-            'D' => 500,
-            'M' => 1000,
-            _ => return None,
-        };
-        if current < prior {
-            total -= current;
-        } else {
-            total += current;
-            prior = current;
-        }
-    }
-    (total > 0 && total <= MAX_COUNTER_VALUE).then_some(total)
+    legal_layout::roman_value(value).filter(|number| *number <= MAX_COUNTER_VALUE)
 }
 
 pub type EnumeratorInterpretation = (String, u32, usize);
@@ -65,13 +46,15 @@ pub fn enumerator_interpretations(value: &str, punct: &str) -> Vec<EnumeratorInt
         return result;
     }
     let upper = value.to_uppercase();
-    if value == upper
+    // Small numerals count a family of their own ("(i)", "(ii)" under "(a)").
+    let roman_family = if value == upper { "roman" } else { "lower_roman" };
+    if (value == upper || value == value.to_lowercase())
         && ROMAN
             .get_or_init(|| Regex::new(r"^[IVXLCDM]{2,7}$").unwrap())
             .is_match(&upper)
     {
         if let Some(number) = roman_to_int(value) {
-            result.push((format!("roman_{punct}"), number, 0));
+            result.push((format!("{roman_family}_{punct}"), number, 0));
         }
         return result;
     }
@@ -81,9 +64,9 @@ pub fn enumerator_interpretations(value: &str, punct: &str) -> Vec<EnumeratorInt
         } else {
             "lower_alpha"
         };
-        if value == upper && "IVXLCDM".contains(&upper) {
+        if "IVXLCDM".contains(&upper) {
             if let Some(number) = roman_to_int(value) {
-                result.push((format!("roman_{punct}"), number, 0));
+                result.push((format!("{roman_family}_{punct}"), number, 0));
             }
         }
         let character = upper.chars().next().unwrap();

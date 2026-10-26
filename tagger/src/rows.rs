@@ -6,6 +6,7 @@
 use crate::labels::{anchor, Label, Locator, Piece};
 use crate::state::State;
 use legal_pdf_core::model::{Line as PdfLine, Page};
+use legal_pdf_core::{dominant_face as dominant, flag_share, median, off_grid_sizes, PageMeasure, BOLD, ITALIC, MONOSPACED, SUPERSCRIPT};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -22,60 +23,9 @@ pub const FEATURES: [&str; 62] = [
     "ink", "ink_measured", "weight",
 ];
 
-fn median(mut values: Vec<f64>) -> f64 {
-    if values.is_empty() {
-        return 0.0;
-    }
-    values.sort_by(f64::total_cmp);
-    values[values.len() / 2]
-}
-
-fn quantile(mut values: Vec<f64>, q: f64) -> f64 {
-    if values.is_empty() {
-        return 0.0;
-    }
-    values.sort_by(f64::total_cmp);
-    values[((values.len() - 1) as f64 * q).round() as usize]
-}
-
-/// Each span's share of the line's characters with a flag set.
-fn flagged(line: &PdfLine, flag: u32) -> f64 {
-    let total: usize = line.spans.iter().map(|s| s.text.chars().count()).sum();
-    if total == 0 {
-        return 0.0;
-    }
-    line.spans.iter().filter(|s| s.flags & flag != 0).map(|s| s.text.chars().count()).sum::<usize>() as f64 / total as f64
-}
-
-fn dominant(line: &PdfLine) -> Option<(&str, f64)> {
-    let mut weight: HashMap<(&str, u64), usize> = HashMap::new();
-    for span in &line.spans {
-        *weight.entry((span.font.as_str(), span.size.to_bits())).or_default() += span.text.chars().count();
-    }
-    // Ties broken by name and size so the same line always reads the same way (the map's order is not stable).
-    weight.into_iter().max_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0))).map(|((font, size), _)| (font, f64::from_bits(size)))
-}
-
-/// How many distinct line sizes within [0.8, 1.25] of the page's median fall off the half-point
-/// grid: a recognizer's box heights spread over many, a typeset page's sizes sit on it. Five or
-/// more is the parser's recognized-layer test (main dev: 46 of 227 recognized pages, 1 of 435 typeset).
-fn off_grid_sizes(page: &Page) -> usize {
-    let mut characters: HashMap<i64, usize> = HashMap::new();
-    for line in page.lines.iter().filter(|line| !line.exclude_from_body) {
-        let count = line.text.trim().chars().count();
-        if let Some((_, size)) = dominant(line).filter(|(_, size)| *size > 0.0 && count > 0) {
-            *characters.entry((size * 10.0).round() as i64).or_default() += count;
-        }
-    }
-    let total: usize = characters.values().sum();
-    if total < 200 {
-        return 0;
-    }
-    let mut sizes: Vec<i64> = characters.keys().copied().collect();
-    sizes.sort_unstable();
-    let mut seen = 0;
-    let median = sizes.iter().find(|size| { seen += characters[*size]; seen * 2 >= total }).copied().unwrap_or(0);
-    sizes.iter().filter(|&&size| size * 100 >= median * 80 && size * 100 <= median * 125 && size % 5 != 0).count()
+/// The share of the line's characters carrying a span flag; 0 where it has none.
+fn share(line: &PdfLine, flag: u32) -> f64 {
+    flag_share(line, flag).unwrap_or(0.0)
 }
 
 /// A line's style (dominant font and half-point size) and look (style plus bold, italic and letter
@@ -89,7 +39,7 @@ fn look_of(line: &PdfLine) -> Option<Look> {
     let (font, size) = dominant(line)?;
     let letters: Vec<char> = line.text.chars().filter(|c| c.is_alphabetic()).collect();
     let caps = !letters.is_empty() && letters.iter().filter(|c| c.is_uppercase()).count() * 10 >= letters.len() * 9;
-    Some(((font.to_owned(), (size * 2.0).round() as i64), flagged(line, 16) > 0.5, flagged(line, 2) > 0.5, caps))
+    Some(((font.to_owned(), (size * 2.0).round() as i64), share(line, BOLD) > 0.5, share(line, ITALIC) > 0.5, caps))
 }
 
 /// Document-wide tallies behind the look features.
@@ -195,7 +145,7 @@ fn markers(candidate: &State, pieces: &[Piece], tier0: &[Label]) -> (Vec<[f64; 3
     let mut marker_of: HashMap<usize, legal_structure::layout::NumberingMarker> = HashMap::new();
     for group in &candidate.groups {
         let Some(k) = group.spans.first().and_then(|s| candidate.index.get(&s.line_id).and_then(|&n| locate.at(n, s.start))) else { continue };
-        let spans: Vec<legal_structure::SourceSpan> = serde_json::from_value(group.attributes.get("marker").cloned().unwrap_or_default()).unwrap_or_default();
+        let spans: Vec<legal_structure_features::SourceSpan> = serde_json::from_value(group.attributes.get("marker").cloned().unwrap_or_default()).unwrap_or_default();
         let text: String = spans.iter().filter_map(|s| candidate.index.get(&s.line_id).map(|&m| {
             let chars = &candidate.lines[m].text;
             chars[s.start.min(chars.len())..s.end.min(chars.len())].iter().collect::<String>()
@@ -222,31 +172,20 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
             by_id.insert(line.id.as_str(), (p, n));
         }
     }
-    // Per page: the reading order of its lines, its body's edges and its typical line.
+    // Per page: its measures, each line's place in its reading order, and its typical ink.
     struct PageStats {
-        order: Vec<usize>,
+        measure: PageMeasure,
         rank: HashMap<usize, usize>,
-        height: f64,
-        left: f64,
-        right: f64,
-        size: f64,
         ink: f64,
         weight: f64,
     }
     let stats: Vec<PageStats> = pages.iter().map(|page| {
-        let mut order: Vec<usize> = (0..page.lines.len()).collect();
-        order.sort_by_key(|&n| (page.lines[n].reading_order, n));
-        let rank = order.iter().enumerate().map(|(k, &n)| (n, k)).collect();
-        let sizes: Vec<f64> = page.lines.iter().filter_map(|l| dominant(l).map(|d| d.1)).filter(|s| *s > 0.0).collect();
+        let measure = PageMeasure::of(page);
         PageStats {
-            height: median(page.lines.iter().map(|l| (l.bbox[3] - l.bbox[1]).max(0.1)).collect()).max(0.1),
-            left: quantile(page.lines.iter().map(|l| l.bbox[0]).collect(), 0.1),
-            right: quantile(page.lines.iter().map(|l| l.bbox[2]).collect(), 0.9),
-            size: median(sizes),
+            rank: measure.order.iter().enumerate().map(|(k, &n)| (n, k)).collect(),
             ink: median(page.lines.iter().map(|l| l.ink).filter(|ink| *ink > 0.0).collect()),
             weight: median(page.lines.iter().map(|l| l.weight).filter(|weight| *weight > 0.0).collect()),
-            order,
-            rank,
+            measure,
         }
     }).collect();
     let page_count = pages.len().max(1) as f64;
@@ -263,9 +202,20 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
     let row = |label: &Label| json!([label.region, label.start, u8::from(label.document), u8::from(label.reference),
         label.level, u8::from(label.marker), pointer(&label.continues), label.depth]);
     let (markers, families) = markers(candidate, pieces, tier0);
-    let off_grid: Vec<usize> = pages.iter().map(off_grid_sizes).collect();
+    let off_grid: Vec<usize> = pages.iter().map(|page| off_grid_sizes(page.lines.iter().filter(|line| !line.exclude_from_body))).collect();
     let looks = Looks::tally(pages);
     let mut look_ids = Vec::new();
+    // The reader that made each heading line one, where the pages carry it (regions of kind
+    // "heading_source", id "heading-source:<reader>").
+    let sources: HashMap<&str, &str> = pages
+        .iter()
+        .flat_map(|page| &page.regions)
+        .filter(|region| region.kind == "heading_source")
+        .flat_map(|region| {
+            let source = region.id.strip_prefix("heading-source:").unwrap_or(&region.id);
+            region.line_ids.iter().map(move |id| (id.as_str(), source))
+        })
+        .collect();
     for &k in &kept {
         let piece = &pieces[k];
         let line = &candidate.lines[piece.line];
@@ -274,12 +224,12 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
         let stats = &stats[p];
         let own = &page.lines[n];
         let rank = stats.rank[&n];
-        let neighbour = |offset: isize| (rank as isize + offset).try_into().ok().and_then(|r: usize| stats.order.get(r)).map(|&m| &page.lines[m]);
+        let neighbour = |offset: isize| (rank as isize + offset).try_into().ok().and_then(|r: usize| stats.measure.order.get(r)).map(|&m| &page.lines[m]);
         let (w, h) = (page.width.max(1.0), page.height.max(1.0));
         let [x0, y0, x1, y1] = own.bbox;
-        let body = (stats.right - stats.left).max(1.0);
-        let above = neighbour(-1).map_or(3.0, |prev| ((y0 - prev.bbox[3]) / stats.height).clamp(-3.0, 3.0));
-        let below = neighbour(1).map_or(3.0, |next| ((next.bbox[1] - y1) / stats.height).clamp(-3.0, 3.0));
+        let body = (stats.measure.right - stats.measure.left).max(1.0);
+        let above = neighbour(-1).map_or(3.0, |prev| ((y0 - prev.bbox[3]) / stats.measure.height).clamp(-3.0, 3.0));
+        let below = neighbour(1).map_or(3.0, |next| ((next.bbox[1] - y1) / stats.measure.height).clamp(-3.0, 3.0));
         let style = dominant(own);
         let previous_style = neighbour(-1).and_then(dominant);
         let size = style.map_or(0.0, |s| s.1);
@@ -288,11 +238,11 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
         let length = line.text.len().max(1) as f64;
         let mut values = vec![
             x0 / w, y0 / h, x1 / w, y1 / h,
-            ((y1 - y0) / stats.height).min(5.0), above, below,
-            ((x0 - stats.left) / w).clamp(-1.0, 1.0), ((stats.right - x1) / w).clamp(-1.0, 1.0),
+            ((y1 - y0) / stats.measure.height).min(5.0), above, below,
+            ((x0 - stats.measure.left) / w).clamp(-1.0, 1.0), ((stats.measure.right - x1) / w).clamp(-1.0, 1.0),
             ((x1 - x0) / body).min(2.0), (((x0 + x1) / 2.0 - w / 2.0) / w).clamp(-1.0, 1.0),
-            if stats.size > 0.0 { (size / stats.size).min(4.0) } else { 0.0 },
-            flagged(own, 16), flagged(own, 2), flagged(own, 1), flagged(own, 8),
+            if stats.measure.size > 0.0 { (size / stats.measure.size).min(4.0) } else { 0.0 },
+            share(own, BOLD), share(own, ITALIC), share(own, SUPERSCRIPT), share(own, MONOSPACED),
             match (style, previous_style) { (Some(a), Some(b)) if b.1 > 0.0 => (a.1 / b.1).min(4.0), _ => 1.0 },
             match (style, previous_style) { (Some(a), Some(b)) => f64::from(u8::from(a.0 != b.0)), _ => 0.0 },
             underlined,
@@ -328,7 +278,7 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
         ids.push(anchor(candidate, piece));
         page_of.push(p);
         features.push(values.into_iter().map(|v| (v * 1e4).round() / 1e4).collect::<Vec<f64>>());
-        texts.push(json!([text, own.region_type, own.note_region_mode, families[k]]));
+        texts.push(json!([text, own.region_type, own.note_region_mode, families[k], sources.get(own.id.as_str()).copied().unwrap_or("")]));
         tier0_rows.push(row(&tier0[k]));
         gold_rows.push(gold[k].as_ref().map_or(json!(null), row));
     }

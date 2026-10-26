@@ -3,7 +3,7 @@
 //! citator's graph and the corpus census. A source gives its columns as it holds them ([`Columns`]); the two sources
 //! differ only in the few values they have always given differently, which [`Source`] names.
 
-use crate::{canlii_case_url, canlii_law_url, citation_lookup_key, trim_javascript_whitespace as js_trim, windows_1252_punctuation,
+use legal_structure::{canlii_case_url, canlii_law_url, citation_lookup_key, trim_javascript_whitespace as js_trim, windows_1252_punctuation,
     ProviderTextInput, ProviderTextSourceKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -442,7 +442,7 @@ pub use store::{LazyRow, StoreRow};
 #[cfg(feature = "a2aj-store")]
 mod store {
     use super::Columns;
-    use crate::trim_javascript_whitespace as js_trim;
+    use legal_structure::trim_javascript_whitespace as js_trim;
     use rusqlite::{types::ValueRef, Connection, OptionalExtension};
     use std::borrow::Cow;
     use std::collections::HashMap;

@@ -91,13 +91,13 @@ fn replaced(node: &StructureNode) -> bool {
 /// decoder made from the parser's reference reading. The parser's footnote nodes and note records
 /// go: the model's notes read higher than the parser's on the main development set.
 fn notes(gold: &Gold, lines: &HashMap<String, Placed>, regions: &[&str]) -> (Vec<StructureNode>, Vec<Note>) {
-    let range_of = |span: &legal_structure::SourceSpan| -> Option<ScalarRange> {
+    let range_of = |span: &legal_structure_features::SourceSpan| -> Option<ScalarRange> {
         let line = lines.get(&span.line_id)?;
         let last = line.offsets.len() - 1;
         let (start, end) = (line.offsets[span.start.min(last)], line.offsets[span.end.min(last)]);
         (start < end).then_some(ScalarRange { start, end })
     };
-    let mut references_of: HashMap<usize, Vec<legal_structure::SourceSpan>> = HashMap::new();
+    let mut references_of: HashMap<usize, Vec<legal_structure_features::SourceSpan>> = HashMap::new();
     for pair in &gold.notes {
         if let (Some(note), Some(r)) = (pair.note, pair.reference) {
             if let Some(span) = gold.typed[pair.line].references.get(r).and_then(|reference| reference.spans.first()) {
@@ -180,7 +180,7 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
     let mut nodes: Vec<StructureNode> = Vec::new();
     let mut continuations: Vec<SourceContinuation> = Vec::new();
     // A span counted in characters of a line, as a UTF-16 range in the text.
-    let range_of = |span: &legal_structure::SourceSpan| -> Option<ScalarRange> {
+    let range_of = |span: &legal_structure_features::SourceSpan| -> Option<ScalarRange> {
         let line = lines.get(&span.line_id)?;
         let last = line.offsets.len() - 1;
         let (start, end) = (line.offsets[span.start.min(last)], line.offsets[span.end.min(last)]);
@@ -211,7 +211,7 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
         for (r, unit_index) in (first..u).enumerate() {
             let row_id = format!("tag-row-{tables:06}-{:04}", r + 1);
             let head = &gold.typed[gold.units[unit_index].lines[0]];
-            let spans: Vec<&legal_structure::SourceSpan> = gold.units[unit_index].lines.iter().flat_map(|&t| gold.typed[t].spans.iter()).collect();
+            let spans: Vec<&legal_structure_features::SourceSpan> = gold.units[unit_index].lines.iter().flat_map(|&t| gold.typed[t].spans.iter()).collect();
             let row_ranges: Vec<ScalarRange> = spans.iter().filter_map(|s| range_of(s)).collect();
             let Some(&row_first) = row_ranges.first() else { continue };
             let hull = ScalarRange { start: row_first.start, end: row_ranges.iter().map(|x| x.end).max().unwrap() };
@@ -235,7 +235,7 @@ pub fn retag(structure: &mut DocumentStructure, gold: &Gold) -> Result<(), Strin
             }
             row.page_indexes.sort_unstable();
             row.page_indexes.dedup();
-            let grid: Vec<Vec<legal_structure::SourceSpan>> = match &head.cells {
+            let grid: Vec<Vec<legal_structure_features::SourceSpan>> = match &head.cells {
                 Some(grid) if !grid.is_empty() => grid.clone(),
                 _ => vec![spans.iter().map(|s| (*s).clone()).collect()],
             };

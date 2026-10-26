@@ -9,8 +9,9 @@ workspace = "../.."
 
 [dependencies]
 diff-match-patch-rs = "0.5.1"
-legal-pdf-core = { path = "../../legal-pdf-parser/legal-pdf-core", features = ["structure-analysis"] }
+legal-pdf-core = { path = "../../legal-pdf-parser/legal-pdf-core" }
 legal-structure = { path = ".." }
+legal-structure-features = { path = "../features" }
 legal-structure-model = { path = "../model" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

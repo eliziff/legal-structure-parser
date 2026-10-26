@@ -381,7 +381,7 @@ fn field(row: &Value, name: &'static str) -> FieldResult {
                 stage = "serialize-document";
                 let document = digest_value(&doc)?;
                 stage = "document-outline";
-                let outline = digest_value(&legal_structure::document_outline(&doc, false, None))?;
+                let outline = digest_value(&legal_structure_features::document_outline(&doc, false, None))?;
                 stage = "source-opinion-components";
                 let opinions = digest_value(&query.source_opinion_components(&doc))?;
                 stage = "observe";
@@ -737,7 +737,7 @@ impl Aggregate {
             "source_columns":self.header,"original_header_csv_sha256":self.header_sha256,"column_stats":self.columns,
             "decoded_csv_bytes":decoded_bytes,"decoded_csv_sha256":current(decoded_digest),
             "maximum_raw_record_bytes":self.maximum_raw_record_bytes,"seconds":self.started.elapsed().as_secs_f64(),
-            "engine_source_sha256":legal_structure::ENGINE_SOURCE_SHA256,
+            "engine_source_sha256":legal_structure::ENGINE_SOURCE_SHA256,"features_source_sha256":legal_structure_features::SOURCE_SHA256,
             "query_source_sha256":hash(include_bytes!("../../../query/src/document_query.rs")),
             "main_source_sha256":hash(include_bytes!("main.rs")),
             "harness_source_sha256":hash(include_bytes!("native_aggregate.rs")),
