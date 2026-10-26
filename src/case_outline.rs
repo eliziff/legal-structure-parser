@@ -180,14 +180,26 @@ fn may_head(line: &str) -> bool {
 }
 
 /// What follows a line, read for whether the line heads it: without the number of the paragraph it
-/// opens ("[11] The court ...").
+/// opens ("[11] The court ...", "11. The court ...", "(a) The court ...").
 fn after_marker(following: &str) -> &str {
     let following = following.trim_start();
     following
         .strip_prefix('[')
         .and_then(|rest| rest.split_once(']'))
         .filter(|(number, _)| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
-        .map_or(following, |(_, rest)| rest)
+        .map(|(_, rest)| rest)
+        .or_else(|| following.split_once(char::is_whitespace).filter(|(token, _)| heading_enumerator(token)).map(|(_, rest)| rest))
+        .unwrap_or(following)
+}
+
+/// A line standing between paragraphs read as the heading of what follows it (`following`): its path
+/// a level at a time ("IV. Analysis A. The Right ..."), or a sentence heading as one level. The
+/// grammar every reader of a judgment's text shares, a PDF's included.
+pub(crate) fn heading_between(line: &str, following: &str) -> Option<Vec<String>> {
+    if !may_head(line) {
+        return None;
+    }
+    heading_levels(line).or_else(|| sentence_heading(line, after_marker(following)).then(|| vec![line.to_owned()]))
 }
 
 /// Reads a judgment's text, as A2AJ and other providers give it (a line to a paragraph, its
@@ -308,24 +320,13 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
         // the paragraph after it opens on that line, is a path its number vouches for.
         let joined = end > start && end < chars.len() && chars[end - 1] != '\n';
         let heading = |index: usize, line: &str| {
-            if !may_head(line) {
-                return None;
-            }
             // The last line, its paragraph's number run in after it, is read as the paragraph reader reads it.
-            let levels = if joined && index + 1 == lines.len() {
-                joined_heading_levels(line).or_else(|| run_in_heading(line).then(|| vec![line.to_owned()]))
-            } else {
-                heading_levels(line)
-            };
-            levels.or_else(|| {
-                let sentence = match lines.get(index + 1) {
-                    Some((_, _, next)) => sentence_heading(line, after_marker(next)),
-                    None => sentence_heading(
-                        line,
-                        after_marker(&slice(end, (end + 200).min(chars.len()))),
-                    ),
-                };
-                sentence.then(|| vec![line.to_owned()])
+            let joined_levels = (joined && index + 1 == lines.len() && may_head(line))
+                .then(|| joined_heading_levels(line).or_else(|| run_in_heading(line).then(|| vec![line.to_owned()])))
+                .flatten();
+            joined_levels.or_else(|| match lines.get(index + 1) {
+                Some((_, _, next)) => heading_between(line, next),
+                None => heading_between(line, &slice(end, (end + 200).min(chars.len()))),
             })
         };
         // Before the reasons, only the headings that open them count: the enumerated ones just

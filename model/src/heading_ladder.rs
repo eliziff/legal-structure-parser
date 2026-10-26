@@ -127,6 +127,23 @@ pub struct HeadingLadder<'a> {
     pub status: HeadingLadderStatus,
 }
 
+/// [`parse_heading_ladder`] over each run the whole sequence starts over at the top (an illegal
+/// restart to level 1), as the readers split them: each run's first index in `candidates`, with
+/// its own ladder.
+pub fn parse_heading_runs<'a>(candidates: &[&'a [EnumeratorInterpretation]]) -> Vec<(usize, HeadingLadder<'a>)> {
+    let mut starts = parse_heading_ladder(candidates.iter().copied())
+        .assignments
+        .iter()
+        .enumerate()
+        .filter(|(_, assignment)| assignment.action == HeadingAction::IllegalRestart && assignment.level == Some(1))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    starts.insert(0, 0);
+    starts.push(candidates.len());
+    starts.dedup();
+    starts.windows(2).map(|run| (run[0], parse_heading_ladder(candidates[run[0]..run[1]].iter().copied()))).collect()
+}
+
 pub fn parse_heading_ladder<'a>(
     candidates: impl IntoIterator<Item = &'a [EnumeratorInterpretation]>,
 ) -> HeadingLadder<'a> {

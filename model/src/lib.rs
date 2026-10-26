@@ -36,7 +36,7 @@ pub use docx::{
     DocxNumberingResult, DocxStructureFacts,
 };
 pub use heading_ladder::{
-    enumerator_interpretations, parse_heading_ladder, EnumeratorInterpretation, HeadingAction,
+    enumerator_interpretations, parse_heading_ladder, parse_heading_runs, EnumeratorInterpretation, HeadingAction,
     HeadingAssignment, HeadingFamilyStats, HeadingLadder, HeadingLadderStatus,
 };
 pub use fingerprint::{document_fingerprint, DocumentFingerprint, DocumentFingerprintCounts};

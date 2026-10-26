@@ -53,6 +53,10 @@ impl LayoutAnalysis for EngineAnalysis {
         crate::layout_cues::styled_heading_text_plausible(text)
     }
 
+    fn heading_between(&self, line: &str, following: &str) -> bool {
+        crate::case_outline::heading_between(line, following).is_some()
+    }
+
     fn has_citation_cue(&self, text: &str) -> bool {
         cues::layout_has_citation_cue(text)
     }
