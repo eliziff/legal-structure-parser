@@ -24,7 +24,7 @@ pub mod text;
 pub mod transcript;
 
 pub use analysis::{install_structure_analysis, structure_analysis, StructureAnalysis};
-pub use legal_layout::{CitationSpan, LayoutAnalysis, NumberingMarker, PARTY_ROLES};
+pub use legal_layout::{ablated, CitationSpan, LayoutAnalysis, NumberingMarker, PARTY_ROLES};
 pub use definitions::{DefinedTerm, DefinitionOccurrence, DefinitionsResult};
 pub use document::{
     CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,

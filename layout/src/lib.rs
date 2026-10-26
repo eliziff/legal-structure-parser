@@ -12,6 +12,14 @@ mod stats;
 pub use measures::*;
 pub use stats::*;
 
+/// Temporary ablation: whether LEGALPDF_ABLATE (comma-separated pass names) leaves `pass` out.
+pub fn ablated(pass: &str) -> bool {
+    static NAMES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| std::env::var("LEGALPDF_ABLATE").unwrap_or_default().split(',').map(str::to_owned).collect())
+        .iter()
+        .any(|name| name == pass)
+}
+
 /// A party's role as a filing, a cover or a judgment prints it, in English or French ("Applicant",
 /// "Respondents", "Amicus Curiae", "Intimée"), as a regular expression's alternatives: the one
 /// vocabulary every reader of party labels, covers and front matter builds its pattern from.

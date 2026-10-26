@@ -144,6 +144,42 @@ pub(super) fn utf16_longer(value: &str, limit: usize) -> bool {
         })
 }
 
+/// Whether a line may head what follows it rather than being matter the judgment quotes: a table's
+/// figure ("1,000.00") has no words, and a quoted enactment's provision opens its first subsection
+/// on its number's line ("399. (1) On motion, the Court may …", "6 (1) Except where …").
+pub(crate) fn may_head(line: &str) -> bool {
+    let mut words = line.split_whitespace();
+    let provision = words.next().is_some_and(|first| first.trim_end_matches('.').bytes().all(|byte| byte.is_ascii_digit() || byte == b'.'))
+        && words.next().is_some_and(|second| {
+            second.len() >= 3 && second.starts_with('(') && second.ends_with(')')
+                && second[1..second.len() - 1].bytes().all(|byte| byte.is_ascii_alphanumeric())
+        });
+    line.chars().any(char::is_alphabetic) && !provision
+}
+
+/// What follows a line, read for whether the line heads it: without the number of the paragraph it
+/// opens ("[11] The court ...", "11. The court ...", "(a) The court ...").
+pub(crate) fn after_marker(following: &str) -> &str {
+    let following = following.trim_start();
+    following
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .filter(|(number, _)| !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()))
+        .map(|(_, rest)| rest)
+        .or_else(|| following.split_once(char::is_whitespace).filter(|(token, _)| heading_enumerator(token)).map(|(_, rest)| rest))
+        .unwrap_or(following)
+}
+
+/// A line standing between paragraphs read as the heading of what follows it (`following`): its path
+/// a level at a time ("IV. Analysis A. The Right ..."), or a sentence heading as one level. The
+/// grammar every reader of a judgment's text shares, a PDF's included.
+pub(crate) fn heading_between(line: &str, following: &str) -> Option<Vec<String>> {
+    if !may_head(line) {
+        return None;
+    }
+    heading_levels(line).or_else(|| sentence_heading(line, after_marker(following)).then(|| vec![line.to_owned()]))
+}
+
 pub(crate) fn sentence_heading(value: &str, following: &str) -> bool {
     let heading = trim_leading_parenthetical(value);
     if utf16_longer(heading, 120) {

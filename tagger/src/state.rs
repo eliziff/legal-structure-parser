@@ -802,8 +802,9 @@ pub fn parsed(structure: &DocumentStructure) -> Result<State, String> {
         }
         for (k, spans) in parts.into_iter().enumerate() {
             let mut part = g.clone();
+            // A later part is known by its first span, as the links to it name it.
             if k > 0 {
-                part.id = if g.id.is_empty() { String::new() } else { format!("{}#{k}", g.id) };
+                part.id = String::new();
                 if part.attributes.contains_key("marker") {
                     part.attributes.insert("marker".into(), json!([]));
                 }
