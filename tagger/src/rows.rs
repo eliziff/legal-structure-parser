@@ -6,7 +6,7 @@
 use crate::labels::{anchor, Label, Locator, Piece};
 use crate::state::State;
 use legal_pdf_core::model::{Line as PdfLine, Page};
-use legal_pdf_core::{dominant_face as dominant, flag_share, median, off_grid_sizes, PageMeasure, BOLD, ITALIC, MONOSPACED, SUPERSCRIPT};
+use legal_pdf_core::{dominant_face as dominant, flag_share, upper_median as median, off_grid_sizes, PageMeasure, BOLD, ITALIC, MONOSPACED, SUPERSCRIPT};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 

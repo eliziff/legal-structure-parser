@@ -413,7 +413,8 @@ fn prose_like(text: &str) -> bool {
 }
 
 fn median(values: Vec<f64>) -> Option<f64> {
-    (!values.is_empty()).then(|| layout::median(values))
+    let values = values.into_iter().filter(|value| value.is_finite()).collect::<Vec<_>>();
+    (!values.is_empty()).then(|| layout::upper_median(values))
 }
 
 fn core_line_label(text: &str) -> Option<String> {
@@ -2235,7 +2236,7 @@ fn note_zone_column_split(lines: &[PairLine<'_>], page: u32) -> Option<f64> {
         .iter()
         .map(|line| (line.bbox[2] - line.bbox[0]) / line.page_width)
         .collect();
-    let (left_width, right_width) = (layout::median(left_widths), layout::median(right_widths));
+    let (left_width, right_width) = (layout::upper_median(left_widths), layout::upper_median(right_widths));
     let wide = left_width.max(right_width);
     if wide > 0.0 && left_width.min(right_width) / wide < 0.60 {
         None

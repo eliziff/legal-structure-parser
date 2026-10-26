@@ -2,6 +2,17 @@
 //! extraction.
 
 /// The median of the finite values, the middle pair averaged; 0 where there are none.
+/// The upper of the two middle values where their count is even (no averaging): a measure that is
+/// one of the values themselves, as the note, column and margin readers take it.
+pub fn upper_median(mut values: Vec<f64>) -> f64 {
+    values.retain(|value| value.is_finite());
+    if values.is_empty() {
+        return 0.0;
+    }
+    let middle = values.len() / 2;
+    *values.select_nth_unstable_by(middle, f64::total_cmp).1
+}
+
 pub fn median(mut values: Vec<f64>) -> f64 {
     values.retain(|value| value.is_finite());
     if values.is_empty() {
