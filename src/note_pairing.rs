@@ -2138,7 +2138,7 @@ fn repair_gaps(
             let residual: Vec<u32> = (interval_low..=interval_high)
                 .filter(|value| unclaimed.contains(value))
                 .collect();
-            let rekeyed = if skipped("sequence_position_rekey") { Vec::new() } else { sequence_position_rekey(&interval, &residual, lines, used_lines) };
+            let rekeyed = sequence_position_rekey(&interval, &residual, lines, used_lines);
             if rekeyed.is_empty() {
                 if let Some(holes) = &mut holes {
                     for value in residual {
@@ -3140,11 +3140,7 @@ fn build_pairs<'a>(
         if let (Some(sequence_holes), Some(holes)) = (&mut sequence_holes, holes) {
             sequence_holes.extend(holes);
         }
-        *segment = if skipped("recover_out_of_order_labels") {
-            repaired
-        } else {
-            recover_out_of_order_labels(repaired, &labels, &mut used, &lines)
-        };
+        *segment = recover_out_of_order_labels(repaired, &labels, &mut used, &lines);
     }
     segments.retain(|segment| !segment.is_empty());
     let endnote = segments
@@ -3216,23 +3212,19 @@ fn build_pairs<'a>(
             .filter(|candidate| !candidate.repaired)
             .count();
         let apparatus = clean >= 3 && 3 * clean >= segment.len();
-        if !skipped("repair_missing_refs") {
-            for (kind, count) in repair_missing_refs(&mut chosen, segment, pool, &lines, endnote) {
+        for (kind, count) in repair_missing_refs(&mut chosen, segment, pool, &lines, endnote) {
                 *ref_repair_counts.entry(kind).or_default() += count;
             }
-        }
-        if !skipped("rekey_same_value_ref_runs") {
-            for (kind, count) in rekey_same_value_ref_runs(&mut chosen, segment, pool, &lines, endnote) {
+        for (kind, count) in rekey_same_value_ref_runs(&mut chosen, segment, pool, &lines, endnote) {
                 *ref_repair_counts.entry(kind).or_default() += count;
             }
-        }
-        let glyphs = if skipped("repair_glyph_refs") { 0 } else { repair_glyph_refs(&mut chosen, segment, &lines, endnote) };
+        let glyphs = repair_glyph_refs(&mut chosen, segment, &lines, endnote);
         if glyphs > 0 {
             *ref_repair_counts
                 .entry("glyph_sequence_repair".to_owned())
                 .or_default() += glyphs;
         }
-        if apparatus && !skipped("repair_page_glyph_refs") {
+        if apparatus {
             let glyphs = repair_page_glyph_refs(&mut chosen, segment, pool, &lines, endnote);
             if glyphs > 0 {
                 *ref_repair_counts
@@ -4346,7 +4338,6 @@ fn materialize(
     }
 }
 
-use legal_structure_model::ablated as skipped;
 
 pub fn pair_footnotes(
     pages: &[Page],
