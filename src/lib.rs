@@ -10,11 +10,9 @@ mod analysis;
 #[cfg(feature = "structure-inference")]
 mod layout_cues;
 #[cfg(feature = "structure-inference")]
-mod note_dropout;
+mod numbering_repair;
 #[cfg(feature = "structure-inference")]
 mod note_pairing;
-#[cfg(feature = "structure-inference")]
-mod paragraph_numbers;
 #[cfg(feature = "structure-inference")]
 mod text_notes;
 #[cfg(feature = "citator")]

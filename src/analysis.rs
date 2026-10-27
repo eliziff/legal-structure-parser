@@ -90,8 +90,8 @@ impl LayoutAnalysis for EngineAnalysis {
     }
 
     fn repair_label_dropouts(&self, pages: &mut [Page]) {
-        crate::note_dropout::repair_label_dropouts(pages);
-        crate::paragraph_numbers::repair_paragraph_numbers(pages);
+        crate::numbering_repair::repair_label_dropouts(pages);
+        crate::numbering_repair::repair_paragraph_numbers(pages);
     }
 }
 
