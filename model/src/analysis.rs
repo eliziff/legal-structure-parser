@@ -10,20 +10,6 @@ use legal_layout::LayoutAnalysis;
 pub trait StructureAnalysis: LayoutAnalysis {
     fn detect_structure_candidate_runs(&self, text: &str) -> Vec<StructureCandidateRun>;
 
-    #[allow(clippy::too_many_arguments)]
-    fn resolve_structure_graph(
-        &self,
-        document_id: String,
-        provider: String,
-        text: &str,
-        source_sha256: Option<String>,
-        nodes: Vec<StructureNode>,
-        runs: &[StructureCandidateRun],
-        evidence: &[CandidateEvidenceV2],
-        note_pairs: &[NotePairClaimV2],
-        diagnostics: Vec<StructureDiagnostic>,
-    ) -> Result<DocumentStructure, EngineError>;
-
     /// Resolve source candidates, then invoke the producer's single outline assembler. The
     /// producer refreshes the revision once it completes the structure.
     #[allow(clippy::too_many_arguments)]

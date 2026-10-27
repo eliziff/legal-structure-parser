@@ -330,6 +330,6 @@ mod case_outline;
 pub use case_outline::{case_outline, CaseOutlineEntry};
 
 #[cfg(feature = "structure-inference")]
-pub use candidates::{detect_structure_candidate_runs, resolve_structure_graph};
+pub use candidates::detect_structure_candidate_runs;
 #[cfg(feature = "journal")]
 pub(crate) use derive::derive_native_structure_evidence;

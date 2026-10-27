@@ -642,33 +642,6 @@ fn marker_readings(label: &str) -> Vec<(String, u32)> {
 }
 
 #[cfg(feature = "structure-inference")]
-pub fn resolve_structure_graph(
-    document_id: String,
-    provider: String,
-    text: &str,
-    source_sha256: Option<String>,
-    nodes: Vec<StructureNode>,
-    runs: &[StructureCandidateRun],
-    evidence: &[CandidateEvidenceV2],
-    note_pairs: &[NotePairClaimV2],
-    diagnostics: Vec<StructureDiagnostic>,
-) -> Result<DocumentStructure, EngineError> {
-    let coordinates = ScalarText::new(text);
-    resolve_structure_graph_with_assembler(
-        document_id,
-        provider,
-        text,
-        source_sha256,
-        nodes,
-        runs,
-        evidence,
-        note_pairs,
-        diagnostics,
-        &mut |nodes| nest_by_numbering(nodes, &coordinates),
-    )
-}
-
-#[cfg(feature = "structure-inference")]
 pub fn resolve_structure_graph_with_assembler(
     document_id: String,
     provider: String,
@@ -1794,65 +1767,3 @@ pub(crate) fn numbering_marker(
     })
 }
 
-/// Every numbered item placed by the document's numbering, read over the whole document: a marker
-/// whose family stands open is that item's sibling and closes the families opened under it; a
-/// family opening at its first value nests under the item before it ("(a)" under "1.", "(i)" under
-/// "(a)"); one opening anywhere else continues an outer count and starts over at the base. A
-/// heading of the document's own closes every family. Each level of the numbering is a level of the
-/// structure.
-fn nest_by_numbering(nodes: &mut [StructureNode], text: &ScalarText<'_>) {
-    let mut order = (0..nodes.len())
-        .filter(|index| {
-            matches!(
-                nodes[*index].kind,
-                NodeKind::ListItem | NodeKind::Paragraph | NodeKind::Section | NodeKind::Heading
-            )
-        })
-        .collect::<Vec<_>>();
-    order.sort_by_key(|index| {
-        (
-            nodes[*index].range.start,
-            std::cmp::Reverse(nodes[*index].range.end),
-        )
-    });
-    let mut stack = Vec::<(Family, usize, u32)>::new();
-    for index in order {
-        let node = &nodes[index];
-        let barrier = node.kind == NodeKind::Heading
-            || node.kind == NodeKind::Section && node.grammar.as_deref() == Some("heading_section");
-        if barrier {
-            stack.clear();
-            continue;
-        }
-        let Some(marker) = node
-            .marker_range
-            .and_then(|range| text.slice(range.start..range.end))
-        else {
-            continue;
-        };
-        let open = |family: Family, value: u32, inserted: bool| {
-            stack.iter().any(|(open, _, last)| {
-                *open == family
-                    && (last.checked_add(1) == Some(value) || inserted && *last == value)
-            })
-        };
-        let Some((family, value)) = marker_family(marker, open) else {
-            continue;
-        };
-        if let Some(position) = stack.iter().rposition(|(open, _, _)| *open == family) {
-            stack.truncate(position + 1);
-            stack[position] = (family, index, value);
-            if position > 0 {
-                let parent = nodes[stack[position - 1].1].id.clone();
-                nodes[index].parent_id = Some(parent);
-            }
-        } else if value == 1 && !stack.is_empty() {
-            let parent = nodes[stack.last().expect("open family").1].id.clone();
-            nodes[index].parent_id = Some(parent);
-            stack.push((family, index, value));
-        } else {
-            stack.clear();
-            stack.push((family, index, value));
-        }
-    }
-}

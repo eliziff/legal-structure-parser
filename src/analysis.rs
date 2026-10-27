@@ -100,31 +100,6 @@ impl StructureAnalysis for EngineAnalysis {
         crate::detect_structure_candidate_runs(text)
     }
 
-    fn resolve_structure_graph(
-        &self,
-        document_id: String,
-        provider: String,
-        text: &str,
-        source_sha256: Option<String>,
-        nodes: Vec<StructureNode>,
-        runs: &[StructureCandidateRun],
-        evidence: &[CandidateEvidenceV2],
-        note_pairs: &[NotePairClaimV2],
-        diagnostics: Vec<StructureDiagnostic>,
-    ) -> Result<DocumentStructure, EngineError> {
-        crate::resolve_structure_graph(
-            document_id,
-            provider,
-            text,
-            source_sha256,
-            nodes,
-            runs,
-            evidence,
-            note_pairs,
-            diagnostics,
-        )
-    }
-
     fn resolve_structure_graph_with_assembler(
         &self,
         document_id: String,
