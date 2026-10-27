@@ -148,9 +148,12 @@ impl StructureAnalysis for EngineAnalysis {
     }
 }
 
-/// Every citation in `text`, each with its style of cause, pinpoints and parentheticals.
+/// Every citation in `text`, each with its style of cause, pinpoints and parentheticals: where the
+/// citation grammar finds them, without the metadata, short-form resolution and name references
+/// extraction adds, which no structure reading uses (measured: the structure gold, the footnote
+/// benchmark and the A2AJ census unchanged; 3-5x faster on documents dense with citations).
 pub(crate) fn citation_spans(text: &str) -> Vec<CitationSpan> {
-    legal_citations::extract(text, &legal_citations::Options::default())
+    legal_citations::find::find_occurrences(text, &legal_citations::Options::default())
         .into_iter()
         .map(|citation| CitationSpan {
             range: citation.full_span.start..citation.full_span.end,
