@@ -457,7 +457,9 @@ impl StructureState {
         let (family, value) = if numeric {
             (1, token.to_owned())
         } else if roman_preferred {
-            (3, roman.unwrap().to_string())
+            // A head of several letters that is no roman numeral ("aa") is no marker this ladder reads.
+            let Some(roman) = roman else { return };
+            (3, roman.to_string())
         } else {
             let Some(alpha) = alpha_value else { return };
             (
