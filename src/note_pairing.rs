@@ -415,27 +415,6 @@ fn median(values: Vec<f64>) -> Option<f64> {
     (!values.is_empty()).then(|| layout::upper_median(values))
 }
 
-fn core_line_label(text: &str) -> Option<String> {
-    static LINE_START: OnceLock<Regex> = OnceLock::new();
-    static PURE: OnceLock<Regex> = OnceLock::new();
-    let line_start =
-        LINE_START.get_or_init(|| Regex::new(r"^\s*(\d{1,4}|[*†‡§¶#])(?:\s|[.)\],:;-])").unwrap());
-    let pure = PURE.get_or_init(|| Regex::new(r"^(?:\d{1,4}|[*†‡§¶#])$").unwrap());
-    let raw = line_start
-        .captures(text)
-        .and_then(|capture| capture.get(1))
-        .map(|value| value.as_str())
-        .or_else(|| {
-            let stripped = text.trim();
-            pure.is_match(stripped).then_some(stripped)
-        })?;
-    Some(
-        normalize_symbol(raw)
-            .parse::<u32>()
-            .map_or_else(|_| normalize_symbol(raw), |number| number.to_string()),
-    )
-}
-
 fn build_lines<'a>(
     pages: &'a [Page],
     protected_citation_spans: &'a BTreeMap<String, Vec<PdfSourceSpan>>,
@@ -505,7 +484,7 @@ fn build_lines<'a>(
     for line in &mut lines {
         let page_local_one = line.region_type == "footnote"
             && line.note_region_mode == "footnote"
-            && core_line_label(&line.text).as_deref() == Some("1");
+            && legal_structure_model::text::label_prefix(&line.text).is_some_and(|prefix| prefix.label == "1");
         if page_local_one {
             line.note_sequence_restart =
                 !page_local_one_pages.is_empty() && !page_local_one_pages.contains(&line.page);

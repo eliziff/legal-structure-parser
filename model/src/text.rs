@@ -50,3 +50,74 @@ pub fn normalize_note_symbol(character: char) -> char {
         other => other,
     }
 }
+
+/// The longest run of note symbols a label prints ("***").
+pub const MAX_SYMBOL_LABEL_LEN: usize = 8;
+
+/// A note label opening a line: its normalized label ("12", "*") and where it sits in the line's
+/// characters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelPrefix {
+    pub label: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// A note label's text normalized: superscript digits as digits, a number without leading zeros,
+/// symbol look-alikes as their symbol.
+pub fn normalize_label(value: &str) -> String {
+    let translated: String = value
+        .trim()
+        .chars()
+        .map(|character| normalize_decimal_digit(character).unwrap_or_else(|| normalize_note_symbol(character)))
+        .collect();
+    translated.parse::<u64>().map_or(translated, |number| number.to_string())
+}
+
+pub fn is_note_symbol(character: char) -> bool {
+    matches!(character, '*' | '∗' | '\u{f02a}' | '†' | '‡' | '§' | '¶' | '#')
+}
+
+fn scalar_suffix(value: &str, start: usize) -> &str {
+    let byte = value.char_indices().nth(start).map_or(value.len(), |at| at.0);
+    &value[byte..]
+}
+
+/// A note label opening a line before its text: up to four digits or a run of note symbols,
+/// followed by a space, or a stop or bracket and a space; "1endnote 1" (an endnote's number glued to
+/// its call) reads as one label.
+pub fn line_start_label_prefix(text: &str) -> Option<LabelPrefix> {
+    let leading = text.chars().take_while(|character| character.is_whitespace()).count();
+    let trimmed = text.trim_start();
+    let symbols: String = trimmed.chars().take(MAX_SYMBOL_LABEL_LEN).take_while(|character| is_note_symbol(*character)).collect();
+    let token = if symbols.is_empty() { trimmed.chars().take(4).take_while(char::is_ascii_digit).collect() } else { symbols };
+    if token.is_empty() {
+        return None;
+    }
+    let token_chars = token.chars().count();
+    let remainder = scalar_suffix(trimmed, token_chars);
+    let embedded_endnote = format!("endnote {token}");
+    if remainder.get(..embedded_endnote.len()).is_some_and(|value| value.eq_ignore_ascii_case(&embedded_endnote)) {
+        return Some(LabelPrefix { label: normalize_label(&token), start: leading, end: leading + token_chars + embedded_endnote.chars().count() });
+    }
+    let mut remainder_chars = remainder.chars();
+    let valid_boundary = match remainder_chars.next() {
+        Some(character) if character.is_whitespace() => true,
+        Some(character) if ".)],:;-".contains(character) => remainder_chars.next().is_none_or(|next| next.is_whitespace()),
+        _ => false,
+    };
+    valid_boundary.then(|| LabelPrefix { label: normalize_label(&token), start: leading, end: leading + token_chars })
+}
+
+/// A note label opening a line, or standing alone on it ("12", "*").
+pub fn label_prefix(text: &str) -> Option<LabelPrefix> {
+    if let Some(prefix) = line_start_label_prefix(text) {
+        return Some(prefix);
+    }
+    let leading = text.chars().take_while(|character| character.is_whitespace()).count();
+    let stripped = text.trim();
+    let count = stripped.chars().count();
+    let pure = ((1..=MAX_SYMBOL_LABEL_LEN).contains(&count) && stripped.chars().all(is_note_symbol))
+        || ((1..=4).contains(&count) && stripped.chars().all(|character| character.is_ascii_digit()));
+    pure.then(|| LabelPrefix { label: normalize_label(stripped), start: leading, end: leading + count })
+}
