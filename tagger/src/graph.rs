@@ -62,6 +62,7 @@ fn kind_of(region: &str) -> Option<(NodeKind, PrimaryRole)> {
         "provision" => (NodeKind::Paragraph, PrimaryRole::Text),
         "list_item" => (NodeKind::ListItem, PrimaryRole::Text),
         "heading" => (NodeKind::Heading, PrimaryRole::Heading),
+        "title" => (NodeKind::Paragraph, PrimaryRole::Title),
         "quote" => (NodeKind::Quote, PrimaryRole::Text),
         "contents" => (NodeKind::Prose, PrimaryRole::Text),
         "caption" => (NodeKind::Paragraph, PrimaryRole::Caption),

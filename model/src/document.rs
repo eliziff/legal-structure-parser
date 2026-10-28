@@ -78,6 +78,8 @@ pub enum NoteKindV2 {
 pub enum PrimaryRole {
     Text,
     Heading,
+    /// The document's own title, set over all of it ("REASONS FOR JUDGMENT", "SECURITY AGREEMENT").
+    Title,
     Caption,
     Instruction,
     Headnote,
