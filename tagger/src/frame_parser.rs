@@ -1,25 +1,24 @@
-//! A parser structure as composition blocks and annotations over its source lines, for the
-//! structure gold to score it.
-use crate::{CompositionAnnotation, CompositionBlock, CompositionLine, CompositionLink, CompositionLinks, SourceSpan};
+//! A parser structure as the grader's frame: blocks and annotations over its source lines.
+use crate::{FrameAnnotation, FrameBlock, FrameLine, FrameLink, FrameLinks, SourceSpan};
 use legal_structure::{DocumentStructure, NodeKind, PrimaryRole, ScalarRange, ScalarText};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Deserialize)]
-pub struct StructureCompositionBlocksRequest {
+pub struct ParserFrameRequest {
     pub structure: DocumentStructure,
-    pub lines: Vec<CompositionLine>,
+    pub lines: Vec<FrameLine>,
 }
 
 #[derive(Serialize)]
-pub struct PreparedCompositionBlocks {
-    pub groups: Vec<CompositionBlock>,
-    pub annotations: Vec<CompositionAnnotation>,
-    pub continuations: CompositionLinks,
+pub struct ParserFrame {
+    pub groups: Vec<FrameBlock>,
+    pub annotations: Vec<FrameAnnotation>,
+    pub continuations: FrameLinks,
 }
 
-type Line<'a> = (&'a CompositionLine, ScalarRange, usize);
+type Line<'a> = (&'a FrameLine, ScalarRange, usize);
 
 /// A UTF-16 range as spans of the source lines it crosses.
 fn line_spans(text: &ScalarText<'_>, lines: &[Line<'_>], ranges: &[ScalarRange]) -> Result<Vec<SourceSpan>, String> {
@@ -39,7 +38,7 @@ fn line_spans(text: &ScalarText<'_>, lines: &[Line<'_>], ranges: &[ScalarRange])
     Ok(result)
 }
 
-pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) -> Result<PreparedCompositionBlocks, String> {
+pub fn parser_frame(request: ParserFrameRequest) -> Result<ParserFrame, String> {
     let structure = &request.structure;
     if structure.offset_unit != "utf16" {
         return Err("Native source coordinates must be UTF-16".into());
@@ -151,7 +150,7 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
         }
     }
     let anchors: HashMap<_, _> = parts.iter().rev().filter_map(|(owner, spans)| owner.map(|index|
-        (candidates[index].0.id.as_str(), crate::composition::anchor(&spans[0])))).collect();
+        (candidates[index].0.id.as_str(), crate::frame::anchor(&spans[0])))).collect();
     // A transcript (its lines numbered) reads by speakers' turns.
     let transcript = structure.nodes.iter().any(|node| node.role == Some(PrimaryRole::LineLabel));
     let mut groups = Vec::new();
@@ -216,8 +215,8 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
         let contents = node.is_some_and(|node| node.grammar.as_deref() == Some("contents") && role == PrimaryRole::Text);
         let kind = if quoted { "quote".to_owned() } else if contents { "contents".to_owned() }
             else { serde_json::to_value(role).unwrap().as_str().unwrap().to_owned() };
-        groups.push(CompositionBlock {
-            id: crate::composition::anchor(&spans[0]),
+        groups.push(FrameBlock {
+            id: crate::frame::anchor(&spans[0]),
             kind,
             line_ids: spans.iter().filter(|span| seen.insert(span.line_id.clone())).map(|span| span.line_id.clone()).collect(),
             spans,
@@ -237,23 +236,23 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
             .ok_or("Continuation has no source fragment")?;
         Ok(format!("{}@{}", line.id, text.scalar_at_utf16(offset).ok_or("Continuation starts inside a source character")? - scalar_start))
     };
-    let link = |next: String, separator: Option<String>, kind: &str| CompositionLink {
+    let link = |next: String, separator: Option<String>, kind: &str| FrameLink {
         next, separator, attributes: BTreeMap::from([("kind".into(), json!(kind))]),
     };
-    let mut continuations = CompositionLinks::new();
+    let mut continuations = FrameLinks::new();
     for found in structure.continuations.as_deref().unwrap_or_default() {
         let kind = serde_json::to_value(found.kind).unwrap().as_str().unwrap().to_owned();
         continuations.entry(kind.clone()).or_default()
             .insert(source_anchor(found.from)?, link(source_anchor(found.to)?, found.separator.clone(), &kind));
     }
     // A unit printed on several pages is one object even where its text seam is not linked.
-    let mut native_parts = HashMap::<&str, Vec<&CompositionBlock>>::new();
+    let mut native_parts = HashMap::<&str, Vec<&FrameBlock>>::new();
     for group in &groups {
         if let Some(id) = group.attributes.get("native_id").and_then(Value::as_str) {
             native_parts.entry(id).or_default().push(group);
         }
     }
-    let page = |group: &CompositionBlock| lines.iter().find(|(line, _, _)| line.id == group.spans[0].line_id).unwrap().0.page;
+    let page = |group: &FrameBlock| lines.iter().find(|(line, _, _)| line.id == group.spans[0].line_id).unwrap().0.page;
     for (id, parts) in native_parts {
         let node = nodes[id];
         let kind = if node.kind == NodeKind::Heading || node.role == Some(PrimaryRole::Heading) { "heading" }
@@ -267,14 +266,14 @@ pub fn structure_composition_blocks(request: StructureCompositionBlocksRequest) 
         }
     }
     let annotations = seed_annotations(structure, &text, &lines)?;
-    Ok(PreparedCompositionBlocks { groups, annotations, continuations })
+    Ok(ParserFrame { groups, annotations, continuations })
 }
 
 /// Notes, tables and the source's own document as annotations over the source lines.
-fn seed_annotations(structure: &DocumentStructure, text: &ScalarText<'_>, lines: &[Line<'_>]) -> Result<Vec<CompositionAnnotation>, String> {
+fn seed_annotations(structure: &DocumentStructure, text: &ScalarText<'_>, lines: &[Line<'_>]) -> Result<Vec<FrameAnnotation>, String> {
     let annotation = |id: &str, kind: &str, spans: Vec<SourceSpan>, attributes: Value| {
         let mut seen = HashSet::new();
-        CompositionAnnotation {
+        FrameAnnotation {
             id: id.to_owned(), kind: kind.to_owned(),
             line_ids: spans.iter().filter(|span| seen.insert(span.line_id.clone())).map(|span| span.line_id.clone()).collect(),
             spans, attributes: attributes.as_object().unwrap().clone(),

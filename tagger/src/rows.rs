@@ -145,7 +145,7 @@ fn markers(candidate: &State, pieces: &[Piece], tier0: &[Label]) -> (Vec<[f64; 3
     let mut marker_of: HashMap<usize, legal_structure::layout::NumberingMarker> = HashMap::new();
     for group in &candidate.groups {
         let Some(k) = group.spans.first().and_then(|s| candidate.index.get(&s.line_id).and_then(|&n| locate.at(n, s.start))) else { continue };
-        let spans: Vec<legal_structure_features::SourceSpan> = serde_json::from_value(group.attributes.get("marker").cloned().unwrap_or_default()).unwrap_or_default();
+        let spans: Vec<crate::SourceSpan> = serde_json::from_value(group.attributes.get("marker").cloned().unwrap_or_default()).unwrap_or_default();
         let text: String = spans.iter().filter_map(|s| candidate.index.get(&s.line_id).map(|&m| {
             let chars = &candidate.lines[m].text;
             chars[s.start.min(chars.len())..s.end.min(chars.len())].iter().collect::<String>()

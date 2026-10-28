@@ -1,6 +1,6 @@
 //! Annotations as logical objects: a note or table continued across fragments read as one.
-use crate::composition::{anchor, spans, Source};
-use crate::{CompositionAnnotation, CompositionLine, CompositionLinks};
+use crate::frame::{anchor, spans, Source};
+use crate::{FrameAnnotation, FrameLine, FrameLinks};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -8,28 +8,28 @@ use std::collections::{HashMap, HashSet};
 type Result<T> = std::result::Result<T, String>;
 
 #[derive(Debug, Deserialize)]
-pub struct CompositionAnnotationsRequest {
-    pub lines: Vec<CompositionLine>,
+pub struct FrameAnnotationsRequest {
+    pub lines: Vec<FrameLine>,
     pub reading_order: Vec<String>,
-    pub annotations: Vec<CompositionAnnotation>,
+    pub annotations: Vec<FrameAnnotation>,
     #[serde(default)]
-    pub continuations: CompositionLinks,
+    pub continuations: FrameLinks,
 }
 
 #[derive(Debug, Serialize)]
-pub struct ResolvedCompositionAnnotations {
-    pub annotations: Vec<CompositionAnnotation>,
+pub struct ResolvedFrameAnnotations {
+    pub annotations: Vec<FrameAnnotation>,
 }
 
 /// Each annotation with the fragments its note or table continuations join to it.
-pub fn resolve_composition_annotations(mut request: CompositionAnnotationsRequest) -> Result<ResolvedCompositionAnnotations> {
+pub fn resolve_frame_annotations(mut request: FrameAnnotationsRequest) -> Result<ResolvedFrameAnnotations> {
     let source = Source::new(&request.lines, &request.reading_order)?;
     for annotation in &mut request.annotations {
         source.membership(&mut annotation.line_ids, &mut annotation.spans)?;
     }
     let annotations = &request.annotations;
     // The annotation of a kind that opens at an anchor, or else holds it.
-    let object = |kind: &str, id: &str| -> Result<Option<&CompositionAnnotation>> {
+    let object = |kind: &str, id: &str| -> Result<Option<&FrameAnnotation>> {
         if let Some(found) = annotations.iter().find(|a| a.kind == kind && anchor(&a.spans[0]) == id) {
             return Ok(Some(found));
         }
@@ -88,5 +88,5 @@ pub fn resolve_composition_annotations(mut request: CompositionAnnotationsReques
         }
         result.push(merged);
     }
-    Ok(ResolvedCompositionAnnotations { annotations: result })
+    Ok(ResolvedFrameAnnotations { annotations: result })
 }

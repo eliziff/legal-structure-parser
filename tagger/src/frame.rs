@@ -1,5 +1,6 @@
-//! Literal source-span composition the structure gold reads: blocks, the documents that own them
-//! and the logical blocks their continuations make. No classification runs here.
+//! The grader's frame: a document as literal source-span blocks and annotations over its lines (the
+//! gold's projection and a parse's alike), the documents that own them and the logical blocks their
+//! continuations make. No classification runs here.
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -13,7 +14,7 @@ pub struct SourceSpan {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CompositionLine {
+pub struct FrameLine {
     pub id: String,
     pub text: String,
     pub page: usize,
@@ -22,7 +23,7 @@ pub struct CompositionLine {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CompositionBlock {
+pub struct FrameBlock {
     #[serde(default)]
     pub id: String,
     pub kind: String,
@@ -38,7 +39,7 @@ pub struct CompositionBlock {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CompositionAnnotation {
+pub struct FrameAnnotation {
     #[serde(default)]
     pub id: String,
     pub kind: String,
@@ -51,29 +52,29 @@ pub struct CompositionAnnotation {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CompositionLink {
+pub struct FrameLink {
     pub next: String,
     pub separator: Option<String>,
     #[serde(flatten)]
     pub attributes: BTreeMap<String, Value>,
 }
 
-pub type CompositionLinks = BTreeMap<String, BTreeMap<String, CompositionLink>>;
+pub type FrameLinks = BTreeMap<String, BTreeMap<String, FrameLink>>;
 
 #[derive(Debug, Deserialize)]
-pub struct CompositionRequest {
-    pub lines: Vec<CompositionLine>,
-    pub groups: Vec<CompositionBlock>,
-    pub annotations: Vec<CompositionAnnotation>,
+pub struct FrameRequest {
+    pub lines: Vec<FrameLine>,
+    pub groups: Vec<FrameBlock>,
+    pub annotations: Vec<FrameAnnotation>,
     pub reading_order: Vec<String>,
     #[serde(default)]
-    pub continuations: CompositionLinks,
+    pub continuations: FrameLinks,
 }
 
 #[derive(Debug, Serialize)]
-pub struct AppliedComposition {
-    pub groups: Vec<CompositionBlock>,
-    pub annotations: Vec<CompositionAnnotation>,
+pub struct AssembledFrame {
+    pub groups: Vec<FrameBlock>,
+    pub annotations: Vec<FrameAnnotation>,
     /// Each logical block's fragments, keyed by its first.
     pub logical_blocks: BTreeMap<String, Vec<String>>,
 }
@@ -87,12 +88,12 @@ pub(crate) fn spans(value: Option<&Value>) -> Result<Vec<SourceSpan>, String> {
 }
 
 pub(crate) struct Source<'a> {
-    pub(crate) lines: HashMap<&'a str, &'a CompositionLine>,
+    pub(crate) lines: HashMap<&'a str, &'a FrameLine>,
     pub(crate) positions: HashMap<&'a str, usize>,
 }
 
 impl<'a> Source<'a> {
-    pub(crate) fn new(lines: &'a [CompositionLine], order: &'a [String]) -> Result<Self, String> {
+    pub(crate) fn new(lines: &'a [FrameLine], order: &'a [String]) -> Result<Self, String> {
         let source = Source {
             lines: lines.iter().map(|line| (line.id.as_str(), line)).collect(),
             positions: order.iter().enumerate().map(|(n, id)| (id.as_str(), n)).collect(),
@@ -133,7 +134,7 @@ impl<'a> Source<'a> {
         Ok((*self.positions.get(line).ok_or("Relationship names absent source")?, offset))
     }
 
-    fn links(&self, layer: Option<&BTreeMap<String, CompositionLink>>) -> BTreeMap<String, String> {
+    fn links(&self, layer: Option<&BTreeMap<String, FrameLink>>) -> BTreeMap<String, String> {
         layer.into_iter().flatten().map(|(id, link)| (self.canonical(id), self.canonical(&link.next))).collect()
     }
 
@@ -142,7 +143,7 @@ impl<'a> Source<'a> {
     }
 }
 
-pub fn apply_structure_composition(mut request: CompositionRequest) -> Result<AppliedComposition, String> {
+pub fn assemble_frame(mut request: FrameRequest) -> Result<AssembledFrame, String> {
     let source = Source::new(&request.lines, &request.reading_order)?;
     for group in &mut request.groups {
         source.membership(&mut group.line_ids, &mut group.spans)?;
@@ -157,13 +158,13 @@ pub fn apply_structure_composition(mut request: CompositionRequest) -> Result<Ap
         group.document = Some(owner);
     }
     let logical_blocks = logical_blocks(&request.groups, &request.annotations, &source, &request.continuations)?;
-    Ok(AppliedComposition { groups: request.groups, annotations: request.annotations, logical_blocks })
+    Ok(AssembledFrame { groups: request.groups, annotations: request.annotations, logical_blocks })
 }
 
 /// Who owns each block: the document holding its note's references, else the innermost document
 /// opened at or before it ("source" before the first).
-fn documents(groups: &[CompositionBlock], annotations: &[CompositionAnnotation], source: &Source<'_>,
-             continuations: &CompositionLinks) -> Result<Vec<String>, String> {
+fn documents(groups: &[FrameBlock], annotations: &[FrameAnnotation], source: &Source<'_>,
+             continuations: &FrameLinks) -> Result<Vec<String>, String> {
     let docs = annotations.iter().filter(|a| a.kind == "document").map(|a| (a.id.as_str(), a)).collect::<HashMap<_, _>>();
     let reference = |id: &str| -> Result<String, String> {
         if docs.contains_key(id) { return Ok(id.to_owned()); }
@@ -229,8 +230,8 @@ fn documents(groups: &[CompositionBlock], annotations: &[CompositionAnnotation],
 }
 
 /// Blocks joined by their paragraph, heading and note continuations, each chain keyed by its first.
-fn logical_blocks(groups: &[CompositionBlock], annotations: &[CompositionAnnotation], source: &Source<'_>,
-                  continuations: &CompositionLinks) -> Result<BTreeMap<String, Vec<String>>, String> {
+fn logical_blocks(groups: &[FrameBlock], annotations: &[FrameAnnotation], source: &Source<'_>,
+                  continuations: &FrameLinks) -> Result<BTreeMap<String, Vec<String>>, String> {
     let blocks = groups.iter().map(|b| b.id.as_str()).collect::<HashSet<_>>();
     let mut links = BTreeMap::new();
     for kind in ["paragraph", "heading"] {

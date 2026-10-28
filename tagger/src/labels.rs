@@ -7,7 +7,7 @@
 use crate::alignment::Alignment;
 use crate::state::{block_id, Gold, State};
 use legal_structure::{LayoutAnalysis};
-use legal_structure_features::{SourceSpan};
+use crate::{SourceSpan};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -218,7 +218,7 @@ pub fn labels(state: &State, region: &dyn Fn(&Piece) -> usize) -> Result<(Vec<Pi
     let mut annotations = state.annotations.clone();
     if !annotations.iter().any(|a| a.kind == "document") && !state.reading_order.is_empty() {
         let first = &state.lines[state.reading_order[0]];
-        annotations.push(legal_structure_features::CompositionAnnotation {
+        annotations.push(crate::FrameAnnotation {
             id: "source".into(), kind: "document".into(), line_ids: vec![first.id.clone()],
             spans: vec![SourceSpan { line_id: first.id.clone(), start: 0, end: first.text.len() }],
             attributes: serde_json::json!({"parent": null}).as_object().unwrap().clone(),

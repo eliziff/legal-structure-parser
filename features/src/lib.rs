@@ -1,6 +1,6 @@
 //! What the products build on the structure engine, apart from it: the note-up graph built from
 //! the local A2AJ store and the A2AJ documents it reads, quote location and verification, passage
-//! links, journal-title search, a printed statute's currency, compositions, document outlines and
+//! links, journal-title search, a printed statute's currency, document outlines and
 //! reading order. The engine's document readers (`legal-structure`) read none of this, so an edit
 //! here leaves them, and every cache keyed on them, untouched.
 
@@ -8,9 +8,6 @@
 pub mod a2aj;
 #[cfg(feature = "citator-graph")]
 pub mod citator_graph;
-mod composition;
-mod composition_annotations;
-mod composition_seed;
 #[cfg(all(feature = "citator", feature = "document-query"))]
 mod journal_titles;
 #[cfg(all(feature = "provider-text", feature = "document-query"))]
@@ -25,9 +22,6 @@ mod quote_location;
 mod quote_verification;
 mod reading_order;
 
-pub use composition::*;
-pub use composition_annotations::*;
-pub use composition_seed::*;
 #[cfg(all(feature = "citator", feature = "document-query"))]
 pub use journal_titles::{journal_title_choice, journal_title_searches, JournalTitleHit, JournalTitleSearch};
 #[cfg(all(feature = "provider-text", feature = "document-query"))]

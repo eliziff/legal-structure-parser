@@ -1,7 +1,7 @@
 //! The scorer's frame: source lines, reading order, blocks over exact source spans, annotations
 //! (notes, tables, documents) and continuations. The gold is projected into it from its typed
 //! lines and units; a parser structure through the composition the apps read.
-use legal_structure_features::{CompositionAnnotation, CompositionBlock, CompositionLine, CompositionLink, CompositionLinks, SourceSpan};
+use crate::{FrameAnnotation, FrameBlock, FrameLine, FrameLink, FrameLinks, SourceSpan};
 use legal_structure_model::DocumentStructure;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -24,9 +24,9 @@ pub struct State {
     /// columns share source lines, so reading order is finer than line order. A parser's state
     /// has none and reads in line order.
     pub span_rank: HashMap<(usize, usize), usize>,
-    pub groups: Vec<CompositionBlock>,
-    pub annotations: Vec<CompositionAnnotation>,
-    pub continuations: CompositionLinks,
+    pub groups: Vec<FrameBlock>,
+    pub annotations: Vec<FrameAnnotation>,
+    pub continuations: FrameLinks,
 }
 
 impl State {
@@ -34,10 +34,10 @@ impl State {
         &self.lines[self.index[id]]
     }
 
-    pub fn composition_lines(&self) -> Vec<CompositionLine> {
+    pub fn composition_lines(&self) -> Vec<FrameLine> {
         self.lines
             .iter()
-            .map(|line| CompositionLine {
+            .map(|line| FrameLine {
                 id: line.id.clone(),
                 text: line.text.iter().collect(),
                 page: line.page,
@@ -59,7 +59,7 @@ pub fn anchor(span: &SourceSpan) -> String {
 }
 
 /// A block's identity: its declared id, or its first span.
-pub fn block_id(block: &CompositionBlock) -> String {
+pub fn block_id(block: &FrameBlock) -> String {
     if !block.id.is_empty() {
         return block.id.clone();
     }
@@ -78,8 +78,8 @@ fn unique_ids(spans: &[SourceSpan]) -> Vec<String> {
         .collect()
 }
 
-fn link(next: String, separator: Option<&str>, kind: &str) -> CompositionLink {
-    CompositionLink {
+fn link(next: String, separator: Option<&str>, kind: &str) -> FrameLink {
+    FrameLink {
         next,
         separator: separator.map(str::to_owned),
         attributes: BTreeMap::from([("kind".to_owned(), json!(kind))]),
@@ -216,7 +216,7 @@ pub struct NotePair {
 
 /// A numbered unit of the parser's is a list item when the parser located it as one; numbered
 /// paragraphs, sections and clauses are not, however the number is written.
-pub fn parser_list_item(block: &CompositionBlock) -> bool {
+pub fn parser_list_item(block: &FrameBlock) -> bool {
     block.attributes.get("locator_kind").and_then(Value::as_str) == Some("list_item")
 }
 
@@ -384,7 +384,7 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
     // depth. The scorer reads them as given; nothing derives a tree.
     let mut groups = Vec::new();
     let mut annotations = Vec::new();
-    let mut continuations = CompositionLinks::new();
+    let mut continuations = FrameLinks::new();
     let mut notes: HashMap<usize, usize> = HashMap::new();
     let trace = std::env::var("LEGALPDF_ASSEMBLE_TRACE").is_ok_and(|p| gold.source_sha256.starts_with(&p));
     for (u, unit) in units.iter().enumerate() {
@@ -428,7 +428,7 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
                     }
                 }
             }
-            groups.push(CompositionBlock {
+            groups.push(FrameBlock {
                 id: String::new(),
                 kind: kind_of(region[u]).to_owned(),
                 line_ids: unique_ids(spans),
@@ -442,7 +442,7 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
                 } else {
                     Vec::new()
                 };
-                annotations.push(CompositionAnnotation {
+                annotations.push(FrameAnnotation {
                     id: format!("note:{}", anchor(&spans[0])),
                     kind: "note".into(),
                     line_ids: unique_ids(spans),
@@ -480,7 +480,7 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
     }
     // The line numbers cut from the lines they number, each a label of its own.
     for label in cut.iter().flat_map(|(labels, _)| labels) {
-        groups.push(CompositionBlock {
+        groups.push(FrameBlock {
             id: String::new(),
             kind: "line_label".into(),
             line_ids: vec![label.line_id.clone()],
@@ -513,7 +513,7 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
             } else {
                 json!(root)
             };
-            annotations.push(CompositionAnnotation {
+            annotations.push(FrameAnnotation {
                 id: format!("document:{}", anchor(&opening)), kind: "document".into(), line_ids: vec![opening.line_id.clone()],
                 spans: vec![opening],
                 attributes: attributes(json!({"kind": null, "parent": parent, "relationship": null, "title": [], "facets": {}})),
@@ -607,7 +607,7 @@ pub fn projected(gold: &Gold) -> Result<State, String> {
                 .collect();
             let populated: Vec<SourceSpan> = grid.iter().flatten().flatten().cloned().collect();
             let first = anchor(&populated[0]);
-            annotations.push(CompositionAnnotation {
+            annotations.push(FrameAnnotation {
                 id: format!("table:{first}"),
                 kind: "table".into(),
                 line_ids: unique_ids(&populated),
@@ -709,15 +709,15 @@ pub fn parsed(structure: &DocumentStructure) -> Result<State, String> {
             text: text.chars().collect(),
             spatial: (*page, k as f64, 0.0),
         });
-        composition.push(CompositionLine {
+        composition.push(FrameLine {
             id: id.clone(),
             text: text.clone(),
             page: *page,
             evidence: BTreeMap::from([("range".to_owned(), json!({"start": start, "end": end}))]),
         });
     }
-    let prepared = legal_structure_features::structure_composition_blocks(
-        legal_structure_features::StructureCompositionBlocksRequest {
+    let prepared = crate::parser_frame(
+        crate::ParserFrameRequest {
             structure: structure.clone(),
             lines: composition,
         },
@@ -744,7 +744,7 @@ pub fn parsed(structure: &DocumentStructure) -> Result<State, String> {
     // composition keeps a paragraph that runs over a page as one block; the gold writes it as parts
     // and a continuation; the two say the same.
     let mut continuations = prepared.continuations;
-    let members_of = |g: &CompositionBlock| -> Vec<SourceSpan> {
+    let members_of = |g: &FrameBlock| -> Vec<SourceSpan> {
         if !g.spans.is_empty() {
             return g.spans.iter().filter(|s| index.contains_key(&s.line_id)).cloned().collect();
         }
@@ -821,7 +821,7 @@ pub fn parsed(structure: &DocumentStructure) -> Result<State, String> {
     let groups = parted;
     // A PDF parser's constituents are sections under the package's own document.
     let mut annotations = prepared.annotations;
-    let roots: Vec<CompositionAnnotation> = annotations
+    let roots: Vec<FrameAnnotation> = annotations
         .iter()
         .filter(|a| a.kind == "document")
         .cloned()
@@ -850,7 +850,7 @@ pub fn parsed(structure: &DocumentStructure) -> Result<State, String> {
                 "annex" => "attachment",
                 _ => "component",
             };
-            annotations.push(CompositionAnnotation {
+            annotations.push(FrameAnnotation {
                 id: node.id.clone(), kind: "document".into(), line_ids: node.line_ids.clone(), spans: Vec::new(),
                 attributes: attributes(json!({"kind": kind, "parent": first, "relationship": relationship, "title": [], "facets": {}})),
             });
