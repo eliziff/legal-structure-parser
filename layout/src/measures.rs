@@ -94,6 +94,67 @@ impl PageMeasure {
     }
 }
 
+/// A page's columns and each line's own: a two-column page's line is short against the page and
+/// full against its column, and a heading centred in its column sits off the page's centre.
+/// Columns are clusters of left edges (lines within 6% of the page's width of the cluster's last
+/// edge) holding three lines or more and wider than 15% of the page; a line belongs to the column
+/// its middle falls in, else the nearest left edge's.
+pub struct Columns {
+    /// Each column's left and right edge, left to right.
+    pub edges: Vec<(f64, f64)>,
+    /// Each line's column.
+    pub of: Vec<usize>,
+}
+
+impl Columns {
+    pub fn of(page: &Page) -> Self {
+        let lines = &page.lines;
+        let width = page.width.max(1.0);
+        let mut order: Vec<usize> = (0..lines.len()).collect();
+        order.sort_by(|&a, &b| lines[a].bbox[0].total_cmp(&lines[b].bbox[0]));
+        let mut clusters: Vec<Vec<usize>> = Vec::new();
+        for slot in order {
+            match clusters.last_mut() {
+                Some(cluster) if lines[slot].bbox[0] - lines[*cluster.last().unwrap()].bbox[0] <= 0.06 * width => cluster.push(slot),
+                _ => clusters.push(vec![slot]),
+            }
+        }
+        let mut edges: Vec<(f64, f64)> = clusters
+            .iter()
+            .filter(|cluster| cluster.len() >= 3)
+            .filter_map(|cluster| {
+                let left = median(cluster.iter().map(|&slot| lines[slot].bbox[0]).collect());
+                let right = quantile(cluster.iter().map(|&slot| lines[slot].bbox[2]).collect(), 0.9);
+                (right - left > 0.15 * width).then_some((left, right))
+            })
+            .collect();
+        if edges.is_empty() {
+            let left = lines.iter().map(|line| line.bbox[0]).fold(f64::MAX, f64::min).min(width);
+            let right = lines.iter().map(|line| line.bbox[2]).fold(0.0, f64::max).max(left + 0.1 * width);
+            edges.push((left, right));
+        }
+        edges.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let of = lines
+            .iter()
+            .map(|line| {
+                let middle = (line.bbox[0] + line.bbox[2]) / 2.0;
+                edges.iter().position(|&(left, right)| left - 0.03 * width <= middle && middle <= right + 0.03 * width).unwrap_or_else(|| {
+                    (0..edges.len()).min_by(|&a, &b| (edges[a].0 - line.bbox[0]).abs().total_cmp(&(edges[b].0 - line.bbox[0]).abs())).unwrap_or(0)
+                })
+            })
+            .collect();
+        Self { edges, of }
+    }
+
+    /// The line's width as a share of its column's, and the offset of its middle from its
+    /// column's as a share of the column's width.
+    pub fn place(&self, line: &Line, slot: usize) -> (f64, f64) {
+        let (left, right) = self.edges[self.of[slot]];
+        let width = (right - left).max(1.0);
+        (((line.bbox[2] - line.bbox[0]) / width).min(2.0), (((line.bbox[0] + line.bbox[2]) / 2.0 - (left + right) / 2.0) / width).clamp(-1.0, 1.0))
+    }
+}
+
 /// A roman numeral's value, its letters all capitals or all small ("xiv", "XIV"), where it is written
 /// as numerals are: "iiii", "ic" and "vx" are not numerals.
 pub fn roman_value(token: &str) -> Option<u32> {

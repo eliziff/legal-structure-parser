@@ -6,12 +6,13 @@
 use crate::labels::{anchor, Label, Locator, Piece};
 use crate::state::State;
 use legal_pdf_core::model::{Line as PdfLine, Page};
-use legal_pdf_core::{dominant_face as dominant, flag_share, upper_median as median, off_grid_sizes, PageMeasure, BOLD, ITALIC, MONOSPACED, SUPERSCRIPT};
+use legal_pdf_core::{dominant_face as dominant, flag_share, upper_median as median, off_grid_sizes, Columns, PageMeasure, BOLD, ITALIC, MONOSPACED, SUPERSCRIPT};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-/// Names of the numeric features, in row order.
-pub const FEATURES: [&str; 62] = [
+/// Names of the numeric features, in row order. The two `col_*` features set the line against its
+/// own column (a two-column page's line is short against the page and full against its column).
+pub const FEATURES: [&str; 64] = [
     "x0", "y0", "x1", "y1", "height", "gap_above", "gap_below", "indent", "right_gap", "width", "centre",
     "size", "bold", "italic", "superscript", "monospace", "size_change", "font_change", "underlined",
     "length", "upper", "digits", "punctuation", "spaces", "starts_digit", "starts_upper", "starts_lower",
@@ -21,6 +22,7 @@ pub const FEATURES: [&str; 62] = [
     "marker", "ordinal", "prefix_depth",
     "style_share", "look_share", "look_lines", "look_pages", "look_length", "size_rank", "doc_size", "body_style",
     "ink", "ink_measured", "weight",
+    "col_width", "col_centre",
 ];
 
 /// The share of the line's characters carrying a span flag; 0 where it has none.
@@ -175,6 +177,7 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
     // Per page: its measures, each line's place in its reading order, and its typical ink.
     struct PageStats {
         measure: PageMeasure,
+        columns: Columns,
         rank: HashMap<usize, usize>,
         ink: f64,
         weight: f64,
@@ -186,6 +189,7 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
             ink: median(page.lines.iter().map(|l| l.ink).filter(|ink| *ink > 0.0).collect()),
             weight: median(page.lines.iter().map(|l| l.weight).filter(|weight| *weight > 0.0).collect()),
             measure,
+            columns: Columns::of(page),
         }
     }).collect();
     let page_count = pages.len().max(1) as f64;
@@ -274,6 +278,8 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
             f64::from(u8::from(own.ink > 0.0)),
             if stats.weight > 0.0 && own.weight > 0.0 { (own.weight / stats.weight).min(3.0) } else { 0.0 },
         ]);
+        let (col_width, col_centre) = stats.columns.place(own, n);
+        values.extend([col_width, col_centre]);
         debug_assert_eq!(values.len(), FEATURES.len());
         ids.push(anchor(candidate, piece));
         page_of.push(p);
