@@ -163,6 +163,7 @@ impl Tagger {
         // only, a marker on starts only, a resumed piece resumes the latest earlier unit of its region.
         let heading = REGIONS.iter().position(|r| *r == "heading").unwrap_or(3);
         let note = REGIONS.iter().position(|r| *r == "note").unwrap_or(5);
+        let contents = REGIONS.iter().position(|r| *r == "contents").unwrap_or(7);
         let column = |name: &str| heads.iter().position(|(h, _, _)| h == name);
         let (c_region, c_start, c_document, c_reference, c_level, c_marker, c_depth) = (
             column("region").ok_or("model without a region head")?, column("start").ok_or("model without a start head")?,
@@ -184,6 +185,12 @@ impl Tagger {
                 document: c_document.is_some_and(|h| c[h] == 1),
                 reference: c_reference.is_some_and(|h| c[h] == 1),
             };
+            // Tier 0's contents lines stand under the model: its contents reader is precise (0.98 on
+            // the structure gold's development split) and the model reads a contents list as text.
+            if tier0[k].region == contents {
+                label = Label { document: label.document, reference: label.reference, ..tier0[k].clone() };
+                start = label.start;
+            }
             if hybrid {
                 // Tier 0 keeps its notes (their pairs are its own), its references and its document starts.
                 if tier0[k].region == note || region == note {

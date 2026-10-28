@@ -6,12 +6,14 @@
 use crate::labels::{anchor, Label, Locator, Piece};
 use crate::state::State;
 use legal_pdf_core::model::{Line as PdfLine, Page};
-use legal_pdf_core::{dominant_face as dominant, flag_share, upper_median as median, off_grid_sizes, PageMeasure, BOLD, ITALIC, MONOSPACED, SUPERSCRIPT};
+use legal_pdf_core::{dominant_face as dominant, flag_share, upper_median as median, off_grid_sizes, Columns, PageMeasure, BOLD, ITALIC, MONOSPACED, SUPERSCRIPT};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-/// Names of the numeric features, in row order.
-pub const FEATURES: [&str; 62] = [
+/// Names of the numeric features, in row order. The `col_*` features set the line against its own
+/// column (`Columns`): a two-column page's line is short against the page and full against its
+/// column, and its blanks and neighbours are the column's, not the other column's at the same height.
+pub const FEATURES: [&str; 74] = [
     "x0", "y0", "x1", "y1", "height", "gap_above", "gap_below", "indent", "right_gap", "width", "centre",
     "size", "bold", "italic", "superscript", "monospace", "size_change", "font_change", "underlined",
     "length", "upper", "digits", "punctuation", "spaces", "starts_digit", "starts_upper", "starts_lower",
@@ -21,6 +23,8 @@ pub const FEATURES: [&str; 62] = [
     "marker", "ordinal", "prefix_depth",
     "style_share", "look_share", "look_lines", "look_pages", "look_length", "size_rank", "doc_size", "body_style",
     "ink", "ink_measured", "weight",
+    "col_width", "col_centre", "col_indent", "col_right_gap", "col_count", "col_margin", "col_gap_above", "col_gap_below",
+    "col_prev_width", "col_next_width", "col_prev_same_look", "col_next_same_look",
 ];
 
 /// The share of the line's characters carrying a span flag; 0 where it has none.
@@ -175,6 +179,7 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
     // Per page: its measures, each line's place in its reading order, and its typical ink.
     struct PageStats {
         measure: PageMeasure,
+        columns: Columns,
         rank: HashMap<usize, usize>,
         ink: f64,
         weight: f64,
@@ -185,6 +190,7 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
             rank: measure.order.iter().enumerate().map(|(k, &n)| (n, k)).collect(),
             ink: median(page.lines.iter().map(|l| l.ink).filter(|ink| *ink > 0.0).collect()),
             weight: median(page.lines.iter().map(|l| l.weight).filter(|weight| *weight > 0.0).collect()),
+            columns: Columns::of(page),
             measure,
         }
     }).collect();
@@ -273,6 +279,24 @@ pub fn document(pages: &[Page], candidate: &State, pieces: &[Piece], tier0: &[La
             if stats.ink > 0.0 && own.ink > 0.0 { (own.ink / stats.ink).min(3.0) } else { 0.0 },
             f64::from(u8::from(own.ink > 0.0)),
             if stats.weight > 0.0 && own.weight > 0.0 { (own.weight / stats.weight).min(3.0) } else { 0.0 },
+        ]);
+        // The line against its own column and its column neighbours.
+        let columns = &stats.columns;
+        let same_look = |other: Option<usize>| other.map_or(0.0, |m| f64::from(u8::from(look_of(&page.lines[m]) == look_of(own))));
+        let neighbour_width = |other: Option<usize>| other.map_or(0.0, |m| columns.width(&page.lines[m], m).min(2.0));
+        values.extend([
+            columns.width(own, n).min(2.0),
+            columns.centre(own, n).clamp(-1.0, 1.0),
+            columns.indent(own, n).clamp(-1.0, 1.0),
+            ((columns.edges[columns.of[n]].1 - x1) / columns.column_width(n)).clamp(-1.0, 1.0),
+            columns.edges.len().min(4) as f64,
+            f64::from(u8::from(columns.margin[n])),
+            columns.gap_above(&page.lines, n),
+            columns.gap_below(&page.lines, n),
+            neighbour_width(columns.above[n]),
+            neighbour_width(columns.below[n]),
+            same_look(columns.above[n]),
+            same_look(columns.below[n]),
         ]);
         debug_assert_eq!(values.len(), FEATURES.len());
         ids.push(anchor(candidate, piece));

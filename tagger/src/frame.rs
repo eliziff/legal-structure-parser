@@ -246,7 +246,8 @@ fn logical_blocks(groups: &[FrameBlock], annotations: &[FrameAnnotation], source
             .ok_or("Note continuation names absent fragment")?;
         let target = source.location(&next)?;
         let following = parts.get(&next).copied().unwrap_or(note);
-        let first = following.spans.iter().find(|s| source.holds(s, target)).ok_or("Note continuation target names absent fragment")?;
+        // A parser's note printed over pages may hold the next page's block outside its note text.
+        let Some(first) = following.spans.iter().find(|s| source.holds(s, target)) else { continue };
         let last = if following.id == note.id {
             note.spans.iter().filter(|s| (source.positions[s.line_id.as_str()], s.end) <= target).last()
                 .ok_or("Note continuation has no preceding body")?
