@@ -178,6 +178,7 @@ dependencies = [
 [[package]]
 name = "diff-match-patch-rs"
 version = "0.5.1"
+source = "git+https://github.com/eliziff/common-law-cite.git?rev=6d7549c61d5794533847a4a891e8ab1e49ac9966#6d7549c61d5794533847a4a891e8ab1e49ac9966"
 dependencies = [
  "chrono",
  "percent-encoding",
@@ -525,6 +526,7 @@ dependencies = [
 [[package]]
 name = "legal-citations"
 version = "0.1.0"
+source = "git+https://github.com/eliziff/common-law-cite.git?rev=6d7549c61d5794533847a4a891e8ab1e49ac9966#6d7549c61d5794533847a4a891e8ab1e49ac9966"
 dependencies = [
  "aho-corasick",
  "chrono",
@@ -559,6 +561,7 @@ dependencies = [
 [[package]]
 name = "legal-grammar"
 version = "0.1.0"
+source = "git+https://github.com/eliziff/common-law-cite.git?rev=6d7549c61d5794533847a4a891e8ab1e49ac9966#6d7549c61d5794533847a4a891e8ab1e49ac9966"
 dependencies = [
  "fancy-regex",
  "flate2",
@@ -631,6 +634,7 @@ dependencies = [
 [[package]]
 name = "legal-text"
 version = "0.1.0"
+source = "git+https://github.com/eliziff/common-law-cite.git?rev=6d7549c61d5794533847a4a891e8ab1e49ac9966#6d7549c61d5794533847a4a891e8ab1e49ac9966"
 
 [[package]]
 name = "libc"
