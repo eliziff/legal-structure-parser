@@ -24,7 +24,7 @@ quote-verification = ["document-query"]
 legal-structure = { path = ".." }
 legal-structure-model = { path = "../model" }
 legal-document-query = { path = "../query", optional = true }
-legal-citations = { path = "../../common-law-cite/crates/legal-citations", optional = true }
+legal-citations = { workspace = true, optional = true }
 regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }

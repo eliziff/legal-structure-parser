@@ -585,6 +585,20 @@ dependencies = [
  "legal-document-query",
  "legal-structure-model",
  "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "legal-structure-features"
+version = "0.1.0"
+dependencies = [
+ "legal-citations",
+ "legal-document-query",
+ "legal-structure",
+ "legal-structure-model",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

@@ -13,6 +13,12 @@ members = ["features", "layout", "model", "python", "query"]
 default-members = ["."]
 resolver = "2"
 
+# common-law-cite is a repository of its own, pinned here; a checkout beside it overrides the pin with a
+# [patch] in its own Cargo configuration (as Beaver's does), never by a path into another repository.
+[workspace.dependencies]
+legal-citations = { git = "https://github.com/eliziff/common-law-cite.git", rev = "8fb4f99ad0e933ff7ba6ca7b12d9c81baa81570d" }
+legal-text = { git = "https://github.com/eliziff/common-law-cite.git", rev = "8fb4f99ad0e933ff7ba6ca7b12d9c81baa81570d" }
+
 [features]
 # Every provider adapter is built by default; a jurisdiction's instantiation builds only its own.
 default = ["canada", "us", "uk", "journal", "local-pdf"]
@@ -37,7 +43,7 @@ journal = []
 [dependencies]
 legal-structure-model = { path = "model" }
 legal-document-query = { path = "query", optional = true }
-legal-citations = { path = "../common-law-cite/crates/legal-citations", optional = true }
+legal-citations = { workspace = true, optional = true }
 aho-corasick = "1.1"
 regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
