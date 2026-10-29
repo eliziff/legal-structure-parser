@@ -178,7 +178,7 @@ dependencies = [
 [[package]]
 name = "diff-match-patch-rs"
 version = "0.5.1"
-source = "git+https://github.com/eliziff/common-law-cite.git?rev=0be1463fd08236aebd855524f117a06ccfa00001#0be1463fd08236aebd855524f117a06ccfa00001"
+source = "git+https://github.com/eliziff/common-law-cite.git?rev=4432a1aedf4e480a56c8aa18969187804ed7b258#4432a1aedf4e480a56c8aa18969187804ed7b258"
 dependencies = [
  "chrono",
  "percent-encoding",
@@ -526,7 +526,7 @@ dependencies = [
 [[package]]
 name = "legal-citations"
 version = "0.1.0"
-source = "git+https://github.com/eliziff/common-law-cite.git?rev=0be1463fd08236aebd855524f117a06ccfa00001#0be1463fd08236aebd855524f117a06ccfa00001"
+source = "git+https://github.com/eliziff/common-law-cite.git?rev=4432a1aedf4e480a56c8aa18969187804ed7b258#4432a1aedf4e480a56c8aa18969187804ed7b258"
 dependencies = [
  "aho-corasick",
  "chrono",
@@ -561,7 +561,7 @@ dependencies = [
 [[package]]
 name = "legal-grammar"
 version = "0.1.0"
-source = "git+https://github.com/eliziff/common-law-cite.git?rev=0be1463fd08236aebd855524f117a06ccfa00001#0be1463fd08236aebd855524f117a06ccfa00001"
+source = "git+https://github.com/eliziff/common-law-cite.git?rev=4432a1aedf4e480a56c8aa18969187804ed7b258#4432a1aedf4e480a56c8aa18969187804ed7b258"
 dependencies = [
  "fancy-regex",
  "flate2",
@@ -634,7 +634,7 @@ dependencies = [
 [[package]]
 name = "legal-text"
 version = "0.1.0"
-source = "git+https://github.com/eliziff/common-law-cite.git?rev=0be1463fd08236aebd855524f117a06ccfa00001#0be1463fd08236aebd855524f117a06ccfa00001"
+source = "git+https://github.com/eliziff/common-law-cite.git?rev=4432a1aedf4e480a56c8aa18969187804ed7b258#4432a1aedf4e480a56c8aa18969187804ed7b258"
 
 [[package]]
 name = "libc"
