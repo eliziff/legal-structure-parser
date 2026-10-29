@@ -5,6 +5,8 @@ edition = "2021"
 license = "MIT"
 description = "The document-structure model, text coordinates and analysis seam shared by legal-structure and the parsers that feed it"
 repository = "https://github.com/eliziff/legal-structure-parser"
+# Publishes where legal-layout's sources are to dependents' build scripts (build.rs).
+links = "legal_structure_model"
 
 [dependencies]
 legal-layout = { path = "../layout" }
