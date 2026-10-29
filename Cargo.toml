@@ -16,8 +16,8 @@ resolver = "2"
 # common-law-cite is a repository of its own, pinned here; a checkout beside it overrides the pin with a
 # [patch] in its own Cargo configuration (as Beaver's does), never by a path into another repository.
 [workspace.dependencies]
-legal-citations = { git = "https://github.com/eliziff/common-law-cite.git", rev = "29aca7d7d3b1c81b96d6d076f3d52d95b3b939f2" }
-legal-text = { git = "https://github.com/eliziff/common-law-cite.git", rev = "29aca7d7d3b1c81b96d6d076f3d52d95b3b939f2" }
+legal-citations = { git = "https://github.com/eliziff/common-law-cite.git", rev = "0be1463fd08236aebd855524f117a06ccfa00001" }
+legal-text = { git = "https://github.com/eliziff/common-law-cite.git", rev = "0be1463fd08236aebd855524f117a06ccfa00001" }
 
 [features]
 # Every provider adapter is built by default; a jurisdiction's instantiation builds only its own.
