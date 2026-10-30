@@ -88,10 +88,10 @@ pub use text::{
 
 pub(crate) use legal_structure_model::EvidenceKind;
 pub use legal_structure_model::{
-    CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, DetectionProfile, EngineError,
+    CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, CandidateRoleV2, DetectionProfile, EngineError,
     NoteBodyV2, NotePairClaimV2, NotePairSupportV2, Origin, ResolutionProofV2, ResolutionRuleV2, ScalarRange, Scope,
     LayoutAnalysis, ScopeKind, StructureAnalysis, StructureCandidateRun, StructureMarkerCandidate, TextAnchorV2,
-    DOCUMENT_STRUCTURE_SCHEMA,
+    UnitRole, DOCUMENT_STRUCTURE_SCHEMA,
 };
 pub const ENGINE_SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_ENGINE_SHA256");
 const ENGINE_ORIGIN: &str = "legalpdf.structure-engine";
@@ -252,29 +252,10 @@ impl DocumentInput {
 }
 
 #[cfg(feature = "structure-inference")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ResolvedRole {
-    NumberedParagraph,
-    Section,
-    ListItem,
-}
-
-#[cfg(feature = "structure-inference")]
-impl ResolvedRole {
-    pub(crate) fn node_kind(self) -> NodeKind {
-        match self {
-            Self::NumberedParagraph => NodeKind::Paragraph,
-            Self::Section => NodeKind::Section,
-            Self::ListItem => NodeKind::ListItem,
-        }
-    }
-}
-
-#[cfg(feature = "structure-inference")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedCandidate<'a> {
     pub(crate) candidate: &'a StructureMarkerCandidate,
-    pub(crate) role: Option<ResolvedRole>,
+    pub(crate) role: Option<UnitRole>,
     pub(crate) proof: ResolutionProofV2,
     pub(crate) page_indexes: &'a [usize],
     pub(crate) line_ids: &'a [String],

@@ -15,11 +15,13 @@ pub mod docx;
 pub mod fingerprint;
 mod heading_ladder;
 pub mod instrument;
+pub mod judgment;
 /// Laid-out pages and lines and note pairs, which the document model builds on.
 pub use legal_layout as layout;
 pub use legal_layout::{NotePairSupportV2, ScalarRange};
 pub mod locator;
 pub mod numeric_sequence;
+pub mod statute;
 pub mod text;
 pub mod transcript;
 
@@ -271,6 +273,39 @@ pub enum ResolutionRuleV2 {
 pub struct ResolutionProofV2 {
     pub rule: ResolutionRuleV2,
     pub observations: Vec<CandidateObservationV2>,
+}
+
+/// The unit a numbering marker opens: one of the text's numbered paragraphs, a section or clause,
+/// or a list's item.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnitRole {
+    Paragraph,
+    Section,
+    Item,
+}
+
+impl UnitRole {
+    /// The kind of node the unit is.
+    pub fn node_kind(self) -> NodeKind {
+        match self {
+            Self::Paragraph => NodeKind::Paragraph,
+            Self::Section => NodeKind::Section,
+            Self::Item => NodeKind::ListItem,
+        }
+    }
+}
+
+/// A numbering candidate's role: the unit it opens, or none, and the rule that decided it; and
+/// whether its number counts in its text (the next of its count after the last of that count read
+/// before it, or that last one).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CandidateRoleV2 {
+    pub candidate_id: String,
+    pub role: Option<UnitRole>,
+    pub rule: ResolutionRuleV2,
+    #[serde(default)]
+    pub counted: bool,
 }
 
 /// An authoritative table cell a document's text was rendered from, in UTF-16 offsets.

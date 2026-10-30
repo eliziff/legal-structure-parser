@@ -3,12 +3,12 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 #[cfg(feature = "structure-inference")]
-pub fn detect_structure_candidate_runs(value: &str) -> Vec<StructureCandidateRun> {
+pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<StructureCandidateRun> {
     let text = ScalarText::new(value);
     let mut runs = inference::raw_numeric_runs(&text);
     let mut raw_enumerators = inference::raw_enumerator_runs(&text);
     raw_enumerators.extend(inference::raw_bullet_runs(&text));
-    let points = inference::detect_instrument_grammar(&text, false);
+    let points = inference::detect_instrument_grammar(&text, refinements);
     let parent_indexes = points
         .iter()
         .enumerate()
@@ -205,16 +205,16 @@ fn smallest_container(
 /// The kind a numbering's family fixes, as the structure gold's numbering rule does: numbers,
 /// decimals ("1.01") and bare capitals ("A." recitals) are the document's own numbered
 /// paragraphs; letters, roman numerals, bullets and a bracketed capital are a list's items.
-fn family_kind(label: &str) -> ResolvedRole {
+fn family_kind(label: &str) -> UnitRole {
     let token = label.trim().trim_start_matches('*');
     let bare = token.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '.' | ':' | '-'));
     let bracketed = token.starts_with(['(', '[']);
     let digits = bare.starts_with(|c: char| c.is_ascii_digit()) && bare.chars().all(|c| c.is_ascii_digit() || c == '.');
     let capital = !bracketed && bare.chars().count() == 1 && bare.chars().all(|c| c.is_ascii_uppercase());
     if digits || capital {
-        ResolvedRole::NumberedParagraph
+        UnitRole::Paragraph
     } else {
-        ResolvedRole::ListItem
+        UnitRole::Item
     }
 }
 
@@ -236,9 +236,9 @@ fn opens_count(label: &str) -> bool {
 fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>], resolved: &mut [ResolvedCandidate<'_>]) {
     let own = |item: &ResolvedCandidate<'_>| {
         !item.proof.observations.contains(&CandidateObservationV2::Quotation)
-            && matches!(item.role, Some(ResolvedRole::NumberedParagraph | ResolvedRole::ListItem))
+            && matches!(item.role, Some(UnitRole::Paragraph | UnitRole::Item))
     };
-    let kinds: Vec<Option<ResolvedRole>> = runs
+    let kinds: Vec<Option<UnitRole>> = runs
         .iter()
         .map(|run| run.markers.first().filter(|_| run.grammar != CandidateGrammar::Hierarchy).map(|marker| family_kind(&marker.label)))
         .collect();
@@ -253,7 +253,7 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
         .iter()
         .zip(&kinds)
         .map(|(span, kind)| {
-            let listed = *kind == Some(ResolvedRole::ListItem) && span.clone().any(|i| own(&resolved[i]));
+            let listed = *kind == Some(UnitRole::Item) && span.clone().any(|i| own(&resolved[i]));
             span.clone().filter(|&i| own(&resolved[i]) || listed && unread(&resolved[i])).collect()
         })
         .collect();
@@ -266,15 +266,15 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
         for &i in &items[k] {
             let candidate = resolved[i].candidate;
             let kind = if decimal(&candidate.label)
-                || (candidate.level == 0 && family_kind(&candidate.label) == ResolvedRole::NumberedParagraph)
+                || (candidate.level == 0 && family_kind(&candidate.label) == UnitRole::Paragraph)
             {
-                ResolvedRole::NumberedParagraph
+                UnitRole::Paragraph
             } else {
-                ResolvedRole::ListItem
+                UnitRole::Item
             };
             if resolved[i].role != Some(kind) {
                 resolved[i].role = Some(kind);
-                resolved[i].proof.rule = if kind == ResolvedRole::NumberedParagraph {
+                resolved[i].proof.rule = if kind == UnitRole::Paragraph {
                     ResolutionRuleV2::RootedNumericProse
                 } else {
                     ResolutionRuleV2::ListItemLayout
@@ -284,24 +284,24 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
     }
     // Each paragraph run's markers and paragraph ends, in reading order.
     let outer: Vec<(usize, Vec<(usize, usize)>)> = (0..runs.len())
-        .filter(|&k| kinds[k] == Some(ResolvedRole::NumberedParagraph))
+        .filter(|&k| kinds[k] == Some(UnitRole::Paragraph))
         .map(|k| (k, items[k].iter().map(|&i| (resolved[i].candidate.marker_range.start, resolved[i].candidate.range.end)).collect()))
         .collect();
     for (k, kind) in kinds.iter().enumerate() {
         let (Some(mut kind), Some(&first), Some(&last)) = (*kind, items[k].first(), items[k].last()) else {
             continue;
         };
-        if kind == ResolvedRole::NumberedParagraph && opens_count(&resolved[first].candidate.label) {
+        if kind == UnitRole::Paragraph && opens_count(&resolved[first].candidate.label) {
             let (opens, closes) = (resolved[first].candidate.marker_range.start, resolved[last].candidate.marker_range.start);
             let inside = outer.iter().filter(|(other, _)| *other != k).any(|(_, marks)| {
                 let at = marks.partition_point(|(start, _)| *start < opens);
                 at > 0 && marks.get(at).map_or(opens < marks[at - 1].1, |next| next.0 > closes)
             });
             if inside {
-                kind = ResolvedRole::ListItem;
+                kind = UnitRole::Item;
             }
         }
-        let rule = if kind == ResolvedRole::NumberedParagraph {
+        let rule = if kind == UnitRole::Paragraph {
             ResolutionRuleV2::RootedNumericProse
         } else {
             ResolutionRuleV2::ListItemLayout
@@ -321,19 +321,12 @@ thread_local! {
     static TRACE_DOCUMENT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }
 
-pub(crate) fn resolve_structure_candidates<'a>(
-    runs: &'a [StructureCandidateRun],
+/// Each candidate's evidence by its id. Every candidate has an id of its own, and every item of
+/// evidence names one candidate, once, with its pages and lines.
+fn evidence_by_candidate<'a>(
+    runs: &[StructureCandidateRun],
     evidence: &'a [CandidateEvidenceV2],
-) -> Result<Vec<ResolvedCandidate<'a>>, EngineError> {
-    let mut provision_starts = runs
-        .iter()
-        .filter(|run| run.grammar == CandidateGrammar::Hierarchy && run.rooted && run.consecutive)
-        .flat_map(|run| {
-            run.markers
-                .iter()
-                .map(|candidate| candidate.marker_range.start)
-        })
-        .collect::<HashSet<_>>();
+) -> Result<HashMap<&'a str, &'a CandidateEvidenceV2>, EngineError> {
     let mut candidate_ids = HashSet::new();
     for run in runs {
         for candidate in &run.markers {
@@ -372,9 +365,60 @@ pub(crate) fn resolve_structure_candidates<'a>(
             )));
         }
     }
-    if std::env::var_os("LEGALPDF_CANDIDATE_TRACE").is_some() {
-        // One line per raw marker before resolution: which run read it, and where it sits.
-        let document = TRACE_DOCUMENT.with(|d| d.borrow().clone());
+    Ok(evidence_by_candidate)
+}
+
+/// A candidate's observations, each once, in the order its evidence gives them.
+fn distinct_observations(item: Option<&CandidateEvidenceV2>) -> Vec<CandidateObservationV2> {
+    let mut seen = HashSet::new();
+    item.map_or_else(Vec::new, |item| {
+        item.observations
+            .iter()
+            .copied()
+            .filter(|observation| seen.insert(*observation))
+            .collect()
+    })
+}
+
+/// Each candidate of `runs` resolved, in text order, to the unit it opens, if any, and whether its
+/// number counts (`counted_markers`).
+pub(crate) fn resolve_candidates(
+    runs: &[StructureCandidateRun],
+    evidence: &[CandidateEvidenceV2],
+) -> Result<Vec<CandidateRoleV2>, EngineError> {
+    let counted = counted_markers(runs);
+    Ok(resolve_structure_candidates(runs, evidence, &counted)?
+        .into_iter()
+        .map(|resolved| CandidateRoleV2 {
+            candidate_id: resolved.candidate.id.clone(),
+            role: resolved.role,
+            rule: resolved.proof.rule,
+            counted: counted.contains(&resolved.candidate.marker_range.start),
+        })
+        .collect())
+}
+
+/// The candidates of `runs` in the roles `roles` give them, each with its evidence's pages, lines
+/// and observations, in text order. Every candidate has one role.
+pub(crate) fn resolved_from_roles<'a>(
+    runs: &'a [StructureCandidateRun],
+    evidence: &'a [CandidateEvidenceV2],
+    roles: &[CandidateRoleV2],
+) -> Result<Vec<ResolvedCandidate<'a>>, EngineError> {
+    let evidence_by_candidate = evidence_by_candidate(runs, evidence)?;
+    let mut role_by_candidate = HashMap::with_capacity(roles.len());
+    for role in roles {
+        if role_by_candidate.insert(role.candidate_id.as_str(), role).is_some() {
+            return Err(EngineError::invalid(format!(
+                "candidate '{}' has duplicate roles",
+                role.candidate_id
+            )));
+        }
+    }
+    let trace = std::env::var_os("LEGALPDF_CANDIDATE_TRACE").is_some();
+    let document = if trace { TRACE_DOCUMENT.with(|d| d.borrow().clone()) } else { String::new() };
+    if trace {
+        // One line per raw marker: which run read it, and where it sits.
         for run in runs {
             for candidate in &run.markers {
                 let item = evidence_by_candidate.get(candidate.id.as_str());
@@ -388,6 +432,58 @@ pub(crate) fn resolve_structure_candidates<'a>(
             }
         }
     }
+    let mut resolved = Vec::with_capacity(roles.len());
+    for run in runs {
+        for candidate in &run.markers {
+            let Some(role) = role_by_candidate.remove(candidate.id.as_str()) else {
+                return Err(EngineError::invalid(format!("candidate '{}' has no role", candidate.id)));
+            };
+            let item = evidence_by_candidate.get(candidate.id.as_str()).copied();
+            let observations = distinct_observations(item);
+            if trace {
+                // One line per candidate: where it is, what it became and why.
+                let first = item.and_then(|i| i.line_ids.first()).map(String::as_str).unwrap_or("");
+                let page = item.and_then(|i| i.page_indexes.first()).copied().unwrap_or(usize::MAX);
+                let snippet: String = candidate.label.replace(['\t', '\n'], " ");
+                eprintln!(
+                    "ctrace\t{document}\t{page}\t{first}\t{:?}\t{:?}\t{:?}\trooted={}\tconsecutive={}\t{:?}\t{snippet}",
+                    role.role, role.rule, run.grammar, run.rooted, run.consecutive, observations
+                );
+            }
+            resolved.push(ResolvedCandidate {
+                candidate,
+                role: role.role,
+                proof: ResolutionProofV2 { rule: role.rule, observations },
+                page_indexes: item.map_or(&[], |item| item.page_indexes.as_slice()),
+                line_ids: item.map_or(&[], |item| item.line_ids.as_slice()),
+            });
+        }
+    }
+    if let Some(unknown) = roles.iter().find(|role| role_by_candidate.contains_key(role.candidate_id.as_str())) {
+        return Err(EngineError::invalid(format!(
+            "role names unknown candidate '{}'",
+            unknown.candidate_id
+        )));
+    }
+    resolved.sort_by_key(|value| (value.candidate.range.start, value.candidate.range.end));
+    Ok(resolved)
+}
+
+pub(crate) fn resolve_structure_candidates<'a>(
+    runs: &'a [StructureCandidateRun],
+    evidence: &'a [CandidateEvidenceV2],
+    counted: &HashSet<usize>,
+) -> Result<Vec<ResolvedCandidate<'a>>, EngineError> {
+    let mut provision_starts = runs
+        .iter()
+        .filter(|run| run.grammar == CandidateGrammar::Hierarchy && run.rooted && run.consecutive)
+        .flat_map(|run| {
+            run.markers
+                .iter()
+                .map(|candidate| candidate.marker_range.start)
+        })
+        .collect::<HashSet<_>>();
+    let evidence_by_candidate = evidence_by_candidate(runs, evidence)?;
     // A count of numbers printed with their period ("1.", "2.") that the count from 1 reads is the
     // text's numbered paragraphs, not its sections: a statute prints its sections' numbers bare.
     // Their sub-items are then lists.
@@ -482,21 +578,13 @@ pub(crate) fn resolve_structure_candidates<'a>(
     // parser's composed reading of a paragraph nearly always is (99%), and a table's or a form's
     // cell is not without prose after it. The local witnesses that read lists (layout, syntax, a
     // composed list reading) add nothing to a count, so they decide only what a marker is.
-    let counted = counted_markers(runs);
     let mut resolved = Vec::new();
     let mut spans = Vec::with_capacity(runs.len());
     for run in runs {
         let run_start = resolved.len();
         for candidate in &run.markers {
             let item = evidence_by_candidate.get(candidate.id.as_str()).copied();
-            let mut seen_observations = HashSet::new();
-            let observations = item.map_or_else(Vec::new, |item| {
-                item.observations
-                    .iter()
-                    .copied()
-                    .filter(|observation| seen_observations.insert(*observation))
-                    .collect()
-            });
+            let observations = distinct_observations(item);
             let seen = |observation: CandidateObservationV2| observations.contains(&observation);
             let vetoed = seen(CandidateObservationV2::Furniture) || seen(CandidateObservationV2::TranscriptLineNumber);
             let marker = !vetoed
@@ -513,12 +601,12 @@ pub(crate) fn resolve_structure_candidates<'a>(
                 && run.grammar != CandidateGrammar::Enumerator
             {
                 (
-                    Some(ResolvedRole::NumberedParagraph),
+                    Some(UnitRole::Paragraph),
                     ResolutionRuleV2::RootedNumericProse,
                 )
             } else if seen(CandidateObservationV2::ComposedListItem) {
                 (
-                    Some(ResolvedRole::ListItem),
+                    Some(UnitRole::Item),
                     ResolutionRuleV2::ListItemLayout,
                 )
             // A number a statute's sections claim is theirs, not a paragraph's.
@@ -528,7 +616,7 @@ pub(crate) fn resolve_structure_candidates<'a>(
                 (None, ResolutionRuleV2::InsufficientEvidence)
             } else if run.grammar == CandidateGrammar::Numeric {
                 (
-                    Some(ResolvedRole::NumberedParagraph),
+                    Some(UnitRole::Paragraph),
                     ResolutionRuleV2::RootedNumericProse,
                 )
             } else if run.grammar == CandidateGrammar::Hierarchy
@@ -541,31 +629,20 @@ pub(crate) fn resolve_structure_candidates<'a>(
                     || observations.contains(&CandidateObservationV2::SectionHeading))
             {
                 (
-                    Some(ResolvedRole::Section),
+                    Some(UnitRole::Section),
                     ResolutionRuleV2::HierarchySection,
                 )
             } else if seen(CandidateObservationV2::ListItemSyntax) {
                 (
-                    Some(ResolvedRole::ListItem),
+                    Some(UnitRole::Item),
                     ResolutionRuleV2::ListItemSyntax,
                 )
             } else {
                 (
-                    Some(ResolvedRole::ListItem),
+                    Some(UnitRole::Item),
                     ResolutionRuleV2::ListItemLayout,
                 )
             };
-            if std::env::var_os("LEGALPDF_CANDIDATE_TRACE").is_some() {
-                // One line per candidate: where it is, what it became and why.
-                let first = item.and_then(|i| i.line_ids.first()).map(String::as_str).unwrap_or("");
-                let page = item.and_then(|i| i.page_indexes.first()).copied().unwrap_or(usize::MAX);
-                let snippet: String = candidate.label.replace(['\t', '\n'], " ");
-                let document = TRACE_DOCUMENT.with(|d| d.borrow().clone());
-                eprintln!(
-                    "ctrace\t{document}\t{page}\t{first}\t{:?}\t{:?}\t{:?}\trooted={}\tconsecutive={}\t{:?}\t{snippet}",
-                    role, rule, run.grammar, run.rooted, run.consecutive, observations
-                );
-            }
             resolved.push(ResolvedCandidate {
                 candidate,
                 role,

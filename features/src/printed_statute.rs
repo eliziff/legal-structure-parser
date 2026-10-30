@@ -5,6 +5,7 @@
 use legal_structure::{
     analyze_instrument, DocumentLookupStatus, DocumentQuery, DocumentStructure, NodeKind, ScalarRange, ScalarText,
 };
+use legal_structure_model::statute::history_note;
 use std::collections::{HashMap, HashSet};
 
 /// A line of print: its id, its text, its box (left, top, right, bottom) and its page.
@@ -221,28 +222,6 @@ fn contents_entry(text: &str) -> bool {
     let numbered = rest.len() < text.len() && rest.starts_with(char::is_whitespace)
         || ["Part ", "PART ", "Division ", "DIVISION ", "Schedule ", "SCHEDULE "].iter().any(|word| text.starts_with(word));
     numbered && !rest.trim_start().starts_with('[') && !text.ends_with(['.', ';', ':', ','])
-}
-
-/// A history note under a provision lists the enactments that made or amended it, each a
-/// year or revision and its chapter: "1991, c. 43, s. 4; 2005, c. 22, s. 20", "R.S., c. C-34,
-/// s. 1", "R.S., 1985, c. 27 (1st Supp.), s. 13", "2009 c50 s7". It is references only, with
-/// no word longer than "suppl."; an amendment's text ("2019, c. 25, s. 5, is replaced by")
-/// is no history note.
-fn history_note(line: &str) -> bool {
-    if line.split(|c: char| !c.is_alphabetic()).any(|word| word.chars().count() > 5) {
-        return false;
-    }
-    let revised = ["R.S.C.", "R.S.", "L.R.C.", "S.R.", "S.C."].iter()
-        .find_map(|prefix| line.strip_prefix(prefix)).map(|rest| rest.trim_start_matches([',', ' ']));
-    let rest = revised.unwrap_or(line);
-    let year = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-    let rest = match year {
-        4 => rest[4..].trim_start_matches([',', ' ']),
-        0 if revised.is_some() => rest,
-        _ => return false,
-    };
-    rest.starts_with("c. ") || rest.starts_with("ch. ")
-        || rest.strip_prefix('c').is_some_and(|number| number.starts_with(|c: char| c.is_ascii_digit()))
 }
 
 impl PrintedStatute {

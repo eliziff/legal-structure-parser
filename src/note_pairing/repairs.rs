@@ -502,10 +502,16 @@ pub(super) fn truncated_value_match(observed: &str, expected: u32) -> bool {
     digits != expected && (expected.starts_with(&digits) || expected.ends_with(&digits))
 }
 
+/// References for the backbone's labels the assignment left without one, each between the
+/// references of the labels around it: a reference read with that value, or one a misread glyph,
+/// a dropped digit or the window's sole number stands for. A label in the page's note band also
+/// takes a number of its value from `expected`, the places the reading passed over: a footnote's on
+/// its page or the one before, an endnote's anywhere between its neighbours' references.
 pub(super) fn repair_missing_refs(
     chosen: &mut HashMap<u32, Candidate>,
     backbone: &[Candidate],
     refs: &[Candidate],
+    expected: &[Candidate],
     lines: &[PairLine<'_>],
     endnote: bool,
 ) -> BTreeMap<String, usize> {
@@ -623,6 +629,24 @@ pub(super) fn repair_missing_refs(
             }
             best = Some((score, repaired, repair_kind));
         }
+        if lines[label.line].in_note_band() {
+            let label_page = lines[label.line].page;
+            for candidate in expected.iter().filter(|candidate| candidate.value == Some(value)) {
+                let page = lines[candidate.line].page;
+                if taken.contains(&(candidate.line, candidate.start, candidate.end))
+                    || label_spans.contains(&(candidate.line, candidate.start))
+                    || !in_window(candidate)
+                    || (!endnote && page != label_page && page + 1 != label_page)
+                {
+                    continue;
+                }
+                let score = candidate.score - 0.8 + if page == label_page { 1.0 } else { 0.0 };
+                if score <= 0.0 || best.as_ref().is_some_and(|prior| prior.0 >= score) {
+                    continue;
+                }
+                best = Some((score, candidate.clone(), "expected_reference"));
+            }
+        }
         if let Some((_, candidate, repair_kind)) = best {
             taken.insert((candidate.line, candidate.start, candidate.end));
             chosen.insert(value, candidate);
@@ -719,7 +743,7 @@ pub(super) fn repair_glyph_refs(
         let mut sites = Vec::new();
         for line_index in floor.0..=ceiling.0.min(lines.len().saturating_sub(1)) {
             let line = &lines[line_index];
-            if line.zone != Zone::Body || label_lines.contains(&line_index) {
+            if line.zone != Zone::Body || line.furniture || label_lines.contains(&line_index) {
                 continue;
             }
             for (start, end) in glyph_sites(&chars(&line.text)) {
@@ -836,7 +860,10 @@ pub(super) fn repair_page_glyph_refs(
             };
             let mut sites = Vec::<(usize, usize, usize)>::new();
             for (line_index, line) in lines.iter().enumerate() {
-                if line.page != page || line.zone != Zone::Body || label_lines.contains(&line_index)
+                if line.page != page
+                    || line.zone != Zone::Body
+                    || line.furniture
+                    || label_lines.contains(&line_index)
                 {
                     continue;
                 }

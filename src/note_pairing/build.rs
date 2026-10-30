@@ -10,7 +10,7 @@ pub(super) fn build_pairs<'a>(
     let lines = build_lines(pages, protected_citation_spans);
     // Source page numbers remain physical; introductory symbols belong to this document's start.
     let first_page = pages.iter().map(|page| page.number).min().unwrap_or(1);
-    let refs = extract_refs(&lines);
+    let (refs, expected) = extract_refs(&lines);
     let labels = extract_labels(&lines, &refs, first_page);
     let (segments, backbone_summary) = select_segments(&labels, &lines, include_audit);
     let mut segments: Vec<Vec<Candidate>> = segments
@@ -38,6 +38,7 @@ pub(super) fn build_pairs<'a>(
         .is_some_and(|segment| endnote_mode(segment, &lines));
 
     let mut pools = Vec::<Vec<Candidate>>::new();
+    let mut expected_pools = Vec::<&[Candidate]>::new();
     let mut previous_boundary = None;
     for (segment_index, segment) in segments.iter().enumerate() {
         let last_page = segment
@@ -80,9 +81,15 @@ pub(super) fn build_pairs<'a>(
             .cloned()
             .collect();
         pools.push(pool);
+        let from = previous_boundary.map_or(0, |prior| expected.partition_point(|site| lines[site.line].idx <= prior));
+        let to = expected.partition_point(|site| lines[site.line].idx <= boundary);
+        expected_pools.push(&expected[from..to.max(from)]);
         previous_boundary = Some(boundary);
     }
 
+    // A segment whose labels stand for the most part in the note band: its notes stand, whatever
+    // references were read for them.
+    let banded = |segment: &[Candidate]| segment.iter().filter(|candidate| lines[candidate.line].in_note_band()).count() * 2 > segment.len();
     let mut chosen_by_segment = Vec::<HashMap<u32, Candidate>>::new();
     let mut repeated_by_segment = Vec::<HashMap<u32, Vec<Candidate>>>::new();
     let mut suppressed = HashSet::<usize>::new();
@@ -90,7 +97,7 @@ pub(super) fn build_pairs<'a>(
     let mut numbered_diagnostics = include_audit.then(Vec::<Value>::new);
     let mut ref_drop_reasons = BTreeMap::<String, usize>::new();
     let mut ref_repair_counts = BTreeMap::<String, usize>::new();
-    for (segment_index, (segment, pool)) in segments.iter().zip(&pools).enumerate() {
+    for (segment_index, ((segment, pool), expected)) in segments.iter().zip(&pools).zip(&expected_pools).enumerate() {
         let (mut chosen, drops) = select_refs(segment, pool, &lines, endnote);
         for (reason, count) in drops {
             *ref_drop_reasons.entry(reason).or_default() += count;
@@ -102,7 +109,7 @@ pub(super) fn build_pairs<'a>(
             .filter(|candidate| !candidate.repaired)
             .count();
         let apparatus = clean >= 3 && 3 * clean >= segment.len();
-        for (kind, count) in repair_missing_refs(&mut chosen, segment, pool, &lines, endnote) {
+        for (kind, count) in repair_missing_refs(&mut chosen, segment, pool, expected, &lines, endnote) {
                 *ref_repair_counts.entry(kind).or_default() += count;
             }
         for (kind, count) in rekey_same_value_ref_runs(&mut chosen, segment, pool, &lines, endnote) {
@@ -127,7 +134,7 @@ pub(super) fn build_pairs<'a>(
             .iter()
             .filter(|candidate| candidate.form == "paren")
             .count();
-        if !segment.is_empty() && paren_count * 2 >= segment.len() {
+        if !segment.is_empty() && paren_count * 2 >= segment.len() && !banded(segment) {
             let label_pages: HashMap<u32, HashSet<u32>> =
                 segment.iter().fold(HashMap::new(), |mut pages, candidate| {
                     if let Some(value) = candidate.value {
@@ -202,7 +209,7 @@ pub(super) fn build_pairs<'a>(
     }
     let mut duplicate_diagnostics = include_audit.then(Vec::<Value>::new);
     for (segment_index, (segment, chosen)) in segments.iter().zip(&chosen_by_segment).enumerate() {
-        if suppressed.contains(&segment_index) || segment.len() < 10 || !chosen.is_empty() {
+        if suppressed.contains(&segment_index) || segment.len() < 10 || !chosen.is_empty() || banded(segment) {
             continue;
         }
         let values: HashSet<u32> = segment
