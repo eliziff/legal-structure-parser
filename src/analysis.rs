@@ -122,7 +122,7 @@ impl StructureAnalysis for EngineAnalysis {
         diagnostics: Vec<StructureDiagnostic>,
         assembler: &mut dyn FnMut(&mut [StructureNode]),
     ) -> Result<DocumentStructure, EngineError> {
-        let structure = crate::candidates::resolve_structure_graph_with_assembler(
+        let mut structure = crate::candidates::resolve_structure_graph_with_assembler(
             document_id,
             provider,
             text,
@@ -135,7 +135,8 @@ impl StructureAnalysis for EngineAnalysis {
             diagnostics,
             assembler,
         )?;
-        crate::assembly::assemble_structure(structure).map_err(EngineError::invalid)
+        legal_structure_model::assemble_in_place(&mut structure).map_err(EngineError::invalid)?;
+        Ok(structure)
     }
 
     fn analyze_instrument(
