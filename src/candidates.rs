@@ -202,22 +202,6 @@ fn smallest_container(
     best.map(|(_, index)| index)
 }
 
-/// The kind a numbering's family fixes, as the structure gold's numbering rule does: numbers,
-/// decimals ("1.01") and bare capitals ("A." recitals) are the document's own numbered
-/// paragraphs; letters, roman numerals, bullets and a bracketed capital are a list's items.
-fn family_kind(label: &str) -> UnitRole {
-    let token = label.trim().trim_start_matches('*');
-    let bare = token.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '.' | ':' | '-'));
-    let bracketed = token.starts_with(['(', '[']);
-    let digits = bare.starts_with(|c: char| c.is_ascii_digit()) && bare.chars().all(|c| c.is_ascii_digit() || c == '.');
-    let capital = !bracketed && bare.chars().count() == 1 && bare.chars().all(|c| c.is_ascii_uppercase());
-    if digits || capital {
-        UnitRole::Paragraph
-    } else {
-        UnitRole::Item
-    }
-}
-
 /// Whether a marker opens its count: 1, a, A, i, I.
 fn opens_count(label: &str) -> bool {
     let bare = label.trim().trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '.' | ':' | '-'));
@@ -228,8 +212,10 @@ fn opens_count(label: &str) -> bool {
 /// decides whether a marker numbers anything (exclusions, prose flow, composed readings); the
 /// family decides what, once for the run. A count of numbers that opens inside another run's
 /// numbered paragraph (it fits before that run's next marker, or within its last paragraph) is a
-/// list: an order's 1. 2. 3. after "[45] ... I order:". A parallel translation's count, which
-/// interleaves with the run, fits inside no one paragraph of it. A provision ladder's markers
+/// list: an order's 1. 2. 3. after "[45] ... I order:". A stray of three markers or fewer (a
+/// counsel's initial, a capital heading, a wrapped citation's volume) encloses no longer count. A
+/// parallel translation's count, which interleaves with the run, fits inside no one paragraph of
+/// it. A provision ladder's markers
 /// that number prose rather than sections take their own families' kinds: a decimal clause is a
 /// numbered paragraph wherever it stands, and any other count under a parent marker opens inside
 /// its parent's paragraph, so is a list.
@@ -240,7 +226,7 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
     };
     let kinds: Vec<Option<UnitRole>> = runs
         .iter()
-        .map(|run| run.markers.first().filter(|_| run.grammar != CandidateGrammar::Hierarchy).map(|marker| family_kind(&marker.label)))
+        .map(|run| run.markers.first().filter(|_| run.grammar != CandidateGrammar::Hierarchy).map(|marker| UnitRole::of_family(&marker.label)))
         .collect();
     // A list's marker its own evidence left unread ("- I was not", an item a scan set apart) is an
     // item all the same where others of its run are: the run, not the line, says it is a list.
@@ -266,7 +252,7 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
         for &i in &items[k] {
             let candidate = resolved[i].candidate;
             let kind = if decimal(&candidate.label)
-                || (candidate.level == 0 && family_kind(&candidate.label) == UnitRole::Paragraph)
+                || (candidate.level == 0 && UnitRole::of_family(&candidate.label) == UnitRole::Paragraph)
             {
                 UnitRole::Paragraph
             } else {
@@ -293,7 +279,10 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
         };
         if kind == UnitRole::Paragraph && opens_count(&resolved[first].candidate.label) {
             let (opens, closes) = (resolved[first].candidate.marker_range.start, resolved[last].candidate.marker_range.start);
-            let inside = outer.iter().filter(|(other, _)| *other != k).any(|(_, marks)| {
+            // A stray capital or number (a counsel's initial, a wrapped citation's volume) holds none
+            // of the document's paragraphs.
+            let encloses = |marks: &Vec<(usize, usize)>| marks.len() > 3 || marks.len() >= items[k].len();
+            let inside = outer.iter().filter(|(other, marks)| *other != k && encloses(marks)).any(|(_, marks)| {
                 let at = marks.partition_point(|(start, _)| *start < opens);
                 at > 0 && marks.get(at).map_or(opens < marks[at - 1].1, |next| next.0 > closes)
             });
