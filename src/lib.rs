@@ -21,8 +21,6 @@ mod citator;
 mod text_units;
 #[cfg(all(feature = "citator", feature = "canlii"))]
 mod canlii;
-mod assembly;
-pub use assembly::assemble_in_place;
 mod filing;
 pub use filing::{filing_cover, FiledBy, FilingCover, PartyGroup};
 use legal_structure_model::document;

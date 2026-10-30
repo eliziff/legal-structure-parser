@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 
 mod analysis;
+mod assembly;
 pub mod definitions;
 pub mod document;
 pub mod docx;
@@ -26,6 +27,7 @@ pub mod text;
 pub mod transcript;
 
 pub use analysis::{install_structure_analysis, structure_analysis, StructureAnalysis};
+pub use assembly::assemble_in_place;
 pub use legal_layout::{ablated, CitationSpan, LayoutAnalysis, NumberingMarker, PARTY_ROLES};
 pub use definitions::{DefinedTerm, DefinitionOccurrence};
 pub use document::{

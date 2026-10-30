@@ -14,14 +14,8 @@ fn heading(node: &crate::StructureNode) -> bool {
 }
 
 /// Each node's one-based level under its parents, its extent (its own membership with its
-/// descendants'), and its readable membership in the rendered text.
-/// The producer, which completes the structure, refreshes its revision.
-pub(crate) fn assemble_structure(mut structure: DocumentStructure) -> Result<DocumentStructure, String> {
-    assemble_in_place(&mut structure)?;
-    Ok(structure)
-}
-
-/// The same assembly over a structure in place: the tagger's retag, which replaces the graph's
+/// descendants'), and its readable membership in the rendered text. The producer, which completes
+/// the structure, refreshes its revision; the tagger's retag, which replaces the graph's
 /// paragraph-level nodes after the producer assembled it, runs it again so every node it adds
 /// carries its level, extent and rendered membership like the nodes it replaced.
 pub fn assemble_in_place(structure: &mut DocumentStructure) -> Result<(), String> {
