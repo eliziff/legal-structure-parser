@@ -64,6 +64,7 @@ pub(super) fn materialize(
                     !reference.repaired && matches!(reference.form, "sup" | "detached" | "symbol")
                 }),
                 note_region: label_line.zone == Zone::Note && !label_line.region_witness_demoted,
+                note_band: label_line.in_note_band(),
             };
             support.supports_note().then_some((pair, support))
         })

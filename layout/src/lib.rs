@@ -71,6 +71,10 @@ pub struct NotePairSupportV2 {
     pub observed_pair: bool,
     pub typographic_reference: bool,
     pub note_region: bool,
+    /// The label stands in its page's note band, which is final: its note stands whether or not a
+    /// reference to it was read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub note_band: bool,
 }
 
 impl NotePairSupportV2 {
@@ -81,11 +85,12 @@ impl NotePairSupportV2 {
     }
 
     pub fn supports_label_only(&self) -> bool {
-        self.note_region
-            && (self.sequence_observed_pairs >= 2
-                && self.sequence_labels <= 3 * self.sequence_observed_pairs
-                || self.sequence_note_labels >= 3
-                    && 4 * self.sequence_note_labels >= 3 * self.sequence_labels)
+        self.note_band
+            || (self.note_region
+                && (self.sequence_observed_pairs >= 2
+                    && self.sequence_labels <= 3 * self.sequence_observed_pairs
+                    || self.sequence_note_labels >= 3
+                        && 4 * self.sequence_note_labels >= 3 * self.sequence_labels))
     }
 
     /// Plain numbers alone are not positive evidence for a note.

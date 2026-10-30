@@ -2,7 +2,7 @@
 //! steps run in order over one `Resolution`, which holds the nodes and what binds them:
 //!
 //! 1. `validate`: every node, candidate and run names a valid range and identity.
-//! 2. The candidates resolved to their roles (`resolve_structure_candidates`).
+//! 2. The candidates in the roles the producer gives them (`resolved_from_roles`).
 //! 3. `note_nodes`: each paired note a node of its own, the candidates its label holds bound to it.
 //! 4. `note_rooted_lists`: a hierarchy hung from a note's label is a list, never provisions.
 //! 5. `split_at_starts`: a PDF source unit parted where a resolved candidate opens inside it.
@@ -262,7 +262,7 @@ fn note_rooted_lists<'a>(runs: &'a [StructureCandidateRun], notes: &[Note], reso
         .map(|run| run.markers[0].id.as_str())
         .collect::<HashSet<_>>();
     for resolved in resolved_candidates.iter_mut() {
-        if resolved.role == Some(ResolvedRole::Section) && note_rooted.contains(resolved.candidate.id.as_str()) {
+        if resolved.role == Some(UnitRole::Section) && note_rooted.contains(resolved.candidate.id.as_str()) {
             let observations = &resolved.proof.observations;
             let rule = if observations.contains(&CandidateObservationV2::ListItemSyntax) {
                 Some(ResolutionRuleV2::ListItemSyntax)
@@ -271,7 +271,7 @@ fn note_rooted_lists<'a>(runs: &'a [StructureCandidateRun], notes: &[Note], reso
             } else {
                 None
             };
-            resolved.role = rule.map(|_| ResolvedRole::ListItem);
+            resolved.role = rule.map(|_| UnitRole::Item);
             resolved.proof.rule = rule.unwrap_or(ResolutionRuleV2::InsufficientEvidence);
         }
     }
@@ -425,12 +425,12 @@ impl<'a> Resolution<'a> {
             self.candidate_nodes.insert(resolved.candidate.id.as_str(), index);
             self.pending_parents.insert(index, resolved.candidate.parent_candidate_id.as_deref());
             let label = match role {
-                ResolvedRole::NumberedParagraph => format!("par{}", resolved.candidate.grammar_value),
-                ResolvedRole::Section => resolved.candidate.grammar_value.clone(),
-                ResolvedRole::ListItem => resolved.candidate.label.clone(),
+                UnitRole::Paragraph => format!("par{}", resolved.candidate.grammar_value),
+                UnitRole::Section => resolved.candidate.grammar_value.clone(),
+                UnitRole::Item => resolved.candidate.label.clone(),
             };
             let aliases = (resolved.candidate.label != label).then(|| vec![resolved.candidate.label.clone()]);
-            let locator_kind = (role == ResolvedRole::Section).then(|| {
+            let locator_kind = (role == UnitRole::Section).then(|| {
                 let label = resolved.candidate.grammar_value.as_str();
                 if label.starts_with("sec") {
                     "section"
@@ -481,9 +481,9 @@ impl<'a> Resolution<'a> {
             if !matches!(node.grammar.as_deref(), Some("contents" | "translation")) {
                 node.grammar = Some(
                     match role {
-                        ResolvedRole::NumberedParagraph => "numeric",
-                        ResolvedRole::Section => "hierarchy",
-                        ResolvedRole::ListItem => "enumerator",
+                        UnitRole::Paragraph => "numeric",
+                        UnitRole::Section => "hierarchy",
+                        UnitRole::Item => "enumerator",
                     }
                     .to_owned(),
                 );
@@ -540,7 +540,7 @@ impl<'a> Resolution<'a> {
             resolved_candidates.iter().map(|resolved| (resolved.candidate.id.as_str(), resolved)).collect::<HashMap<_, _>>();
         let mut paragraph_starts = resolved_candidates
             .iter()
-            .filter(|resolved| resolved.role == Some(ResolvedRole::NumberedParagraph))
+            .filter(|resolved| resolved.role == Some(UnitRole::Paragraph))
             .map(|resolved| resolved.candidate.range.start)
             .collect::<Vec<_>>();
         paragraph_starts.sort_unstable();
@@ -551,7 +551,7 @@ impl<'a> Resolution<'a> {
                 let Some(resolved) = resolved_by_candidate
                     .get(candidate.id.as_str())
                     .copied()
-                    .filter(|resolved| resolved.role == Some(ResolvedRole::ListItem))
+                    .filter(|resolved| resolved.role == Some(UnitRole::Item))
                 else {
                     continue;
                 };
@@ -724,6 +724,7 @@ pub fn resolve_structure_graph_with_assembler(
     nodes: Vec<StructureNode>,
     runs: &[StructureCandidateRun],
     evidence: &[CandidateEvidenceV2],
+    roles: &[CandidateRoleV2],
     note_pairs: &[NotePairClaimV2],
     mut diagnostics: Vec<StructureDiagnostic>,
     assembler: &mut dyn FnMut(&mut [StructureNode]),
@@ -731,7 +732,7 @@ pub fn resolve_structure_graph_with_assembler(
     TRACE_DOCUMENT.with(|d| *d.borrow_mut() = source_sha256.clone().unwrap_or_else(|| document_id.clone()));
     let scalar_text = ScalarText::new(text);
     let node_ids = validate(&nodes, runs, scalar_text.len())?;
-    let mut resolved_candidates = resolve_structure_candidates(runs, evidence)?;
+    let mut resolved_candidates = resolved_from_roles(runs, evidence, roles)?;
     let mut counters = HashMap::<NodeKind, usize>::new();
     for node in &nodes {
         *counters.entry(node.kind).or_default() += 1;

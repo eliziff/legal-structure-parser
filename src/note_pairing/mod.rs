@@ -74,6 +74,8 @@ struct PairLine<'a> {
     region_witness_demoted: bool,
     native_superscript_spans: Vec<(usize, usize)>,
     edge_folio: bool,
+    /// The line is the page's furniture, which holds no note's reference.
+    furniture: bool,
     note_sequence_restart: bool,
     detached_references: Cow<'a, [DetachedReference]>,
 }
@@ -81,6 +83,13 @@ struct PairLine<'a> {
 impl PairLine<'_> {
     fn height(&self) -> f64 {
         self.bbox[3] - self.bbox[1]
+    }
+
+    /// Whether the line stands in its page's note band: a laid-out line (one with a box) its parser
+    /// set as a footnote and gave a note mode. The band is final, so a label on it opens a note
+    /// whether or not a reference to it was read, and the page's body holds that note's reference.
+    fn in_note_band(&self) -> bool {
+        self.region_type == "footnote" && !self.note_region_mode.is_empty() && self.height() > 0.0
     }
 
     fn protected(&self, start: usize, end: usize) -> bool {
@@ -292,6 +301,12 @@ fn is_edge_folio(line: &Line) -> bool {
     }
 }
 
+/// Whether a line is the page's furniture that would otherwise read as body: a running foot or a
+/// folio at the foot, a transcript's line label.
+fn is_furniture(line: &Line) -> bool {
+    matches!(line.region_type.as_str(), "footer" | "line_label")
+}
+
 fn prose_like(text: &str) -> bool {
     static LOWER_WORD: OnceLock<Regex> = OnceLock::new();
     let lower_words = LOWER_WORD
@@ -376,6 +391,7 @@ fn build_lines<'a>(
                     .map(|span| (span.start, span.end))
                     .collect(),
                 edge_folio: is_edge_folio(line),
+                furniture: is_furniture(line),
                 note_sequence_restart: false,
                 detached_references,
             }

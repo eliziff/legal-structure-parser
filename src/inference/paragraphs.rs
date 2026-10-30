@@ -1,6 +1,8 @@
 //! Numbered paragraphs: their markers, the counts they form, and the ranges each count gives.
 
 use super::*;
+use legal_structure_model::judgment::{author_line, signature_line};
+use legal_structure_model::statute::{marginal_note_shaped, markdown_line};
 
 pub(super) fn case_source_line<'a>(text: &ScalarText<'_>, mut line: Line<'a>) -> Line<'a> {
     let prefix = line.text.len() - line.text.trim_start_matches([' ', '\t', '\u{c}']).len();
@@ -464,20 +466,6 @@ pub(super) fn restart_boundaries(candidates: &[Marker], chain: &[Marker]) -> Vec
     }).map(|(_, marker)| (*marker).clone()).collect()
 }
 
-/// A judge's or member's signature, or a release line, as a decision prints them after its reasons
-/// ("“K. Feldman J.A.”", "“I agree. L.B. Roberts J.A.”", "Released: November 28, 2022").
-pub(super) fn signature_line(value: &str) -> bool {
-    let value = value.trim().trim_matches(['"', '“', '”', '\'', '‘', '’']).trim();
-    !value.is_empty()
-        && value.chars().count() <= 90
-        && (cached_regex!(
-            SIGNATURE,
-            r"\b(?:J|JJ|C\.?J|C\.?J\.?C|C\.?J\.?O|J\.?A|JJ\.?A|J\.?C\.?A|Q\.?C|K\.?C)\.(?:\s*\((?:ad hoc|dissenting|concurring)\))?$|\b(?:Member|Adjudicator|Arbitrator|Chairperson|Vice-Chairperson|Commissioner|Associate Judge|Master|Prothonotary|Referee)$"
-        )
-        .is_match(value)
-            || cached_regex!(RELEASE, r"^(?i:released|date of release|dated|i agree)\b").is_match(value))
-}
-
 /// A paragraph's end before the signatures and release lines it closes with, which are the
 /// decision's; never its first line.
 pub(super) fn paragraph_end_before_signatures(text: &ScalarText<'_>, start: usize, end: usize) -> usize {
@@ -672,12 +660,7 @@ pub(super) fn unnumbered_paragraphs(text: &ScalarText<'_>, after: usize, until: 
     let index = text.lines();
     let value = |line: &[usize; 3]| text.value[line[0]..line[1]].trim();
     let record = index.iter().position(|line| value(line) == "Decision Content").map_or(0, |at| at + 1);
-    let author = index.iter().skip(record).position(|line| {
-        let line = value(line);
-        cached_regex!(AUTHOR, r"^[A-Z][A-Za-zÀ-ÿ'’. -]{1,60}?(?:C\.J\.[A-Z.]*|J\.A\.|JJ\.|J\.)\s*[—–-]\s*\S").is_match(line)
-            || line.contains("judgment of the Court was delivered by")
-            || line.contains("reasons for judgment were delivered by")
-    });
+    let author = index.iter().skip(record).position(|line| author_line(value(line)));
     let prose = |line: &str| {
         let words = line.split_whitespace().collect::<Vec<_>>();
         let lowercase = words.iter().filter(|word| word.chars().next().is_some_and(char::is_lowercase)).count();
@@ -1004,24 +987,14 @@ pub(super) fn provision_end_before_marginal_notes(text: &ScalarText<'_>, start: 
     let mut notes = 0;
     for position in (first..last).rev() {
         let line = index[position];
-        // A provider's markdown sets a note as a heading ("### Commencement of order").
-        let value = text.value[line[0]..line[1]].trim().trim_start_matches('#').trim_start();
-        let emphasized = value
-            .strip_prefix("**")
-            .and_then(|inner| inner.strip_suffix("**"))
-            .filter(|inner| !inner.trim().is_empty() && !inner.contains('*'));
-        let value = emphasized.map_or(value, str::trim);
-        let words = value.split_whitespace().count();
+        let printed = &text.value[line[0]..line[1]];
+        let (value, _) = markdown_line(printed);
         let structural = cached_regex!(
             VALUE,
             r"^(?:PART|Part|DIVISION|Division|SUBDIVISION|Subdivision|CHAPTER|Chapter|TITLE|Title|SCHEDULE|Schedule|PARTIE|Partie|SECTION|Section)\s+[0-9IVXLC]+[A-Z]?(?:\.\d+)?\b"
         )
         .is_match(value);
-        let note = (1..=16).contains(&words)
-            && (emphasized.is_some()
-                || value.chars().next().is_some_and(char::is_uppercase)
-                    && !value.ends_with(['.', ';', ':', ',', '—', '-'])
-                    && !value.chars().any(|character| character.is_ascii_digit()));
+        let note = marginal_note_shaped(printed);
         if value.is_empty() {
             candidate = line[2];
         } else if (note || structural) && notes < 4 {

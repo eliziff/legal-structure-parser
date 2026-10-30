@@ -2,8 +2,8 @@
 //! on the model crate alone and so are not recompiled when the engine changes.
 
 use crate::{
-    AuthoritativeTableCell, CandidateEvidenceV2, DocumentStructure, EngineError, NotePairClaimV2,
-    StructureCandidateRun, StructureDiagnostic, StructureNode,
+    AuthoritativeTableCell, CandidateEvidenceV2, CandidateRoleV2, DocumentStructure, EngineError,
+    NotePairClaimV2, StructureCandidateRun, StructureDiagnostic, StructureNode,
 };
 use legal_citations::cues;
 use legal_structure_model::layout::{Page, PairingOutput, PdfSourceSpan};
@@ -96,8 +96,16 @@ impl LayoutAnalysis for EngineAnalysis {
 }
 
 impl StructureAnalysis for EngineAnalysis {
-    fn detect_structure_candidate_runs(&self, text: &str) -> Vec<StructureCandidateRun> {
-        crate::detect_structure_candidate_runs(text)
+    fn detect_structure_candidate_runs(&self, text: &str, refinements: bool) -> Vec<StructureCandidateRun> {
+        crate::detect_structure_candidate_runs(text, refinements)
+    }
+
+    fn resolve_candidates(
+        &self,
+        runs: &[StructureCandidateRun],
+        evidence: &[CandidateEvidenceV2],
+    ) -> Result<Vec<CandidateRoleV2>, EngineError> {
+        crate::candidates::resolve_candidates(runs, evidence)
     }
 
     fn resolve_structure_graph_with_assembler(
@@ -109,6 +117,7 @@ impl StructureAnalysis for EngineAnalysis {
         nodes: Vec<StructureNode>,
         runs: &[StructureCandidateRun],
         evidence: &[CandidateEvidenceV2],
+        roles: &[CandidateRoleV2],
         note_pairs: &[NotePairClaimV2],
         diagnostics: Vec<StructureDiagnostic>,
         assembler: &mut dyn FnMut(&mut [StructureNode]),
@@ -121,6 +130,7 @@ impl StructureAnalysis for EngineAnalysis {
             nodes,
             runs,
             evidence,
+            roles,
             note_pairs,
             diagnostics,
             assembler,

@@ -213,19 +213,23 @@ pub(super) fn repeated_refs(
     result
 }
 
+/// Whether a label no reference was found for still opens a note: it stands in its page's note
+/// band, or in a note region or column with a strong reading or a neighbour in its count within a
+/// page of it.
 pub(super) fn label_only_supported(backbone: &[Candidate], position: usize, lines: &[PairLine<'_>]) -> bool {
     let label = &backbone[position];
-    label.zone_is_noteish(lines)
-        && (label.score >= 1.5
-            || [
-                position.checked_sub(1),
-                (position + 1 < backbone.len()).then_some(position + 1),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|neighbor| {
-                let neighbor = &backbone[neighbor];
-                label.value.unwrap().abs_diff(neighbor.value.unwrap()) == 1
-                    && lines[label.line].page.abs_diff(lines[neighbor.line].page) <= 1
-            }))
+    lines[label.line].in_note_band()
+        || (label.zone_is_noteish(lines)
+            && (label.score >= 1.5
+                || [
+                    position.checked_sub(1),
+                    (position + 1 < backbone.len()).then_some(position + 1),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|neighbor| {
+                    let neighbor = &backbone[neighbor];
+                    label.value.unwrap().abs_diff(neighbor.value.unwrap()) == 1
+                        && lines[label.line].page.abs_diff(lines[neighbor.line].page) <= 1
+                })))
 }

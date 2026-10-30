@@ -1,6 +1,6 @@
 use crate::{
-    AuthoritativeTableCell, CandidateEvidenceV2, DocumentStructure, EngineError, NotePairClaimV2,
-    StructureCandidateRun, StructureDiagnostic, StructureNode,
+    AuthoritativeTableCell, CandidateEvidenceV2, CandidateRoleV2, DocumentStructure, EngineError,
+    NotePairClaimV2, StructureCandidateRun, StructureDiagnostic, StructureNode,
 };
 use legal_layout::LayoutAnalysis;
 
@@ -8,10 +8,24 @@ use legal_layout::LayoutAnalysis;
 /// beside its services on laid-out text. A parser takes this as a dependency on the model alone, so
 /// editing the engine recompiles the engine and the program that supplies it, not every parser.
 pub trait StructureAnalysis: LayoutAnalysis {
-    fn detect_structure_candidate_runs(&self, text: &str) -> Vec<StructureCandidateRun>;
+    /// The numbering runs in `text`: its counts of numbers, letters and bullets, and the provision
+    /// ladder the instrument grammar reads. With `refinements`, the ladder also reads a section's
+    /// number its subsections repeat ("33(2) The …"), and leaves out enactment history notes,
+    /// regnal heads, contents columns and years standing alone.
+    fn detect_structure_candidate_runs(&self, text: &str, refinements: bool) -> Vec<StructureCandidateRun>;
 
-    /// Resolve source candidates, then invoke the producer's single outline assembler. The
-    /// producer refreshes the revision once it completes the structure.
+    /// Each candidate of `runs` resolved, in text order, to the unit it opens, if any: its evidence
+    /// says whether it numbers anything, its run's numbering family what.
+    fn resolve_candidates(
+        &self,
+        runs: &[StructureCandidateRun],
+        evidence: &[CandidateEvidenceV2],
+    ) -> Result<Vec<CandidateRoleV2>, EngineError>;
+
+    /// Bind the producer's nodes, the candidates in their `roles` and the note pairs into one
+    /// graph, then invoke the producer's single outline assembler. `evidence` gives each candidate
+    /// its lines, pages and observations. The producer refreshes the revision once it completes
+    /// the structure.
     #[allow(clippy::too_many_arguments)]
     fn resolve_structure_graph_with_assembler(
         &self,
@@ -22,6 +36,7 @@ pub trait StructureAnalysis: LayoutAnalysis {
         nodes: Vec<StructureNode>,
         runs: &[StructureCandidateRun],
         evidence: &[CandidateEvidenceV2],
+        roles: &[CandidateRoleV2],
         note_pairs: &[NotePairClaimV2],
         diagnostics: Vec<StructureDiagnostic>,
         assembler: &mut dyn FnMut(&mut [StructureNode]),

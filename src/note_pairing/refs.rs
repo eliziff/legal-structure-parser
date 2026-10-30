@@ -38,15 +38,74 @@ pub(super) fn isolated_inline_references(line: &Line) -> Vec<DetachedReference> 
         .collect()
 }
 
-pub(super) fn ref_zone_score(line: &PairLine<'_>) -> Option<(f64, bool)> {
-    match line.zone {
-        Zone::Body => Some((0.6, false)),
-        Zone::Title => Some((0.1, false)),
-        Zone::Visual => Some((-0.4, false)),
-        Zone::Note => Some((-0.4, true)),
-        Zone::Header | Zone::Number if line.prose_like => Some((-0.5, true)),
-        _ => None,
+/// What a reference read on the line scores for where the line stands: a running head's or
+/// number's line holds one only where it reads as prose. The page's furniture read as body (its
+/// running foot and folio at the foot, its line labels) holds none.
+pub(super) fn ref_zone_score(line: &PairLine<'_>) -> Option<f64> {
+    if line.furniture {
+        return None;
     }
+    match line.zone {
+        Zone::Body => Some(0.6),
+        Zone::Title => Some(0.1),
+        Zone::Visual | Zone::Note => Some(-0.4),
+        Zone::Header | Zone::Number if line.prose_like => Some(-0.5),
+        Zone::Header | Zone::Number => None,
+    }
+}
+
+/// Whether the line's spans set its characters `start..end` apart as a reference's figures are
+/// set, even where the PDF does not flag them: spans of their own, without letters, each flagged
+/// superscript, smaller than the line's type (`size`) or raised above its baseline.
+pub(super) fn raised_or_small(line: &PairLine<'_>, start: usize, end: usize, size: f64) -> bool {
+    let height = line.height();
+    let mut spans = line.spans.iter().filter(|span| span.start < end && start < span.end).peekable();
+    spans.peek().is_some()
+        && spans.all(|span| {
+            !span.text.chars().any(char::is_alphabetic)
+                && (span.superscript
+                    || (size > 0.0 && span.size > 0.0 && span.size * 1.25 <= size)
+                    || (height > 0.0 && span.bbox[3] <= line.bbox[3] - 0.25 * height))
+        })
+}
+
+/// The places on a body line where a note's reference stands though its reading passes over
+/// them, for a note the page's band holds: a number ending its word, set as a superscript, smaller
+/// than the line's type or raised above it, or run on after a word's punctuation
+/// ("licensing.59"). Each is its start, its end and whether its type sets it apart.
+pub(super) fn expected_sites(
+    line: &PairLine<'_>,
+    values: &[char],
+    digit_runs: &[(usize, usize)],
+    superscripts: &[(usize, usize, String)],
+) -> Vec<(usize, usize, bool)> {
+    let mut size = None;
+    let mut sites = Vec::new();
+    let tokens = digit_runs
+        .iter()
+        .filter(|(start, end)| end - start <= 3 && values[*start] != '0')
+        .map(|&(start, end)| (start, end, false))
+        .chain(superscripts.iter().map(|(start, end, _)| (*start, *end, true)));
+    for (start, end, superscript) in tokens {
+        let left = start.checked_sub(1).map(|at| values[at]);
+        let right = values.get(end).copied();
+        if left.is_some_and(|value| value.is_ascii_digit() || is_superscript(value))
+            || right.is_some_and(char::is_alphanumeric)
+        {
+            continue;
+        }
+        let raised = superscript
+            || raised_or_small(line, start, end, *size.get_or_insert_with(|| line_font_size(line.line)));
+        let glued = start >= 2
+            && left.is_some_and(|value| REF_PUNCTUATION.contains(value) || QUOTES.contains(value))
+            && (values[start - 2].is_alphabetic() || ")]”’\"'".contains(values[start - 2]))
+            && !(right.is_some_and(|value| ".,:".contains(value)) && values.get(end + 1).is_some_and(char::is_ascii_digit))
+            && !abbreviation_pinpoint(&chars_slice(values, 0, start));
+        if raised || glued {
+            sites.push((start, end, raised));
+        }
+    }
+    sites
 }
 
 pub(super) fn ref_left(character: char) -> bool {
@@ -375,8 +434,11 @@ pub(super) fn symbol_runs(values: &[char]) -> Vec<(usize, usize, String)> {
     result
 }
 
-pub(super) fn extract_refs(lines: &[PairLine<'_>]) -> Vec<Candidate> {
+/// The references read on the document's lines, and the places a reference a band's note expects
+/// may stand besides (`expected_sites`), each in line order.
+pub(super) fn extract_refs(lines: &[PairLine<'_>]) -> (Vec<Candidate>, Vec<Candidate>) {
     let mut candidates = Vec::new();
+    let mut expected = Vec::new();
     let mut previous_body = None;
     let mut previous_page = None;
     let mut previous_by_line = Vec::with_capacity(lines.len());
@@ -404,9 +466,9 @@ pub(super) fn extract_refs(lines: &[PairLine<'_>]) -> Vec<Candidate> {
     }
     for (line_index, line) in lines.iter().enumerate() {
         let zone = ref_zone_score(line);
-        let sup_zone_score = zone.map(|(score, _)| score).or_else(|| {
-            (matches!(line.zone, Zone::Header | Zone::Number)
-                && line.text.trim().chars().count() >= 6)
+        // A superscript on a running head's or number's line of six characters or more is read too.
+        let sup_zone_score = zone.or_else(|| {
+            (!line.furniture && matches!(line.zone, Zone::Header | Zone::Number) && line.text.trim().chars().count() >= 6)
                 .then_some(0.1)
         });
         let Some(sup_zone_score) = sup_zone_score else {
@@ -422,7 +484,7 @@ pub(super) fn extract_refs(lines: &[PairLine<'_>]) -> Vec<Candidate> {
         // "appeal.[1] The", "job.Footnote 1 The".
         // Its calls take no other form: no superscript survives the flattening, and its digits are text.
         if provider_text(line) {
-            let Some((zone_score, _)) = zone else {
+            let Some(zone_score) = zone else {
                 continue;
             };
             for captures in provider_call.captures_iter(&line.text) {
@@ -470,12 +532,14 @@ pub(super) fn extract_refs(lines: &[PairLine<'_>]) -> Vec<Candidate> {
             .rposition(|character| !character.is_whitespace())
             .map_or(0, |index| index + 1);
         let digit_runs = digit_runs(&line_chars);
+        let superscripts = superscript_runs(&line_chars);
         let mut seen = HashSet::new();
-        for (start, end, observed) in superscript_runs(&line_chars) {
+        for (start, end, observed) in &superscripts {
+            let (start, end) = (*start, *end);
             if start < label_end || line.protected(start, end) {
                 continue;
             }
-            let Some(value) = numeric_value(&observed) else {
+            let Some(value) = numeric_value(observed) else {
                 continue;
             };
             seen.insert((start, end));
@@ -483,7 +547,7 @@ pub(super) fn extract_refs(lines: &[PairLine<'_>]) -> Vec<Candidate> {
                 line: line_index,
                 start,
                 end,
-                observed,
+                observed: observed.clone(),
                 value: Some(value),
                 symbol: String::new(),
                 form: "sup",
@@ -537,9 +601,32 @@ pub(super) fn extract_refs(lines: &[PairLine<'_>]) -> Vec<Candidate> {
                 flags: CandidateFlags::default(),
             });
         }
-        let Some((zone_score, _)) = zone else {
+        let Some(zone_score) = zone else {
             continue;
         };
+        if line.zone == Zone::Body {
+            for (start, end, raised) in expected_sites(line, &line_chars, &digit_runs, &superscripts) {
+                let observed = chars_slice(&line_chars, start, end);
+                let Some(value) = numeric_value(&observed) else {
+                    continue;
+                };
+                expected.push(Candidate {
+                    line: line_index,
+                    start,
+                    end,
+                    observed,
+                    value: Some(value),
+                    symbol: String::new(),
+                    form: if raised { "sup" } else { "tight" },
+                    score: zone_score + if raised { 1.6 } else { 0.9 },
+                    reason: "expected_reference",
+                    repaired: false,
+                    repair_kind: "",
+                    requires_visual_cue: false,
+                    flags: CandidateFlags::default(),
+                });
+            }
+        }
         let stripped = line.text.trim();
         if stripped.chars().all(|character| character.is_ascii_digit())
             && (1..=3).contains(&stripped.chars().count())
@@ -804,5 +891,5 @@ pub(super) fn extract_refs(lines: &[PairLine<'_>]) -> Vec<Candidate> {
             }
         }
     }
-    candidates
+    (candidates, expected)
 }
