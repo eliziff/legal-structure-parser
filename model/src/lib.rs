@@ -296,6 +296,23 @@ impl UnitRole {
             Self::Item => NodeKind::ListItem,
         }
     }
+
+    /// The kind a numbering's family fixes, read on a marker's label, as the structure gold's
+    /// numbering rule does: numbers, decimals ("1.01") and bare capitals ("A." recitals) are the
+    /// document's own numbered paragraphs; letters, roman numerals, bullets and a bracketed capital
+    /// are a list's items.
+    pub fn of_family(label: &str) -> Self {
+        let token = label.trim().trim_start_matches('*');
+        let bare = token.trim_matches(|c: char| matches!(c, '(' | ')' | '[' | ']' | '.' | ':' | '-'));
+        let bracketed = token.starts_with(['(', '[']);
+        let digits = bare.starts_with(|c: char| c.is_ascii_digit()) && bare.chars().all(|c| c.is_ascii_digit() || c == '.');
+        let capital = !bracketed && bare.chars().count() == 1 && bare.chars().all(|c| c.is_ascii_uppercase());
+        if digits || capital {
+            Self::Paragraph
+        } else {
+            Self::Item
+        }
+    }
 }
 
 /// A numbering candidate's role: the unit it opens, or none, and the rule that decided it; and
