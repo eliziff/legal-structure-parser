@@ -279,13 +279,72 @@ fn note_rooted_lists<'a>(runs: &'a [StructureCandidateRun], notes: &[Note], reso
 }
 
 impl<'a> Resolution<'a> {
+    /// Compound openings where a parent candidate and its immediate child open on the same PDF
+    /// body unit with only whitespace between their markers ("6. (1) The forms..."). Returns
+    /// `(compound_parents, child_opening_start)` mapping each compound child ID to the outermost
+    /// compound parent's `marker_range.start`.
+    fn compound_openings(
+        &self,
+        resolved_candidates: &[ResolvedCandidate<'a>],
+        scalar_text: &ScalarText<'_>,
+    ) -> (HashSet<&'a str>, HashMap<&'a str, usize>) {
+        let by_id: HashMap<&'a str, &StructureMarkerCandidate> = resolved_candidates
+            .iter()
+            .filter(|c| c.role.is_some())
+            .map(|c| (c.candidate.id.as_str(), c.candidate))
+            .collect();
+        let mut parent_of_child: HashMap<&'a str, &'a StructureMarkerCandidate> = HashMap::new();
+        let mut compound_parents: HashSet<&'a str> = HashSet::new();
+        for resolved in resolved_candidates.iter().filter(|c| c.role.is_some()) {
+            let child = resolved.candidate;
+            let Some(parent_id) = child.parent_candidate_id.as_deref() else { continue };
+            let Some(&parent) = by_id.get(parent_id) else { continue };
+            if parent.marker_range.end > child.marker_range.start {
+                continue;
+            }
+            let whitespace_between = scalar_text
+                .slice(parent.marker_range.end..child.marker_range.start)
+                .is_some_and(|s| s.chars().all(char::is_whitespace));
+            if !whitespace_between {
+                continue;
+            }
+            let same_pdf_body_unit = self.nodes.iter().any(|node| {
+                node.origin_id.starts_with("legalpdf.")
+                    && matches!(
+                        node.kind,
+                        NodeKind::Prose | NodeKind::Paragraph | NodeKind::Section | NodeKind::ListItem
+                    )
+                    && node.role != Some(PrimaryRole::Heading)
+                    && node.range.start <= parent.marker_range.start
+                    && child.marker_range.end <= node.range.end
+            });
+            if same_pdf_body_unit {
+                compound_parents.insert(parent.id.as_str());
+                parent_of_child.insert(child.id.as_str(), parent);
+            }
+        }
+        let mut child_opening_start: HashMap<&'a str, usize> = HashMap::new();
+        for (&child_id, &parent) in &parent_of_child {
+            let mut root = parent;
+            while let Some(&outer) = parent_of_child.get(root.id.as_str()) {
+                root = outer;
+            }
+            child_opening_start.insert(child_id, root.marker_range.start);
+        }
+        (compound_parents, child_opening_start)
+    }
+
     /// Native PDF paragraph grouping is source layout, not a second structural boundary truth.
     /// Expose grammar starts within those groups before attaching locators. Learned exact spans
     /// already own their boundaries and are never split by this source-layout adjustment.
     fn split_at_starts(&mut self, resolved_candidates: &[ResolvedCandidate<'a>], scalar_text: &ScalarText<'_>) -> Result<(), EngineError> {
+        let (_, child_opening_start) = self.compound_openings(resolved_candidates, scalar_text);
         let mut starts = resolved_candidates
             .iter()
-            .filter(|candidate| candidate.role.is_some())
+            .filter(|candidate| {
+                candidate.role.is_some()
+                    && !child_opening_start.contains_key(candidate.candidate.id.as_str())
+            })
             .map(|candidate| candidate.candidate.marker_range.start)
             .collect::<Vec<_>>();
         starts.sort_unstable();
@@ -350,7 +409,9 @@ impl<'a> Resolution<'a> {
     /// Each resolved candidate bound to its node: the producer's node of its kind at its marker, a
     /// PDF source unit it opens (which owns its role and exact membership: numbering adds locator
     /// facts to it rather than a second unit at the same start), or a node made for it.
-    fn candidate_nodes(&mut self, resolved_candidates: &mut [ResolvedCandidate<'a>]) -> Result<(), EngineError> {
+    fn candidate_nodes(&mut self, resolved_candidates: &mut [ResolvedCandidate<'a>], scalar_text: &ScalarText<'_>) -> Result<(), EngineError> {
+        let (compound_parents, child_opening_start) =
+            self.compound_openings(resolved_candidates, scalar_text);
         // Source units by where they open, so each candidate finds its own in one lookup.
         let mut units_at = HashMap::<usize, Vec<usize>>::new();
         for (index, node) in self.nodes.iter().enumerate() {
@@ -374,16 +435,31 @@ impl<'a> Resolution<'a> {
             let Some(role) = resolved.role else { continue };
             let kind = role.node_kind();
             let nodes = &self.nodes;
-            let source_unit = units_at.get(&resolved.candidate.marker_range.start).into_iter().flatten().copied().find(|&index| {
-                let node = &nodes[index];
-                is_pdf_unit(node)
-                    && node.range.start == resolved.candidate.marker_range.start
-                    && resolved.candidate.marker_range.end <= node.range.end
-                    && (node.ranges.is_empty()
-                        || node.ranges.iter().any(|part| {
-                            part.start <= resolved.candidate.marker_range.start && resolved.candidate.marker_range.end <= part.end
-                        }))
-            });
+            let is_compound_parent = compound_parents.contains(resolved.candidate.id.as_str());
+            let open_start = child_opening_start
+                .get(resolved.candidate.id.as_str())
+                .copied()
+                .unwrap_or(resolved.candidate.marker_range.start);
+            let source_unit = (!is_compound_parent)
+                .then(|| {
+                    units_at
+                        .get(&open_start)
+                        .into_iter()
+                        .flatten()
+                        .copied()
+                        .find(|&index| {
+                            let node = &nodes[index];
+                            is_pdf_unit(node)
+                                && node.range.start == open_start
+                                && resolved.candidate.marker_range.end <= node.range.end
+                                && (node.ranges.is_empty()
+                                    || node.ranges.iter().any(|part| {
+                                        part.start <= open_start
+                                            && open_start < part.end
+                                    }))
+                        })
+                })
+                .flatten();
             let claimed_source = source_unit.filter(|&index| {
                 let node = &nodes[index];
                 node.marker_range.is_some()
@@ -754,7 +830,7 @@ pub fn resolve_structure_graph_with_assembler(
     let notes = resolution.note_nodes(note_pairs, runs, &scalar_text)?;
     let note_roots = note_rooted_lists(runs, &notes, &mut resolved_candidates);
     resolution.split_at_starts(&resolved_candidates, &scalar_text)?;
-    resolution.candidate_nodes(&mut resolved_candidates)?;
+    resolution.candidate_nodes(&mut resolved_candidates, &scalar_text)?;
     resolution.settle_roles(runs, &mut resolved_candidates);
     resolution.list_nodes(runs, &resolved_candidates, &note_roots)?;
     resolution.lists_into_paragraphs();
