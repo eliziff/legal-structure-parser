@@ -273,11 +273,12 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
         .filter(|&k| kinds[k] == Some(UnitRole::Paragraph))
         .map(|k| (k, items[k].iter().map(|&i| (resolved[i].candidate.marker_range.start, resolved[i].candidate.range.end)).collect()))
         .collect();
+    let mut decided: Vec<Option<UnitRole>> = kinds.clone();
     for (k, kind) in kinds.iter().enumerate() {
-        let (Some(mut kind), Some(&first), Some(&last)) = (*kind, items[k].first(), items[k].last()) else {
+        let (Some(UnitRole::Paragraph), Some(&first), Some(&last)) = (*kind, items[k].first(), items[k].last()) else {
             continue;
         };
-        if kind == UnitRole::Paragraph && opens_count(&resolved[first].candidate.label) {
+        if opens_count(&resolved[first].candidate.label) {
             let (opens, closes) = (resolved[first].candidate.marker_range.start, resolved[last].candidate.marker_range.start);
             // A stray capital or number (a counsel's initial, a wrapped citation's volume) holds none
             // of the document's paragraphs.
@@ -287,9 +288,16 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
                 at > 0 && marks.get(at).map_or(opens < marks[at - 1].1, |next| next.0 > closes)
             });
             if inside {
-                kind = UnitRole::Item;
+                decided[k] = Some(UnitRole::Item);
             }
         }
+    }
+    let labels: Vec<Vec<&str>> = items.iter().map(|run| run.iter().map(|&i| resolved[i].candidate.label.as_str()).collect()).collect();
+    for k in quoted_paragraph_runs(&decided, &labels) {
+        decided[k] = Some(UnitRole::Item);
+    }
+    for (k, kind) in decided.iter().enumerate() {
+        let Some(kind) = *kind else { continue };
         let rule = if kind == UnitRole::Paragraph {
             ResolutionRuleV2::RootedNumericProse
         } else {
@@ -302,6 +310,30 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
             }
         }
     }
+}
+
+/// The paragraph runs (of `kinds`, each run's marker `labels` in order) that are a quoted list's, not the
+/// document's: a document numbers its paragraphs in one family, its spine, the paragraph run with the most
+/// markers; a run of another family that prints any of the spine's numbers (an agreed statement of facts' "45."
+/// against the reasons' "[45]", an issue list's "1." against "[1]") is a list set in the text. A run of the
+/// spine's own family that repeats its numbers is the spine printed again (a parallel translation) and stays.
+fn quoted_paragraph_runs(kinds: &[Option<UnitRole>], labels: &[Vec<&str>]) -> Vec<usize> {
+    let family = |label: &str| marker_readings(label).into_iter().next();
+    let paragraphs: Vec<usize> = (0..kinds.len()).filter(|&k| kinds[k] == Some(UnitRole::Paragraph) && !labels[k].is_empty()).collect();
+    let Some(&spine) = paragraphs.iter().max_by_key(|&&k| (labels[k].len(), std::cmp::Reverse(k))) else {
+        return Vec::new();
+    };
+    let spine_family = labels[spine].first().and_then(|label| family(label)).map(|(family, _)| family);
+    let spine_values: HashSet<u32> = labels[spine].iter().filter_map(|label| family(label)).map(|(_, value)| value).collect();
+    paragraphs
+        .into_iter()
+        .filter(|&k| k != spine)
+        .filter(|&k| {
+            let readings: Vec<(String, u32)> = labels[k].iter().filter_map(|label| family(label)).collect();
+            readings.first().map(|(family, _)| family) != spine_family.as_ref()
+                && readings.iter().any(|(_, value)| spine_values.contains(value))
+        })
+        .collect()
 }
 
 #[cfg(feature = "structure-inference")]
