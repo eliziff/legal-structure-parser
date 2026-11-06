@@ -1344,7 +1344,7 @@ pub(super) fn detect_paragraphs(
         let start = first_utf16 as f64 / text_length.max(1) as f64;
         let span = (text.utf16(last_start) - first_utf16) as f64 / text_length.max(1) as f64;
         let accepted = if hypothesis.short {
-            text_length <= 6_000
+            text_length <= if rooted { 12_000 } else { 6_000 }
                 // A provider's catalogue record opens its text, so a rooted count may start late.
                 && (rooted || first_utf16 <= 1_200 || start <= 0.5)
                 // A rooted count standing alone may be an endorsement of a few short paragraphs ("[1] The motion
