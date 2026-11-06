@@ -361,7 +361,7 @@ pub fn repair_label_dropouts(pages: &mut [Page]) -> usize {
 // Paragraph and item numbers.
 
 const PARAGRAPH_WINDOW_LINES: usize = 300;
-const GAP_LINES: usize = 400;
+const GAP_LINES: usize = 1000;
 const GAP_VALUES: u32 = 30;
 
 /// A family as its markers print: the wrapping, the count, and the numbers before the last.
@@ -535,6 +535,10 @@ fn misread_marker(text: &str, family: &Family) -> Option<(usize, usize, Vec<Read
             if wrap == "[]" && body.len() > 1 && body[..body.len() - 1].iter().all(char::is_ascii_digit) && body[body.len() - 1].is_alphabetic() {
                 numerals.push(body[..body.len() - 1].iter().collect());
             }
+            // "[S51]": a stray mark read against the opening one.
+            if wrap == "[]" && body.len() > 1 && body[0].is_alphabetic() && body[1..].iter().all(char::is_ascii_digit) {
+                numerals.push(body[1..].iter().collect());
+            }
             let printed = token.iter().collect::<String>();
             let exact = crate::candidates::numbering_marker(&printed, None).is_some_and(|marker| marker.family == family.0);
             found.extend(numerals.into_iter().map(|numeral| Reading {
@@ -606,13 +610,15 @@ pub fn repair_paragraph_numbers(pages: &mut [Page]) -> usize {
         let Some(&(first, first_value)) = found.first() else {
             continue;
         };
-        // The gaps the run spans, each between two of its markers starting together; and below the
-        // run's first marker, from its count's start.
+        // The gaps the run spans, each between two of its markers starting together; below the
+        // run's first marker, from its count's start; and past a bracketed run's last, on to the numbers it would go on to.
+        // Further from a run's start and past its end only a line that reads the very number carries it: a list stands there.
+        let bracketed = family.0 == "[]:1";
         let mut spans = Vec::new();
-        if (2..=3).contains(&first_value) {
+        if (2..=3).contains(&first_value) || bracketed && (4..=GAP_VALUES).contains(&first_value) {
             let from = by_family[*family].iter().map(|(position, _)| *position).filter(|&position| position < first).next_back();
             let low = first.saturating_sub(PARAGRAPH_WINDOW_LINES).max(from.map_or(0, |position| position + 1));
-            spans.push((low, first, 0, first_value, vec![first]));
+            spans.push((low, first, 0, first_value, vec![first], first_value > 3));
         }
         for pair in found.windows(2) {
             let ((before, value), (after, next)) = (pair[0], pair[1]);
@@ -625,9 +631,12 @@ pub fn repair_paragraph_numbers(pages: &mut [Page]) -> usize {
             {
                 continue;
             }
-            spans.push((before + 1, after, value, next, vec![before, after]));
+            spans.push((before + 1, after, value, next, vec![before, after], false));
         }
-        for (low, high, value, next, neighbours) in spans {
+        if let (true, [.., (end, value)]) = (bracketed && found.len() >= 3, found.as_slice()) {
+            spans.push((end + 1, (end + GAP_LINES).min(order.len()), *value, value + GAP_VALUES, vec![*end], true));
+        }
+        for (low, high, value, next, neighbours, very) in spans {
             let neighbours = neighbours.iter().map(|&n| line(n)).collect::<Vec<_>>();
             let lines = (low..high)
                 .filter(|&position| {
@@ -640,8 +649,9 @@ pub fn repair_paragraph_numbers(pages: &mut [Page]) -> usize {
                     Some(Candidate { position, start, end, readings })
                 })
                 .collect::<Vec<_>>();
-            let values = (value + 1..next).filter_map(|v| render(family, v)).collect();
-            gaps.push(Gap { lines, values, lone: true });
+            let values = (value + 1..next).filter_map(|v| render(family, v)).collect::<Vec<_>>();
+            let lines = lines.into_iter().filter(|candidate: &Candidate| !very || candidate.readings.iter().any(|reading| values.iter().any(|(_, numeral)| *numeral == reading.numeral))).collect();
+            gaps.push(Gap { lines, values, lone: !very });
         }
     }
     repair(pages, &order, &gaps, false, true)
