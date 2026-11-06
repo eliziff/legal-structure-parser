@@ -315,9 +315,22 @@ pub(super) fn lost_root(chain: &mut Vec<Marker>, score: &mut f64, candidates: &[
 fn rooted_on_author(text: &ScalarText<'_>, chain: &mut Vec<Marker>) {
     let Some(second) = chain.iter().position(|marker| marker.number == 2).filter(|&at| at <= 1) else { return };
     let (before, style) = (chain[second].start, chain[second].style);
-    let author = text.lines().iter().rev().map(|line| (text.scalar(line[0]), text.value[line[0]..line[1]].trim()))
-        .find(|(start, line)| *start < before && author_line(line));
-    let Some((start, _)) = author else { return };
+    let author = text.lines().iter().rev().map(|line| (line[0], text.value[line[0]..line[1]].trim_end()))
+        .find(|(start, line)| text.scalar(*start) < before && author_line(line.trim_start()));
+    let Some((byte, line)) = author else { return };
+    // Who gives the reasons is no paragraph's words: it opens after "delivered by", "rendu par", on the line or on the next.
+    let given = ["delivered by", "rendu par", "rendus par"].iter().filter_map(|words| line.find(words).map(|at| at + words.len())).max();
+    let start = match given {
+        Some(end) if !line[end..].trim().is_empty() => text.scalar(byte + end + line[end..].len() - line[end..].trim_start().len()),
+        Some(_) => {
+            let Some(next) = text.lines().iter().find(|other| other[0] > byte && !text.value[other[0]..other[1]].trim().is_empty()) else { return };
+            text.scalar(next[0])
+        }
+        None => text.scalar(byte),
+    };
+    if start >= before {
+        return;
+    }
     if second == 1 && chain[0].start >= start {
         return;
     }
