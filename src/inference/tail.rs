@@ -37,9 +37,10 @@ fn ended(line: &str) -> bool {
 }
 
 /// A line stops on an abbreviation its next words complete ("… at para." / "340.", "… c. F-" / "23.", "OJ NO." / "1189 (C.A.)."), or
-/// on a citation's year, its volume on the next line ("…, [1992]" / "6 W.W.R. 701 (B.C.C.A.).").
+/// on a citation's year, its volume on the next line ("…, [1992]" / "6 W.W.R. 701 (B.C.C.A.)."), or on the Crown, its case on the
+/// next line ("… aux pp. 473 et 474; R." / "c. Biddle, [1995] 1 R.C.S. 761").
 fn shortened(words: &[&str]) -> bool {
-    const SHORTENED: [&str; 25] = ["para", "paras", "par", "al", "man", "s", "ss", "c", "p", "pp", "art", "arts", "no", "nos", "vol", "at", "v", "mr", "mrs", "ms", "dr", "me", "mme", "hon", "prof"];
+    const SHORTENED: [&str; 26] = ["para", "paras", "par", "al", "man", "s", "ss", "c", "p", "pp", "art", "arts", "no", "nos", "vol", "at", "v", "mr", "mrs", "ms", "dr", "me", "mme", "hon", "prof", "r"];
     let bare = words.last().copied().unwrap_or_default().trim_end_matches('.');
     let word = bare.to_lowercase();
     // (Its article elided: "l'art.", "d'al.".)
@@ -47,6 +48,11 @@ fn shortened(words: &[&str]) -> bool {
     // (Words all the same: "[60] No.", "... B, and C.".)
     let answer = bare == "No" && words.iter().filter(|word| !word.starts_with('[')).count() == 1;
     SHORTENED.contains(&word) && bare != "C" && !answer || cached_regex!(YEAR, r"^\[\d{4}\]$").is_match(bare)
+}
+
+/// A sentence's stop, a remark in brackets after it: "... after pleadings close. (Underlining mine)".
+fn remarked(line: &str) -> bool {
+    cached_regex!(REMARK, r"[.?!]\s+\([^()]*\)$").is_match(line.trim_end())
 }
 
 /// A sentence's tail is no heading: "… is the norm.18 [emphasis added]", "… in his car.”", "…, 2013 BCCA 34 at para.
@@ -57,7 +63,7 @@ fn closes_sentence(line: &str) -> bool {
     let line = line.split_whitespace().next().and_then(|first| line.trim_end().strip_suffix(first)).filter(|rest| !rest.is_empty()).unwrap_or(line);
     let opened = line.matches('(').count() >= line.matches(')').count();
     let capitals = !line.contains(char::is_lowercase) && line.split_whitespace().filter(|word| word.chars().filter(|c| c.is_alphabetic()).count() >= 3).count() >= 2;
-    ended(line) && !capitals && !line.ends_with('?') && !(line.ends_with(')') && opened)
+    ended(line) && !capitals && !line.ends_with('?') && !(line.ends_with(')') && opened && !remarked(line))
 }
 
 /// Whether text ends a sentence, not a citation ("…; 2 Baudry", "([22]) 1 Masse") or an abbreviation ("p. 3",
@@ -88,10 +94,14 @@ fn short(line: &str) -> bool {
     let line = line.trim().trim_start_matches(['\u{2022}', '\u{25cf}', '\u{25aa}', ' ', '\'', '\u{2019}']);
     // Capitals run on as words of a sentence do not ("LA DEMANDERESSE A-T-ELLE FAIT LA DÉMONSTRATION …").
     let capitals = !line.contains(char::is_lowercase);
+    // (A term in quotation marks stands alone with no stop of its own, the other column's mark on it or not: "\u{201c}Lands reserved for the Indians\u{201d}\u{ab}".)
+    let term = cached_regex!(QUOTED_TERM, r#"^[\u{201c}"\u{ab}][^.?!]*[\u{201d}"\u{bb}][\u{201c}\u{ab}]?$"#).is_match(line);
     // (A citing line, "See also, Canada Square Corporation, supra", is the quotation's.)
+    // (So is a source's date: "Letter from the Registrar, April 27, 1998".)
     !utf16_longer(line, if capitals { 300 } else { 120 }) && (1..=if capitals { 50 } else { 18 }).contains(&line.split_whitespace().count())
-        && (level_opens(line) || elided || line.starts_with(['"', '\u{201c}']) && heading_title_case(&line.split_whitespace().collect::<Vec<_>>()))
-        && (!closes_sentence(line) || elided && line.ends_with(')')) && !line.ends_with(',') && may_head(line) && !line.starts_with("See ") && !line.starts_with("Voir ")
+        && (level_opens(line) || elided || term || line.starts_with(['"', '\u{201c}']) && heading_title_case(&line.split_whitespace().collect::<Vec<_>>()))
+        && (!closes_sentence(line) || elided && line.ends_with(')') || term) && !line.ends_with(',') && may_head(line) && !line.starts_with("See ") && !line.starts_with("Voir ")
+        && !cached_regex!(DATED_SOURCE, r",\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}\.?$").is_match(line)
         // (Nor is a sentence's last line one for its lost stop: "There were also no specific firefighter issues during ...".)
         // (Long words: a French heading's little ones are no sentence's.)
         && (line.ends_with('?') || line.split_whitespace().filter(|word| word.starts_with(char::is_lowercase) && word.chars().count() >= 4).count() < 7) && !spoken(line)
@@ -101,10 +111,11 @@ fn short(line: &str) -> bool {
 
 /// A court opening a line: its history, under a heading's enumerator or not. The court's name runs a few words to its
 /// bracket, a comma before its citation or division, or the line's end ("La Cour suprême de la Colombie-Britannique (1994),
-/// 91 B.C.L.R. (2d) 365", "Cour d'appel, [1995] R.J.Q. 2015", "Federal Court, Trial Division"): words going on from it are
-/// a sentence's ("The Court is now asked to ...", "La Cour d'appel a ramené la période ...", "Notre Cour a exigé ...").
+/// 91 B.C.L.R. (2d) 365", "Cour d'appel, [1995] R.J.Q. 2015", "Federal Court, Trial Division", "La Section de première instance
+/// de la Cour fédérale, [1996] 3 C.F. 259"): words going on from it are a sentence's ("The Court is now asked to ...", "La Cour
+/// d'appel a ramené la période ...", "Notre Cour a exigé ...").
 fn court_opens(line: &str) -> bool {
-    !line.contains(" v. ") && cached_regex!(COURT_LINE, r"^(?:(?:The|La|Le)\s+)?(?:\p{Lu}\p{L}+\s+){0,3}(?:Court|Cour|Tribunal)\b(?:\s+[^\s,(.?!]+){0,8}?(?:\s*\(|,\s*[\[\d\p{Lu}]|\s*$)").is_match(line.trim())
+    !line.contains(" v. ") && cached_regex!(COURT_LINE, r"^(?:(?:The|La|Le)\s+)?(?:\p{Lu}\p{L}+\s+){0,3}(?:Court|Cour|Tribunal|Section\s+de\s+premi.re\s+instance)\b(?:\s+[^\s,(.?!]+){0,8}?(?:\s*\(|,\s*[\[\d\p{Lu}]|\s*$)").is_match(line.trim())
 }
 
 /// What a paragraph's line shows, read once: the rules ask this, not the text.
@@ -181,9 +192,10 @@ impl<'a> LineEvidence<'a> {
     /// A line of its own in title case, a stop after it, is a heading some courts stop: "Impact on the Community.",
     /// "LSOG Inc. and LSM Inc."
     /// So is a question of its own, however long: "If the April 6 Agreement is valid and binding, is it enforceable in view of
-    /// s. 59 of the Law and Equity Act, R.S.B.C. 1996, c. 253?"
+    /// s. 59 of the Law and Equity Act, R.S.B.C. 1996, c. 253?", its mark lost or not: "Could this hazard ... exposed to it".
     fn titled(&self) -> bool {
-        let asked = self.asks && self.words.len() <= 40;
+        let unmarked = !self.ended && cached_regex!(ASKING, r"^(?:Could|Did|Does|Is|Was|Will|Should|What)\s").is_match(self.value);
+        let asked = (self.asks || unmarked) && self.words.len() <= 40;
         // (A word to carry it: "R. (2d) 308 (C.A.).", "456 (H.C.)." are a citation's tail.)
         let worded = self.words.iter().any(|word| word.chars().count() >= 4 && word.starts_with(char::is_uppercase) && word.chars().all(char::is_alphabetic));
         level_opens(self.value) && !self.spoken && (asked || self.value.ends_with('.') && (2..=8).contains(&self.words.len()) && !self.line.contains(',') && worded && self.title_case)
@@ -256,10 +268,12 @@ impl Tail<'_> {
             // (Nor a list's next item under its bullet: "-" / "Can the MUHC invoke ...?".)
             // (But a heading in question form under a list's last question is no next question, nor is an outline's next
             // heading under a sentence's question: "... immune from review by the courts?" / "(iii) What Constitutes a Policy Decision ...?".)
-            || line.asks && above.asks && !(above.enumerated && !line.enumerated) && !(line.enumerated && line.title_case && !above.words.iter().take(2).any(|word| heading_enumerator(word)) && !Levels::opens(line.words[0]))
+            // (A list that sets out a question with no label goes on without them: "What is the alleged hazard ...?" / "a) Could ...?" / "Or" / "b) Could ...?" / "Will the threat ...?".)
+            || line.asks && above.asks && !(above.enumerated && !line.enumerated && !self.lines[1..at - 1].iter().any(|before| before.asks && !before.enumerated)) && !(line.enumerated && line.title_case && !above.words.iter().take(2).any(|word| heading_enumerator(word)) && !Levels::opens(line.words[0]))
             || !above.value.chars().any(char::is_alphanumeric)
             || line.cited() && !self.case_head(at)
             || editorial_line(line.line) && !line.noted
+            || remarked(line.line)
     }
 
     /// Whether the line at `at` (`line`, its note's call aside), standing on no form of its own, reads as a heading all the
@@ -346,7 +360,8 @@ impl Tail<'_> {
         // The enumerator may run on a dash ("4 - Le Conseil devrait-il ...?", "B - Le bien-fonde"), or stand under a word
         // ("Issue 1:", "Event 4:").
         // (Or be glued to its first word: "(c)School Health Support Services".)
-        let dashed = cached_regex!(DASHED, r"^(?:\S{1,4}\s*[\u{2014}\u{2013}-]+\s*|\([\p{L}\p{N}]{1,3}\))\p{Lu}").is_match(value);
+        // (A provider's dash may hold a hyphen that does not break: "II -\u{2011} Decision of the Court of Appeal".)
+        let dashed = cached_regex!(DASHED, r"^(?:\S{1,4}\s*[\u{2014}\u{2013}\u{2011}-]+\s*|\([\p{L}\p{N}]{1,3}\))\p{Lu}").is_match(value);
         let named = cached_regex!(NAMED, r"^(?:Issue|Event|Item|Question|Ground)\s+\S{1,6}\s*[:.)]?\s").is_match(value);
         // (A heading's words open in capitals, a provision's clause in its sentence: "(e) in the case of ...".)
         // (Of a bare enumerator: "2—L'APAC a-t-elle manqué ...?" is a heading on a dash.)
@@ -366,12 +381,14 @@ impl Tail<'_> {
             && rest.iter().map(|line| line.line.chars().count()).sum::<usize>() <= 360
             // (A citation's brackets may close on its last line: "B. Ontario Court of Appeal ... (2008 ONCA 796, 92 O.R." / "(3d) 151)".)
             && rest.iter().enumerate().all(|(k, line)| {
+                // (A heading's wrapped citation closes nothing on its line: "... (Division générale), [1998]", "... 85 Man. R.", "(Rivard J.".)
+                let wraps = !line.completed || cached_regex!(WRAPS, r"(?:\[\d{4}\]|\b\p{Lu}\.)$").is_match(line.value);
                 // (A term in quotation marks closes no sentence: "... and \u{201c}Pith and Substance\u{201d}".)
                 k == 0 && heading_enumerator(line.value) || if k + 1 == rest.len() {
-                    !closes_sentence(rest.iter().map(|line| line.line).collect::<Vec<_>>().join(" ").trim()) || cached_regex!(TERM, r"\p{L}\s?[\u{201d}\x22\u{bb}]$").is_match(line.value)
+                    // (A heading's last word, a line read as a heading already: "(3) Les erreurs de droit dans la défense de M." / "Barton".)
+                    !closes_sentence(rest.iter().map(|line| line.line).collect::<Vec<_>>().join(" ").trim()) || cached_regex!(TERM, r"\p{L}\s?[\u{201d}\x22\u{bb}]$").is_match(line.value) || cut < self.lines.len() && wraps
                 } else {
-                    // (A heading's wrapped citation closes nothing on its line: "... (Division générale), [1998]", "... 85 Man. R.", "(Rivard J.".)
-                    !closes_sentence(line.value) || !line.completed || cached_regex!(WRAPS, r"(?:\[\d{4}\]|\b\p{Lu}\.)$").is_match(line.value)
+                    !closes_sentence(line.value) || wraps
                 }
             }) && !last.value.ends_with(',')
     }
@@ -428,7 +445,8 @@ fn closing_at(lines: &[&str]) -> usize {
 }
 
 /// The lines the list a paragraph's lines before `cut` read goes on into: a line going on with the list is its next item,
-/// however like a heading it reads.
+/// however like a heading it reads. (But for a last line closing on nothing under an item that closed: "(h) any other relevant
+/// circumstances." / "C. Procedural Issues: Judge and Jury" heads what follows.)
 fn list_goes_on(lines: &[&str], mut cut: usize) -> usize {
     let mut items = Levels::default();
     for line in &lines[..cut] {
@@ -436,7 +454,8 @@ fn list_goes_on(lines: &[&str], mut cut: usize) -> usize {
             items.read(token);
         }
     }
-    while let Some(token) = lines.get(cut).and_then(|line| enumerated(line.trim())).map(|(token, _)| token).filter(|token| items.continues(token)) {
+    let titled = |at: usize| at + 1 == lines.len() && at > 0 && ended(lines[at - 1]) && !ended(lines[at]);
+    while let Some(token) = lines.get(cut).filter(|_| !titled(cut)).and_then(|line| enumerated(line.trim())).map(|(token, _)| token).filter(|token| items.continues(token)) {
         items.read(token);
         cut += 1;
         // (An item's wrapped words are the item's: "C. Should the evidence be excluded under s. 24(2)" / "of the Charter?".)
@@ -514,8 +533,8 @@ impl OwnLine {
         let sentence = lowercase >= 3 && line.split_whitespace().count() >= 5 && line.ends_with(['.', '?', '!']);
         // (A sentence goes on over its line whatever the next one looks like: "... as proposed by" / "Sopinka J.", "... under s." / "43 of FIPPA:".)
         let above_runs = lower_words(previous) >= 4;
-        // (A citation wrapped over its line: "..., 2003 SCC 69, [2003]" / "3 S.C.R. 263, at para. 77.".)
-        let wrapped = previous.ends_with(',') || cached_regex!(YEAR_END, r"\[\d{4}\]$").is_match(previous);
+        // (A citation wrapped over its line: "..., 2003 SCC 69, [2003]" / "3 S.C.R. 263, at para. 77.", "... 67 C.C.C. (3d)" / "385 (C.A.C.-B.); R. c. Stockley".)
+        let wrapped = previous.ends_with(',') || cached_regex!(YEAR_END, r"\[\d{4}\]$|\(\d*(?:d|th|nd|rd|e)\)$").is_match(previous);
         let closing = closing_line(line);
         Self {
             introduced,
@@ -528,7 +547,8 @@ impl OwnLine {
             running_line: line.split_whitespace().count() >= 8 && lowercase >= 4 && !closing,
             // (A quoted order's second heading over its list: "On the second indictment, ..." / "a)".)
             heads_list: (quoting || enumerated(previous).is_some()) && lines.get(at + 1).is_some_and(|next| enumerated(next.trim()).is_some()),
-            prose: (running_prose(line) || sentence) && !closing,
+            // (A line setting out what follows is one too: "Section 683(3) provides:".)
+            prose: (running_prose(line) || sentence || lowercase >= 1 && line.ends_with(':')) && !closing,
         }
     }
 

@@ -129,11 +129,12 @@ pub fn reasons_go_on(before: &str, numbered: &str, rest: &str) -> bool {
     let after: usize = rest.lines().take_while(|line| {
         let dated = date_line(line.trim()) && above.trim_end().ends_with(['.', '?', '!', '"', '\u{201d}']);
         above = line;
-        !(judgment_end(line) || signature_line(line.trim()) || dated)
+        // (A sentence going on over its line signs nothing: "... by letter" / "dated August 22, 1994.  Shortly thereafter, ...".)
+        !(judgment_end(line) || signature_line(line.trim()) && !line.trim_start().starts_with(char::is_lowercase) || dated)
     }).map(running).sum();
     let opening = before.lines().collect::<Vec<_>>();
-    // (Or a judge's name on its own line: "HALLETT, J.A.", "BATEMAN, J.A.:".)
-    let author = opening.iter().rposition(|line| author_line(line) || line.split_whitespace().count() <= 4 && signature_line(line.trim().trim_end_matches(':')));
+    // (Or a judge's name on its own line: "HALLETT, J.A.", "BATEMAN, J.A.:", "PUGSLEY, J.A.:   (In Chambers)".)
+    let author = opening.iter().rposition(|line| author_line(line) || line.split_whitespace().count() <= 4 && signature_line(line.split('(').next().unwrap_or(line).trim().trim_end_matches(':')));
     let earlier: usize = author.map_or(0, |at| opening[at..].iter().map(|line| running(line)).sum());
     let within = numbered.lines().map(running).sum::<usize>();
     within >= 1 && (earlier + after) * 5 >= within * 4
