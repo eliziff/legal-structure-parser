@@ -55,12 +55,14 @@ struct Marker {
     sentence: bool,
     /// Under a line ending on a colon: what opens here is what that line introduces.
     introduced: bool,
+    /// Its words open in lower case: the sentence above goes on under it, if the count prints it again.
+    going_on: bool,
 }
 
 impl Marker {
     /// A marker on a line of its own: no heading run in before it, nothing introducing it.
     fn new(number: u32, start: usize, content_start: usize, style: MarkerStyle, score: f64) -> Self {
-        Self { number, start, content_start, style, score, formal: false, sentence: false, introduced: false }
+        Self { number, start, content_start, style, score, formal: false, sentence: false, introduced: false, going_on: false }
     }
 }
 

@@ -109,6 +109,7 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
             let content = marker_end + leading_ascii_space(&value[marker_end..]);
             result.push(Marker {
                 introduced: text.value[..line.byte_start].trim_end().ends_with(':'),
+                going_on: value[content..].starts_with(char::is_lowercase),
                 ..Marker::new(number.parse().unwrap(), start, line.scalar_start + lead + shift + content, style, 1.0)
             });
         }
@@ -380,9 +381,11 @@ fn quoted_runs(candidates: &[Marker]) -> HashSet<usize> {
             let introduced = |place: usize| counts[place].first().is_some_and(|&first| candidates[first].introduced);
             let number = candidates[at].number;
             let again = || order[step + 1..].iter().map(|&later| candidates[later].number).take_while(|&later| later <= number + 8).any(|later| later == number);
-            // (A number a colon introduces, printed again with no colon over it, is a quotation's.)
-            let plainly = || order[step + 1..].iter().take_while(|&&later| candidates[later].number <= number + 8).any(|&later| candidates[later].number == number && !candidates[later].introduced);
-            if candidates[at].introduced && plainly() {
+            // (A number a colon introduces, printed again with no colon over it, is a quotation's. So is one over words going on,
+            // a number misfired on a line of a sentence: "[15]" / "of Stockwell Day, ...", "... of Appendix" / "2 of the Referendum
+            // Act".)
+            let plainly = || order[step + 1..].iter().take_while(|&&later| candidates[later].number <= number + 8).any(|&later| candidates[later].number == number && !candidates[later].introduced && !candidates[later].going_on);
+            if (candidates[at].introduced || candidates[at].going_on) && plainly() {
                 counts.push(vec![at]);
                 continue;
             }

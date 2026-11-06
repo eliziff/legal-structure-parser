@@ -33,11 +33,8 @@ pub(super) fn heading_level(words: &[&str], enumerated: bool) -> bool {
     let bare = last.trim_end_matches(|c: char| c.is_ascii_digit());
     let called = bare != *last && bare.trim_end_matches(CLOSERS).strip_suffix(['.', '?', '!']).is_some_and(|word| word.ends_with(char::is_alphabetic));
     // (A heading closes no bracket it never opened, "Legal Probs. 23)", "... was English.)"; a clause's letter does, "de l'al.
-    // 11b)", "... Conspiracy?a)".)
-    let clause = |word: &str| {
-        let mut letters = word.trim_end_matches(')').chars().rev();
-        word.ends_with(')') && letters.next().is_some_and(char::is_lowercase) && !letters.next().is_some_and(char::is_alphabetic)
-    };
+    // 11b)", "... Conspiracy?a)", "Le sous-al. 686(1)b)(iii)".)
+    let clause = |word: &str| cached_regex!(CLAUSE, r"(?:^|[^\p{L}])\p{Ll}\)").is_match(word);
     let count = |bracket: char| words.iter().filter(|word| !clause(word)).map(|word| word.matches(bracket).count()).sum::<usize>();
     if !level_opens(words[0]) || closed || called || count(')') > count('(') {
         return false;

@@ -41,8 +41,9 @@ pub fn figure_caption(line: &str) -> bool {
 /// A line opening what stands after a judge's reasons, in either language: the formal judgment ("FOR THESE REASONS, THE
 /// COURT:", "JUDGMENT in IMM-15723-24", "THIS COURT'S JUDGMENT is that:", "POUR CES MOTIFS"), the record of the hearing
 /// ("Appeal heard on May 2, 2017", "Memorandum filed at Edmonton"), counsel ("SOLICITORS OF RECORD:", "APPEARANCES:",
-/// "NAMES OF COUNSEL"), the concurrence ("Concurred in:"), a signature ("Signed:", "- Sgd -", "“Hon Brendan Brown KC”", "The
-/// Honourable Madam Justice Forth") or an appendix
+/// "NAMES OF COUNSEL", "Counsel for the first plaintiff: Martin Hayden SC", "Counsel for the Petitioners I.H. Fraser"; not
+/// "Counsel for the parties agreed."), the concurrence ("Concurred in:"), a signature ("Signed:", "- Sgd -", "“Hon Brendan
+/// Brown KC”", "The Honourable Madam Justice Forth") or an appendix
 /// ("Appendix A – Proceeding participants"). A short line: a sentence that merely begins so is the reasons'.
 pub fn end_matter(value: &str) -> bool {
     static CAPITALS: OnceLock<Regex> = OnceLock::new();
@@ -53,7 +54,7 @@ pub fn end_matter(value: &str) -> bool {
             .get_or_init(|| Regex::new(r"^(?:FOR (?:THESE|THOSE) REASONS|POUR CES MOTIFS|JUDGMENT\b|JUGEMENT\b|THIS COURT['’]S JUDGMENT|APPENDIX\b|ANNEXE\b|SCHEDULE\b|FEDERAL COURT\b)").expect("capitals regex"))
             .is_match(value)
             || OPENING
-                .get_or_init(|| Regex::new(r"(?i)^(?:-\s*)?(?:appeal heard|heard (?:on|at)\b|applications? heard|memorandum filed|reasons filed|issued on\b|signed\b|sgd\b|dated (?:at|on|in|this)\b|counsel for\b|dated:|released:|i agree\.?$|(?:the )?hon(?:ou?rable)?\b|solicitors of record|names of counsel|appearances\b|written representations|concurred in\b|appendix [a-z0-9]\b|annexe [a-z0-9]\b|solicitors? for\b|procureurs? d)").expect("opening regex"))
+                .get_or_init(|| Regex::new(r"(?i)^(?:-\s*)?(?:appeal heard|heard (?:on|at)\b|applications? heard|memorandum filed|reasons filed|issued on\b|signed\b|sgd\b|dated (?:at|on|in|this)\b|counsel for\b(?:[^:]*:|(?:\s+the)?\s+\S+(?:\s+(?:and|(?-i:\p{Lu})\S*))*$)|dated:|released:|i agree\.?$|(?:the )?hon(?:ou?rable)?\b|solicitors of record|names of counsel|appearances\b|written representations|concurred in\b|appendix [a-z0-9]\b|annexe [a-z0-9]\b|solicitors? for\b|procureurs? d)").expect("opening regex"))
                 .is_match(value))
 }
 
