@@ -123,6 +123,31 @@ pub(super) fn note_opening(body: &str, label: String) -> (String, usize) {
     }
 }
 
+/// Notes a word processor exported as styled paragraphs, `<p class="MsoFootnoteText">[1] We decide this case ...`: the label opens
+/// the note, and a paragraph of the style with none carries the note before it on.
+pub(super) fn word_notes(structure: &DocumentStructure, coordinates: &ScalarText, notes: &mut Vec<OpinionNote>) {
+    static LABEL: OnceLock<Regex> = OnceLock::new();
+    let label = LABEL.get_or_init(|| Regex::new(r"^\[?(\d{1,3}|\*+)\]?[.)]?\s+\S").unwrap());
+    let held = notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
+    let mut found = Vec::<OpinionNote>::new();
+    for element in structure.markup_elements.iter().filter(|element| element.tag == "p" && element.attributes.get("class").is_some_and(|class| class == "MsoFootnoteText")) {
+        let range = element.range;
+        if held.iter().any(|known| known.start < range.end && range.start < known.end) {
+            continue;
+        }
+        let Some(printed) = coordinates.slice_utf16(range.start..range.end).map(trim_js).filter(|printed| !printed.is_empty()) else { continue };
+        match label.captures(printed) {
+            Some(capture) => found.push(OpinionNote { items: Vec::new(), label: capture[1].to_owned(), start: range.start, end: range.end, ranges: vec![range], references: Vec::new(), page: None, called_outside: false, pins: Vec::new() }),
+            None => if let Some(last) = found.last_mut() {
+                last.end = range.end;
+                last.ranges.push(range);
+            },
+        }
+    }
+    notes.append(&mut found);
+    notes.sort_by_key(|note| note.start);
+}
+
 /// Notes that are only anchors: a number named by a link from earlier in the text (`<a name="N_1_">1.</a>` and
 /// `<a href="#N_1_">`). Each runs to the next.
 pub(super) fn anchored_notes(structure: &DocumentStructure, coordinates: &ScalarText, end: usize, notes: &mut Vec<OpinionNote>) {

@@ -990,6 +990,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
         !advertised && !notes_title(body)
     });
     anchored_notes(structure, &coordinates, utf16_len(text), &mut notes);
+    word_notes(structure, &coordinates, &mut notes);
     let unmatched_calls = unmatched_calls(structure, &coordinates, &notes);
 
     let parts = structure.nodes.iter().filter(|node| node.kind == NodeKind::Section && node.markup_tag.as_deref().is_some_and(|tag| tag == "opinion" || tag.ends_with("_text"))).map(|node| {
