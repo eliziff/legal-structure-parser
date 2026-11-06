@@ -88,7 +88,77 @@ pub(super) fn number_paragraphs(layer: &mut OpinionLayer) {
     fill_skipped_numbers(layer);
     misread_numbers(layer);
     carry_title_numbers(layer);
+    walk_scanned_numbers(layer);
+    numbers_from_elsewhere(layer);
+    fill_skipped_numbers(layer);
     list_labels(layer);
+}
+
+/// How many of a layer's paragraphs carry a number.
+fn numbers_held(layer: &OpinionLayer) -> usize {
+    layer.paragraphs.iter().filter(|paragraph| paragraph.number.as_deref().is_some_and(|number| number.parse::<u32>().is_ok())).count()
+}
+
+/// A better reading replaces a worse one. A number of ours that stands between its new neighbours may stay: the reading can
+/// have passed over its paragraph. One out of its order was a misreading: "[110]" where the opinion prints "[¶ 10]".
+fn take_numbers(layer: &mut OpinionLayer, mut taken: Vec<(usize, u32)>) {
+    taken.sort_unstable();
+    for index in 0..layer.paragraphs.len() {
+        let at = taken.partition_point(|entry| entry.0 < index);
+        if taken.get(at).is_some_and(|entry| entry.0 == index) {
+            continue;
+        }
+        let low = at.checked_sub(1).map_or(0, |before| taken[before].1);
+        let high = taken.get(at).map_or(u32::MAX, |entry| entry.1);
+        if layer.paragraphs[index].number.as_deref().and_then(|number| number.parse::<u32>().ok()).is_some_and(|number| number <= low || number >= high) {
+            layer.paragraphs[index].number = None;
+        }
+    }
+    for (index, number) in taken {
+        layer.paragraphs[index].number = Some(number.to_string());
+    }
+}
+
+/// An opinion numbered throughout under a scanner: "[11] [T2] [13] [14]" is 1, 2, 3, 4. Walked from 1, each paragraph tried for
+/// the one number due. A count that climbs by ones over most of the opinion is no accident, however its marks were read.
+fn walk_scanned_numbers(layer: &mut OpinionLayer) {
+    const LEAST: usize = 4;
+    let coordinates = ScalarText::new(&layer.text);
+    let mut due = 1;
+    let mut taken = Vec::new();
+    let mut open = 0;
+    for (index, paragraph) in layer.paragraphs.iter().enumerate().filter(|(_, paragraph)| !paragraph.quote) {
+        open += 1;
+        let opening = coordinates.slice_utf16(paragraph.start..paragraph.end).map_or("", trim_js);
+        if paragraph.number.as_deref() == Some(due.to_string().as_str()) || text::paragraph_marker(opening).is_some_and(|(number, _)| number == due) || scanned_number(opening, due - 1, due + 1).is_some() {
+            taken.push((index, due));
+            due += 1;
+        }
+    }
+    if taken.len() >= LEAST && taken.len() * 2 >= open && taken.len() > numbers_held(layer) {
+        take_numbers(layer, taken);
+    }
+}
+
+/// Numbers another rendition prints where ours lost them, from the rendition that prints the most, each on the paragraph its
+/// words open. A rendition whose words mostly fall in no paragraph of ours is reading something else, its notes as like as not.
+fn numbers_from_elsewhere(layer: &mut OpinionLayer) {
+    const LEAST: usize = 3;
+    const REACH: usize = 40;
+    let best = std::mem::take(&mut layer.printed_elsewhere).iter().map(|numbers| {
+        let mut taken = BTreeMap::new();
+        for &(number, at) in numbers {
+            let Some(index) = layer.paragraphs.partition_point(|paragraph| paragraph.start <= at).checked_sub(1) else { continue };
+            let paragraph = &layer.paragraphs[index];
+            if !paragraph.quote && at < paragraph.end && at - paragraph.start <= REACH {
+                taken.entry(index).or_insert(number);
+            }
+        }
+        (taken.len() * 2 >= numbers.len()).then(|| taken.into_iter().collect::<Vec<_>>()).unwrap_or_default()
+    }).max_by_key(Vec::len).unwrap_or_default();
+    if best.len() >= LEAST && best.len() > numbers_held(layer) {
+        take_numbers(layer, best);
+    }
 }
 
 /// Every paragraph that opens on a list's label keeps it, numbered run or not.
@@ -327,7 +397,7 @@ pub(super) fn fill_skipped_numbers(layer: &mut OpinionLayer) {
     }
     // A run from 2 whose first paragraph opens on what a scanner made of "1".
     static FIRST: OnceLock<Regex> = OnceLock::new();
-    let first = FIRST.get_or_init(|| Regex::new(r"^\W{0,2}[1IlL][.)]?\s").unwrap());
+    let first = FIRST.get_or_init(|| Regex::new(r"^\W{0,2}[1IlL][.)T]?\s").unwrap());
     if let Some(&(index, 2)) = numbered.first() {
         let opening = index.checked_sub(1).and_then(|before| coordinates.slice_utf16(layer.paragraphs[before].start..layer.paragraphs[before].end)).map_or("", trim_js);
         if first.is_match(opening) {

@@ -126,7 +126,8 @@ pub fn reasons_go_on(before: &str, numbered: &str, rest: &str) -> bool {
     let running = |line: &str| line.split_whitespace().filter(|word| word.starts_with(char::is_lowercase)).count();
     let mut above = "";
     // (A date under a finished sentence ends them; one inside a quotation, under its title, does not.)
-    let after: usize = rest.lines().take_while(|line| {
+    // (`rest` opens on the last number's own words: they are the count's, not what follows it.)
+    let after: usize = rest.lines().skip(1).take_while(|line| {
         let dated = date_line(line.trim()) && above.trim_end().ends_with(['.', '?', '!', '"', '\u{201d}']);
         above = line;
         // (A sentence going on over its line signs nothing: "... by letter" / "dated August 22, 1994.  Shortly thereafter, ...".)

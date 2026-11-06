@@ -216,7 +216,7 @@ pub fn author_line(line: &str) -> bool {
     static AUTHOR: OnceLock<Regex> = OnceLock::new();
     AUTHOR
         .get_or_init(|| {
-            Regex::new(r"^[A-Z][A-Za-zÀ-ÿ'’. -]{1,60}?(?:C\.J\.[A-Z.]*|J\.A\.|JJ\.|J\.)\s*(?:[—–]\s*|-\s+|-\s*$)(?:\S|$)").expect("author regex")
+            Regex::new(r"^[A-Z][A-Za-zÀ-ÿ'’´. -]{1,60}?(?:C\.J\.[A-Z.]*|J\.A\.|JJ\.|J\.)\s*(?:[—–]\s*|-\s+|-\s*$)(?:\S|$)").expect("author regex")
         })
         .is_match(line)
         || line.contains("judgment of the Court was delivered by")

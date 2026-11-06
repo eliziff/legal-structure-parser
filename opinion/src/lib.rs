@@ -366,12 +366,17 @@ pub struct OpinionLayer {
     /// The opening words of blocks another rendition sets as quotations.
     #[serde(skip)]
     quoted_elsewhere: HashSet<String>,
+    /// Each other rendition's paragraph numbers, each where its words fall in our text.
+    #[serde(skip)]
+    printed_elsewhere: Vec<Vec<(u32, usize)>>,
     /// What is yet to leave the text.
     #[serde(skip)]
     cuts: Vec<ScalarRange>,
 }
 
 fn structure_of(id: &str, plain: &str, markup: &str) -> Option<DocumentStructure> {
+    // North Dakota's opinions spell the paragraph sign "[&amp;P&amp;12]".
+    let markup = markup.replace("&amp;P&amp;", "¶");
     let input: NativeMarkupInput = serde_json::from_value(serde_json::json!({
         "provider": "courtlistener", "id": id, "url": null, "text": plain, "markup": markup, "citation": null,
     })).ok()?;
@@ -381,11 +386,47 @@ fn structure_of(id: &str, plain: &str, markup: &str) -> Option<DocumentStructure
 /// A court's text set in <pre> blocks: markup in name, the extractor's layout in fact.
 /// A resource.org page counts its blocks down the margin (`div.num`, `span.num`): that is no number the opinion prints.
 /// The block counters a source sets, `<span class="num">14</span>`, each with where it stands.
-fn block_marks(structure: &DocumentStructure, coordinates: &ScalarText) -> Vec<(String, usize)> {
-    structure.markup_elements.iter().filter(|element| element.tag == "span" && element.attributes.get("class").is_some_and(|class| class == "num")).filter_map(|element| {
+fn block_marks(name: &str, structure: &DocumentStructure, coordinates: &ScalarText) -> Vec<(String, usize)> {
+    let marks = structure.markup_elements.iter().filter(|element| element.tag == "span" && element.attributes.get("class").is_some_and(|class| class == "num")).filter_map(|element| {
         let printed = coordinates.slice_utf16(element.range.start..element.range.end).map(trim_js)?;
         (!printed.is_empty() && printed.bytes().all(|byte| byte.is_ascii_digit())).then(|| (printed.to_owned(), element.range.start))
-    }).collect()
+    }).collect::<Vec<_>>();
+    if marks.is_empty() && name == "html_columbia.html" { bracket_counters(structure, coordinates) } else { marks }
+}
+
+/// Columbia's counter on each block, "[1] OPINION", "[2] Kenneth Joe Rider": a count of its blocks, title and all, that the
+/// opinion never printed, and that holds on most of the blocks or is some other thing.
+fn bracket_counters(structure: &DocumentStructure, coordinates: &ScalarText) -> Vec<(String, usize)> {
+    const LEAST: usize = 4;
+    static COUNTER: OnceLock<Regex> = OnceLock::new();
+    let counter = COUNTER.get_or_init(|| Regex::new(r"^\[(\d{1,3})\]\s+\S").unwrap());
+    let blocks = structure.nodes.iter().filter(|node| matches!(node.kind, NodeKind::Paragraph | NodeKind::Heading)).filter_map(|node| {
+        let range = structure.query_range(node);
+        Some((coordinates.slice_utf16(range.start..range.end).map(trim_js)?, range.start))
+    }).collect::<Vec<_>>();
+    let mut due = 1;
+    let mut found = Vec::new();
+    for (printed, start) in &blocks {
+        if counter.captures(printed).is_some_and(|capture| capture[1].parse::<u32>().ok() == Some(due)) {
+            found.push((due.to_string(), *start));
+            due += 1;
+        }
+    }
+    if found.len() >= LEAST && found.len() * 2 >= blocks.len() { found } else { Vec::new() }
+}
+
+/// The paragraph numbers a rendition prints, read as ours are read, each with where it stands. Bare numbers name no paragraph
+/// and must hold on half the blocks: a headnote's "[3]" may open a block as well.
+fn printed_numbers(structure: &DocumentStructure) -> Vec<(u32, usize)> {
+    const LEAST: usize = 3;
+    let coordinates = ScalarText::new(structure.query_text());
+    let nodes = structure.nodes.iter().filter(|node| node.kind == NodeKind::Paragraph).collect::<Vec<_>>();
+    let openings = nodes.iter().filter_map(|node| { let range = structure.query_range(node); Some((range.start, coordinates.slice_utf16(range.start..range.end).map(trim_js)?)) }).collect::<Vec<_>>();
+    let read = text::own_numbers(openings.iter().enumerate().map(|(index, (_, opening))| (index, *opening)), LEAST);
+    let named = read.keys().any(|index| text::says_paragraph(openings[*index].1));
+    let mut found = if named || read.len() * 2 >= openings.len() { read.into_iter().map(|(index, number)| (openings[index].0, number)).collect::<BTreeMap<_, _>>() } else { BTreeMap::new() };
+    found.extend(nodes.iter().filter_map(|node| Some((structure.query_range(node).start, node.label.as_deref()?.strip_prefix("par")?.parse::<u32>().ok()?))));
+    found.into_iter().map(|(start, number)| (number, start)).collect()
 }
 
 fn counts_its_blocks(structure: &DocumentStructure) -> bool {
@@ -783,7 +824,7 @@ fn from_text(record: &OpinionRecord, name: &str, text: String) -> OpinionLayer {
     OpinionLayer {
         id: record.id.clone(), rendition: name.to_owned(), text, pages: reading.pages, paragraphs: reading.paragraphs, notes: reading.notes,
         headings: reading.headings, headnotes: Vec::new(), headnote_marks: Vec::new(), parts: Vec::new(), front: reading.front,
-        furniture: Vec::new(), unmatched_calls: Vec::new(), tables: reading.tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks: Vec::new(), page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), quoted_elsewhere: HashSet::new(), cuts: reading.furniture,
+        furniture: Vec::new(), unmatched_calls: Vec::new(), tables: reading.tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks: Vec::new(), page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), quoted_elsewhere: HashSet::new(), printed_elsewhere: Vec::new(), cuts: reading.furniture,
     }
 }
 
@@ -995,7 +1036,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
         }
     }
     paragraphs.sort_by_key(|paragraph| paragraph.start);
-    let blocks = block_marks(structure, &coordinates).into_iter().map(|(label, start)| OpinionBlock { label, start, source: "marked", pins: Vec::new() }).collect::<Vec<_>>();
+    let blocks = block_marks(name, structure, &coordinates).into_iter().map(|(label, start)| OpinionBlock { label, start, source: "marked", pins: Vec::new() }).collect::<Vec<_>>();
 
     let notes = structure.notes.iter().map(|note| {
         let (label, echo) = note_label_of(structure, &coordinates, note);
@@ -1049,7 +1090,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
     }).collect();
     OpinionLayer {
         id: record.id.clone(), rendition: name.to_owned(), text: text.to_owned(), pages, paragraphs, notes, headings, headnotes,
-        headnote_marks: marks, parts, front, furniture: Vec::new(), unmatched_calls, tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks, page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), quoted_elsewhere: HashSet::new(), cuts,
+        headnote_marks: marks, parts, front, furniture: Vec::new(), unmatched_calls, tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks, page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), quoted_elsewhere: HashSet::new(), printed_elsewhere: Vec::new(), cuts,
     }
 }
 
@@ -1253,12 +1294,8 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
     let marks = closest.as_ref().and_then(|scheme| schemes.remove(scheme)).unwrap_or_default();
     let held_series = layer.pages.iter().map(|page| page.series.clone()).collect::<HashSet<_>>();
     schemes.retain(|scheme, _| !held_series.contains(scheme));
-    let numbers = if counts_its_blocks(other) || layer.paragraphs.iter().any(|paragraph| paragraph.number.is_some()) { Vec::new() } else {
-        other.nodes.iter().filter(|node| node.kind == NodeKind::Paragraph).filter_map(|node| {
-            Some((node.label.as_deref()?.strip_prefix("par")?.to_owned(), other.query_range(node).start))
-        }).collect::<Vec<_>>()
-    };
-    let blocks = if layer.blocks.is_empty() { block_marks(other, &ScalarText::new(other.query_text())) } else { Vec::new() };
+    let numbers = if counts_its_blocks(other) { Vec::new() } else { printed_numbers(other) };
+    let blocks = if layer.blocks.is_empty() { block_marks(name, other, &ScalarText::new(other.query_text())) } else { Vec::new() };
     // Marks all ours add nothing, and reading where they fall costs a whole index of the text.
     if witness || marks.iter().any(|(label, _)| !have.contains_key(label)) || !numbers.is_empty() || !blocks.is_empty() || !schemes.is_empty() {
         let words = word_starts(&layer.text);
@@ -1334,16 +1371,9 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
             };
             layer.blocks.push(OpinionBlock { label: label.clone(), start, source, pins: Vec::new() });
         }
-        // A paragraph takes the number printed at its start in the other rendition.
-        for (number, start) in numbers {
-            let Some(place) = place_of(start) else { continue };
-            let at = words[place].1;
-            let paragraph = layer.paragraphs.partition_point(|paragraph| paragraph.start <= at);
-            if let Some(paragraph) = paragraph.checked_sub(1).map(|index| &mut layer.paragraphs[index]) {
-                if paragraph.number.is_none() && at < paragraph.end && at - paragraph.start <= 40 {
-                    paragraph.number = Some(number);
-                }
-            }
+        let printed = numbers.iter().filter_map(|(number, start)| Some((*number, words[place_near(*start)?].1))).collect::<Vec<_>>();
+        if !printed.is_empty() {
+            layer.printed_elsewhere.push(printed);
         }
     }
     let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
