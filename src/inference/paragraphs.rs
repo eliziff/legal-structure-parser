@@ -1177,7 +1177,9 @@ pub(super) fn detect_paragraphs(
             if !short || (style == MarkerStyle::Bracket
                 // A short ruling numbers its paragraphs "1." to "4." from the head of its reasons, no running prose before
                 // them; after prose, such a count is a list.
-                || style == MarkerStyle::Dot && !text.value[..text.byte(chain[0].start)].lines().any(running_prose))
+                || style == MarkerStyle::Dot && !text.value[..text.byte(chain[0].start)].lines().any(running_prose)
+                // A short ruling's first number stands on its judge: "1 CORY J. — We are all of the view ...". No list opens so.
+                || style == MarkerStyle::Bare && text.value[text.byte(chain[0].content_start)..].lines().next().is_some_and(author_line))
                 // A note list after the paragraphs counts from 1 again; the count stands alone before it.
                 && sole_chain(&chain, &counted)
             {
