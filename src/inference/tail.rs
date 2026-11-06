@@ -50,9 +50,10 @@ fn shortened(words: &[&str]) -> bool {
     SHORTENED.contains(&word) && bare != "C" && !answer || cached_regex!(YEAR, r"^\[\d{4}\]$").is_match(bare)
 }
 
-/// A sentence's stop, a remark in brackets after it: "... after pleadings close. (Underlining mine)".
+/// A sentence's stop, a remark in brackets after it: "... after pleadings close. (Underlining mine)". A judge's initials are no
+/// stop: "Brossard J.A. (dissenting in part)".
 fn remarked(line: &str) -> bool {
-    cached_regex!(REMARK, r"[.?!]\s+\([^()]*\)$").is_match(line.trim_end())
+    cached_regex!(REMARK, r"\p{Ll}{2}[.?!]\s+\([^()]*\)$").is_match(line.trim_end())
 }
 
 /// A sentence's tail is no heading: "… is the norm.18 [emphasis added]", "… in his car.”", "…, 2013 BCCA 34 at para.
@@ -426,7 +427,8 @@ fn closing_at(lines: &[&str]) -> usize {
     // (A line of prose may end on a judge: "(3d) 14 (Ont. C.A.), at para. 47, per Doherty J.A.".)
     // (Nor is a note in brackets prose: "//Le juge Forget (ad hoc)//".)
     let signed = |line: &str| signature_line(line.trim().trim_matches('/')) && lower_words(line.split('(').next().unwrap_or(line)) <= 1 && !line.contains(|c: char| c.is_ascii_digit());
-    while closed > 1 && (signed(lines[closed - 1]) || date_line(lines[closed - 1])) && !named(closed - 1) {
+    // (A date may finish a sentence: "... the parties have until" / "April 3, 2026.".)
+    while closed > 1 && (signed(lines[closed - 1]) || date_line(lines[closed - 1]) && ended(lines[closed - 2])) && !named(closed - 1) {
         closed -= 1;
     }
     // (The name over a title goes with it: "Claude Roy" / "Vice-président".)
