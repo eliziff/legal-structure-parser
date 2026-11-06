@@ -309,6 +309,26 @@ pub(super) fn lost_root(chain: &mut Vec<Marker>, score: &mut f64, candidates: &[
     }
 }
 
+/// A count of bare numbers whose "1" a recognizer lost, or found on a figure in the matter before the reasons ("1 Ad. & E. 3",
+/// "1 Halsbury's Statutes"): its first paragraph opens at the last author's line before its "2" ("CORY J. - In this case").
+/// A "1" on or after that line stands.
+fn rooted_on_author(text: &ScalarText<'_>, chain: &mut Vec<Marker>) {
+    let Some(second) = chain.iter().position(|marker| marker.number == 2).filter(|&at| at <= 1) else { return };
+    let (before, style) = (chain[second].start, chain[second].style);
+    let author = text.lines().iter().rev().map(|line| (text.scalar(line[0]), text.value[line[0]..line[1]].trim()))
+        .find(|(start, line)| *start < before && author_line(line));
+    let Some((start, _)) = author else { return };
+    if second == 1 && chain[0].start >= start {
+        return;
+    }
+    let root = Marker::new(1, start, start, style, 1.0);
+    if second == 1 {
+        chain[0] = root;
+    } else {
+        chain.insert(0, root);
+    }
+}
+
 /// The highest number a count whose first numbers its reader lost may go on from.
 const LOST_ROOT_START: u32 = 9;
 
@@ -1179,6 +1199,9 @@ pub(super) fn detect_paragraphs(
             pooled.extend(counted.iter().cloned());
             extend_over_gaps(&mut chain, &counted);
             lost_root(&mut chain, &mut score, &counted);
+            if style == MarkerStyle::Bare {
+                rooted_on_author(text, &mut chain);
+            }
             // Scored on the count it holds, not on where its first link ended: a count carried past a lost "[2]" is
             // as long as it reads.
             score = chain_score(&chain);
