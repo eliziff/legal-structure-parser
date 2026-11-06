@@ -493,7 +493,8 @@ fn misread_marker(text: &str, family: &Family) -> Option<(usize, usize, Vec<Read
         }
     }
     let token = characters[start..end].iter().filter(|c| !c.is_whitespace()).copied().collect::<Vec<_>>();
-    if token.is_empty() || token.len() > 8 {
+    // A word of letters alone is a word: "Il faut" opens no "(1)".
+    if token.is_empty() || token.len() > 8 || token.iter().all(|c| c.is_alphabetic()) {
         return None;
     }
     let mut found = Vec::new();

@@ -15,6 +15,19 @@ pub(super) fn case_source_line<'a>(text: &ScalarText<'_>, mut line: Line<'a>) ->
     line
 }
 
+/// A paragraph's bracket as a recognizer misreads it: "(2]", "6]", "|7|", "26|", "[11 This": the number and where the
+/// marker ends. A list's "(2)" and "2)" stand as they are.
+fn misread_bracket(value: &str) -> Option<(&str, usize)> {
+    let open = value.chars().next().filter(|c| "[(|{".contains(*c)).map_or(0, char::len_utf8);
+    let rest = value[open..].trim_start_matches(' ');
+    let (number, length) = decimal_prefix(rest, 4)?;
+    let after = rest[length..].trim_start_matches(' ');
+    if after.starts_with([']', '|', '}']) {
+        return Some((number, value.len() - after.len() + 1));
+    }
+    (value.starts_with('[') && after.starts_with(char::is_uppercase)).then_some((number, value.len() - after.len()))
+}
+
 pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtlistener: bool) -> Vec<Marker> {
     let mut result = Vec::new();
     for line in lines(text) {
@@ -68,7 +81,9 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
                 let after = rest[length..].trim_start_matches(' ').strip_prefix(']')?;
                 (!cached_regex!(TOC_RANGE, r"^\s*[-\u{2013}\u{2014}]\s*\[\d{1,4}\]\s*$").is_match(after))
                     .then(|| (number, MarkerStyle::Bracket, value.len() - after.len()))
-            })
+            }).or_else(|| misread_bracket(value).map(|(number, end)| (number, MarkerStyle::Bracket, end)))
+        } else if let Some((number, end)) = misread_bracket(value) {
+            Some((number, MarkerStyle::Bracket, end))
         } else {
             decimal_prefix(value, 4).and_then(|(number, length)| {
                 let rest = &value[length..];
