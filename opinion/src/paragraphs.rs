@@ -91,7 +91,67 @@ pub(super) fn number_paragraphs(layer: &mut OpinionLayer) {
     walk_scanned_numbers(layer);
     numbers_from_elsewhere(layer);
     fill_skipped_numbers(layer);
+    closing_numbers(layer);
     list_labels(layer);
+}
+
+/// The lines past the last numbered paragraph that went out of the paragraphs as the opinion's foot, "[¶ 16.] GILBERTSON, Chief
+/// Justice, concurs.": a line that prints the number due is that paragraph, whatever else it says.
+fn closing_numbers(layer: &mut OpinionLayer) {
+    const LEAST: usize = 3;
+    if numbers_held(layer) < LEAST {
+        return;
+    }
+    let Some((from, mut due)) = layer.paragraphs.iter().rev().find_map(|paragraph| Some((paragraph.end, paragraph.number.as_deref()?.parse::<u32>().ok()? + 1))) else { return };
+    let coordinates = ScalarText::new(&layer.text);
+    let Some(rest) = coordinates.slice_utf16(from..utf16_len(&layer.text)) else { return };
+    let held = layer.paragraphs.iter().map(|paragraph| (paragraph.start, paragraph.end)).chain(layer.notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end)))).collect::<Vec<_>>();
+    let mut at = from;
+    let mut found = Vec::new();
+    for line in rest.split_inclusive('\n') {
+        let start = at + utf16_len(&line[..line.len() - line.trim_start_matches(javascript_whitespace).len()]);
+        let words = trim_js(line);
+        at += utf16_len(line);
+        if !words.is_empty() && !held.iter().any(|range| range.0 <= start && start < range.1) && (text::paragraph_marker(words).is_some_and(|(number, _)| number == due) || scanned_number(words, due - 1, due + 1).is_some()) {
+            found.push(OpinionParagraph { continues: false, item: None, number: Some(due.to_string()), start, end: start + utf16_len(words), page: None, quote: false, part: None, speaker: None, pins: Vec::new() });
+            due += 1;
+        }
+    }
+    if !found.is_empty() {
+        layer.paragraphs.append(&mut found);
+        layer.paragraphs.sort_by_key(|paragraph| paragraph.start);
+    }
+}
+
+/// Text past the opening that nothing holds is the opinion's: paragraphs by the blank lines of a plain text, by the lines of
+/// markup. What the headnotes already hold stays out.
+pub(super) fn hold_leftovers(layer: &mut OpinionLayer) {
+    const WORDS: usize = 4;
+    let Some(first) = layer.paragraphs.iter().map(|paragraph| paragraph.start).min() else { return };
+    static BLANK: OnceLock<Regex> = OnceLock::new();
+    let blank = BLANK.get_or_init(|| Regex::new(r"\n[ \t]*\n").unwrap());
+    let plain = layer.rendition == "plain_text.txt";
+    let coordinates = ScalarText::new(&layer.text);
+    let summaries = layer.headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
+    let mut found = Vec::new();
+    for (start, end) in layer.unheld_stretches().into_iter().filter(|stretch| stretch.1 > first).map(|stretch| (stretch.0.max(first), stretch.1)) {
+        let Some(raw) = coordinates.slice_utf16(start..end) else { continue };
+        let cuts = if plain { blank.find_iter(raw).map(|cut| (cut.start(), cut.end())).collect::<Vec<_>>() } else { raw.match_indices('\n').map(|(at, _)| (at, at + 1)).collect() };
+        let mut from = 0;
+        for (cut, past) in cuts.into_iter().chain([(raw.len(), raw.len())]) {
+            let piece = &raw[from..cut];
+            let words = trim_js(piece);
+            let lead = start + utf16_len(&raw[..from]) + utf16_len(&piece[..piece.len() - piece.trim_start_matches(javascript_whitespace).len()]);
+            from = past;
+            if words.split_whitespace().count() >= WORDS && words.chars().any(char::is_lowercase) && !opening_words(words).is_some_and(|opening| summaries.contains(&opening)) {
+                found.push(OpinionParagraph { continues: false, item: None, number: None, start: lead, end: lead + utf16_len(words), page: None, quote: false, part: None, speaker: None, pins: Vec::new() });
+            }
+        }
+    }
+    if !found.is_empty() {
+        layer.paragraphs.append(&mut found);
+        layer.paragraphs.sort_by_key(|paragraph| paragraph.start);
+    }
 }
 
 /// How many of a layer's paragraphs carry a number.
@@ -130,6 +190,10 @@ fn walk_scanned_numbers(layer: &mut OpinionLayer) {
     for (index, paragraph) in layer.paragraphs.iter().enumerate().filter(|(_, paragraph)| !paragraph.quote) {
         open += 1;
         let opening = coordinates.slice_utf16(paragraph.start..paragraph.end).map_or("", trim_js);
+        // A number on a line of its own is a source's block counter.
+        if opening.split_once('\n').is_some_and(|(line, _)| line.trim().bytes().all(|byte| byte.is_ascii_digit())) {
+            continue;
+        }
         if paragraph.number.as_deref() == Some(due.to_string().as_str()) || text::paragraph_marker(opening).is_some_and(|(number, _)| number == due) || scanned_number(opening, due - 1, due + 1).is_some() {
             taken.push((index, due));
             due += 1;
@@ -145,7 +209,7 @@ fn walk_scanned_numbers(layer: &mut OpinionLayer) {
 fn numbers_from_elsewhere(layer: &mut OpinionLayer) {
     const LEAST: usize = 3;
     const REACH: usize = 40;
-    let best = std::mem::take(&mut layer.printed_elsewhere).iter().map(|numbers| {
+    let best = std::mem::take(&mut layer.printed_elsewhere).iter().map(|(named, numbers)| {
         let mut taken = BTreeMap::new();
         for &(number, at) in numbers {
             let Some(index) = layer.paragraphs.partition_point(|paragraph| paragraph.start <= at).checked_sub(1) else { continue };
@@ -154,9 +218,12 @@ fn numbers_from_elsewhere(layer: &mut OpinionLayer) {
                 taken.entry(index).or_insert(number);
             }
         }
-        (taken.len() * 2 >= numbers.len()).then(|| taken.into_iter().collect::<Vec<_>>()).unwrap_or_default()
-    }).max_by_key(Vec::len).unwrap_or_default();
-    if best.len() >= LEAST && best.len() > numbers_held(layer) {
+        (*named, (taken.len() * 2 >= numbers.len()).then(|| taken.into_iter().collect::<Vec<_>>()).unwrap_or_default())
+    }).max_by_key(|(_, taken)| taken.len()).unwrap_or_default();
+    let (named, best) = best;
+    // Fewer than ours is still the better reading where they run in order: ours may hold every mark, half of them misread.
+    let held = numbers_held(layer);
+    if best.len() >= LEAST && (best.len() > held || named && best.len() * 2 >= held && best.windows(2).all(|pair| pair[0].1 < pair[1].1)) {
         take_numbers(layer, best);
     }
 }

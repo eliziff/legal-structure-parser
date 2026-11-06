@@ -133,7 +133,7 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
     for block in &mut layer.blocks {
         block.start = moved(block.start);
     }
-    for numbers in &mut layer.printed_elsewhere {
+    for (_, numbers) in &mut layer.printed_elsewhere {
         numbers.iter_mut().for_each(|number| number.1 = moved(number.1));
     }
     for paragraph in &mut layer.paragraphs {

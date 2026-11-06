@@ -270,7 +270,7 @@ impl Tail<'_> {
             // (But a heading in question form under a list's last question is no next question, nor is an outline's next
             // heading under a sentence's question: "... immune from review by the courts?" / "(iii) What Constitutes a Policy Decision ...?".)
             // (A list that sets out a question with no label goes on without them: "What is the alleged hazard ...?" / "a) Could ...?" / "Or" / "b) Could ...?" / "Will the threat ...?".)
-            || line.asks && above.asks && !(above.enumerated && !line.enumerated && !self.lines[1..at - 1].iter().any(|before| before.asks && !before.enumerated)) && !(line.enumerated && line.title_case && !above.words.iter().take(2).any(|word| heading_enumerator(word)) && !Levels::opens(line.words[0]))
+            || line.asks && above.asks && !(above.enumerated && !line.enumerated && !self.lines[1.min(at - 1)..at - 1].iter().any(|before| before.asks && !before.enumerated)) && !(line.enumerated && line.title_case && !above.words.iter().take(2).any(|word| heading_enumerator(word)) && !Levels::opens(line.words[0]))
             || !above.value.chars().any(char::is_alphanumeric)
             || line.cited() && !self.case_head(at)
             || editorial_line(line.line) && !line.noted
