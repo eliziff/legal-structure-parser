@@ -3,8 +3,7 @@
 
 use crate::{
     AuthoritativeTableCell, CandidateEvidenceV2, CandidateRoleV2, DocumentStructure, EngineError,
-    NotePairClaimV2, StructureCandidateRun, StructureDiagnostic, StructureNode,
-};
+    StructureCandidateRun, };
 use legal_citations::cues;
 use legal_structure_model::layout::{Page, PairingOutput, PdfSourceSpan};
 use legal_structure_model::{CitationSpan, LayoutAnalysis, StructureAnalysis};
@@ -154,37 +153,6 @@ impl StructureAnalysis for EngineAnalysis {
         evidence: &[CandidateEvidenceV2],
     ) -> Result<Vec<CandidateRoleV2>, EngineError> {
         crate::candidates::resolve_candidates(runs, evidence)
-    }
-
-    fn resolve_structure_graph_with_assembler(
-        &self,
-        document_id: String,
-        provider: String,
-        text: &str,
-        source_sha256: Option<String>,
-        nodes: Vec<StructureNode>,
-        runs: &[StructureCandidateRun],
-        evidence: &[CandidateEvidenceV2],
-        roles: &[CandidateRoleV2],
-        note_pairs: &[NotePairClaimV2],
-        diagnostics: Vec<StructureDiagnostic>,
-        assembler: &mut dyn FnMut(&mut [StructureNode]),
-    ) -> Result<DocumentStructure, EngineError> {
-        let mut structure = crate::candidates::resolve_structure_graph_with_assembler(
-            document_id,
-            provider,
-            text,
-            source_sha256,
-            nodes,
-            runs,
-            evidence,
-            roles,
-            note_pairs,
-            diagnostics,
-            assembler,
-        )?;
-        legal_structure_model::assemble_in_place(&mut structure).map_err(EngineError::invalid)?;
-        Ok(structure)
     }
 
     fn analyze_instrument(

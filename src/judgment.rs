@@ -65,8 +65,9 @@ pub fn disposition_line(value: &str) -> bool {
     let printed = value.contains(['\u{a0}', '\u{2011}']).then(|| value.replace('\u{a0}', " ").replace('\u{2011}', "-"));
     let value = printed.as_deref().unwrap_or(value);
     static NAMED: OnceLock<Regex> = OnceLock::new();
-    // (Or names its party or what it disposes of: "East's appeal dismissed.", "Pourvoi de Javid Ahmad rejeté.", "Judgment accordingly.", "Motions dismissed.")
-    let named = NAMED.get_or_init(|| Regex::new(r"^(?:\p{Lu}[\p{L}.'’-]*(?:\s\p{Lu}[\p{L}.'’-]*){0,3}['’]s (?:cross-)?appeals? (?:dismissed|allowed)|Appeal and cross-appeals\b|Pourvois? d(?:e |u |['’]).{0,60}(?:rejet|accueilli)|Judgment accordingly|Jugement en cons[ée]quence|Motions? (?:.{0,40} )?(?:dismissed|granted)\.?$)").expect("disposition regex"));
+    // (Or names its party or what it disposes of: "East's appeal dismissed.", "Pourvoi de Javid Ahmad rejeté.", "Judgment accordingly.", "Motions dismissed.",
+    // "Motions for extension of time to serve and file notices of appeal dismissed.", "Application dismissed.", "Requête accordée.", "Les requêtes en prorogation de délai ... sont rejetés.")
+    let named = NAMED.get_or_init(|| Regex::new(r"^(?:\p{Lu}[\p{L}.'’-]*(?:\s\p{Lu}[\p{L}.'’-]*){0,3}['’]s (?:cross-)?appeals? (?:dismissed|allowed)|Appeal and cross-appeals\b|Pourvois? d(?:e |u |['’]).{0,60}(?:rejet|accueilli)|Judgment accordingly|Jugement en cons[ée]quence|(?:Motions?|Applications?) (?:.{0,160} )?(?:dismissed|granted|refused)\.?$|(?:Demandes?|Requ.{1,2}tes?|Les (?:demandes|requ.{1,2}tes)) (?:.{0,160} )?(?:rejet|accueilli|accord)\S*\.?$)").expect("disposition regex"));
     DISPOSITIONS.iter().any(|opening| value.trim_start().starts_with(opening)) || named.is_match(value.trim_start())
 }
 
@@ -210,13 +211,14 @@ pub fn court_order(value: &str) -> Option<Vec<&'static str>> {
 }
 
 /// The line a decision's reasons open with, naming who gives them: a judge's name and title before
-/// a dash ("MARTLAND J.—…"), "The judgment of the Court was delivered by", "The reasons for judgment
+/// a dash ("MARTLAND J.—…", "LE JUGE SOPINKA — …", "LE JUGE MCLACHLIN (dissidente en partie) —", "La juge Charron —", "Le Juge
+/// en chef et le juge Major —"), "The judgment of the Court was delivered by", "The reasons for judgment
 /// were delivered by", "The reasons of Bastarache and Rothstein JJ. were delivered by", "Version française des motifs".
 pub fn author_line(line: &str) -> bool {
     static AUTHOR: OnceLock<Regex> = OnceLock::new();
     AUTHOR
         .get_or_init(|| {
-            Regex::new(r"^[A-Z][A-Za-zÀ-ÿ'’´. -]{1,60}?(?:C\.J\.[A-Z.]*|J\.A\.|JJ\.|J\.)\s*(?:[—–]\s*|-\s+|-\s*$)(?:\S|$)").expect("author regex")
+            Regex::new(r"^[A-Z][A-Za-zÀ-ÿ'’´. -]{1,60}?(?:C\.J\.[A-Z.]*|J\.A\.|JJ\.|J\.)\s*(?:[—–]\s*|-\s+|-\s*$)(?:\S|$)|^L(?:[AEae]|ES|es)\s+(?i:juges?)(?:\s+(?:(?i:en|chef|et|l[ae]s?|juges?)\b|\p{Lu}[\p{L}'’´.-]*|\([^)]*\)))*\s*(?:[—–]\s*|--\s*)(?:\S|$)").expect("author regex")
         })
         .is_match(line)
         || line.contains("judgment of the Court was delivered by")

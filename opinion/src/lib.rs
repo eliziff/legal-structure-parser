@@ -471,6 +471,13 @@ impl OpinionLayer {
         stretches
     }
 
+    /// Lines inside notes that open on a paragraph's own mark: a note has run on through the opinion.
+    pub fn marks_in_notes(&self) -> usize {
+        let coordinates = ScalarText::new(&self.text);
+        self.notes.iter().flat_map(|note| note.ranges.iter()).filter_map(|range| coordinates.slice_utf16(range.start..range.end))
+            .map(|body| body.lines().skip(1).filter(|line| text::says_paragraph(line.trim_start())).count()).sum()
+    }
+
     /// How much of the text (spaces aside) nothing holds, and how the longest such stretch opens.
     pub fn unheld_text(&self) -> (usize, String) {
         let coordinates = ScalarText::new(&self.text);

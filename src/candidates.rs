@@ -1,5 +1,4 @@
 use super::*;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
 #[cfg(feature = "structure-inference")]
@@ -141,65 +140,6 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
         (run.range.start, grammar, run.range.end)
     });
     runs
-}
-
-/// The indexes of the nodes of `kinds`, in the order they open.
-#[cfg(feature = "structure-inference")]
-fn nodes_by_start(nodes: &[StructureNode], kinds: &[NodeKind]) -> Vec<usize> {
-    let mut found = (0..nodes.len())
-        .filter(|index| kinds.contains(&nodes[*index].kind))
-        .collect::<Vec<_>>();
-    found.sort_by_key(|index| nodes[*index].range.start);
-    found
-}
-
-#[cfg(feature = "structure-inference")]
-fn own_membership(node: &StructureNode) -> &[ScalarRange] {
-    if node.ranges.is_empty() {
-        std::slice::from_ref(&node.range)
-    } else {
-        &node.ranges
-    }
-}
-
-/// The shortest of `containers` (node indexes in the order they open) holding `range` that
-/// `accept` takes, the first in node order among equals: the node a scan of every node finds.
-/// A node opening further back is no shorter than the distance to `range`'s end, so the scan
-/// back from `range` stops once that distance passes the shortest found.
-#[cfg(feature = "structure-inference")]
-fn smallest_container(
-    nodes: &[StructureNode],
-    containers: &[usize],
-    membership: &[ScalarRange],
-    accept: impl Fn(usize) -> bool,
-) -> Option<usize> {
-    let range = ScalarRange {
-        start: membership.iter().map(|part| part.start).min()?,
-        end: membership.iter().map(|part| part.end).max()?,
-    };
-    let opened = containers.partition_point(|index| nodes[*index].range.start <= range.start);
-    let mut best: Option<(usize, usize)> = None;
-    for &index in containers[..opened].iter().rev() {
-        let candidate = nodes[index].range;
-        if best.is_some_and(|(length, _)| range.end.saturating_sub(candidate.start) > length) {
-            break;
-        }
-        let parts = own_membership(&nodes[index]);
-        if range.end <= candidate.end
-            && membership.iter().all(|part| {
-                parts
-                    .iter()
-                    .any(|outer| outer.start <= part.start && part.end <= outer.end)
-            })
-            && accept(index)
-        {
-            let key = (candidate.end - candidate.start, index);
-            if best.is_none_or(|best| key < best) {
-                best = Some(key);
-            }
-        }
-    }
-    best.map(|(_, index)| index)
 }
 
 /// Whether a marker opens its count: 1, a, A, i, I.
@@ -379,50 +319,6 @@ pub(crate) fn resolve_candidates(
             counted: counted.contains(&resolved.candidate.marker_range.start),
         })
         .collect())
-}
-
-/// The candidates of `runs` in the roles `roles` give them, each with its evidence's pages, lines
-/// and observations, in text order. Every candidate has one role.
-pub(crate) fn resolved_from_roles<'a>(
-    runs: &'a [StructureCandidateRun],
-    evidence: &'a [CandidateEvidenceV2],
-    roles: &[CandidateRoleV2],
-) -> Result<Vec<ResolvedCandidate<'a>>, EngineError> {
-    let evidence_by_candidate = evidence_by_candidate(runs, evidence)?;
-    let mut role_by_candidate = HashMap::with_capacity(roles.len());
-    for role in roles {
-        if role_by_candidate.insert(role.candidate_id.as_str(), role).is_some() {
-            return Err(EngineError::invalid(format!(
-                "candidate '{}' has duplicate roles",
-                role.candidate_id
-            )));
-        }
-    }
-    let mut resolved = Vec::with_capacity(roles.len());
-    for run in runs {
-        for candidate in &run.markers {
-            let Some(role) = role_by_candidate.remove(candidate.id.as_str()) else {
-                return Err(EngineError::invalid(format!("candidate '{}' has no role", candidate.id)));
-            };
-            let item = evidence_by_candidate.get(candidate.id.as_str()).copied();
-            let observations = distinct_observations(item);
-            resolved.push(ResolvedCandidate {
-                candidate,
-                role: role.role,
-                proof: ResolutionProofV2 { rule: role.rule, observations },
-                page_indexes: item.map_or(&[], |item| item.page_indexes.as_slice()),
-                line_ids: item.map_or(&[], |item| item.line_ids.as_slice()),
-            });
-        }
-    }
-    if let Some(unknown) = roles.iter().find(|role| role_by_candidate.contains_key(role.candidate_id.as_str())) {
-        return Err(EngineError::invalid(format!(
-            "role names unknown candidate '{}'",
-            unknown.candidate_id
-        )));
-    }
-    resolved.sort_by_key(|value| (value.candidate.range.start, value.candidate.range.end));
-    Ok(resolved)
 }
 
 pub(crate) fn resolve_structure_candidates<'a>(
@@ -679,78 +575,7 @@ fn marker_readings(label: &str) -> Vec<(String, u32)> {
 }
 
 #[cfg(feature = "structure-inference")]
-mod resolution;
 #[cfg(feature = "structure-inference")]
-pub use resolution::*;
-
-/// A numbered paragraph the page's geometry broke in two (a page break, a wide gap, a line cut
-/// mid-word) goes on in the prose unit that follows it in reading order, past the page's notes and
-/// furniture, when the follower opens in lower case or the paragraph broke off on a comma, hyphen
-/// or dash: one paragraph, as the text runs. The follower's own unit is gone, its children the
-/// paragraph's.
-fn join_broken_paragraphs(nodes: &mut Vec<StructureNode>, text: &ScalarText<'_>) {
-    let flow = |node: &StructureNode| match node.kind {
-        NodeKind::Paragraph | NodeKind::ListItem | NodeKind::Heading | NodeKind::Quote | NodeKind::Table => true,
-        NodeKind::Prose => matches!(node.role, None | Some(PrimaryRole::Text | PrimaryRole::Caption | PrimaryRole::Heading)),
-        _ => false,
-    };
-    let mut order = (0..nodes.len()).filter(|&index| flow(&nodes[index])).collect::<Vec<_>>();
-    order.sort_by_key(|&index| (nodes[index].range.start, nodes[index].range.end));
-    let mut absorbed = HashMap::<String, String>::new();
-    let mut slot = 0;
-    while slot < order.len() {
-        let head = order[slot];
-        let numbered = nodes[head].kind == NodeKind::Paragraph
-            && nodes[head].marker_range.is_some()
-            && nodes[head].grammar.as_deref() == Some("numeric");
-        let mut next = slot + 1;
-        while numbered && next < order.len() {
-            let follower = &nodes[order[next]];
-            let plain = follower.kind == NodeKind::Prose
-                && follower.marker_range.is_none()
-                && matches!(follower.role, None | Some(PrimaryRole::Text))
-                && follower.origin_id.starts_with("legalpdf.")
-                && !matches!(follower.grammar.as_deref(), Some("contents" | "translation"));
-            if !plain {
-                break;
-            }
-            let last = nodes[head].ranges.last().copied().unwrap_or(nodes[head].range);
-            // Broken off: on a comma, a hyphen or a dash. A bare unpunctuated end is no witness: the
-            // gold keeps such a paragraph apart from a capitalized follower as often as not.
-            let broken = text.slice(last.start..last.end)
-                .is_some_and(|words| words.trim_end().ends_with([',', '-', '\u{2013}', '\u{2014}', '(']));
-            let lower = text.slice(follower.range.start..follower.range.end)
-                .and_then(|words| words.trim_start().chars().next())
-                .is_some_and(char::is_lowercase);
-            if !broken && !lower {
-                break;
-            }
-            let follower = nodes[order[next]].clone();
-            let paragraph = &mut nodes[head];
-            if paragraph.ranges.is_empty() {
-                paragraph.ranges.push(paragraph.range);
-            }
-            paragraph.ranges.extend(if follower.ranges.is_empty() { vec![follower.range] } else { follower.ranges.clone() });
-            paragraph.range.end = paragraph.range.end.max(follower.range.end);
-            paragraph.line_ids.extend(follower.line_ids.iter().cloned());
-            paragraph.page_indexes.extend(follower.page_indexes.iter().copied());
-            paragraph.page_indexes.sort_unstable();
-            paragraph.page_indexes.dedup();
-            absorbed.insert(follower.id.clone(), paragraph.id.clone());
-            next += 1;
-        }
-        slot = next.max(slot + 1);
-    }
-    if absorbed.is_empty() {
-        return;
-    }
-    nodes.retain(|node| !absorbed.contains_key(&node.id));
-    for node in nodes.iter_mut() {
-        if let Some(parent) = node.parent_id.as_ref().and_then(|parent| absorbed.get(parent)) {
-            node.parent_id = Some(parent.clone());
-        }
-    }
-}
 
 /// How a marker counts: its brackets, and whether it counts in digits, dotted digits, letters or
 /// roman numerals of either case, or is a bullet.

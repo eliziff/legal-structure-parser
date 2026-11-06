@@ -1,7 +1,6 @@
 use crate::{
     AuthoritativeTableCell, CandidateEvidenceV2, CandidateRoleV2, DocumentStructure, EngineError,
-    NotePairClaimV2, StructureCandidateRun, StructureDiagnostic, StructureNode,
-};
+    StructureCandidateRun, };
 use legal_layout::LayoutAnalysis;
 
 /// The structure engine's document reading, as parsers that build documents on the model call it,
@@ -21,26 +20,6 @@ pub trait StructureAnalysis: LayoutAnalysis {
         runs: &[StructureCandidateRun],
         evidence: &[CandidateEvidenceV2],
     ) -> Result<Vec<CandidateRoleV2>, EngineError>;
-
-    /// Bind the producer's nodes, the candidates in their `roles` and the note pairs into one
-    /// graph, then invoke the producer's single outline assembler. `evidence` gives each candidate
-    /// its lines, pages and observations. The producer refreshes the revision once it completes
-    /// the structure.
-    #[allow(clippy::too_many_arguments)]
-    fn resolve_structure_graph_with_assembler(
-        &self,
-        document_id: String,
-        provider: String,
-        text: &str,
-        source_sha256: Option<String>,
-        nodes: Vec<StructureNode>,
-        runs: &[StructureCandidateRun],
-        evidence: &[CandidateEvidenceV2],
-        roles: &[CandidateRoleV2],
-        note_pairs: &[NotePairClaimV2],
-        diagnostics: Vec<StructureDiagnostic>,
-        assembler: &mut dyn FnMut(&mut [StructureNode]),
-    ) -> Result<DocumentStructure, EngineError>;
 
     fn analyze_instrument(
         &self,

@@ -123,10 +123,12 @@ fn closing_numbers(layer: &mut OpinionLayer) {
     }
 }
 
-/// Text past the opening that nothing holds is the opinion's: paragraphs by the blank lines of a plain text, by the lines of
-/// markup. What the headnotes already hold stays out.
+/// Text nothing holds is the opinion's: paragraphs by the blank lines of a plain text, by the lines of markup. What the headnotes
+/// already hold stays out. Ahead of the first paragraph only running prose counts: a reader can find its first paragraph late,
+/// and a caption's lines are no prose.
 pub(super) fn hold_leftovers(layer: &mut OpinionLayer) {
     const WORDS: usize = 4;
+    const PROSE_WORDS: usize = 15;
     let Some(first) = layer.paragraphs.iter().map(|paragraph| paragraph.start).min() else { return };
     static BLANK: OnceLock<Regex> = OnceLock::new();
     let blank = BLANK.get_or_init(|| Regex::new(r"\n[ \t]*\n").unwrap());
@@ -134,7 +136,7 @@ pub(super) fn hold_leftovers(layer: &mut OpinionLayer) {
     let coordinates = ScalarText::new(&layer.text);
     let summaries = layer.headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
     let mut found = Vec::new();
-    for (start, end) in layer.unheld_stretches().into_iter().filter(|stretch| stretch.1 > first).map(|stretch| (stretch.0.max(first), stretch.1)) {
+    for (start, end) in layer.unheld_stretches() {
         let Some(raw) = coordinates.slice_utf16(start..end) else { continue };
         let cuts = if plain { blank.find_iter(raw).map(|cut| (cut.start(), cut.end())).collect::<Vec<_>>() } else { raw.match_indices('\n').map(|(at, _)| (at, at + 1)).collect() };
         let mut from = 0;
@@ -143,7 +145,9 @@ pub(super) fn hold_leftovers(layer: &mut OpinionLayer) {
             let words = trim_js(piece);
             let lead = start + utf16_len(&raw[..from]) + utf16_len(&piece[..piece.len() - piece.trim_start_matches(javascript_whitespace).len()]);
             from = past;
-            if words.split_whitespace().count() >= WORDS && words.chars().any(char::is_lowercase) && !opening_words(words).is_some_and(|opening| summaries.contains(&opening)) {
+            let count = words.split_whitespace().count();
+            let running = || count >= PROSE_WORDS && words.split_whitespace().filter(|word| word.starts_with(char::is_lowercase)).count() * 5 >= count * 3;
+            if count >= WORDS && words.chars().any(char::is_lowercase) && (lead >= first || running()) && !opening_words(words).is_some_and(|opening| summaries.contains(&opening)) {
                 found.push(OpinionParagraph { continues: false, item: None, number: None, start: lead, end: lead + utf16_len(words), page: None, quote: false, part: None, speaker: None, pins: Vec::new() });
             }
         }

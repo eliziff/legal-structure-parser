@@ -32,7 +32,9 @@ fn ended(line: &str) -> bool {
         return false;
     }
     let called = line.trim_end_matches(|c: char| c.is_ascii_digit());
-    let line = if called.ends_with(['.', '?', '!', '"', '\u{201d}', ')']) { called } else { line };
+    // (A stop inside a section's figures is none: "Section 732.1". A year's is: "... in 1974.14".)
+    let decimal = called.strip_suffix('.').is_some_and(|rest| (1..=3).contains(&(rest.len() - rest.trim_end_matches(|c: char| c.is_ascii_digit()).len())));
+    let line = if called.ends_with(['.', '?', '!', '"', '\u{201d}', ')']) && !decimal { called } else { line };
     line.ends_with(['.', ';', '?', '!', '"', '\u{201d}', ')', ']', '\u{2026}', '\u{bb}']) || editorial_line(line)
 }
 
@@ -51,9 +53,11 @@ fn shortened(words: &[&str]) -> bool {
 }
 
 /// A sentence's stop, a remark in brackets after it: "... after pleadings close. (Underlining mine)". A judge's initials are no
-/// stop: "Brossard J.A. (dissenting in part)".
+/// stop: "Brossard J.A. (dissenting in part)". Nor is a numbered question's gloss a remark: "F. Did SJSL and Raychem Owe BVI and
+/// HOOL a Duty to Warn? (Recovery of Contractual Relational Economic Loss)".
 fn remarked(line: &str) -> bool {
-    cached_regex!(REMARK, r"\p{Ll}{2}[.?!]\s+\([^()]*\)$").is_match(line.trim_end())
+    let asked = line.contains('?') && line.split_whitespace().next().is_some_and(heading_enumerator);
+    !asked && cached_regex!(REMARK, r"\p{Ll}{2}[.?!]\s+\([^()]*\)$").is_match(line.trim_end())
 }
 
 /// A sentence's tail is no heading: "… is the norm.18 [emphasis added]", "… in his car.”", "…, 2013 BCCA 34 at para.
@@ -80,7 +84,9 @@ pub(super) fn sentence_closed(value: &str) -> bool {
 /// What a witness or counsel says heads nothing: a heading asks in the third person, an answer opens on its speaker.
 fn spoken(line: &str) -> bool {
     let line = line.trim();
-    let asked = line.ends_with('?') && line.split_whitespace().any(|word| ["I", "I'm", "I\u{2019}m", "you", "You", "je", "Je", "vous", "Vous"].contains(&word));
+    // (A heading's numeral speaks for no one: "I Is there a relationship between the donor and ultimate beneficiary?".)
+    let words = line.strip_prefix("I ").filter(|rest| rest.starts_with(char::is_uppercase)).unwrap_or(line);
+    let asked = line.ends_with('?') && words.split_whitespace().any(|word| ["I", "I'm", "I\u{2019}m", "you", "You", "je", "Je", "vous", "Vous"].contains(&word));
     // (French sets a space before its colon: "Homme : O.K.")
     // (A speaker's words end as a sentence does: "Canada: the Standard under s. 686(1)(a)(iii)" is a heading.)
     let speaking = line.ends_with(['.', '?', '!']) && (line.split_whitespace().next().is_some_and(|word| word.ends_with(':')) || line.split_whitespace().nth(1) == Some(":"));
@@ -208,6 +214,12 @@ impl<'a> LineEvidence<'a> {
         let value = self.value;
         value.ends_with('\u{2022}') || lower_words(value) >= 9 && !self.asks || self.spoken || self.provision || value.starts_with("See ") || value.starts_with("Voir ")
     }
+
+    /// A note's call set apart from its sentence's stop: "... give effect to the intent of this Agreement. 6". An abbreviation's
+    /// figure is none: "at para. 6".
+    fn call_apart(&self) -> bool {
+        cached_regex!(CALL_APART, r"\p{Ll}{3}[.?!]\s+\d{1,3}$").is_match(self.value) && !shortened(&self.words[..self.words.len() - 1])
+    }
 }
 
 /// A paragraph's lines, read, and what stands around them.
@@ -253,6 +265,16 @@ impl Tail<'_> {
         above.ends_with("as follows.") || above == "follows." && at >= 2 && self.lines[at - 2].line.trim_end().ends_with(" as")
     }
 
+    /// Whether a line opens on an enumerator past a list's first that goes on with none of the lists open above it.
+    fn off_list(&self, at: usize, line: &LineEvidence) -> bool {
+        let (mut items, mut listed) = (Levels::default(), false);
+        for (token, _) in self.lines[..at].iter().filter_map(|before| enumerated(before.value)) {
+            items.read(token);
+            listed = true;
+        }
+        listed && line.enumerated && !Levels::opens(line.words[0]) && !items.continues(line.words[0])
+    }
+
     /// Whether the line at `at` (`line`, its note's call aside) stands in no run of headings, in the order the vetoes are
     /// asked.
     fn stops_run(&self, at: usize, line: &LineEvidence) -> bool {
@@ -270,7 +292,8 @@ impl Tail<'_> {
             // (But a heading in question form under a list's last question is no next question, nor is an outline's next
             // heading under a sentence's question: "... immune from review by the courts?" / "(iii) What Constitutes a Policy Decision ...?".)
             // (A list that sets out a question with no label goes on without them: "What is the alleged hazard ...?" / "a) Could ...?" / "Or" / "b) Could ...?" / "Will the threat ...?".)
-            || line.asks && above.asks && !(above.enumerated && !line.enumerated && !self.lines[1.min(at - 1)..at - 1].iter().any(|before| before.asks && !before.enumerated)) && !(line.enumerated && line.title_case && !above.words.iter().take(2).any(|word| heading_enumerator(word)) && !Levels::opens(line.words[0]))
+            // (Nor is a question on an enumerator no open list goes on with: "(1) ... Et (2) ... santé?" / "VI. La juge de première instance était-elle liée ...?".)
+            || line.asks && above.asks && !(above.enumerated && !line.enumerated && !self.lines[1.min(at - 1)..at - 1].iter().any(|before| before.asks && !before.enumerated)) && !(line.enumerated && line.title_case && !above.words.iter().take(2).any(|word| heading_enumerator(word)) && !Levels::opens(line.words[0])) && !self.off_list(at, line)
             || !above.value.chars().any(char::is_alphanumeric)
             || line.cited() && !self.case_head(at)
             || editorial_line(line.line) && !line.noted
@@ -283,8 +306,10 @@ impl Tail<'_> {
         let above = &self.lines[at - 1];
         // (A heading may be set in lower case: "the sentence", under a finished one.)
         let small = line.words.len() <= 3 && !line.ended && above.completed;
+        // (A title may wrap onto its provision: "The Admissibility of a Videotaped Statement Under" / "s. 715.1".)
+        let wrapped = line.provision && line.words.len() <= 3 && !above.ended && above.title_case;
         let next = self.lines.get(at + 1).map_or(self.after, |next| next.line);
-        !line.barred() && heading_between(line.line, next).is_some() || short(line.line) || line.titled() && (above.completed || at >= 2 && self.formal(at - 1, above)) || small
+        !line.barred() && heading_between(line.line, next).is_some() || short(line.line) || line.titled() && (above.completed || at >= 2 && self.formal(at - 1, above)) || small || wrapped
     }
 
     /// (A heading on a colon introduces nothing: "Analysis:" / "1. Does the applicant ...?".)
@@ -295,15 +320,23 @@ impl Tail<'_> {
 
     /// Where the list a colon's line sets out ends, its numbers bare: "... in the following order:" / "I   Directors" / "II Directors
     /// (metteurs en scène)" / "III   Choreographers" / "IV  Fight directors", the next "I DIRECTORS (RÉALISATEURS)" no item of it.
+    /// A level under the list's own is the list's where the list comes back over it: "The outline is as follows:" / "A. General
+    /// Principles" / "(1) Nature ..." / "B. Application" / "(1) Reasonable ...", the next "IV. Analysis" no item of it; "... as
+    /// follows:" / "1. ...?" / "2. ...?" / "(1) The Second Amendment is a Policy Decision" heads what follows.
     fn counted_list(&self, colon: usize) -> usize {
         let mut items = Levels::default();
-        let token = |at: usize| self.lines.get(at).and_then(|line| line.words.first()).map(|word| format!("{word}."));
-        let mut at = colon + 1;
-        while let Some(token) = token(at).filter(|token| if at == colon + 1 { Levels::opens(token) } else { items.continues(token) }) {
-            items.read(&token);
+        let token = |at: usize| self.lines.get(at).and_then(|line| line.words.first()).map(|word| if heading_enumerator(word) { (*word).to_owned() } else { format!("{word}.") });
+        let (mut at, mut end, mut under, mut returned) = (colon + 1, colon + 1, false, false);
+        while let Some(token) = token(at).filter(|token| if at == colon + 1 { Levels::opens(token) } else { items.continues(token) || items.nests(token) }) {
+            let outermost = items.read(&token) == Some(0);
             at += 1;
+            under |= !outermost;
+            returned |= outermost && under;
+            if outermost || returned {
+                end = at;
+            }
         }
-        at
+        end
     }
 
     /// Where the run of headings the lines end with opens: `lines.len()` where they end in none.
@@ -391,7 +424,7 @@ impl Tail<'_> {
                 } else {
                     !closes_sentence(line.value) || wraps
                 }
-            }) && !last.value.ends_with(',')
+            }) && !last.value.ends_with(',') && !last.call_apart()
     }
 }
 

@@ -240,6 +240,7 @@ pub(super) fn answer_calls(layer: &mut OpinionLayer) {
     // A list under a notes title needs no call at all.
     static TITLE: OnceLock<Regex> = OnceLock::new();
     let title = TITLE.get_or_init(|| Regex::new(r"(?mi)^[ \t]*(?:(?:foot|end)?notes?|escolios?)[ \t]*:?[ \t]*$").unwrap()).find_iter(&layer.text).last();
+    let titled = title.is_some() && layer.notes.is_empty();
     if let Some(title) = title.filter(|_| layer.notes.is_empty()) {
         last_call = utf16_len(&layer.text[..title.end()]);
         if wanted.is_empty() {
@@ -251,15 +252,27 @@ pub(super) fn answer_calls(layer: &mut OpinionLayer) {
         let coordinates = ScalarText::new(&layer.text);
         let mut found = Vec::new();
         let mut next = 0;
+        // The paragraphs under a note belong to it only where another note closes them, or a notes title heads the list: past
+        // the last note of no list is the opinion, a number having opened a paragraph of it. A paragraph's own mark ends any note.
+        let mut under = None;
         for paragraph in layer.paragraphs.iter().filter(|paragraph| paragraph.start >= last_call) {
             let Some(printed) = coordinates.slice_utf16(paragraph.start..paragraph.end).map(trim_js) else { continue };
             let number = opening.captures(printed).and_then(|capture| capture[1].parse::<u32>().ok());
             if number.is_some_and(|number| wanted.get(next) == Some(&number)) {
+                if let (Some(last), Some(end)) = (found.last_mut(), under.take()) {
+                    let last: &mut (u32, usize, usize) = last;
+                    last.2 = end;
+                }
                 found.push((wanted[next], paragraph.start, paragraph.end));
                 next += 1;
-            } else if let Some(last) = found.last_mut() {
-                last.2 = paragraph.end;
+            } else if text::says_paragraph(printed) {
+                break;
+            } else if !found.is_empty() {
+                under = Some(paragraph.end);
             }
+        }
+        if let (true, Some(last), Some(end)) = (titled, found.last_mut(), under) {
+            last.2 = end;
         }
         if found.len() * 2 >= wanted.len().min(found.len() + 1) {
             for (number, start, end) in found {
@@ -293,11 +306,22 @@ pub(super) fn flat_notes(layer: &mut OpinionLayer) {
         .filter(|capture| !opened.iter().any(|open| open.0 <= capture.get(0).unwrap().start() && capture.get(0).unwrap().start() < open.1))
         .map(|capture| { let whole = capture.get(0).unwrap(); (capture[1].to_owned(), units.at(whole.start()), utf16_len(whole.as_str())) }).collect::<Vec<_>>();
     let mut units = Units::new(&layer.text);
-    let starts = opened.iter().map(|open| (units.at(open.0), units.at(open.1))).collect::<Vec<_>>();
-    let end = units.at(layer.text.len());
-    let found = opened.iter().enumerate().map(|(index, (_, _, number))| {
-        (number.clone(), starts[index].1, starts.get(index + 1).map_or(end, |next| next.0))
+    let starts = opened.iter().map(|open| units.at(open.1)).collect::<Vec<_>>();
+    // A note set flat ends with its own paragraph, ahead of the next note or not: the opinion goes on below it. A plain text's
+    // lines wrap, so its paragraphs end at a blank line; a paragraph's own mark ends one anywhere.
+    static PAST: OnceLock<Regex> = OnceLock::new();
+    static BROKEN: OnceLock<Regex> = OnceLock::new();
+    let past = PAST.get_or_init(|| Regex::new(r"\n[ \t]*\n|\n[ \t]*[\[{(]?¶").unwrap());
+    let broken = BROKEN.get_or_init(|| Regex::new(r"\n").unwrap());
+    let closes = if layer.rendition == "plain_text.txt" { past } else { broken };
+    let mut units = Units::new(&layer.text);
+    let stops = opened.iter().enumerate().map(|(index, open)| {
+        let limit = opened.get(index + 1).map_or(layer.text.len(), |next| next.0);
+        let body = &layer.text[open.1..limit];
+        let lead = body.len() - body.trim_start().len();
+        units.at(closes.find(&body[lead..]).map_or(limit, |close| open.1 + lead + close.start()))
     }).collect::<Vec<_>>();
+    let found = opened.iter().enumerate().map(|(index, (_, _, number))| (number.clone(), starts[index], stops[index])).collect::<Vec<_>>();
     for (number, start, stop) in found {
         if layer.notes.iter().any(|note| note.label == number && note.start <= start && start < note.end) {
             continue;

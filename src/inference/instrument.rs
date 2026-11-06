@@ -193,6 +193,11 @@ impl Levels {
         readings(token).is_some_and(|readings| readings.iter().any(|(_, value)| value == "1"))
     }
 
+    /// Whether an enumerator opens a level none open holds: "(1)" under "A.".
+    pub(crate) fn nests(&self, token: &str) -> bool {
+        readings(token).is_some_and(|readings| readings.iter().any(|(family, value)| value == "1" && !self.0.iter().any(|(open, _)| open == family)))
+    }
+
     fn continued(&self, (family, value): &((u8, bool), String)) -> bool {
         self.0.iter().any(|(open, last)| {
             open == family && (family.0 == u8::MAX || enum_increment(family.0, last, value))

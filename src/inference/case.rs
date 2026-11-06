@@ -483,6 +483,9 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
         if value.len() != length { continue; }
         let label_start = text.scalar(line.byte_start + line.text.len() - line.text.trim_start().len());
         let label_range = ScalarRange { start: label_start, end: label_start + length };
+        // A number the markup sets as a heading ("<h2>1</h2>") or in a table is that, however alone it stands.
+        if evidence.native_claims.iter().any(|claim| matches!(claim.kind, EvidenceKind::Heading | EvidenceKind::Table | EvidenceKind::Row | EvidenceKind::Cell)
+            && claim.range.start <= label_start && label_start < claim.range.end) { continue; }
         let physical = physical_page(label_start);
         let Some(&reference) = supported_references.get(&marker.start) else { continue; };
         let body_start = after_line(line);
@@ -511,6 +514,11 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
                 body_seen = true;
                 blanks = 0;
             }
+        }
+        // A text with no pages has no foot to stop a note: in markup its own block ends it.
+        if let Some(block) = evidence.native_claims.iter().find(|claim| matches!(claim.kind, EvidenceKind::Paragraph | EvidenceKind::Prose)
+            && claim.range.start <= body_start && body_start < claim.range.end) {
+            body_end = body_end.min(block.range.end);
         }
         if body_start >= body_end || word_count(text.slice(body_start..body_end).unwrap_or(""), true) < 3
             || !source_lines.iter().skip(at).take_while(|line| line.scalar_start < body_end)
