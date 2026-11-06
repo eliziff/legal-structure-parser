@@ -16,7 +16,6 @@ pub mod docx;
 pub mod fingerprint;
 mod heading_ladder;
 pub mod instrument;
-pub mod judgment;
 /// Laid-out pages and lines and note pairs, which the document model builds on.
 pub use legal_layout as layout;
 pub use legal_layout::{NotePairSupportV2, ScalarRange};
@@ -269,6 +268,8 @@ pub enum ResolutionRuleV2 {
     DirectExclusion,
     ConflictingRoles,
     InsufficientEvidence,
+    /// A numbered paragraph off the document's count (`paragraph_spine`): a list's or a quotation's.
+    OffCount,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

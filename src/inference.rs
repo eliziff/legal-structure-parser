@@ -13,7 +13,7 @@ macro_rules! cached_regex {
 
 mod paragraphs;
 use paragraphs::*;
-pub(crate) use paragraphs::run_in_heading;
+pub(crate) use paragraphs::{closing_line, run_in_heading};
 mod headings;
 pub(crate) use headings::*;
 mod runs;
@@ -50,6 +50,8 @@ struct Marker {
     score: f64,
     formal: bool,
     sentence: bool,
+    /// Under a line ending on a colon: what opens here is what that line introduces.
+    introduced: bool,
 }
 
 #[derive(Clone, Copy)]

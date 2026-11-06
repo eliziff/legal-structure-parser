@@ -27,9 +27,6 @@ pub(super) fn detect_case(
     };
     if profile == DetectionProfile::CaseRootedComplete {
         paragraphs = with_endnotes(text, paragraphs);
-        for block in paragraphs.iter_mut().filter(|block| block.kind == NodeKind::Paragraph) {
-            block.range.end = paragraph_end_before_signatures(text, block.range.start, block.range.end);
-        }
         if !paragraphs.iter().any(|block| block.kind == NodeKind::Paragraph) {
             let until = paragraphs.iter().filter(|block| block.kind == NodeKind::Endnote)
                 .filter_map(|block| block.marker_range.map(|range| range.start)).min().unwrap_or(text.len());
@@ -358,7 +355,7 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
         if !form_feeds.is_empty() && !(header || footer) { continue; }
         pages.push(SourcePageMarker {
             marker: Marker { number: number.parse().unwrap(), start, content_start: end,
-                style: MarkerStyle::Bare, score: 1.0, formal: false, sentence: false },
+                style: MarkerStyle::Bare, score: 1.0, formal: false, sentence: false, introduced: false },
             range: ScalarRange { start, end },
             line: ScalarRange { start: line.scalar_start, end: line_end },
             after_line: after_line(*line),
@@ -713,6 +710,7 @@ pub(super) fn detect_case_headings(evidence: &DocumentInput, text: &ScalarText<'
                 score: 1.0,
                 formal: true,
                 sentence: false,
+                introduced: false,
             })
             .collect::<Vec<_>>();
         let positions = family

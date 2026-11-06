@@ -2,16 +2,14 @@
 //! paragraphs, the lists within them, and the matter before and after its reasons, in document
 //! order, so a caller can lay the judgment out.
 
-use crate::inference::{
-    after_marker, enum_increment, enum_readings, heading_between, heading_enumerator, heading_levels, inserted_letter_token,
-    joined_heading_levels, may_head, run_in_heading, sentence_heading,
-};
+use crate::inference::{enumerated, heading_between, joined_heading_levels, may_head, run_in_heading, Levels};
 use crate::filing::{front_matter_line, FrontMatterLine};
 use crate::analysis::citation_spans;
 use crate::{
     provider_text_document_structure, Derivation, DocumentStructure, EngineError, NodeKind,
     ProviderTextInput, ProviderTextSourceKind, ScalarRange, StructureNode,
 };
+use crate::judgment::{author_line, date_line, signature_line};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -55,115 +53,12 @@ fn front_role(line: &str, opening: bool) -> Option<&'static str> {
     }
 }
 
-const BULLETS: [&str; 8] = ["•", "-", "–", "—", "*", "·", "◦", "▪"];
-
-/// An enumerator's readings: its family as the instrument grammar reads it (a letter that is
-/// also a numeral has both), whether it is parenthesized, and its value.
-fn readings(token: &str) -> Option<Vec<((u8, bool), String)>> {
-    if BULLETS.contains(&token) {
-        return Some(vec![((u8::MAX, false), "1".to_owned())]);
-    }
-    let (inner, wrapped) = match token.strip_prefix('(') {
-        Some(rest) => (rest.strip_suffix(')')?, true),
-        None => (token.strip_suffix(['.', ')'])?, false),
-    };
-    let readings = enum_readings(inner)
-        .into_iter()
-        .flatten()
-        .filter_map(|(family, value)| {
-            let value = if family == 0 {
-                value.parse::<u32>().ok()?.to_string()
-            } else {
-                value
-            };
-            Some(((family, wrapped), value))
-        })
-        .collect::<Vec<_>>();
-    (!readings.is_empty()).then_some(readings)
-}
-
-/// The open levels of a hierarchy of enumerators, outermost first: each one's family (the
-/// instrument grammar's reading of the enumerator, and whether it is parenthesized) and the
-/// value last read in it.
-#[derive(Default)]
-struct Levels(Vec<((u8, bool), String)>);
-
-impl Levels {
-    /// The depth an enumerator opens at, from 0, opening or closing levels to it. Of a letter
-    /// that is also a numeral ("i", "v", "C") the reading taken continues an open level, or else
-    /// starts one at its first value ("i" is 1, not the ninth letter).
-    fn read(&mut self, token: &str) -> Option<usize> {
-        let readings = readings(token)?;
-        let mut continuing = readings.iter().filter(|reading| self.continued(reading));
-        let inserted =
-            inserted_letter_token(token.trim_start_matches('(').trim_end_matches(['.', ')']))
-                .is_some();
-        let continued = if inserted {
-            continuing.max_by_key(|(family, _)| self.0.iter().rposition(|(open, _)| open == family))
-        } else {
-            continuing.next()
-        };
-        let (family, value) = continued
-            .or_else(|| readings.iter().find(|(_, value)| value == "1"))
-            .or_else(|| {
-                readings
-                    .iter()
-                    .find(|(family, _)| self.0.iter().any(|(open, _)| open == family))
-            })
-            .or(readings.first())
-            .cloned()?;
-        Some(self.open(family, value))
-    }
-
-    /// Whether an enumerator goes on with an open level: "2." after "1.".
-    fn continues(&self, token: &str) -> bool {
-        readings(token)
-            .is_some_and(|readings| readings.iter().any(|reading| self.continued(reading)))
-    }
-
-    fn continued(&self, (family, value): &((u8, bool), String)) -> bool {
-        self.0.iter().any(|(open, last)| {
-            open == family && (family.0 == u8::MAX || enum_increment(family.0, last, value))
-        })
-    }
-
-    fn open(&mut self, family: (u8, bool), value: String) -> usize {
-        match self.0.iter().position(|(open, _)| *open == family) {
-            Some(at) => {
-                self.0.truncate(at + 1);
-                self.0[at].1 = value;
-                at
-            }
-            None => {
-                self.0.push((family, value));
-                self.0.len() - 1
-            }
-        }
-    }
-}
-
 /// Where lines between paragraphs stand: before the reasons, among them, or after them.
 #[derive(Clone, Copy)]
 enum Place {
     Front,
     Between,
     Tail,
-}
-
-/// A line's leading enumerator and the words after it, where it opens with one.
-fn enumerated(line: &str) -> Option<(&str, &str)> {
-    let (token, rest) = line.split_once(char::is_whitespace)?;
-    let rest = rest.trim_start();
-    (!rest.is_empty()
-        && (token.starts_with('(') && token.ends_with(')') && token.len() <= 7
-            || heading_enumerator(token)
-            || token.ends_with(['.', ')'])
-                && inserted_letter_token(
-                    token.trim_start_matches('(').trim_end_matches(['.', ')']),
-                )
-                .is_some()
-            || BULLETS.contains(&token)))
-    .then_some((token, rest))
 }
 
 /// Reads a judgment's text, as A2AJ and other providers give it (a line to a paragraph, its
@@ -177,6 +72,143 @@ pub fn case_outline(text: &str) -> Result<Vec<CaseOutlineEntry>, EngineError> {
         text,
     ))?;
     Ok(read(&structure))
+}
+
+/// A line ending a judge's paragraphs by what it says: the next reasons' introduction, the matter after the reasons.
+pub fn judgment_end(line: &str) -> bool {
+    crate::inference::closing_line(line.trim())
+}
+
+/// A line no numbered paragraph holds, whatever stands around it: a formal heading ("IV. Judicial History"), or a line
+/// ending the paragraphs (`judgment_end`).
+pub fn judgment_division(line: &str) -> bool {
+    // (A heading's words may end on a stop of their own: "II. The Sexual Activity with A.C.".)
+    let initials = line.split_whitespace().last().is_some_and(|word| word.trim_end_matches('.').contains('.'));
+    judgment_end(line) || crate::inference::formal_heading(line.trim()) && (initials || !line.trim().ends_with(['.', ';', ':', ',']))
+}
+
+/// A judgment's numbered paragraphs as a provider's text of it reads, every printing an entry: a decision printed
+/// again whole after its reasons (its translation set after them) is read the same way, a count that holds four
+/// fifths of the first's numbers being that decision again and not a list after its reasons.
+pub(crate) fn judgment_paragraphs(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
+    let mut paragraphs = printings(text);
+    // A count holds four fifths of the numbers from 1 to its last: a number past the highest that does is no
+    // paragraph's (a stray "272" among a few low numbers), and a text none of whose numbers do numbers none.
+    let numbers: std::collections::BTreeSet<usize> = paragraphs.iter().map(|(number, _)| *number).collect();
+    let reach = numbers.iter().copied().filter(|&number| numbers.range(..=number).count() * 5 >= number * 4).max().unwrap_or(0);
+    paragraphs.retain(|(number, _)| *number <= reach);
+    // A few numbers starting over and over are lists in unnumbered reasons: the relief sought, an affidavit's, the issues.
+    if reach <= 12 && paragraphs.iter().filter(|(number, _)| *number == 1).count() >= 3 {
+        paragraphs.clear();
+    }
+    // (The first printing's numbers: a second printing's would stand the count's end at the text's.)
+    let mut seen = std::collections::HashSet::new();
+    let starts: Vec<usize> = paragraphs.iter().take_while(|(number, _)| seen.insert(*number)).filter_map(|(_, ranges)| ranges.first()).map(|range| range.start).collect();
+    if let (Some(&first), Some(&last)) = (starts.iter().min(), starts.iter().max()) {
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        let part = |range: &[u16]| String::from_utf16_lossy(range);
+        if reach <= LIST_NUMBERS && reasons_go_on(&part(utf16.get(..first).unwrap_or_default()), &part(utf16.get(first..last).unwrap_or_default()), &part(utf16.get(last..).unwrap_or_default())) {
+            paragraphs.clear();
+        }
+    }
+    paragraphs
+}
+
+/// The most numbers a list a decision quotes runs to.
+pub const LIST_NUMBERS: usize = 40;
+
+/// Whether a decision's reasons go on around its numbers, unnumbered, as long as those numbers run: `before` is its text
+/// up to the first of them, `numbered` from there to the last, `rest` from the last. Those numbers are a list the reasons
+/// quote (the agreed facts, an agreement's terms, the grounds of appeal), not their paragraphs. An order's numbered
+/// paragraphs stop at its signature, whatever schedule follows. Running words count: a stamp, a name or a back page's
+/// title are none, and of what stands before the numbers only what follows the reasons' author (a report's headnote does not).
+pub fn reasons_go_on(before: &str, numbered: &str, rest: &str) -> bool {
+    let running = |line: &str| line.split_whitespace().filter(|word| word.starts_with(char::is_lowercase)).count();
+    let mut above = "";
+    // (A date under a finished sentence ends them; one inside a quotation, under its title, does not.)
+    let after: usize = rest.lines().take_while(|line| {
+        let dated = date_line(line.trim()) && above.trim_end().ends_with(['.', '?', '!', '"', '\u{201d}']);
+        above = line;
+        !(judgment_end(line) || signature_line(line.trim()) || dated)
+    }).map(running).sum();
+    let opening = before.lines().collect::<Vec<_>>();
+    // (Or a judge's name on its own line: "HALLETT, J.A.", "BATEMAN, J.A.:".)
+    let author = opening.iter().rposition(|line| author_line(line) || line.split_whitespace().count() <= 4 && signature_line(line.trim().trim_end_matches(':')));
+    let earlier: usize = author.map_or(0, |at| opening[at..].iter().map(|line| running(line)).sum());
+    let within = numbered.lines().map(running).sum::<usize>();
+    within >= 1 && (earlier + after) * 5 >= within * 4
+}
+
+/// Every printing of each number `text` reads: a decision printed twice over is read as two.
+fn printings(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
+    if let Some(printings) = two_printings(text) {
+        return printings;
+    }
+    let mut paragraphs = one_printing(text);
+    let mut from = 0;
+    let mut wanted = paragraphs.len();
+    while wanted > 0 {
+        let end = paragraphs.iter().flat_map(|(_, ranges)| ranges).map(|range| range.end).max().unwrap_or(from);
+        let utf16: Vec<u16> = text.encode_utf16().collect();
+        let rest = String::from_utf16_lossy(utf16.get(end..).unwrap_or_default());
+        if end <= from {
+            break;
+        }
+        let again = one_printing(&rest);
+        // A printing as long as half the text before it and four fifths its count.
+        if (utf16.len() - end) * 2 < end - from || again.len() * 5 < wanted * 4 {
+            break;
+        }
+        (from, wanted) = (end, again.len());
+        paragraphs.extend(again.into_iter().map(|(number, ranges)| {
+            (number, ranges.into_iter().map(|range| ScalarRange { start: range.start + end, end: range.end + end }).collect())
+        }));
+    }
+    paragraphs
+}
+
+/// A decision printed twice over, its translation following it: read whole, its count would take a number's later
+/// printing and hop from the one to the other, so a later line opening as the text's first number does ("[1]" or "1."),
+/// past the first third of the text and not under a line introducing it ("The orders sought were as follows:", a list),
+/// parts them where each part then reads a count of four fifths of the other's or more.
+fn two_printings(text: &str) -> Option<Vec<(usize, Vec<ScalarRange>)>> {
+    const TRIALS: usize = 3;
+    let shift = |ranges: Vec<ScalarRange>, by: usize| ranges.into_iter().map(|range| ScalarRange { start: range.start + by, end: range.end + by }).collect::<Vec<_>>();
+    let (mut at, mut trials) = (0, 0);
+    let third = text.len() / 3;
+    let first_number = text.lines().map(str::trim_start).find_map(|line| ["[1]", "1. "].into_iter().find(|number| line.starts_with(number)))?;
+    for line in text.split_inclusive('\n') {
+        let opening = line.trim_start();
+        let introduced = text[..at].trim_end().ends_with(':');
+        if at >= third && trials < TRIALS && opening.starts_with(first_number) && !introduced {
+            trials += 1;
+            let (first, second) = text.split_at(at);
+            let (before, after) = (one_printing(first), one_printing(second));
+            if before.len() >= 5 && before.len() * 5 >= after.len() * 4 && after.len() * 5 >= before.len() * 4 {
+                let offset = first.encode_utf16().count();
+                let mut printings = before;
+                printings.extend(after.into_iter().map(|(number, ranges)| (number, shift(ranges, offset))));
+                return Some(printings);
+            }
+        }
+        at += line.len();
+    }
+    None
+}
+
+/// Each number of the first count `text` reads (the structure of a case's text), once, with the spans its first
+/// printing holds: the structure's paragraph, which ends where its own lines do (`paragraph_tail`).
+fn one_printing(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
+    let Ok(structure) = provider_text_document_structure(ProviderTextInput::new("", ProviderTextSourceKind::Cases, text)) else {
+        return Vec::new();
+    };
+    crate::numbered_paragraphs::paragraph_printings(&structure)
+        .into_iter()
+        .map(|(number, printings)| {
+            let node = &structure.nodes[printings[0]];
+            (number, if node.ranges.is_empty() { vec![node.range] } else { node.ranges.clone() })
+        })
+        .collect()
 }
 
 /// A judgment's outline from its structure's numbered paragraphs and the lines around them.
@@ -317,10 +349,7 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
             // A line going on with the list the paragraph above ends in is that list's; before the
             // reasons (a publication ban quoting its enactment), a line may also open a list.
             let opens = |token: &str| {
-                matches!(place, Place::Front)
-                    && index < opening
-                    && readings(token)
-                        .is_some_and(|readings| readings.iter().any(|(_, value)| value == "1"))
+                matches!(place, Place::Front) && index < opening && Levels::opens(token)
             };
             if let Some((token, rest)) =
                 enumerated(line).filter(|(token, _)| list.continues(token) || opens(token))
@@ -405,31 +434,8 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
             }
             at = close + 1;
         }
-        // A heading on the lines a paragraph ends with, after its last sentence, opens what
-        // follows ("... as follows.\nAdmission of the fresh evidence\n[11] The ..."): it is
-        // read with the lines between the paragraphs.
-        let mut body_end = body_end;
-        while lines.len() > 1 {
-            let (from, to) = lines[lines.len() - 1];
-            let above = slice(lines[lines.len() - 2].0, lines[lines.len() - 2].1);
-            let ended = above
-                .trim_end()
-                .ends_with(['.', ':', ';', '?', '!', '"', '\u{201d}', ')']);
-            let heading = || {
-                let line = slice(from, to);
-                !line.trim_start().starts_with('(')
-                    && (heading_levels(&line).is_some()
-                        || sentence_heading(
-                            &line,
-                            after_marker(&slice(body_end, (body_end + 200).min(chars.len()))),
-                        ))
-            };
-            if !ended || !heading() {
-                break;
-            }
-            body_end = from;
-            lines.pop();
-        }
+        // The paragraph ends where its own lines do (`paragraph_tail`): the headings after it, the matter after the
+        // reasons, are read with the lines between the paragraphs.
         let (first_start, first_end) = lines.first().copied().unwrap_or((*marker_end, *marker_end));
         push(
             &mut entries,
@@ -640,6 +646,21 @@ pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) {
                 end: *end,
             };
         }
+    }
+    // A paragraph ends where a heading after it opens what follows: the heading is no paragraph's.
+    let chars = structure.text.chars().collect::<Vec<_>>();
+    let heading_starts = added.iter().filter(|node| node.kind == NodeKind::Heading).map(|node| node.range.start).collect::<Vec<_>>();
+    for paragraph in structure.nodes.iter_mut().filter(|node| node.kind == NodeKind::Paragraph) {
+        let Some(&start) = heading_starts.iter().filter(|&&start| paragraph.range.start < start && start < paragraph.range.end).min() else { continue };
+        let mut end = start;
+        while end > paragraph.range.start && chars.get(end - 1).is_some_and(|c| c.is_whitespace()) {
+            end -= 1;
+        }
+        paragraph.range.end = end;
+        for range in &mut paragraph.ranges {
+            range.end = range.end.min(end);
+        }
+        paragraph.ranges.retain(|range| range.start < range.end);
     }
     structure.nodes.extend(added);
 }

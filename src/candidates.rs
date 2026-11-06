@@ -292,48 +292,16 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
             }
         }
     }
-    let labels: Vec<Vec<&str>> = items.iter().map(|run| run.iter().map(|&i| resolved[i].candidate.label.as_str()).collect()).collect();
-    for k in quoted_paragraph_runs(&decided, &labels) {
-        decided[k] = Some(UnitRole::Item);
-    }
     for (k, kind) in decided.iter().enumerate() {
         let Some(kind) = *kind else { continue };
-        let rule = if kind == UnitRole::Paragraph {
-            ResolutionRuleV2::RootedNumericProse
-        } else {
-            ResolutionRuleV2::ListItemLayout
-        };
         for &i in &items[k] {
+            let rule = if kind == UnitRole::Paragraph { ResolutionRuleV2::RootedNumericProse } else { ResolutionRuleV2::ListItemLayout };
             if resolved[i].role != Some(kind) {
                 resolved[i].role = Some(kind);
                 resolved[i].proof.rule = rule;
             }
         }
     }
-}
-
-/// The paragraph runs (of `kinds`, each run's marker `labels` in order) that are a quoted list's, not the
-/// document's: a document numbers its paragraphs in one family, its spine, the paragraph run with the most
-/// markers; a run of another family that prints any of the spine's numbers (an agreed statement of facts' "45."
-/// against the reasons' "[45]", an issue list's "1." against "[1]") is a list set in the text. A run of the
-/// spine's own family that repeats its numbers is the spine printed again (a parallel translation) and stays.
-fn quoted_paragraph_runs(kinds: &[Option<UnitRole>], labels: &[Vec<&str>]) -> Vec<usize> {
-    let family = |label: &str| marker_readings(label).into_iter().next();
-    let paragraphs: Vec<usize> = (0..kinds.len()).filter(|&k| kinds[k] == Some(UnitRole::Paragraph) && !labels[k].is_empty()).collect();
-    let Some(&spine) = paragraphs.iter().max_by_key(|&&k| (labels[k].len(), std::cmp::Reverse(k))) else {
-        return Vec::new();
-    };
-    let spine_family = labels[spine].first().and_then(|label| family(label)).map(|(family, _)| family);
-    let spine_values: HashSet<u32> = labels[spine].iter().filter_map(|label| family(label)).map(|(_, value)| value).collect();
-    paragraphs
-        .into_iter()
-        .filter(|&k| k != spine)
-        .filter(|&k| {
-            let readings: Vec<(String, u32)> = labels[k].iter().filter_map(|label| family(label)).collect();
-            readings.first().map(|(family, _)| family) != spine_family.as_ref()
-                && readings.iter().any(|(_, value)| spine_values.contains(value))
-        })
-        .collect()
 }
 
 #[cfg(feature = "structure-inference")]
@@ -634,6 +602,10 @@ pub(crate) fn resolve_structure_candidates<'a>(
             } else if run.grammar == CandidateGrammar::Numeric
                 && (provision_starts.contains(&candidate.marker_range.start) || sectioned(run))
             {
+                (None, ResolutionRuleV2::InsufficientEvidence)
+            // A number inside a citation ("[1993] 1 S.C.R. 497" opening a line) numbers nothing, whatever it counts
+            // on from: the citations of a passage can count on by one.
+            } else if run.grammar == CandidateGrammar::Numeric && seen(CandidateObservationV2::CrossReference) {
                 (None, ResolutionRuleV2::InsufficientEvidence)
             } else if run.grammar == CandidateGrammar::Numeric {
                 (

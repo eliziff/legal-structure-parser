@@ -1,7 +1,7 @@
 //! Numbered paragraphs: their markers, the counts they form, and the ranges each count gives.
 
 use super::*;
-use legal_structure_model::judgment::{author_line, signature_line};
+use crate::judgment::{author_line, date_line, disposition_line, end_matter, figure_caption, signature_line};
 use legal_structure_model::statute::{marginal_note_shaped, markdown_line};
 
 pub(super) fn case_source_line<'a>(text: &ScalarText<'_>, mut line: Line<'a>) -> Line<'a> {
@@ -61,11 +61,13 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
         let basic = if pilcrow.is_some() {
             pilcrow
         } else if let Some(rest) = value.strip_prefix('[') {
+            // (A recognizer may leave a space inside the brackets: "[ 13]".)
+            let rest = rest.trim_start_matches(' ');
             decimal_prefix(rest, 4).and_then(|(number, length)| {
                 // A table of contents' line names the paragraphs under a heading ("[1535] - [1539]"); it opens none.
-                let after = rest[length..].strip_prefix(']')?;
+                let after = rest[length..].trim_start_matches(' ').strip_prefix(']')?;
                 (!cached_regex!(TOC_RANGE, r"^\s*[-\u{2013}\u{2014}]\s*\[\d{1,4}\]\s*$").is_match(after))
-                    .then(|| (number, MarkerStyle::Bracket, length + 2))
+                    .then(|| (number, MarkerStyle::Bracket, value.len() - after.len()))
             })
         } else {
             decimal_prefix(value, 4).and_then(|(number, length)| {
@@ -103,7 +105,7 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
                 }
             })
         };
-        if let Some((number, style, marker_end)) = basic {
+        if let Some((number, style, marker_end)) = basic.filter(|(_, style, marker_end)| *style != MarkerStyle::Bare || !cited_figure(&value[*marker_end..])) {
             let content = marker_end + leading_ascii_space(&value[marker_end..]);
             result.push(Marker {
                 number: number.parse().unwrap(),
@@ -113,6 +115,7 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
                 score: 1.0,
                 formal: false,
                 sentence: false,
+                introduced: text.value[..line.byte_start].trim_end().ends_with(':'),
             });
         }
         {
@@ -141,6 +144,7 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
                             score: 1.0,
                             formal: false,
                             sentence: false,
+                            introduced: false,
                         });
                     }
                 }
@@ -148,6 +152,16 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
         }
     }
     result
+}
+
+/// Whether a bare figure before `rest` is a citation's or a date's, no paragraph's, at a line's opening or within it: a volume, its
+/// report's name after it ("[1989]" / "1 R.C.S. 265", "2 W.W.R. 40", "149 Sask. R. 68", "1 Ch. 264", "1 All E.R. 568", "2 SCR 3", "8 R.N.-B.
+/// (2e)", "60 C.C.C (3d)", "923 F.2d 774", "47 Alta. L.R. (4th) 6", "73 C.B.R. (N.S.) 24"), its page and its year or court ("... 401 U.S." / "1 (2009);", "1 (WL Can.)", "101 (N.W.T.S.C.);"), or a
+/// day, its month and year after it ("... was rendered on" / "11 September 2025: see ..."). (Brackets number on: "[13] CPR 13.07 provides:",
+/// and so does a section's lone letter: "99 S. 24(2) Analysis:".)
+fn cited_figure(rest: &str) -> bool {
+    cached_regex!(REPORT_NAME, r"^\s*(?:All\s+)?(?:(?:SCR|RCS|FCR|RCF|FC|FCA|FTR|CCC|CR|CRR|DLR|WWR|OR|OAC|BCLR|BCR|BCAC|BCCA|BCSC|WAC|AR|ACWS|WCB|NR|NSR|NBR|QAC|RJQ|CCLT|MPLR|ETR|RFL|CPR|CTC|DTC|LAC|QB|KB|AC|WLR|ER|US|SCC|ONCA|ONSC|ABCA|ABQB|QCCA|QCCS|TCC|MBCA|SKCA|NSCA|NBCA)\s+\(?\d|(?:[A-Z][a-z]+\.|(?:-?[A-Z][a-z]*\.){2,})(?:\s*-?[A-Z]?[a-z]*\.){0,4}(?:[A-Z]\b)?\s*\(?(?:\d|N\.S\.)|(?:[A-Z]\.){1,2}\d[a-z]{1,2}\b|\(\d{4}\)[;,.]|\((?:WL\b|(?:[A-Z]\.){2,}[A-Z.]*(?:\s+[A-Z][a-z]+\.)?\)))").is_match(rest)
+        || cached_regex!(WRAPPED_DATE, r"^\s*(?:January|February|March|April|May|June|July|August|September|October|November|December|janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre),?\s+\d{4}\b").is_match(rest)
 }
 
 pub(super) fn marker_visible(marker: &Marker, excluded: &[ScalarRange]) -> bool {
@@ -254,6 +268,7 @@ pub(super) fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usiz
                     score: if formal { 0.6 } else { 0.35 },
                     formal,
                     sentence,
+                    introduced: false,
                 });
             }
             at = end;
@@ -262,11 +277,63 @@ pub(super) fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usiz
     result
 }
 
+/// A count whose first numbers its reader lost ("1" and "2" read into a citation, "1" run into the small capital
+/// opening the judge's name: "1I" "ACOBUCCI J."), the count going on from "3", is read as a lossy reading reads one:
+/// the longest count by steps of up to eight (`monotone_scopes`), where it runs more than twice the rooted count; its
+/// score as a rooted count's (each number's, and a third more for each that follows the last by one).
+pub(super) fn lost_root(chain: &mut Vec<Marker>, score: &mut f64, candidates: &[Marker]) {
+    let mut sorted = candidates.to_vec();
+    sorted.sort_by_key(|marker| marker.start);
+    // The best count, not the first that fits: a stray figure ahead of the next number takes no step from it.
+    let mut best = Vec::<Option<(f64, Option<usize>)>>::with_capacity(sorted.len());
+    let mut at_number = HashMap::<u32, Vec<usize>>::new();
+    for (at, marker) in sorted.iter().enumerate() {
+        let root = (marker.number <= LOST_ROOT_START).then_some((marker.score, None));
+        let steps = (marker.number.saturating_sub(8)..marker.number).flat_map(|number| at_number.get(&number).into_iter().flatten().copied());
+        let onward = steps.filter_map(|before| {
+            let reached = best[before]?.0 + marker.score + if sorted[before].number + 1 == marker.number { 0.3 } else { 0.0 };
+            Some((reached, Some(before)))
+        });
+        best.push(root.into_iter().chain(onward).max_by(|a, b| a.0.total_cmp(&b.0)));
+        at_number.entry(marker.number).or_default().push(at);
+    }
+    let last = (0..sorted.len()).filter(|&at| best[at].is_some()).max_by(|&a, &b| best[a].map_or(0.0, |x| x.0).total_cmp(&best[b].map_or(0.0, |x| x.0)));
+    let scope = last.map(|last| {
+        let mut scope = std::iter::successors(Some(last), |&at| best[at].and_then(|(_, before)| before)).map(|at| sorted[at].clone()).collect::<Vec<_>>();
+        scope.reverse();
+        scope
+    });
+    if let Some(scope) = scope {
+        // A count that lost its first numbers goes on from near its start, as a run of years ("1999" to "2010") never does;
+        // it stands for the count where it reads better than the rooted one (a scan's stray "1" late in the text roots a
+        // count that skips most of the decision).
+        // And it counts: most of its steps are by one, where a scatter of citations' figures ("1 S.C.R. 3", "17 O.R.")
+        // climbs by jumps.
+        let counting = scope.windows(2).filter(|pair| pair[1].number == pair[0].number + 1).count() * 2 >= scope.len();
+        if scope[0].number <= LOST_ROOT_START && counting && chain_score(&scope) > chain_score(chain) {
+            *score = chain_score(&scope);
+            *chain = scope;
+        }
+    }
+}
+
+/// The highest number a count whose first numbers its reader lost may go on from.
+const LOST_ROOT_START: u32 = 9;
+
+/// A count's score as it stands: each number's, and a third more for each that follows the last by one.
+pub(super) fn chain_score(chain: &[Marker]) -> f64 {
+    chain.iter().map(|marker| marker.score).sum::<f64>() + 0.3 * chain.windows(2).filter(|pair| pair[1].number == pair[0].number + 1).count() as f64
+}
+
+/// The count from 1 that `candidates` read, each number the last plus one, and its score; another writing's
+/// paragraphs a paragraph quotes take no part (`quoted_runs`).
 pub(super) fn rooted_chain(candidates: &[Marker]) -> (Vec<Marker>, f64) {
+    let quoted = quoted_runs(candidates);
     let selected = select_numeric_sequence(
         candidates
             .iter()
             .enumerate()
+            .filter(|(index, _)| !quoted.contains(index))
             .map(|(index, marker)| NumericSequenceCandidate {
                 index,
                 value: marker.number,
@@ -278,14 +345,104 @@ pub(super) fn rooted_chain(candidates: &[Marker]) -> (Vec<Marker>, f64) {
             .collect(),
         NumericSequencePolicy::RootedConsecutive,
     );
-    (
-        selected
-            .indices
-            .into_iter()
-            .map(|index| candidates[index].clone())
-            .collect(),
-        selected.score,
-    )
+    let mut chain: Vec<Marker> = selected.indices.into_iter().map(|index| candidates[index].clone()).collect();
+    whole_list(&mut chain, candidates);
+    // The count opens at the last "1" before its "2": an earlier one is a provision or a list in the matter before the
+    // reasons.
+    if let [first, second, ..] = chain.as_mut_slice() {
+        let later = candidates.iter().filter(|marker| marker.number == 1 && marker.style == second.style && first.start < marker.start && marker.start < second.start).max_by_key(|marker| marker.start);
+        if let Some(later) = later {
+            *first = later.clone();
+        }
+    }
+    (chain, selected.score)
+}
+
+/// A count stitched across two lists ("1." to "4." of the agreed facts, then "5." to "8." of the grounds, whose own "1."
+/// to "4." it passed over) reads the list it ended in whole: a member standing right after the number before it, which is
+/// not the count's member, shows the count changed lists there. A bracketed count is left: the run before its member
+/// may be a quotation (`quoted_runs`).
+fn whole_list(chain: &mut [Marker], candidates: &[Marker]) {
+    let mut sorted = candidates.iter().filter(|marker| marker.style != MarkerStyle::Bracket).collect::<Vec<_>>();
+    sorted.sort_by_key(|marker| marker.start);
+    for at in 1..chain.len() {
+        let place = sorted.partition_point(|marker| marker.start < chain[at].start);
+        let run = sorted[..place].iter().rev().zip((0..chain[at].number).rev()).take_while(|(marker, number)| marker.number == *number).map(|(marker, _)| *marker);
+        let run = run.collect::<Vec<_>>();
+        // (A list's run is a run: one number printed twice is none.)
+        if run.len() >= 2 && run.first().is_some_and(|before| before.start != chain[at - 1].start) {
+            for marker in run {
+                if let Some(member) = chain[..at].iter_mut().find(|member| member.number == marker.number) {
+                    *member = marker.clone();
+                }
+            }
+        }
+    }
+}
+
+/// Another writing's paragraph numbers a paragraph quotes where they repeat its own count's (indexes of `candidates`).
+/// Writings nest: a quotation counts on its own, a quotation inside it on its own, and each goes on where the one inside
+/// it stops ("[38] … where I stated:", "[32] In Friesen …:", "[37] …", "[38] …", "[39] …", "[18] …" to "[23] …", "[40] …",
+/// "[33] …", then the judgment's own "[39] The pernicious …"). So each number goes on the innermost count it follows, or
+/// opens a count of its own, and the outermost count is the judgment's. A count still open at the end took the judgment's
+/// numbers on (a number printed twice by mistake, its second printing's words the first's paragraph's), or opened at 1
+/// and is the judgment's whole. Only a number the judgment's count also holds is quoted: a number nothing else prints is
+/// the count's own, however it broke the count.
+fn quoted_runs(candidates: &[Marker]) -> HashSet<usize> {
+    let mut quoted = HashSet::new();
+    for style in [MarkerStyle::Bracket, MarkerStyle::Dot, MarkerStyle::Bare] {
+        let mut order = (0..candidates.len()).filter(|&at| candidates[at].style == style).collect::<Vec<_>>();
+        order.sort_by_key(|&at| candidates[at].start);
+        let next = |count: &[usize]| count.last().map_or(1, |&at| candidates[at].number + 1);
+        let (mut counts, mut closed) = (vec![Vec::<usize>::new()], Vec::<usize>::new());
+        // (A count takes up again over those inside it, never over a longer one: a stray small number closes no reasons.)
+        for (step, &at) in order.iter().enumerate() {
+            let resumes = |place: usize| next(&counts[place]) == candidates[at].number && counts[place + 1..].iter().all(|inner| inner.len() <= counts[place].len());
+            // (Where two counts could go on, a quotation's gives way to the count it stands in, but for a number printed again
+            // before the count has gone past it: that printing is the count's, this the quotation's.)
+            let places = (0..counts.len()).rev().filter(|&place| resumes(place)).collect::<Vec<_>>();
+            let introduced = |place: usize| counts[place].first().is_some_and(|&first| candidates[first].introduced);
+            let number = candidates[at].number;
+            let again = order[step + 1..].iter().map(|&later| candidates[later].number).take_while(|&later| later <= number + 8).any(|later| later == number);
+            // (A number a colon introduces, printed again with no colon over it, is a quotation's.)
+            let plainly = order[step + 1..].iter().take_while(|&&later| candidates[later].number <= number + 8).any(|&later| candidates[later].number == number && !candidates[later].introduced);
+            if candidates[at].introduced && plainly {
+                counts.push(vec![at]);
+                continue;
+            }
+            let inner = places.first().copied().filter(|&place| introduced(place) && again);
+            match inner.or(places.iter().copied().find(|&place| !introduced(place))).or(places.first().copied()) {
+                Some(count) => {
+                    closed.extend(counts.drain(count + 1..).flatten());
+                    counts[count].push(at);
+                }
+                None => counts.push(vec![at]),
+            }
+        }
+        let mut own = counts.remove(0);
+        for count in counts {
+            if candidates[count[0]].number == 1 && count.len() > own.len() {
+                closed.append(&mut own);
+                own = count;
+                continue;
+            }
+            // A quotation's numbers printed before the judgment's own, the judgment's going on past them: ": [89] [90] [91] ...
+            // [89] [90] [91] [92]".
+            let reprinted = own.iter().filter(|&&at| candidates[at].number >= candidates[count[0]].number).count();
+            // (One number will do: "... observed:" / "[113] There are ..." / "[113] In R. v. Loor ...".)
+            if reprinted >= 1 && reprinted < own.len() && candidates[own[own.len() - reprinted]].introduced && !candidates[count[0]].introduced && count.iter().any(|&at| candidates[at].number >= next(&own)) {
+                let quotation = own.split_off(own.len() - reprinted);
+                closed.extend(quotation);
+            }
+            let reached = next(&own);
+            let (more, rest): (Vec<usize>, Vec<usize>) = count.into_iter().partition(|&at| candidates[at].number >= reached);
+            own.extend(more);
+            closed.extend(rest);
+        }
+        let numbers = own.iter().map(|&at| candidates[at].number).collect::<HashSet<_>>();
+        quoted.extend(closed.into_iter().filter(|&at| numbers.contains(&candidates[at].number)));
+    }
+    quoted
 }
 
 /// A rooted count's paragraphs whose numbers a provider's flattened text runs into the line before them, a heading
@@ -302,6 +459,26 @@ pub(super) fn bridge_glued_labels(text: &ScalarText<'_>, candidates: &mut Vec<Ma
     // lose its paragraphs to a pairing by number alone.
     let mut glued = Vec::new();
     for line in lines(text) {
+        // A text layer that lost the opening bracket ("5] In February 1999 …").
+        let opening = line.text.trim_start();
+        let lead = line.text.len() - opening.len();
+        let length = opening.bytes().take(4).take_while(u8::is_ascii_digit).count();
+        if length > 0 && matches!(opening.as_bytes().get(length), Some(b']' | b'}')) {
+            let following = opening[length + 1..].trim_start_matches([' ', '\t']);
+            let start = text.scalar(line.byte_start + lead);
+            if following.starts_with(char::is_uppercase) && !held.contains(&start) {
+                glued.push(Marker {
+                    number: opening[..length].parse().unwrap(),
+                    start,
+                    content_start: text.scalar(line.byte_start + lead + length + 1),
+                    style: MarkerStyle::Bracket,
+                    score: 0.2,
+                    formal: false,
+                    sentence: false,
+                    introduced: false,
+                });
+            }
+        }
         let mut from = 0;
         while let Some(offset) = line.text[from..].find(['[', '{']) {
             let at = from + offset;
@@ -343,6 +520,7 @@ pub(super) fn bridge_glued_labels(text: &ScalarText<'_>, candidates: &mut Vec<Ma
                     score: 0.2,
                     formal: false,
                     sentence: false,
+                    introduced: false,
                 });
             }
         }
@@ -454,34 +632,26 @@ pub(super) fn endnote_shaped(text: &ScalarText<'_>, chain: &[Marker]) -> bool {
 
 /// Where another count from 1 opens among a rooted count's other numbers: "[1]" followed by "[2]"
 /// and "[3]", another writing's paragraphs or a note list. A paragraph's quoted numbers ("[42] This
-/// matters." under [76]) open none.
-pub(super) fn restart_boundaries(candidates: &[Marker], chain: &[Marker]) -> Vec<Marker> {
+/// matters." under [76]) open none, nor does a list the paragraph introduces ("… are as follows:" then "1.").
+pub(super) fn restart_boundaries(text: &ScalarText<'_>, candidates: &[Marker], chain: &[Marker]) -> Vec<Marker> {
     let held = chain.iter().map(|marker| marker.start).collect::<HashSet<_>>();
     let mut rest = candidates.iter().filter(|marker| !held.contains(&marker.start)).collect::<Vec<_>>();
     rest.sort_by_key(|marker| marker.start);
+    // A "1" the line before leads into opens no count: a list ("... are as follows:"), or the sentence going on over the
+    // line ("[1990]" / "1 R.C.S. 158", "... the s." / "1 analysis", "... of the" / "1 percent").
+    let introduced = |marker: &Marker| text.byte_at_scalar(marker.start).is_some_and(|at| {
+        let before = text.value[..at].trim_end();
+        let last = before.split_whitespace().last().unwrap_or_default();
+        let year = last.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).is_some_and(|inner| inner.len() == 4 && inner.bytes().all(|byte| byte.is_ascii_digit()));
+        let word = last.trim_end_matches('.');
+        before.ends_with(':') || year || before.ends_with([',', ';']) || before.ends_with(char::is_lowercase)
+            || last.ends_with('.') && word.chars().count() <= 2
+    });
     rest.iter().enumerate().filter(|(index, marker)| {
-        marker.number == 1 && rest[index + 1..].iter().fold(2, |expected, later| {
+        marker.number == 1 && !introduced(marker) && rest[index + 1..].iter().fold(2, |expected, later| {
             if later.number == expected { expected + 1 } else { expected }
         }) > 3
     }).map(|(_, marker)| (*marker).clone()).collect()
-}
-
-/// A paragraph's end before the signatures and release lines it closes with, which are the
-/// decision's; never its first line.
-pub(super) fn paragraph_end_before_signatures(text: &ScalarText<'_>, start: usize, end: usize) -> usize {
-    let index = text.lines();
-    let first = index.partition_point(|line| line[2] <= start);
-    let last = index.partition_point(|line| line[2] < end);
-    let mut candidate = end;
-    for position in (first..last).rev() {
-        let line = index[position];
-        let value = text.value[line[0]..line[1]].trim();
-        if !value.is_empty() && !signature_line(value) {
-            break;
-        }
-        candidate = line[2];
-    }
-    candidate
 }
 
 /// Whether text ends a sentence, not a citation ("…; 2 Baudry", "([22]) 1 Masse") or an abbreviation ("p. 3",
@@ -530,7 +700,7 @@ pub(super) fn bare_heading_joined(text: &ScalarText<'_>, known: &HashSet<usize>)
                 && (spaced || second.is_some_and(|value| value.is_lowercase() || value == ' '))
                 || spaced && first.is_some_and(|value| ['"', '\u{201c}'].contains(&value));
             // A line opening with a spaced number is the line-opening reader's.
-            if !opens || number_at == 0 && spaced {
+            if !opens || number_at == 0 && spaced || cited_figure(&line.text[content..]) {
                 continue;
             }
             let start = text.scalar(line.byte_start + number_at);
@@ -554,6 +724,7 @@ pub(super) fn bare_heading_joined(text: &ScalarText<'_>, known: &HashSet<usize>)
                 style: MarkerStyle::Bare,
                 score: if formal { 0.6 } else { 0.35 },
                 formal,
+                introduced: false,
                 sentence: !formal,
             });
         }
@@ -582,6 +753,7 @@ pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[Scalar
                 score: 1.0,
                 formal: false,
                 sentence: false,
+                introduced: false,
             })
         })
         .collect::<Vec<_>>();
@@ -609,6 +781,7 @@ pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[Scalar
                 score: 0.6,
                 formal: true,
                 sentence: false,
+                introduced: false,
             });
         }
     }
@@ -653,6 +826,13 @@ pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[Scalar
     blocks
 }
 
+/// Whether a line reads as running prose: a dozen words or more, a few of them in lower case, ending as a sentence does.
+fn running_prose(line: &str) -> bool {
+    let words = line.split_whitespace().collect::<Vec<_>>();
+    let lowercase = words.iter().filter(|word| word.chars().next().is_some_and(char::is_lowercase)).count();
+    words.len() >= 12 && lowercase >= 4 && line.trim_end().ends_with(['.', '?', '!', ':', ';', '"', '”', ')'])
+}
+
 /// A provider text's paragraphs where it numbers none, a line each: from where its reasons open
 /// (an author's "MARTLAND J.—…", "The judgment of the Court was delivered by", else the end of its
 /// catalogue record), or from `after`, to its note list at `until`, the lines that read as running prose.
@@ -661,11 +841,7 @@ pub(super) fn unnumbered_paragraphs(text: &ScalarText<'_>, after: usize, until: 
     let value = |line: &[usize; 3]| text.value[line[0]..line[1]].trim();
     let record = index.iter().position(|line| value(line) == "Decision Content").map_or(0, |at| at + 1);
     let author = index.iter().skip(record).position(|line| author_line(value(line)));
-    let prose = |line: &str| {
-        let words = line.split_whitespace().collect::<Vec<_>>();
-        let lowercase = words.iter().filter(|word| word.chars().next().is_some_and(char::is_lowercase)).count();
-        words.len() >= 12 && lowercase >= 4 && line.trim_end().ends_with(['.', '?', '!', ':', ';', '"', '”', ')'])
-    };
+    let prose = running_prose;
     // Without an author's line, the reasons open at the first two lines of running prose in a row: the
     // front matter's sentence ("In the matter of a complaint …") stands among its captions alone.
     let from = author.map_or_else(|| {
@@ -909,13 +1085,15 @@ pub(super) fn paragraph_ranges(
         .collect::<Vec<_>>();
     boundaries.sort_unstable();
     boundaries.dedup();
+    let last = selected.iter().map(|marker| marker.start).max();
     selected
         .into_iter()
         .map(|marker| {
-            let end = paragraph_end_before_trailing_headings(
+            let end = paragraph_end(
                 text,
                 marker.start,
                 next_boundary(&boundaries, marker.start, text.len()),
+                Some(marker.start) == last,
             );
             let mut block = Block::labelled(
                 NodeKind::Paragraph,
@@ -932,46 +1110,156 @@ pub(super) fn paragraph_ranges(
         .collect()
 }
 
-pub(super) fn paragraph_end_before_trailing_headings(
-    text: &ScalarText<'_>,
-    start: usize,
-    end: usize,
-) -> usize {
+/// Where a numbered paragraph opening at `start` ends, `end` being where the next paragraph's number stands or the
+/// text ends: after its own lines (`paragraph_tail`), each line read from the paragraph's number and up to `end`
+/// (the next number may follow a heading on its line, "(3) Legal proceedings [20] On April 14, …"). `last`: the
+/// paragraph is its count's last.
+pub(super) fn paragraph_end(text: &ScalarText<'_>, start: usize, end: usize, last: bool) -> usize {
     let index = text.lines();
-    let first = index.partition_point(|line| line[2] <= start);
-    let last = index.partition_point(|line| line[2] < end);
-    // A line read only up to the paragraph's end: the next paragraph's number may follow a heading on its line
-    // ("(3) Legal proceedings [20] On April 14, …").
-    let end_byte = text.byte_at_scalar(end).unwrap_or(text.value.len());
-    let mut candidate = end;
-    let mut found = false;
-    for position in (first..last).rev() {
-        let line = index[position];
-        let value = text.value[line[0]..line[1].min(end_byte).max(line[0])].trim();
-        let preceding = position
-            .checked_sub(1)
-            .map(|previous| text.value[index[previous][0]..index[previous][1]].trim());
-        let separated = preceding == Some("");
-        let words = value.split_whitespace().collect::<Vec<_>>();
-        let enumerated = words.first().is_some_and(|word| heading_enumerator(word));
-        // A question can be a heading; its wording alone does not establish that role.
-        // An introductory colon instead connects the following line to its paragraph.
-        let heading_context = !preceding.is_some_and(|line| line.ends_with(':'))
-            && (enumerated || separated || (!value.ends_with('?') && heading_title_case(&words)));
-        if value.is_empty() {
-            candidate = line[2];
-        } else if heading_context && formal_heading(value) {
-            candidate = line[2];
-            found = true;
-        } else {
+    let first = index.partition_point(|line| line[2] <= start).saturating_sub(1);
+    let (start_byte, end_byte) = (text.byte_at_scalar(start).unwrap_or(0), text.byte_at_scalar(end).unwrap_or(text.value.len()));
+    // Each line's words, the scalar its piece of the paragraph opens at, and whether a blank line stands before it.
+    let (mut pieces, mut separated, mut blank) = (Vec::<(usize, &str)>::new(), Vec::new(), false);
+    for line in &index[first..] {
+        if line[0] >= end_byte {
             break;
         }
+        let from = line[0].max(start_byte);
+        let value = &text.value[from..line[1].min(end_byte).max(from)];
+        if value.trim().is_empty() {
+            blank = true;
+        } else {
+            pieces.push((if from > line[0] { start } else { line[2] }, value));
+            separated.push(std::mem::take(&mut blank));
+        }
     }
-    if found {
-        candidate
-    } else {
-        end
+    let mut stop = text.value.len().min(end_byte + 200);
+    while !text.value.is_char_boundary(stop) {
+        stop -= 1;
     }
+    let after = &text.value[end_byte..stop.max(end_byte)];
+    let lines = pieces.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+    pieces.get(paragraph_tail(&lines, &separated, after, last)).map_or(end, |(at, _)| *at)
+}
+
+/// How many of a numbered paragraph's lines are its own (`lines`: from the one its number opens to the next number;
+/// `separated`: whether a blank line stands before each; `after`: the text following them): all of them, but for a
+/// line closing the reasons and what follows it
+/// (`closing_line`), and the headings its lines end with after its last sentence, which open what follows
+/// (`trailing_headings`); a line going on with the paragraph's list is its next item, however like a heading it
+/// reads. The count's `last` paragraph ends with its own words and what they introduce (`own_matter`): nothing
+/// follows the reasons' last paragraph as its own.
+pub(crate) fn paragraph_tail(lines: &[&str], separated: &[bool], after: &str, last: bool) -> usize {
+    // (A sentence may wrap onto a caption's words: "... as shown in" / "Figure 1.".)
+    // (Under a note's call too: "... at arm's length.11" / "Figure 4.".)
+    let caption = |at: usize| figure_caption(lines[at]) && lines[at - 1].trim_end().trim_end_matches(|c: char| c.is_ascii_digit()).ends_with(['.', '?', '!', ':', ')', '"', '\u{201d}']);
+    // (A judge's name may be a sentence's last words: "... de la manière proposée par" / "Sopinka J.".)
+    let named = |at: usize| signature_line(lines[at].trim()) && !lines[at - 1].trim_end().ends_with(['.', '?', '!', ':', ';', ')', ']', '"', '\u{201d}'])
+        && lines[at - 1].split_whitespace().any(|word| word.starts_with(char::is_lowercase));
+    // (A provider may set a judge's line in slashes: "//La Forest J.//".)
+    let mut closed = (1..lines.len()).find(|&at| closing_line(lines[at].trim().trim_matches('/')) && !named(at) || caption(at)).unwrap_or(lines.len());
+    // The signatures and release lines a paragraph ends with are the decision's ("Released: …", "“K. Feldman J.A.”").
+    // (A line of prose may end on a judge: "(3d) 14 (Ont. C.A.), at para. 47, per Doherty J.A.".)
+    let signed = |line: &str| signature_line(line.trim().trim_matches('/')) && line.split_whitespace().filter(|word| word.starts_with(char::is_lowercase)).count() <= 1 && !line.contains(|c: char| c.is_ascii_digit());
+    while closed > 1 && (signed(lines[closed - 1]) || date_line(lines[closed - 1])) && !named(closed - 1) {
+        closed -= 1;
+    }
+    // (The name over a title goes with it: "Claude Roy" / "Vice-président".)
+    let name = |line: &str| {
+        let words = line.split_whitespace().collect::<Vec<_>>();
+        (2..=4).contains(&words.len()) && words.iter().all(|word| word.starts_with(char::is_uppercase)) && !line.trim_end().ends_with('.')
+    };
+    if closed > 1 && closed < lines.len() && signature_line(lines[closed].trim()) && name(lines[closed - 1]) {
+        closed -= 1;
+    }
+    // (Whatever else stands above: a title alone closes no paragraph, its signer does.)
+    if let Some(at) = (2..lines.len()).find(|&at| signature_line(lines[at].trim()) && name(lines[at - 1])) {
+        closed = closed.min(at - 1);
+    }
+    let lines = &lines[..closed];
+    let mut cut = trailing_headings(lines, separated, after);
+    let mut items = Levels::default();
+    for line in &lines[..cut] {
+        if let Some((token, _)) = enumerated(line.trim()) {
+            items.read(token);
+        }
+    }
+    while let Some(token) = lines.get(cut).and_then(|line| enumerated(line.trim())).map(|(token, _)| token).filter(|token| items.continues(token)) {
+        items.read(token);
+        cut += 1;
+        // (An item's wrapped words are the item's: "C. Should the evidence be excluded under s. 24(2)" / "of the Charter?".)
+        while lines.get(cut).is_some_and(|line| line.trim_start().starts_with(char::is_lowercase)) {
+            cut += 1;
+        }
+        // (A parenthesis under an item is the item's: "(page 527)", "(traduction)".)
+        if lines.get(cut).is_some_and(|line| line.trim().starts_with('(') && line.trim().ends_with(')')) {
+            cut += 1;
+        }
+    }
+    if last {
+        cut = own_matter(&lines[..cut]);
+    }
+    cut
+}
+
+/// A line that closes a judge's reasons, in any language the court writes: the disposition set on its own ("Appeal
+/// allowed, La Forest J. dissenting."), the judges concurring, or the judge's name alone with a title
+/// (`signature_line`: "Bateman, J.A.", "MacDonald, C.J.N.S."), two to four capitalized words; a sentence naming a
+/// judge ("This was the view of Lamer C.J.") closes nothing.
+pub(crate) fn closing_line(line: &str) -> bool {
+    let words = line.split_whitespace().collect::<Vec<_>>();
+    disposition_line(line) || line.starts_with("Concurred") || author_line(line) || end_matter(line)
+        // (A provider's inline note, "[FN8] There are many ...", and a line naming the next reasons.)
+        || cached_regex!(INLINE_NOTE, r"^\[FN\d+\]").is_match(line) || cached_regex!(DELIVERED, r"(?:rendus? par|were delivered by)$").is_match(line)
+        || (2..=4).contains(&words.len()) && words.iter().all(|word| word.trim_start_matches(['"', '\u{201c}']).starts_with(char::is_uppercase)) && signature_line(line)
+}
+
+/// How many of the reasons' last paragraph's lines are its own: its first, and after it each line its words go on
+/// into, the quotation or list a line ending on a colon introduces, a list's next item, a passage in quotation marks,
+/// a quotation's next lines and the editorial or citing lines under it ("[Emphasis added.]", "(at para. 12)"), and
+/// running sentences, numbered or not ("I will nominate a date ..."). The first line opening matter of its own ends it:
+/// an order, a signature, an appendix, the next reasons.
+fn own_matter(lines: &[&str]) -> usize {
+    const QUOTES: [char; 5] = ['"', '\u{201c}', '\u{ab}', '\u{2018}', '\''];
+    let mut items = Levels::default();
+    let mut quoting = false;
+    for at in 0..lines.len() {
+        let line = lines[at].trim();
+        if at > 0 {
+            let previous = lines[at - 1].trim_end();
+            let introduced = previous.ends_with(':');
+            // (A signature in quotation marks is a signature.)
+            // (Or a name alone in them: "David Stratas".)
+            let unquoted = line.trim_matches(QUOTES);
+            let name = unquoted.len() + 2 <= line.len() && (2..=4).contains(&unquoted.split_whitespace().count()) && unquoted.split_whitespace().all(|word| word.starts_with(char::is_uppercase));
+            let quoted = line.starts_with(QUOTES) && !closing_line(unquoted) && !name;
+            let item = enumerated(line).is_some_and(|(token, _)| introduced || quoting || items.continues(token));
+            let set_under = crate::numbered_paragraphs::editorial_line(line) || (line.starts_with('(') && line.ends_with(')'));
+            // (A list's marker alone on its line has its words on the next.)
+            let marked = previous.split_whitespace().count() == 1 && enumerated(&format!("{} x", previous.trim())).is_some();
+            let going_on = quoting && (marked || line.starts_with(|c: char| c.is_lowercase() || matches!(c, '.' | '\u{2026}')));
+            // (A short sentence goes on as a long one does: "I do not reach Kenny's sentence appeal.")
+            let lowercase = line.split_whitespace().filter(|word| word.starts_with(char::is_lowercase)).count();
+            let sentence = lowercase >= 3 && line.split_whitespace().count() >= 5 && line.ends_with(['.', '?', '!']);
+            // (A sentence goes on over its line whatever the next one looks like: "... as proposed by" / "Sopinka J.", "... under s." / "43 of FIPPA:".)
+            let above_runs = previous.split_whitespace().filter(|word| word.starts_with(char::is_lowercase)).count() >= 4;
+            // (A citation wrapped over its line: "..., 2003 SCC 69, [2003]" / "3 S.C.R. 263, at para. 77.".)
+            let wrapped = previous.ends_with(',') || cached_regex!(YEAR_END, r"\[\d{4}\]$").is_match(previous);
+            let unfinished = wrapped || above_runs && (!previous.ends_with(['.', '?', '!', ':', ';', ')', ']', '"', '\u{201d}']) || cached_regex!(STOPPED, r"(?:\bs|\bss|\bc|\bpara|\bparas|\bp|\bpp|\bat|\bv|\bno)\.$").is_match(previous));
+            // (A long running line ends the paragraph on nothing it ends on, "... the following terms and".)
+            let running_line = line.split_whitespace().count() >= 8 && lowercase >= 4 && !closing_line(line);
+            // (A quoted order's second heading over its list: "On the second indictment, ..." / "a)".)
+            let heads_list = (quoting || enumerated(previous).is_some()) && lines.get(at + 1).is_some_and(|next| enumerated(next.trim()).is_some());
+            if !(introduced || quoted || item || going_on || unfinished || running_line || heads_list || quoting && set_under || (running_prose(line) || sentence) && !closing_line(line)) {
+                return at;
+            }
+            quoting = introduced || quoted || going_on || heads_list || quoting && (item || set_under);
+        }
+        if let Some((token, _)) = enumerated(line) {
+            items.read(token);
+        }
+    }
+    lines.len()
 }
 
 /// Statute marginal notes are short sentence-case lines ("Lawyer's right to costs out of property
@@ -1052,6 +1340,7 @@ pub(super) fn detect_paragraphs(
         );
     }
     let mut hypotheses = Vec::<Hypothesis>::new();
+    let mut pooled = Vec::<Marker>::new();
     for style in [MarkerStyle::Bracket, MarkerStyle::Dot, MarkerStyle::Bare] {
         let style_index = style as usize;
         if rooted {
@@ -1074,7 +1363,13 @@ pub(super) fn detect_paragraphs(
                 let held = candidates.iter().map(|marker| marker.start).collect::<HashSet<_>>();
                 candidates.extend(before.into_iter().filter(|marker| !held.contains(&marker.start)));
             }
-            extend_over_gaps(&mut chain, &candidates.iter().filter(|marker| marker.start < list).cloned().collect::<Vec<_>>());
+            let counted = candidates.iter().filter(|marker| marker.start < list).cloned().collect::<Vec<_>>();
+            pooled.extend(counted.iter().cloned());
+            extend_over_gaps(&mut chain, &counted);
+            lost_root(&mut chain, &mut score, &counted);
+            // Scored on the count it holds, not on where its first link ended: a count carried past a lost "[2]" is
+            // as long as it reads.
+            score = chain_score(&chain);
             // A decision of one paragraph numbers it "[1]", and no note call names it.
             let lone = style == MarkerStyle::Bracket && chain.len() == 1 && chain[0].number == 1 && candidates.len() == 1
                 && !text.value[..text.byte(chain[0].start)].contains("[1]");
@@ -1089,7 +1384,10 @@ pub(super) fn detect_paragraphs(
                     short: false,
                     score,
                 });
-            } else if style == MarkerStyle::Bracket
+            } else if (style == MarkerStyle::Bracket
+                // A short ruling numbers its paragraphs "1." to "4." from the head of its reasons, no running prose before
+                // them; after prose, such a count is a list.
+                || style == MarkerStyle::Dot && !text.value[..text.byte(chain[0].start)].lines().any(running_prose))
                 // A note list after the paragraphs counts from 1 again; the count stands alone before it.
                 && sole_chain(&chain, &candidates.iter().filter(|marker| marker.start < list).cloned().collect::<Vec<_>>())
             {
@@ -1155,6 +1453,18 @@ pub(super) fn detect_paragraphs(
             }
         }
     }
+    // A decision's numbering may change its style where another judge's reasons begin ("121." and then "122"): the
+    // count reads across its styles where that carries it well past the count of any one of them.
+    if rooted {
+        pooled.sort_by_key(|marker| marker.start);
+        let (mut chain, _) = rooted_chain(&pooled);
+        extend_over_gaps(&mut chain, &pooled);
+        let longest = hypotheses.iter().map(|value| value.markers.len()).max().unwrap_or(0);
+        if chain.len() >= longest + 5 && chain.iter().any(|marker| marker.style != chain[0].style) {
+            let score = chain_score(&chain);
+            hypotheses.push(Hypothesis { style: chain[0].style, markers: chain, all: pooled.into(), short: false, score });
+        }
+    }
     if profile != DetectionProfile::CaseRootedComplete
         && hypotheses
             .iter()
@@ -1188,7 +1498,7 @@ pub(super) fn detect_paragraphs(
     // numbers a paragraph quotes from another decision, which stay in the paragraph quoting them.
     let boundaries = |hypothesis: &Hypothesis| -> Vec<Marker> {
         if rooted {
-            hypothesis.markers.iter().cloned().chain(restart_boundaries(&hypothesis.all, &hypothesis.markers)).collect()
+            hypothesis.markers.iter().cloned().chain(restart_boundaries(text, &hypothesis.all, &hypothesis.markers)).collect()
         } else {
             hypothesis.all.to_vec()
         }
@@ -1204,7 +1514,18 @@ pub(super) fn detect_paragraphs(
     let spread = starts.first().zip(starts.last()).is_some_and(|(first, last)| (last - first) as f64 / text_length.max(1) as f64 >= 0.4);
     let outnumbered = |hypothesis: &Hypothesis| rooted && spread && hypothesis.style != MarkerStyle::Bracket
         && numbered >= 10 && numbered >= 2 * hypothesis.markers.len();
+    // Development only: the hypotheses weighed, best first.
+    let trace = std::env::var_os("LEGAL_STRUCTURE_TRACE_PARAGRAPHS").is_some();
+    if trace {
+        for hypothesis in &hypotheses {
+            eprintln!("hypothesis style={} short={} len={} score={:.2} first={} last={}", hypothesis.style as u8, hypothesis.short, hypothesis.markers.len(), hypothesis.score,
+                hypothesis.markers.first().map_or(0, |m| m.number), hypothesis.markers.last().map_or(0, |m| m.number));
+        }
+    }
     for hypothesis in hypotheses {
+        if trace {
+            eprintln!("weighing style={} len={}", hypothesis.style as u8, hypothesis.markers.len());
+        }
         // A rooted count's paragraph runs to the count's next number or another count's opening, not to
         // whatever number its text holds ("2007 CRTFP 84"); other readings measure to any candidate.
         let ends = if rooted {
@@ -1341,6 +1662,10 @@ pub(super) fn clipped_case_paragraphs(
             }
             if range.start <= block.range.start {
                 return false;
+            }
+            // (A note's call inside the paragraph ends nothing: "... to NFCL[1] and provided".)
+            if range.end < block.range.end && range.end - range.start <= 8 {
+                continue;
             }
             block.range.end = range.start;
         }

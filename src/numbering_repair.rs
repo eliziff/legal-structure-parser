@@ -25,16 +25,6 @@ use std::sync::OnceLock;
 const X0_LOW: f64 = -0.5;
 const X0_HIGH: f64 = 1.0;
 
-/// Whether recognition read the line, the only reading that drops or misreads digits: our own
-/// recognition, or a scan's invisible recognition layer. Printed glyphs are exact.
-fn recognized_line(line: &Line) -> bool {
-    line.source == "ocr"
-        || line
-            .spans
-            .iter()
-            .any(|span| span.flags & legal_structure_model::layout::INVISIBLE != 0)
-}
-
 /// The lines `keep` admits in print order, as (page slot, line slot).
 fn print_order(pages: &[Page], keep: impl Fn(&Line) -> bool) -> Vec<(usize, usize)> {
     let mut order = Vec::new();
@@ -69,10 +59,34 @@ fn supported(entries: &[(usize, u32)], lines: usize, candidates: usize) -> Vec<(
         .collect()
 }
 
-/// Whether a line starts where its neighbouring markers start, within a line's height.
-fn aligned(line: &Line, neighbours: &[&Line]) -> bool {
-    let neighbour = neighbours.iter().map(|other| other.bbox[0]).fold(f64::INFINITY, f64::min);
-    let (height, delta) = (line.bbox[3] - line.bbox[1], line.bbox[0] - neighbour);
+/// The longest run of `entries` whose values climb: a number misread as another ("[29]" for "[39]") stands in no gap's way
+/// and is itself a line of the gap it falls in, and numbers misread side by side leave the run's good ones their gap.
+fn climbing(entries: &[(usize, u32)]) -> Vec<(usize, u32)> {
+    let mut tails = Vec::<usize>::new();
+    let mut before = vec![None; entries.len()];
+    for at in 0..entries.len() {
+        let place = tails.partition_point(|&tail| entries[tail].1 < entries[at].1);
+        before[at] = place.checked_sub(1).map(|previous| tails[previous]);
+        if place == tails.len() {
+            tails.push(at);
+        } else {
+            tails[place] = at;
+        }
+    }
+    let mut run = Vec::with_capacity(tails.len());
+    let mut at = tails.last().copied();
+    while let Some(index) = at {
+        run.push(entries[index]);
+        at = before[index];
+    }
+    run.reverse();
+    run
+}
+
+/// Whether a line starts where its neighbouring markers start, within a line's height; `left` is where a line starts.
+fn aligned(line: &Line, neighbours: &[&Line], left: impl Fn(&Line) -> f64) -> bool {
+    let neighbour = neighbours.iter().map(|other| left(other)).fold(f64::INFINITY, f64::min);
+    let (height, delta) = (line.bbox[3] - line.bbox[1], left(line) - neighbour);
     height > 0.0 && (X0_LOW * height..=X0_HIGH * height).contains(&delta)
 }
 
@@ -330,8 +344,8 @@ pub fn repair_label_dropouts(pages: &mut [Page]) -> usize {
                 let candidate = line(*position);
                 !edges.contains(position)
                     && !matches!(candidate.region_type.as_str(), "header" | "footer")
-                    && recognized_line(candidate)
-                    && aligned(candidate, &[line(before), line(after)])
+                    && candidate.recognized()
+                    && aligned(candidate, &[line(before), line(after)], |line| line.bbox[0])
             })
             .filter_map(|position| {
                 let (start, end, readings) = misread_note_label(&line(position).text)?;
@@ -347,7 +361,6 @@ pub fn repair_label_dropouts(pages: &mut [Page]) -> usize {
 // Paragraph and item numbers.
 
 const PARAGRAPH_WINDOW_LINES: usize = 300;
-const PARAGRAPH_WINDOW_CANDIDATES: usize = 12;
 const GAP_LINES: usize = 400;
 const GAP_VALUES: u32 = 30;
 
@@ -457,12 +470,16 @@ fn misread_marker(text: &str, family: &Family) -> Option<(usize, usize, Vec<Read
     let characters = text.chars().collect::<Vec<_>>();
     let start = characters.iter().take_while(|c| c.is_whitespace()).count();
     let mut end = characters[start..].iter().position(|c| c.is_whitespace()).map_or(characters.len(), |at| start + at);
-    // "( d)", "(a )": a space inside the marks.
-    if matches!(wrap, "[]" | "()") && end - start <= 2 && characters.get(end + 1).is_some_and(|c| !c.is_whitespace()) {
-        let next = characters[end + 1..].iter().position(|c| c.is_whitespace()).map_or(characters.len(), |at| end + 1 + at);
-        if next - start <= 6 {
-            end = next;
+    // "( d)", "(a )", "[ 15]", "[ 1 O]": spaces inside the marks, over words of the count's marks up to a closing bracket.
+    while matches!(wrap, "[]" | "()") && !matches!(characters[end - 1], ']' | ')' | '}' | 'J') {
+        let next = characters.get(end + 1..).unwrap_or_default().iter().position(|c| c.is_whitespace()).map_or(characters.len(), |at| end + 1 + at);
+        let word = characters.get(end + 1..next).unwrap_or_default();
+        let closed = word.last().is_some_and(|c| matches!(c, ']' | ')' | '}' | 'J'));
+        if word.is_empty() || next - start > 7 || !(closed || word.iter().any(char::is_ascii_digit))
+            || !word.iter().all(|c| closes.contains(*c) || !readings(*c, count).is_empty()) {
+            break;
         }
+        end = next;
     }
     // "7.Although": the stop runs into the paragraph's first word.
     if wrap == "." {
@@ -513,6 +530,10 @@ fn misread_marker(text: &str, family: &Family) -> Option<(usize, usize, Vec<Read
                 numerals = numerals.iter().flat_map(|numeral| choices.iter().map(move |c| format!("{numeral}{c}"))).collect();
                 numerals.truncate(64);
             }
+            // "[5S]": a stray mark read against the closing bracket.
+            if wrap == "[]" && body.len() > 1 && body[..body.len() - 1].iter().all(char::is_ascii_digit) && body[body.len() - 1].is_alphabetic() {
+                numerals.push(body[..body.len() - 1].iter().collect());
+            }
             let printed = token.iter().collect::<String>();
             let exact = crate::candidates::numbering_marker(&printed, None).is_some_and(|marker| marker.family == family.0);
             found.extend(numerals.into_iter().map(|numeral| Reading {
@@ -538,9 +559,22 @@ pub fn repair_paragraph_numbers(pages: &mut [Page]) -> usize {
         let (page, line) = order[position];
         &pages[page].lines[line]
     };
-    if !(0..order.len()).any(|position| recognized_line(line(position))) {
+    if !(0..order.len()).any(|position| line(position).recognized()) {
         return 0;
     }
+    // Where each page's body starts: a scan's pages lie shifted against each other, so a line stands at a place on its own page.
+    let mut lefts = HashMap::<usize, Vec<f64>>::new();
+    for position in 0..order.len() {
+        let candidate = line(position);
+        if candidate.text.trim().chars().count() >= 30 {
+            lefts.entry(candidate.page_index).or_default().push(candidate.bbox[0]);
+        }
+    }
+    let edges = lefts.into_iter().map(|(page, mut xs)| {
+        xs.sort_by(f64::total_cmp);
+        (page, xs[xs.len() / 20])
+    }).collect::<HashMap<_, _>>();
+    let left = |line: &Line| line.bbox[0] - edges.get(&line.page_index).copied().unwrap_or(0.0);
     // Every marker the grammar reads opening a line, by its family.
     let mut by_family = HashMap::<Family, Vec<(usize, u32)>>::new();
     let mut last = HashMap::<&'static str, NumberingMarker>::new();
@@ -559,7 +593,7 @@ pub fn repair_paragraph_numbers(pages: &mut [Page]) -> usize {
     }
     let runs = by_family
         .iter()
-        .map(|(family, entries)| (family, supported(entries, PARAGRAPH_WINDOW_LINES, PARAGRAPH_WINDOW_CANDIDATES)))
+        .map(|(family, entries)| (family, climbing(entries)))
         .collect::<Vec<_>>();
     // A line another run supports is that run's.
     let taken = runs
@@ -585,8 +619,8 @@ pub fn repair_paragraph_numbers(pages: &mut [Page]) -> usize {
                 || next - value > GAP_VALUES
                 || after <= before + 1
                 || after - before > GAP_LINES
-                || !aligned(line(before), &[line(after)])
-                || !aligned(line(after), &[line(before)])
+                || !aligned(line(before), &[line(after)], left)
+                || !aligned(line(after), &[line(before)], left)
             {
                 continue;
             }
@@ -596,8 +630,8 @@ pub fn repair_paragraph_numbers(pages: &mut [Page]) -> usize {
             let neighbours = neighbours.iter().map(|&n| line(n)).collect::<Vec<_>>();
             let lines = (low..high)
                 .filter(|&position| {
-                    recognized_line(line(position))
-                        && aligned(line(position), &neighbours)
+                    line(position).recognized()
+                        && aligned(line(position), &neighbours, left)
                         && taken.get(&position).is_none_or(|other| other == family)
                 })
                 .filter_map(|position| {

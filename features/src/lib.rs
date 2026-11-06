@@ -10,7 +10,7 @@ pub mod a2aj;
 pub mod citator_graph;
 #[cfg(all(feature = "citator", feature = "document-query"))]
 mod journal_titles;
-#[cfg(all(feature = "provider-text", feature = "document-query"))]
+#[cfg(all(feature = "structure-inference", feature = "document-query"))]
 mod outline;
 #[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
 mod passage_links;
@@ -24,7 +24,7 @@ mod reading_order;
 
 #[cfg(all(feature = "citator", feature = "document-query"))]
 pub use journal_titles::{journal_title_choice, journal_title_searches, JournalTitleHit, JournalTitleSearch};
-#[cfg(all(feature = "provider-text", feature = "document-query"))]
+#[cfg(all(feature = "structure-inference", feature = "document-query"))]
 pub use outline::{document_outline, OutlineEntry};
 #[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
 pub use passage_links::{cited_passage_link, law_web_link, passage_link, source_link, PassageLink, PassageLinkRequest,

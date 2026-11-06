@@ -9,7 +9,7 @@ readme = "README.md"
 exclude = ["experiments/**"]
 
 [workspace]
-members = ["features", "layout", "model", "python", "query"]
+members = ["features", "layout", "model", "opinion", "python", "query"]
 default-members = ["."]
 resolver = "2"
 
@@ -33,11 +33,12 @@ tna = []
 govuk-et = []
 hansard = []
 local-pdf = []
+# The structure engine: inference over any text, a provider's text read into a structure (provider_text), the case
+# and statute outlines, and the analysis the PDF engine installs.
 structure-inference = ["dep:legal-citations"]
 document-query = ["dep:legal-document-query"]
 citator = ["dep:legal-citations"]
 native-markup = ["structure-inference"]
-provider-text = ["structure-inference"]
 journal = []
 
 [dependencies]

@@ -23,9 +23,8 @@ No features are enabled by default. Enable the operations your application needs
 
 | Feature | Capability |
 | --- | --- |
-| `structure-inference` | Instrument analysis, marker candidates and evidence-based role resolution |
+| `structure-inference` | Instrument analysis, marker candidates and evidence-based role resolution; provider text and ordered section evidence; the case and statute outlines |
 | `document-query` | Navigation and exact text lookup |
-| `provider-text` | Provider text and ordered section evidence; enables inference |
 | `native-markup` | Native markup analysis; enables inference |
 | `footnote-pairing` | Numbered bodies and in-text references; optional proposition/passage context |
 | `citator` | Citation matching, lookup keys and excerpt classification |

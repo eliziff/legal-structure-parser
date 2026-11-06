@@ -8,11 +8,17 @@ use std::sync::OnceLock;
 #[cfg(feature = "structure-inference")]
 mod analysis;
 #[cfg(feature = "structure-inference")]
+pub mod hierarchy;
+#[cfg(feature = "structure-inference")]
+mod numbered_paragraphs;
+#[cfg(feature = "structure-inference")]
+pub use numbered_paragraphs::paragraph_printings;
+#[cfg(feature = "structure-inference")]
 mod layout_cues;
 #[cfg(feature = "structure-inference")]
 mod numbering_repair;
 #[cfg(feature = "structure-inference")]
-mod note_pairing;
+pub mod note_pairing;
 #[cfg(feature = "structure-inference")]
 mod text_notes;
 #[cfg(feature = "citator")]
@@ -37,8 +43,9 @@ mod journal;
 use legal_structure_model::locator;
 #[cfg(feature = "native-markup")]
 mod native_markup;
+pub mod judgment;
 use legal_structure_model::numeric_sequence;
-#[cfg(feature = "provider-text")]
+#[cfg(feature = "structure-inference")]
 mod provider_text;
 mod tables;
 #[cfg(feature = "structure-inference")]
@@ -72,7 +79,7 @@ pub use locator::{normalize_compact_numbered_section_locator, normalize_section_
 #[cfg(feature = "native-markup")]
 pub use native_markup::{analyze_native_markup, NativeMarkupInput};
 pub use numeric_sequence::*;
-#[cfg(feature = "provider-text")]
+#[cfg(feature = "structure-inference")]
 pub use provider_text::{
     provider_text_document_structure, windows_1252_punctuation, ProviderSectionMap, ProviderTextInput,
     ProviderTextSourceKind,
@@ -298,14 +305,15 @@ mod inference;
 #[cfg(feature = "structure-inference")]
 mod candidates;
 mod derive;
-#[cfg(feature = "provider-text")]
+#[cfg(feature = "structure-inference")]
 mod statute_outline;
-#[cfg(feature = "provider-text")]
+#[cfg(feature = "structure-inference")]
 pub use statute_outline::{statute_outline, statute_provision_spans, StatuteOutlineEntry};
-#[cfg(feature = "provider-text")]
+#[cfg(feature = "structure-inference")]
 mod case_outline;
-#[cfg(feature = "provider-text")]
-pub use case_outline::{case_outline, CaseOutlineEntry};
+#[cfg(feature = "structure-inference")]
+pub use case_outline::{case_outline, judgment_division, judgment_end, reasons_go_on, CaseOutlineEntry, LIST_NUMBERS};
+pub use judgment::{date_line, figure_caption};
 
 #[cfg(feature = "structure-inference")]
 pub use candidates::detect_structure_candidate_runs;

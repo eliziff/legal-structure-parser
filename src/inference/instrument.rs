@@ -118,6 +118,118 @@ pub(crate) fn enum_readings(token: &str) -> [Option<(u8, String)>; 2] {
     }
 }
 
+/// A bullet glyph standing as a whole token ("•", "-").
+fn bullet(token: &str) -> bool {
+    let mut glyphs = token.chars();
+    glyphs.next().is_some_and(|glyph| BULLETS.contains(&glyph)) && glyphs.next().is_none()
+}
+
+/// An enumerator's readings: its family as the instrument grammar reads it (a letter that is
+/// also a numeral has both), whether it is parenthesized, and its value.
+fn readings(token: &str) -> Option<Vec<((u8, bool), String)>> {
+    if bullet(token) {
+        return Some(vec![((u8::MAX, false), "1".to_owned())]);
+    }
+    let (inner, wrapped) = match token.strip_prefix('(') {
+        Some(rest) => (rest.strip_suffix(')')?, true),
+        None => (token.strip_suffix(['.', ')'])?, false),
+    };
+    let readings = enum_readings(inner)
+        .into_iter()
+        .flatten()
+        .filter_map(|(family, value)| {
+            let value = if family == 0 {
+                value.parse::<u32>().ok()?.to_string()
+            } else {
+                value
+            };
+            Some(((family, wrapped), value))
+        })
+        .collect::<Vec<_>>();
+    (!readings.is_empty()).then_some(readings)
+}
+
+/// The open levels of a hierarchy of enumerators, outermost first: each one's family (the
+/// instrument grammar's reading of the enumerator, and whether it is parenthesized) and the
+/// value last read in it.
+#[derive(Default)]
+pub(crate) struct Levels(Vec<((u8, bool), String)>);
+
+impl Levels {
+    /// The depth an enumerator opens at, from 0, opening or closing levels to it. Of a letter
+    /// that is also a numeral ("i", "v", "C") the reading taken continues an open level, or else
+    /// starts one at its first value ("i" is 1, not the ninth letter).
+    pub(crate) fn read(&mut self, token: &str) -> Option<usize> {
+        let readings = readings(token)?;
+        let mut continuing = readings.iter().filter(|reading| self.continued(reading));
+        let inserted =
+            inserted_letter_token(token.trim_start_matches('(').trim_end_matches(['.', ')']))
+                .is_some();
+        let continued = if inserted {
+            continuing.max_by_key(|(family, _)| self.0.iter().rposition(|(open, _)| open == family))
+        } else {
+            continuing.next()
+        };
+        let (family, value) = continued
+            .or_else(|| readings.iter().find(|(_, value)| value == "1"))
+            .or_else(|| {
+                readings
+                    .iter()
+                    .find(|(family, _)| self.0.iter().any(|(open, _)| open == family))
+            })
+            .or(readings.first())
+            .cloned()?;
+        Some(self.open(family, value))
+    }
+
+    /// Whether an enumerator goes on with an open level: "2." after "1.".
+    pub(crate) fn continues(&self, token: &str) -> bool {
+        readings(token)
+            .is_some_and(|readings| readings.iter().any(|reading| self.continued(reading)))
+    }
+
+    /// Whether an enumerator opens a list at its first value ("1.", "(a)", "•").
+    pub(crate) fn opens(token: &str) -> bool {
+        readings(token).is_some_and(|readings| readings.iter().any(|(_, value)| value == "1"))
+    }
+
+    fn continued(&self, (family, value): &((u8, bool), String)) -> bool {
+        self.0.iter().any(|(open, last)| {
+            open == family && (family.0 == u8::MAX || enum_increment(family.0, last, value))
+        })
+    }
+
+    fn open(&mut self, family: (u8, bool), value: String) -> usize {
+        match self.0.iter().position(|(open, _)| *open == family) {
+            Some(at) => {
+                self.0.truncate(at + 1);
+                self.0[at].1 = value;
+                at
+            }
+            None => {
+                self.0.push((family, value));
+                self.0.len() - 1
+            }
+        }
+    }
+}
+
+/// A line's leading enumerator and the words after it, where it opens with one.
+pub(crate) fn enumerated(line: &str) -> Option<(&str, &str)> {
+    let (token, rest) = line.split_once(char::is_whitespace)?;
+    let rest = rest.trim_start();
+    (!rest.is_empty()
+        && (token.starts_with('(') && token.ends_with(')') && token.len() <= 7
+            || heading_enumerator(token)
+            || token.ends_with(['.', ')'])
+                && inserted_letter_token(
+                    token.trim_start_matches('(').trim_end_matches(['.', ')']),
+                )
+                .is_some()
+            || bullet(token)))
+    .then_some((token, rest))
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum InstrumentMarkerKind {
     Parenthesized,

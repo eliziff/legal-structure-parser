@@ -93,9 +93,37 @@ impl LayoutAnalysis for EngineAnalysis {
         crate::numbering_repair::repair_label_dropouts(pages);
         crate::numbering_repair::repair_paragraph_numbers(pages);
     }
+
+    fn printed_paragraph_number(&self, text: &str) -> Option<usize> {
+        crate::numbered_paragraphs::paragraph_number(text)
+    }
+
+    fn editorial_line(&self, text: &str) -> bool {
+        crate::numbered_paragraphs::editorial_line(text)
+    }
 }
 
 impl StructureAnalysis for EngineAnalysis {
+    fn signature_line(&self, line: &str) -> bool {
+        crate::judgment::signature_line(line)
+    }
+
+    fn author_line(&self, line: &str) -> bool {
+        crate::judgment::author_line(line)
+    }
+
+    fn end_matter(&self, line: &str) -> bool {
+        crate::judgment::end_matter(line)
+    }
+
+    fn date_line(&self, line: &str) -> bool {
+        crate::judgment::date_line(line)
+    }
+
+    fn disposition_line(&self, line: &str) -> bool {
+        crate::judgment::disposition_line(line)
+    }
+
     fn detect_structure_candidate_runs(&self, text: &str, refinements: bool) -> Vec<StructureCandidateRun> {
         crate::detect_structure_candidate_runs(text, refinements)
     }
@@ -156,6 +184,33 @@ impl StructureAnalysis for EngineAnalysis {
         table_cells: &[AuthoritativeTableCell],
     ) -> Result<DocumentStructure, EngineError> {
         crate::analyze_docx(document_id, paragraphs, table_cells)
+    }
+
+    fn assemble_parents(
+        &self,
+        regions: &[&str],
+        texts: &[String],
+        levels: &[usize],
+        depths: &[usize],
+        starts_document: &[bool],
+    ) -> Vec<Option<usize>> {
+        crate::hierarchy::assemble(regions, texts, levels, depths, starts_document)
+    }
+
+    fn hierarchy_ranks(&self, region: &str) -> bool {
+        crate::hierarchy::ranked(region)
+    }
+
+    fn numbering_family(&self, text: &str) -> String {
+        crate::hierarchy::numbering(text, None)
+    }
+
+    fn paragraph_printings(&self, document: &DocumentStructure) -> Vec<(usize, Vec<usize>)> {
+        crate::numbered_paragraphs::paragraph_printings(document)
+    }
+
+    fn judgment_paragraphs(&self, text: &str) -> Vec<(usize, Vec<legal_structure_model::ScalarRange>)> {
+        crate::case_outline::judgment_paragraphs(text)
     }
 }
 

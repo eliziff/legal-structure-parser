@@ -56,6 +56,50 @@ pub trait StructureAnalysis: LayoutAnalysis {
         paragraphs: Vec<String>,
         table_cells: &[AuthoritativeTableCell],
     ) -> Result<DocumentStructure, EngineError>;
+
+    /// Each unit's parent, in reading order, by the hierarchy rule the gold and every reader share: from its
+    /// region, its first line's text, its heading level (0 off headings), its body depth (0 where none) and
+    /// whether it starts a document.
+    fn assemble_parents(
+        &self,
+        regions: &[&str],
+        texts: &[String],
+        levels: &[usize],
+        depths: &[usize],
+        starts_document: &[bool],
+    ) -> Vec<Option<usize>>;
+
+    /// Whether the hierarchy orders units of `region` (notes, marginal notes, contents and furniture stand
+    /// outside it).
+    fn hierarchy_ranks(&self, region: &str) -> bool;
+
+    /// The numbering family a unit's text opens with, as the hierarchy rule reads it ("" for none).
+    fn numbering_family(&self, text: &str) -> String;
+
+    /// Each paragraph number `document` labels, once, with the indexes of the nodes printing it (a parallel
+    /// report's columns), the first in the text first: the paragraph every consumer's pinpoint addresses.
+    fn paragraph_printings(&self, document: &DocumentStructure) -> Vec<(usize, Vec<usize>)>;
+
+
+    /// A judgment's numbered paragraphs as its text reads them, the reading of a provider's text of a decision (a
+    /// block to a line): each printing of each number, with the spans of `text` its paragraph holds — its words, its
+    /// quotations and lists — up to the next paragraph, the headings between them no paragraph's.
+    fn signature_line(&self, line: &str) -> bool;
+
+    /// The line naming who gives a judge's reasons.
+    fn author_line(&self, line: &str) -> bool;
+
+    /// A line opening what stands after a judge's reasons.
+    fn end_matter(&self, line: &str) -> bool;
+
+    /// A date alone on its line, as a decision is dated under its reasons.
+    fn date_line(&self, line: &str) -> bool;
+
+    /// A report's line recording what became of the proceeding.
+    fn disposition_line(&self, line: &str) -> bool;
+
+    /// A judgment's numbered paragraphs as its text reads them.
+    fn judgment_paragraphs(&self, text: &str) -> Vec<(usize, Vec<crate::ScalarRange>)>;
 }
 
 static STRUCTURE_ANALYSIS: std::sync::OnceLock<&'static dyn StructureAnalysis> = std::sync::OnceLock::new();
