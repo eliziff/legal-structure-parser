@@ -551,8 +551,8 @@ pub(super) fn note_list_start(text: &ScalarText<'_>, candidates: &[Marker]) -> O
 }
 
 /// A rooted count carried past numbers its provider dropped ("16", "17", "19", "21" …): where no
-/// candidate after the count's last paragraph carries its next number, the count goes on at the one
-/// after that if the three numbers from there follow in order.
+/// candidate after the count's last paragraph carries its next number, the count goes on at the next it
+/// finds within three more, if the three numbers from there follow in order.
 fn extend_over_gaps(chain: &mut Vec<Marker>, candidates: &[Marker]) {
     let mut sorted = candidates.iter().collect::<Vec<_>>();
     sorted.sort_by_key(|marker| marker.start);
@@ -561,7 +561,7 @@ fn extend_over_gaps(chain: &mut Vec<Marker>, candidates: &[Marker]) {
         if after.iter().any(|marker| marker.number == last.number + 1) {
             return;
         }
-        let Some(at) = after.iter().position(|marker| marker.number == last.number + 2) else { return };
+        let Some(at) = after.iter().position(|marker| (last.number + 2..=last.number + 4).contains(&marker.number)) else { return };
         let mut run = vec![(**after[at]).clone()];
         for marker in &after[at + 1..] {
             if marker.number == run[run.len() - 1].number + 1 {
