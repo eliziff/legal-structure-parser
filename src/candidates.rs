@@ -304,12 +304,6 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
     }
 }
 
-#[cfg(feature = "structure-inference")]
-thread_local! {
-    /// The document being resolved, for the candidate trace.
-    static TRACE_DOCUMENT: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
-}
-
 /// Each candidate's evidence by its id. Every candidate has an id of its own, and every item of
 /// evidence names one candidate, once, with its pages and lines.
 fn evidence_by_candidate<'a>(
@@ -404,23 +398,6 @@ pub(crate) fn resolved_from_roles<'a>(
             )));
         }
     }
-    let trace = std::env::var_os("LEGALPDF_CANDIDATE_TRACE").is_some();
-    let document = if trace { TRACE_DOCUMENT.with(|d| d.borrow().clone()) } else { String::new() };
-    if trace {
-        // One line per raw marker: which run read it, and where it sits.
-        for run in runs {
-            for candidate in &run.markers {
-                let item = evidence_by_candidate.get(candidate.id.as_str());
-                let page = item.and_then(|i| i.page_indexes.first()).map_or(usize::MAX, |p| *p);
-                let first = item.and_then(|i| i.line_ids.first()).map_or("", String::as_str);
-                let label = candidate.label.replace(['\t', '\n'], " ");
-                eprintln!(
-                    "crun\t{document}\t{page}\t{first}\t{:?}\trooted={}\tconsecutive={}\t{}\t{label}",
-                    run.grammar, run.rooted, run.consecutive, run.markers.len()
-                );
-            }
-        }
-    }
     let mut resolved = Vec::with_capacity(roles.len());
     for run in runs {
         for candidate in &run.markers {
@@ -429,16 +406,6 @@ pub(crate) fn resolved_from_roles<'a>(
             };
             let item = evidence_by_candidate.get(candidate.id.as_str()).copied();
             let observations = distinct_observations(item);
-            if trace {
-                // One line per candidate: where it is, what it became and why.
-                let first = item.and_then(|i| i.line_ids.first()).map(String::as_str).unwrap_or("");
-                let page = item.and_then(|i| i.page_indexes.first()).copied().unwrap_or(usize::MAX);
-                let snippet: String = candidate.label.replace(['\t', '\n'], " ");
-                eprintln!(
-                    "ctrace\t{document}\t{page}\t{first}\t{:?}\t{:?}\t{:?}\trooted={}\tconsecutive={}\t{:?}\t{snippet}",
-                    role.role, role.rule, run.grammar, run.rooted, run.consecutive, observations
-                );
-            }
             resolved.push(ResolvedCandidate {
                 candidate,
                 role: role.role,

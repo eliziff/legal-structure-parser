@@ -104,10 +104,10 @@ pub(crate) fn judgment_paragraphs(text: &str) -> Vec<(usize, Vec<ScalarRange>)> 
     // (The first printing's numbers: a second printing's would stand the count's end at the text's.)
     let mut seen = std::collections::HashSet::new();
     let starts: Vec<usize> = paragraphs.iter().take_while(|(number, _)| seen.insert(*number)).filter_map(|(_, ranges)| ranges.first()).map(|range| range.start).collect();
-    if let (Some(&first), Some(&last)) = (starts.iter().min(), starts.iter().max()) {
+    if let (Some(&first), Some(&last), true) = (starts.iter().min(), starts.iter().max(), reach <= LIST_NUMBERS) {
         let utf16: Vec<u16> = text.encode_utf16().collect();
         let part = |range: &[u16]| String::from_utf16_lossy(range);
-        if reach <= LIST_NUMBERS && reasons_go_on(&part(utf16.get(..first).unwrap_or_default()), &part(utf16.get(first..last).unwrap_or_default()), &part(utf16.get(last..).unwrap_or_default())) {
+        if reasons_go_on(&part(utf16.get(..first).unwrap_or_default()), &part(utf16.get(first..last).unwrap_or_default()), &part(utf16.get(last..).unwrap_or_default())) {
             paragraphs.clear();
         }
     }
@@ -145,18 +145,17 @@ fn printings(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
         return printings;
     }
     let mut paragraphs = one_printing(text);
+    let utf16: Vec<u16> = text.encode_utf16().collect();
     let mut from = 0;
     let mut wanted = paragraphs.len();
     while wanted > 0 {
         let end = paragraphs.iter().flat_map(|(_, ranges)| ranges).map(|range| range.end).max().unwrap_or(from);
-        let utf16: Vec<u16> = text.encode_utf16().collect();
-        let rest = String::from_utf16_lossy(utf16.get(end..).unwrap_or_default());
-        if end <= from {
+        // A printing as long as half the text before it and four fifths its count.
+        if end <= from || (utf16.len() - end) * 2 < end - from {
             break;
         }
-        let again = one_printing(&rest);
-        // A printing as long as half the text before it and four fifths its count.
-        if (utf16.len() - end) * 2 < end - from || again.len() * 5 < wanted * 4 {
+        let again = one_printing(&String::from_utf16_lossy(utf16.get(end..).unwrap_or_default()));
+        if again.len() * 5 < wanted * 4 {
             break;
         }
         (from, wanted) = (end, again.len());
@@ -183,12 +182,15 @@ fn two_printings(text: &str) -> Option<Vec<(usize, Vec<ScalarRange>)>> {
         if at >= third && trials < TRIALS && opening.starts_with(first_number) && !introduced {
             trials += 1;
             let (first, second) = text.split_at(at);
-            let (before, after) = (one_printing(first), one_printing(second));
-            if before.len() >= 5 && before.len() * 5 >= after.len() * 4 && after.len() * 5 >= before.len() * 4 {
-                let offset = first.encode_utf16().count();
-                let mut printings = before;
-                printings.extend(after.into_iter().map(|(number, ranges)| (number, shift(ranges, offset))));
-                return Some(printings);
+            let before = one_printing(first);
+            if before.len() >= 5 {
+                let after = one_printing(second);
+                if before.len() * 5 >= after.len() * 4 && after.len() * 5 >= before.len() * 4 {
+                    let offset = first.encode_utf16().count();
+                    let mut printings = before;
+                    printings.extend(after.into_iter().map(|(number, ranges)| (number, shift(ranges, offset))));
+                    return Some(printings);
+                }
             }
         }
         at += line.len();
@@ -429,7 +431,7 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
             let close = (at..body_end)
                 .find(|at| chars[*at] == '\n')
                 .unwrap_or(body_end);
-            if !slice(at, close).trim().is_empty() {
+            if !chars[at..close].iter().all(|c| c.is_whitespace()) {
                 lines.push((at, close));
             }
             at = close + 1;
@@ -509,10 +511,11 @@ pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) {
     };
     let mut ordinals = std::collections::HashMap::<NodeKind, usize>::new();
     for node in &structure.nodes {
-        let prefix = format!("heuristic-{}-", node.kind.name());
         if let Some(ordinal) = node
             .id
-            .strip_prefix(&prefix)
+            .strip_prefix("heuristic-")
+            .and_then(|rest| rest.strip_prefix(node.kind.name()))
+            .and_then(|rest| rest.strip_prefix('-'))
             .and_then(|rest| rest.parse::<usize>().ok())
         {
             let entry = ordinals.entry(node.kind).or_default();

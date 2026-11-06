@@ -16,6 +16,8 @@ pub use numbered_paragraphs::paragraph_printings;
 #[cfg(feature = "structure-inference")]
 mod layout_cues;
 #[cfg(feature = "structure-inference")]
+mod transcript;
+#[cfg(feature = "structure-inference")]
 mod numbering_repair;
 #[cfg(feature = "structure-inference")]
 pub mod note_pairing;
@@ -40,11 +42,11 @@ mod instrument_contents;
 mod instrument_references;
 #[cfg(feature = "journal")]
 mod journal;
-use legal_structure_model::locator;
+use legal_locator as locator;
 #[cfg(feature = "native-markup")]
 mod native_markup;
 pub mod judgment;
-use legal_structure_model::numeric_sequence;
+mod numeric_sequence;
 #[cfg(feature = "structure-inference")]
 mod provider_text;
 mod tables;
@@ -75,7 +77,8 @@ use legal_structure_model::text;
 pub use legal_structure_model::AuthoritativeTableCell;
 /// The laid-out pages and lines note pairing reads, for programs that hand it lines of their own.
 pub use legal_structure_model::layout;
-pub use locator::{normalize_compact_numbered_section_locator, normalize_section_locator};
+pub use locator::{normalize_compact_numbered_section_locator, normalize_section_locator, parse_ordinal};
+pub mod statute;
 #[cfg(feature = "native-markup")]
 pub use native_markup::{analyze_native_markup, NativeMarkupInput};
 pub use numeric_sequence::*;

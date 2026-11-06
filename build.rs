@@ -26,6 +26,8 @@ fn main() {
         "src",
         "layout/Cargo.toml",
         "layout/src",
+        "locator/Cargo.toml",
+        "locator/src",
         "model/Cargo.toml",
         "model/src",
     ];

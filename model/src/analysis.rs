@@ -80,10 +80,7 @@ pub trait StructureAnalysis: LayoutAnalysis {
     /// report's columns), the first in the text first: the paragraph every consumer's pinpoint addresses.
     fn paragraph_printings(&self, document: &DocumentStructure) -> Vec<(usize, Vec<usize>)>;
 
-
-    /// A judgment's numbered paragraphs as its text reads them, the reading of a provider's text of a decision (a
-    /// block to a line): each printing of each number, with the spans of `text` its paragraph holds — its words, its
-    /// quotations and lists — up to the next paragraph, the headings between them no paragraph's.
+    /// A judge's signature or a release line.
     fn signature_line(&self, line: &str) -> bool;
 
     /// The line naming who gives a judge's reasons.
@@ -98,8 +95,22 @@ pub trait StructureAnalysis: LayoutAnalysis {
     /// A report's line recording what became of the proceeding.
     fn disposition_line(&self, line: &str) -> bool;
 
-    /// A judgment's numbered paragraphs as its text reads them.
+    /// A judgment's numbered paragraphs as its text reads them, the reading of a provider's text of a decision (a
+    /// block to a line): each printing of each number, with the spans of `text` its paragraph holds — its words, its
+    /// quotations and lists — up to the next paragraph, the headings between them no paragraph's.
     fn judgment_paragraphs(&self, text: &str) -> Vec<(usize, Vec<crate::ScalarRange>)>;
+
+    /// A statute's history note under a provision.
+    fn history_note(&self, line: &str) -> bool;
+
+    /// Whether a line reads as a statute's marginal note.
+    fn marginal_note_shaped(&self, line: &str) -> bool;
+
+    /// A numeric printed paragraph, page or transcript line locator (`kind`) read in its canonical spelling grammar.
+    fn parse_ordinal(&self, kind: &str, raw: &str) -> Option<usize>;
+
+    /// A numbered section locator's canonical spelling, whitespace already out ("" where it is none).
+    fn numbered_section_locator(&self, compact: &str) -> String;
 }
 
 static STRUCTURE_ANALYSIS: std::sync::OnceLock<&'static dyn StructureAnalysis> = std::sync::OnceLock::new();

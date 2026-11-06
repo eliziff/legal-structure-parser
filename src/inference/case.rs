@@ -1,6 +1,7 @@
 //! A case's reading: its paragraphs with their notes, its source layout, headings and prose.
 
 use super::*;
+use legal_structure_model::layout::ends_on;
 
 pub(super) fn detect_case(
     text: &ScalarText<'_>,
@@ -354,8 +355,7 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
         }
         if !form_feeds.is_empty() && !(header || footer) { continue; }
         pages.push(SourcePageMarker {
-            marker: Marker { number: number.parse().unwrap(), start, content_start: end,
-                style: MarkerStyle::Bare, score: 1.0, formal: false, sentence: false, introduced: false },
+            marker: Marker::new(number.parse().unwrap(), start, end, MarkerStyle::Bare, 1.0),
             range: ScalarRange { start, end },
             line: ScalarRange { start: line.scalar_start, end: line_end },
             after_line: after_line(*line),
@@ -691,9 +691,7 @@ pub(super) fn detect_case_headings(evidence: &DocumentInput, text: &ScalarText<'
                 == 2
         {
             prose_units += utf16_len(value);
-            sentence_seen |= value
-                .trim_end_matches(['"', '\'', '\u{201d}', ')', ']'])
-                .ends_with(['.', '?', '!']);
+            sentence_seen |= ends_on(value, &['"', '\'', '\u{201d}', ')', ']'], &['.', '?', '!']);
         }
     }
     // Use the shared sequence reader so ambiguous C./D. Roman readings cannot interrupt
@@ -702,16 +700,7 @@ pub(super) fn detect_case_headings(evidence: &DocumentInput, text: &ScalarText<'
     for family in families.values() {
         let markers = family
             .iter()
-            .map(|(index, number, _)| Marker {
-                number: *number,
-                start: candidates[*index].0.range.start,
-                content_start: candidates[*index].0.range.end,
-                style: MarkerStyle::Bare,
-                score: 1.0,
-                formal: true,
-                sentence: false,
-                introduced: false,
-            })
+            .map(|(index, number, _)| Marker { formal: true, ..Marker::new(*number, candidates[*index].0.range.start, candidates[*index].0.range.end, MarkerStyle::Bare, 1.0) })
             .collect::<Vec<_>>();
         let positions = family
             .iter()
@@ -842,9 +831,7 @@ pub(super) fn detect_case_prose(
     let lowercase_words = |value: &str| value.split_whitespace().filter(|word|
         word.chars().find(|character| character.is_alphabetic()).is_some_and(char::is_lowercase)
             && word.chars().filter(|character| character.is_alphabetic()).take(3).count() == 3).count();
-    let sentence_end = |value: &str| value.trim_end()
-        .trim_end_matches(['"', '\'', '\u{201d}', '\u{2019}', ')', ']'])
-        .ends_with(['.', '?', '!']);
+    let sentence_end = |value: &str| ends_on(value, &['"', '\'', '\u{201d}', '\u{2019}', ')', ']'], &['.', '?', '!']);
     let ordinary_line = |line: Line<'_>| !blocked(line_range(line))
         && !layout.running_heads.contains(&line.scalar_start)
         && word_count(line.text, true) >= 8 && lowercase_words(line.text) >= 2;
@@ -872,31 +859,31 @@ pub(super) fn detect_case_prose(
             && (value.split_whitespace().any(sentence_end) || words >= 20 && lowercase >= 8)
             && evidence.clip_inference(EvidenceKind::Prose, range) == Some(range)
         {
-            result.push(Block {
-                kind: NodeKind::Prose, range, label: None, aliases: Vec::new(),
-                parent_label: None, content_start: None, marker_range: None,
-                note: None, diagnostic: None, source: Derivation::Heuristic,
-                origin_id: ENGINE_ORIGIN,
-            });
+            result.push(prose_block(range));
         }
     };
-    let mut current = None::<ScalarRange>;
-    let mut current_body = false;
-    let mut previous = None::<(usize, ScalarRange)>;
+    /// The block a walk down the lines has open: its range so far, whether a line of it is an ordinary
+    /// one, and its last line's index and range.
+    #[derive(Clone, Copy)]
+    struct OpenBlock {
+        range: ScalarRange,
+        body: bool,
+        last: (usize, ScalarRange),
+    }
+    let mut open = None::<OpenBlock>;
     for (position, &(index, line, indent)) in source.iter().enumerate() {
         let value = line.text.trim();
         let range = line_range(line);
         if blocked(range) || layout.running_heads.contains(&line.scalar_start)
             || crosses(range.start.saturating_add(1), range.end.saturating_sub(1)) {
-            if let Some(range) = current.take() { emit(range); }
-            current_body = false;
-            previous = None;
+            if let Some(block) = open.take() { emit(block.range); }
             continue;
         }
         let words = value.split_whitespace().collect::<Vec<_>>();
         let enumerated = words.first().is_some_and(|word| heading_enumerator(word));
-        let continued_wrap = current_body && !enumerated && indent <= body_indent
-            && previous.is_some_and(|(previous_index, previous_range)| {
+        let previous = open.map(|block| block.last);
+        let continued_wrap = !enumerated && indent <= body_indent
+            && open.is_some_and(|block| block.body) && previous.is_some_and(|(previous_index, previous_range)| {
                 let preceding = text.slice(previous_range.start..previous_range.end).unwrap_or("");
                 index.saturating_sub(previous_index + 1) <= wrap_gap
                     && previous_range.end - previous_range.start <= 120
@@ -911,9 +898,7 @@ pub(super) fn detect_case_prose(
         let uppercase = !value.chars().any(char::is_lowercase);
         let columns = value.matches("  ").take(2).count() == 2 && lowercase_words(value) < 3;
         if title || uppercase || columns {
-            if let Some(range) = current.take() { emit(range); }
-            current_body = false;
-            previous = None;
+            if let Some(block) = open.take() { emit(block.range); }
             continue;
         }
         let first_line_indent = indent > body_indent && source.get(position + 1)
@@ -928,13 +913,14 @@ pub(super) fn detect_case_prose(
             index.saturating_sub(previous_index + 1) > wrap_gap || first_line_indent
                 || crosses(previous_range.end, range.start));
         if separated {
-            if let Some(range) = current.take() { emit(range); }
-            current_body = false;
+            if let Some(block) = open.take() { emit(block.range); }
         }
-        current = Some(ScalarRange { start: current.map_or(range.start, |current| current.start), end: range.end });
-        current_body |= ordinary_line(line);
-        previous = Some((index, range));
+        open = Some(OpenBlock {
+            range: ScalarRange { start: open.map_or(range.start, |block| block.range.start), end: range.end },
+            body: open.is_some_and(|block| block.body) || ordinary_line(line),
+            last: (index, range),
+        });
     }
-    if let Some(range) = current { emit(range); }
+    if let Some(block) = open { emit(block.range); }
     result
 }

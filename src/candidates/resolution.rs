@@ -430,29 +430,8 @@ impl<'a> Resolution<'a> {
                 UnitRole::Item => resolved.candidate.label.clone(),
             };
             let aliases = (resolved.candidate.label != label).then(|| vec![resolved.candidate.label.clone()]);
-            let locator_kind = (role == UnitRole::Section).then(|| {
-                let label = resolved.candidate.grammar_value.as_str();
-                if label.starts_with("sec") {
-                    "section"
-                } else if label.starts_with("art") {
-                    "article"
-                } else if label.starts_with("part") {
-                    "part"
-                } else if label.starts_with("sched") {
-                    "schedule"
-                } else if label.starts_with("exh") {
-                    "exhibit"
-                } else if label.starts_with("ann") {
-                    "annex"
-                } else if label.starts_with("app") {
-                    "appendix"
-                } else if resolved.candidate.level == 0 {
-                    "clause"
-                } else {
-                    "subclause"
-                }
-                .to_owned()
-            });
+            let locator_kind = (role == UnitRole::Section)
+                .then(|| legal_structure_model::provision_locator(&resolved.candidate.grammar_value, resolved.candidate.level).to_owned());
             let mut node = if let Some(index) = source_unit {
                 let mut node = self.nodes[index].clone();
                 if node.role.is_none() {
@@ -729,7 +708,6 @@ pub fn resolve_structure_graph_with_assembler(
     mut diagnostics: Vec<StructureDiagnostic>,
     assembler: &mut dyn FnMut(&mut [StructureNode]),
 ) -> Result<DocumentStructure, EngineError> {
-    TRACE_DOCUMENT.with(|d| *d.borrow_mut() = source_sha256.clone().unwrap_or_else(|| document_id.clone()));
     let scalar_text = ScalarText::new(text);
     let node_ids = validate(&nodes, runs, scalar_text.len())?;
     let mut resolved_candidates = resolved_from_roles(runs, evidence, roles)?;

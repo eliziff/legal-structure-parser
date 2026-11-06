@@ -130,6 +130,9 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
         (page.start, page.end) = (moved(page.start), moved(page.end));
         page.marker = None;
     }
+    for block in &mut layer.blocks {
+        block.start = moved(block.start);
+    }
     for paragraph in &mut layer.paragraphs {
         (paragraph.start, paragraph.end) = (moved(paragraph.start), moved(paragraph.end));
     }

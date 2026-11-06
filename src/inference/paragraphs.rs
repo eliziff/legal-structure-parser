@@ -1,8 +1,8 @@
 //! Numbered paragraphs: their markers, the counts they form, and the ranges each count gives.
 
 use super::*;
-use crate::judgment::{author_line, date_line, disposition_line, end_matter, figure_caption, signature_line};
-use legal_structure_model::statute::{marginal_note_shaped, markdown_line};
+use crate::judgment::{author_line, signature_line};
+use crate::statute::{marginal_note_shaped, markdown_line};
 
 pub(super) fn case_source_line<'a>(text: &ScalarText<'_>, mut line: Line<'a>) -> Line<'a> {
     let prefix = line.text.len() - line.text.trim_start_matches([' ', '\t', '\u{c}']).len();
@@ -108,14 +108,8 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
         if let Some((number, style, marker_end)) = basic.filter(|(_, style, marker_end)| *style != MarkerStyle::Bare || !cited_figure(&value[*marker_end..])) {
             let content = marker_end + leading_ascii_space(&value[marker_end..]);
             result.push(Marker {
-                number: number.parse().unwrap(),
-                start,
-                content_start: line.scalar_start + lead + shift + content,
-                style,
-                score: 1.0,
-                formal: false,
-                sentence: false,
                 introduced: text.value[..line.byte_start].trim_end().ends_with(':'),
+                ..Marker::new(number.parse().unwrap(), start, line.scalar_start + lead + shift + content, style, 1.0)
             });
         }
         {
@@ -135,17 +129,8 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
                     let after = rest[length..].chars().next();
                     if after.is_none_or(|value| value.is_whitespace() || ".,;:—-".contains(value))
                     {
-                        result.push(Marker {
-                            number: number.parse().unwrap(),
-                            start,
-                            content_start: text
-                                .scalar(line.byte_start + line.text.len() - rest.len() + length),
-                            style: MarkerStyle::Dot,
-                            score: 1.0,
-                            formal: false,
-                            sentence: false,
-                            introduced: false,
-                        });
+                        let content = text.scalar(line.byte_start + line.text.len() - rest.len() + length);
+                        result.push(Marker::new(number.parse().unwrap(), start, content, MarkerStyle::Dot, 1.0));
                     }
                 }
             }
@@ -255,21 +240,12 @@ pub(super) fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usiz
                 continue;
             }
             let heading = &line.text[..at];
-            let formal = formal_heading(heading)
-                && (style == MarkerStyle::Bracket || !heading.contains('.'));
+            let formal = (style == MarkerStyle::Bracket || !heading.contains('.')) && formal_heading(heading);
             let sentence = style == MarkerStyle::Bracket
                 && sentence_heading(heading, &text.value[line.byte_start + end..]);
             if formal || sentence {
-                result[index].push(Marker {
-                    number: line.text[digits..tail].parse().unwrap(),
-                    start,
-                    content_start: text.scalar(line.byte_start + end),
-                    style,
-                    score: if formal { 0.6 } else { 0.35 },
-                    formal,
-                    sentence,
-                    introduced: false,
-                });
+                let score = if formal { 0.6 } else { 0.35 };
+                result[index].push(Marker { formal, sentence, ..Marker::new(line.text[digits..tail].parse().unwrap(), start, text.scalar(line.byte_start + end), style, score) });
             }
             at = end;
         }
@@ -403,14 +379,14 @@ fn quoted_runs(candidates: &[Marker]) -> HashSet<usize> {
             let places = (0..counts.len()).rev().filter(|&place| resumes(place)).collect::<Vec<_>>();
             let introduced = |place: usize| counts[place].first().is_some_and(|&first| candidates[first].introduced);
             let number = candidates[at].number;
-            let again = order[step + 1..].iter().map(|&later| candidates[later].number).take_while(|&later| later <= number + 8).any(|later| later == number);
+            let again = || order[step + 1..].iter().map(|&later| candidates[later].number).take_while(|&later| later <= number + 8).any(|later| later == number);
             // (A number a colon introduces, printed again with no colon over it, is a quotation's.)
-            let plainly = order[step + 1..].iter().take_while(|&&later| candidates[later].number <= number + 8).any(|&later| candidates[later].number == number && !candidates[later].introduced);
-            if candidates[at].introduced && plainly {
+            let plainly = || order[step + 1..].iter().take_while(|&&later| candidates[later].number <= number + 8).any(|&later| candidates[later].number == number && !candidates[later].introduced);
+            if candidates[at].introduced && plainly() {
                 counts.push(vec![at]);
                 continue;
             }
-            let inner = places.first().copied().filter(|&place| introduced(place) && again);
+            let inner = places.first().copied().filter(|&place| introduced(place) && again());
             match inner.or(places.iter().copied().find(|&place| !introduced(place))).or(places.first().copied()) {
                 Some(count) => {
                     closed.extend(counts.drain(count + 1..).flatten());
@@ -467,16 +443,7 @@ pub(super) fn bridge_glued_labels(text: &ScalarText<'_>, candidates: &mut Vec<Ma
             let following = opening[length + 1..].trim_start_matches([' ', '\t']);
             let start = text.scalar(line.byte_start + lead);
             if following.starts_with(char::is_uppercase) && !held.contains(&start) {
-                glued.push(Marker {
-                    number: opening[..length].parse().unwrap(),
-                    start,
-                    content_start: text.scalar(line.byte_start + lead + length + 1),
-                    style: MarkerStyle::Bracket,
-                    score: 0.2,
-                    formal: false,
-                    sentence: false,
-                    introduced: false,
-                });
+                glued.push(Marker::new(opening[..length].parse().unwrap(), start, text.scalar(line.byte_start + lead + length + 1), MarkerStyle::Bracket, 0.2));
             }
         }
         let mut from = 0;
@@ -512,16 +479,7 @@ pub(super) fn bridge_glued_labels(text: &ScalarText<'_>, candidates: &mut Vec<Ma
                 continue;
             }
             if !held.contains(&start) {
-                glued.push(Marker {
-                    number,
-                    start,
-                    content_start: text.scalar(line.byte_start + end),
-                    style: MarkerStyle::Bracket,
-                    score: 0.2,
-                    formal: false,
-                    sentence: false,
-                    introduced: false,
-                });
+                glued.push(Marker::new(number, start, text.scalar(line.byte_start + end), MarkerStyle::Bracket, 0.2));
             }
         }
     }
@@ -583,8 +541,8 @@ pub(super) fn note_list_start(text: &ScalarText<'_>, candidates: &[Marker]) -> O
         // The paragraphs' count going on after it ("[25]", a quoted "[1]" to "[7]", "[26]") makes it quoted:
         // a number after it beyond the count before it that the list does not take. The count before it
         // is read from line openings alone, so it may stop short where a paragraph's number is glued.
-        let continued = after.iter().any(|marker| marker.number as usize > first && !list.contains(&marker.start));
-        (list.len() >= 3 && list.len() * 2 >= after.len() && tail * 10 >= list.len() * 7 && first >= 3 && !continued)
+        let continued = || after.iter().any(|marker| marker.number as usize > first && !list.contains(&marker.start));
+        (list.len() >= 3 && list.len() * 2 >= after.len() && tail * 10 >= list.len() * 7 && first >= 3 && !continued())
             .then_some(marker.start)
     })
 }
@@ -654,16 +612,6 @@ pub(super) fn restart_boundaries(text: &ScalarText<'_>, candidates: &[Marker], c
     }).map(|(_, marker)| (*marker).clone()).collect()
 }
 
-/// Whether text ends a sentence, not a citation ("…; 2 Baudry", "([22]) 1 Masse") or an abbreviation ("p. 3",
-/// "Q. R. 6 Q. B. 237"); a pinpoint ends one ("… at para. 23. 24 The …").
-fn sentence_closed(value: &str) -> bool {
-    (value.ends_with(['.', '?', '!', '"', '\u{201d}', ']', '…']) || value.ends_with(".)"))
-        && value.split_whitespace().last().is_some_and(|word| {
-            let word = word.trim_matches(|c: char| !c.is_alphanumeric());
-            !(word.chars().all(char::is_alphabetic) && word.chars().count() <= 2)
-        })
-}
-
 /// Whether text reads as a heading run in before a paragraph's number: words, short, no list of
 /// citations, and no closed sentence unless a question ("Issue I: Did the respondent …?").
 pub(crate) fn run_in_heading(value: &str) -> bool {
@@ -717,16 +665,9 @@ pub(super) fn bare_heading_joined(text: &ScalarText<'_>, known: &HashSet<usize>)
             if !(formal || candidates.iter().any(|value| run_in_heading(value)) || run_on && sentence_closed(before)) {
                 continue;
             }
-            result.push(Marker {
-                number: line.text[number_at..number_at + digits].parse().unwrap(),
-                start,
-                content_start: text.scalar(line.byte_start + content),
-                style: MarkerStyle::Bare,
-                score: if formal { 0.6 } else { 0.35 },
-                formal,
-                introduced: false,
-                sentence: !formal,
-            });
+            let number = line.text[number_at..number_at + digits].parse().unwrap();
+            let score = if formal { 0.6 } else { 0.35 };
+            result.push(Marker { formal, sentence: !formal, ..Marker::new(number, start, text.scalar(line.byte_start + content), MarkerStyle::Bare, score) });
         }
     }
     result
@@ -745,15 +686,8 @@ pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[Scalar
             }
             let after = &rest[digits + 1..];
             let content = after.len() - after.trim_start().len();
-            (content > 0 && after.trim_start().chars().next().is_some_and(char::is_uppercase)).then(|| Marker {
-                number: rest[..digits].parse().unwrap(),
-                start: line.scalar_start,
-                content_start: text.scalar(line.byte_start + lead + 1 + digits + 1 + content),
-                style: MarkerStyle::Bracket,
-                score: 1.0,
-                formal: false,
-                sentence: false,
-                introduced: false,
+            (content > 0 && after.trim_start().chars().next().is_some_and(char::is_uppercase)).then(|| {
+                Marker::new(rest[..digits].parse().unwrap(), line.scalar_start, text.scalar(line.byte_start + lead + 1 + digits + 1 + content), MarkerStyle::Bracket, 1.0)
             })
         })
         .collect::<Vec<_>>();
@@ -773,16 +707,8 @@ pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[Scalar
             {
                 continue;
             }
-            markers.push(Marker {
-                number: rest[..digits].parse().unwrap(),
-                start: text.scalar(line.byte_start + at + 1),
-                content_start: text.scalar(line.byte_start + content),
-                style: MarkerStyle::Bracket,
-                score: 0.6,
-                formal: true,
-                sentence: false,
-                introduced: false,
-            });
+            let (start, content) = (text.scalar(line.byte_start + at + 1), text.scalar(line.byte_start + content));
+            markers.push(Marker { formal: true, ..Marker::new(rest[..digits].parse().unwrap(), start, content, MarkerStyle::Bracket, 0.6) });
         }
     }
     markers.sort_by_key(|marker| marker.start);
@@ -827,7 +753,7 @@ pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[Scalar
 }
 
 /// Whether a line reads as running prose: a dozen words or more, a few of them in lower case, ending as a sentence does.
-fn running_prose(line: &str) -> bool {
+pub(super) fn running_prose(line: &str) -> bool {
     let words = line.split_whitespace().collect::<Vec<_>>();
     let lowercase = words.iter().filter(|word| word.chars().next().is_some_and(char::is_lowercase)).count();
     words.len() >= 12 && lowercase >= 4 && line.trim_end().ends_with(['.', '?', '!', ':', ';', '"', '”', ')'])
@@ -858,19 +784,7 @@ pub(super) fn unnumbered_paragraphs(text: &ScalarText<'_>, after: usize, until: 
             let lead = text.value[line[0]..line[1]].len() - text.value[line[0]..line[1]].trim_start().len();
             let start = text.scalar(line[0] + lead);
             let end = text.scalar(line[0] + text.value[line[0]..line[1]].trim_end().len());
-            Block {
-                kind: NodeKind::Prose,
-                range: ScalarRange { start, end },
-                label: None,
-                aliases: Vec::new(),
-                parent_label: None,
-                content_start: None,
-                marker_range: None,
-                note: None,
-                diagnostic: None,
-                source: Derivation::Heuristic,
-                origin_id: ENGINE_ORIGIN,
-            }
+            prose_block(ScalarRange { start, end })
         })
         .collect()
 }
@@ -1142,126 +1056,6 @@ pub(super) fn paragraph_end(text: &ScalarText<'_>, start: usize, end: usize, las
     pieces.get(paragraph_tail(&lines, &separated, after, last)).map_or(end, |(at, _)| *at)
 }
 
-/// How many of a numbered paragraph's lines are its own (`lines`: from the one its number opens to the next number;
-/// `separated`: whether a blank line stands before each; `after`: the text following them): all of them, but for a
-/// line closing the reasons and what follows it
-/// (`closing_line`), and the headings its lines end with after its last sentence, which open what follows
-/// (`trailing_headings`); a line going on with the paragraph's list is its next item, however like a heading it
-/// reads. The count's `last` paragraph ends with its own words and what they introduce (`own_matter`): nothing
-/// follows the reasons' last paragraph as its own.
-pub(crate) fn paragraph_tail(lines: &[&str], separated: &[bool], after: &str, last: bool) -> usize {
-    // (A sentence may wrap onto a caption's words: "... as shown in" / "Figure 1.".)
-    // (Under a note's call too: "... at arm's length.11" / "Figure 4.".)
-    let caption = |at: usize| figure_caption(lines[at]) && lines[at - 1].trim_end().trim_end_matches(|c: char| c.is_ascii_digit()).ends_with(['.', '?', '!', ':', ')', '"', '\u{201d}']);
-    // (A judge's name may be a sentence's last words: "... de la manière proposée par" / "Sopinka J.".)
-    let named = |at: usize| signature_line(lines[at].trim()) && !lines[at - 1].trim_end().ends_with(['.', '?', '!', ':', ';', ')', ']', '"', '\u{201d}'])
-        && lines[at - 1].split_whitespace().any(|word| word.starts_with(char::is_lowercase));
-    // (A provider may set a judge's line in slashes: "//La Forest J.//".)
-    let mut closed = (1..lines.len()).find(|&at| closing_line(lines[at].trim().trim_matches('/')) && !named(at) || caption(at)).unwrap_or(lines.len());
-    // The signatures and release lines a paragraph ends with are the decision's ("Released: …", "“K. Feldman J.A.”").
-    // (A line of prose may end on a judge: "(3d) 14 (Ont. C.A.), at para. 47, per Doherty J.A.".)
-    let signed = |line: &str| signature_line(line.trim().trim_matches('/')) && line.split_whitespace().filter(|word| word.starts_with(char::is_lowercase)).count() <= 1 && !line.contains(|c: char| c.is_ascii_digit());
-    while closed > 1 && (signed(lines[closed - 1]) || date_line(lines[closed - 1])) && !named(closed - 1) {
-        closed -= 1;
-    }
-    // (The name over a title goes with it: "Claude Roy" / "Vice-président".)
-    let name = |line: &str| {
-        let words = line.split_whitespace().collect::<Vec<_>>();
-        (2..=4).contains(&words.len()) && words.iter().all(|word| word.starts_with(char::is_uppercase)) && !line.trim_end().ends_with('.')
-    };
-    if closed > 1 && closed < lines.len() && signature_line(lines[closed].trim()) && name(lines[closed - 1]) {
-        closed -= 1;
-    }
-    // (Whatever else stands above: a title alone closes no paragraph, its signer does.)
-    if let Some(at) = (2..lines.len()).find(|&at| signature_line(lines[at].trim()) && name(lines[at - 1])) {
-        closed = closed.min(at - 1);
-    }
-    let lines = &lines[..closed];
-    let mut cut = trailing_headings(lines, separated, after);
-    let mut items = Levels::default();
-    for line in &lines[..cut] {
-        if let Some((token, _)) = enumerated(line.trim()) {
-            items.read(token);
-        }
-    }
-    while let Some(token) = lines.get(cut).and_then(|line| enumerated(line.trim())).map(|(token, _)| token).filter(|token| items.continues(token)) {
-        items.read(token);
-        cut += 1;
-        // (An item's wrapped words are the item's: "C. Should the evidence be excluded under s. 24(2)" / "of the Charter?".)
-        while lines.get(cut).is_some_and(|line| line.trim_start().starts_with(char::is_lowercase)) {
-            cut += 1;
-        }
-        // (A parenthesis under an item is the item's: "(page 527)", "(traduction)".)
-        if lines.get(cut).is_some_and(|line| line.trim().starts_with('(') && line.trim().ends_with(')')) {
-            cut += 1;
-        }
-    }
-    if last {
-        cut = own_matter(&lines[..cut]);
-    }
-    cut
-}
-
-/// A line that closes a judge's reasons, in any language the court writes: the disposition set on its own ("Appeal
-/// allowed, La Forest J. dissenting."), the judges concurring, or the judge's name alone with a title
-/// (`signature_line`: "Bateman, J.A.", "MacDonald, C.J.N.S."), two to four capitalized words; a sentence naming a
-/// judge ("This was the view of Lamer C.J.") closes nothing.
-pub(crate) fn closing_line(line: &str) -> bool {
-    let words = line.split_whitespace().collect::<Vec<_>>();
-    disposition_line(line) || line.starts_with("Concurred") || author_line(line) || end_matter(line)
-        // (A provider's inline note, "[FN8] There are many ...", and a line naming the next reasons.)
-        || cached_regex!(INLINE_NOTE, r"^\[FN\d+\]").is_match(line) || cached_regex!(DELIVERED, r"(?:rendus? par|were delivered by)$").is_match(line)
-        || (2..=4).contains(&words.len()) && words.iter().all(|word| word.trim_start_matches(['"', '\u{201c}']).starts_with(char::is_uppercase)) && signature_line(line)
-}
-
-/// How many of the reasons' last paragraph's lines are its own: its first, and after it each line its words go on
-/// into, the quotation or list a line ending on a colon introduces, a list's next item, a passage in quotation marks,
-/// a quotation's next lines and the editorial or citing lines under it ("[Emphasis added.]", "(at para. 12)"), and
-/// running sentences, numbered or not ("I will nominate a date ..."). The first line opening matter of its own ends it:
-/// an order, a signature, an appendix, the next reasons.
-fn own_matter(lines: &[&str]) -> usize {
-    const QUOTES: [char; 5] = ['"', '\u{201c}', '\u{ab}', '\u{2018}', '\''];
-    let mut items = Levels::default();
-    let mut quoting = false;
-    for at in 0..lines.len() {
-        let line = lines[at].trim();
-        if at > 0 {
-            let previous = lines[at - 1].trim_end();
-            let introduced = previous.ends_with(':');
-            // (A signature in quotation marks is a signature.)
-            // (Or a name alone in them: "David Stratas".)
-            let unquoted = line.trim_matches(QUOTES);
-            let name = unquoted.len() + 2 <= line.len() && (2..=4).contains(&unquoted.split_whitespace().count()) && unquoted.split_whitespace().all(|word| word.starts_with(char::is_uppercase));
-            let quoted = line.starts_with(QUOTES) && !closing_line(unquoted) && !name;
-            let item = enumerated(line).is_some_and(|(token, _)| introduced || quoting || items.continues(token));
-            let set_under = crate::numbered_paragraphs::editorial_line(line) || (line.starts_with('(') && line.ends_with(')'));
-            // (A list's marker alone on its line has its words on the next.)
-            let marked = previous.split_whitespace().count() == 1 && enumerated(&format!("{} x", previous.trim())).is_some();
-            let going_on = quoting && (marked || line.starts_with(|c: char| c.is_lowercase() || matches!(c, '.' | '\u{2026}')));
-            // (A short sentence goes on as a long one does: "I do not reach Kenny's sentence appeal.")
-            let lowercase = line.split_whitespace().filter(|word| word.starts_with(char::is_lowercase)).count();
-            let sentence = lowercase >= 3 && line.split_whitespace().count() >= 5 && line.ends_with(['.', '?', '!']);
-            // (A sentence goes on over its line whatever the next one looks like: "... as proposed by" / "Sopinka J.", "... under s." / "43 of FIPPA:".)
-            let above_runs = previous.split_whitespace().filter(|word| word.starts_with(char::is_lowercase)).count() >= 4;
-            // (A citation wrapped over its line: "..., 2003 SCC 69, [2003]" / "3 S.C.R. 263, at para. 77.".)
-            let wrapped = previous.ends_with(',') || cached_regex!(YEAR_END, r"\[\d{4}\]$").is_match(previous);
-            let unfinished = wrapped || above_runs && (!previous.ends_with(['.', '?', '!', ':', ';', ')', ']', '"', '\u{201d}']) || cached_regex!(STOPPED, r"(?:\bs|\bss|\bc|\bpara|\bparas|\bp|\bpp|\bat|\bv|\bno)\.$").is_match(previous));
-            // (A long running line ends the paragraph on nothing it ends on, "... the following terms and".)
-            let running_line = line.split_whitespace().count() >= 8 && lowercase >= 4 && !closing_line(line);
-            // (A quoted order's second heading over its list: "On the second indictment, ..." / "a)".)
-            let heads_list = (quoting || enumerated(previous).is_some()) && lines.get(at + 1).is_some_and(|next| enumerated(next.trim()).is_some());
-            if !(introduced || quoted || item || going_on || unfinished || running_line || heads_list || quoting && set_under || (running_prose(line) || sentence) && !closing_line(line)) {
-                return at;
-            }
-            quoting = introduced || quoted || going_on || heads_list || quoting && (item || set_under);
-        }
-        if let Some((token, _)) = enumerated(line) {
-            items.read(token);
-        }
-    }
-    lines.len()
-}
-
 /// Statute marginal notes are short sentence-case lines ("Lawyer's right to costs out of property
 /// recovered") without terminal punctuation; structural headings ("PART 2", "Division 3") also
 /// precede the provision they introduce. Enactment-history lines (which carry digits) stay put.
@@ -1376,28 +1170,15 @@ pub(super) fn detect_paragraphs(
             if chain.len() < 2 && !lone || endnote_shaped(text, &chain) {
                 continue;
             }
-            if chain.len() >= 5 {
-                hypotheses.push(Hypothesis {
-                    style,
-                    markers: chain,
-                    all: candidates.into(),
-                    short: false,
-                    score,
-                });
-            } else if (style == MarkerStyle::Bracket
+            let short = chain.len() < 5;
+            if !short || (style == MarkerStyle::Bracket
                 // A short ruling numbers its paragraphs "1." to "4." from the head of its reasons, no running prose before
                 // them; after prose, such a count is a list.
                 || style == MarkerStyle::Dot && !text.value[..text.byte(chain[0].start)].lines().any(running_prose))
                 // A note list after the paragraphs counts from 1 again; the count stands alone before it.
-                && sole_chain(&chain, &candidates.iter().filter(|marker| marker.start < list).cloned().collect::<Vec<_>>())
+                && sole_chain(&chain, &counted)
             {
-                hypotheses.push(Hypothesis {
-                    style,
-                    markers: chain,
-                    all: candidates.into(),
-                    short: true,
-                    score,
-                });
+                hypotheses.push(Hypothesis { style, markers: chain, all: candidates.into(), short, score });
             }
             continue;
         }
@@ -1420,15 +1201,8 @@ pub(super) fn detect_paragraphs(
         };
         let all: Arc<[Marker]> = style_markers.into();
         for scope in scopes.iter() {
-            if scope.len() >= 5 {
-                hypotheses.push(Hypothesis {
-                    style,
-                    markers: scope.clone(),
-                    all: Arc::clone(&all),
-                    short: false,
-                    score: 0.0,
-                });
-            } else if style == MarkerStyle::Bracket
+            let short = scope.len() < 5;
+            if !short || style == MarkerStyle::Bracket
                 && scope.len() >= 2
                 && scope
                     .iter()
@@ -1443,13 +1217,7 @@ pub(super) fn detect_paragraphs(
                                 || value.number > scope.last().unwrap().number + 1
                         })))
             {
-                hypotheses.push(Hypothesis {
-                    style,
-                    markers: scope.clone(),
-                    all: Arc::clone(&all),
-                    short: true,
-                    score: 0.0,
-                });
+                hypotheses.push(Hypothesis { style, markers: scope.clone(), all: Arc::clone(&all), short, score: 0.0 });
             }
         }
     }
@@ -1494,15 +1262,6 @@ pub(super) fn detect_paragraphs(
             }
         })
     });
-    // A rooted count's paragraphs end at one another and at a second count from 1, not at the
-    // numbers a paragraph quotes from another decision, which stay in the paragraph quoting them.
-    let boundaries = |hypothesis: &Hypothesis| -> Vec<Marker> {
-        if rooted {
-            hypothesis.markers.iter().cloned().chain(restart_boundaries(text, &hypothesis.all, &hypothesis.markers)).collect()
-        } else {
-            hypothesis.all.to_vec()
-        }
-    };
     // A decision numbering its paragraphs in parentheses ("(12) The SADI Program objectives …") may also hold
     // another short count, a list of its issues ("1. Was the Minister correct …"): its parenthesized count,
     // far the longer, is its paragraphs.
@@ -1514,22 +1273,13 @@ pub(super) fn detect_paragraphs(
     let spread = starts.first().zip(starts.last()).is_some_and(|(first, last)| (last - first) as f64 / text_length.max(1) as f64 >= 0.4);
     let outnumbered = |hypothesis: &Hypothesis| rooted && spread && hypothesis.style != MarkerStyle::Bracket
         && numbered >= 10 && numbered >= 2 * hypothesis.markers.len();
-    // Development only: the hypotheses weighed, best first.
-    let trace = std::env::var_os("LEGAL_STRUCTURE_TRACE_PARAGRAPHS").is_some();
-    if trace {
-        for hypothesis in &hypotheses {
-            eprintln!("hypothesis style={} short={} len={} score={:.2} first={} last={}", hypothesis.style as u8, hypothesis.short, hypothesis.markers.len(), hypothesis.score,
-                hypothesis.markers.first().map_or(0, |m| m.number), hypothesis.markers.last().map_or(0, |m| m.number));
-        }
-    }
     for hypothesis in hypotheses {
-        if trace {
-            eprintln!("weighing style={} len={}", hypothesis.style as u8, hypothesis.markers.len());
-        }
+        // A rooted count's paragraphs end at one another and at a second count from 1, not at the
+        // numbers a paragraph quotes from another decision, which stay in the paragraph quoting them.
         // A rooted count's paragraph runs to the count's next number or another count's opening, not to
         // whatever number its text holds ("2007 CRTFP 84"); other readings measure to any candidate.
         let ends = if rooted {
-            let mut ends = boundaries(&hypothesis);
+            let mut ends = hypothesis.markers.iter().cloned().chain(restart_boundaries(text, &hypothesis.all, &hypothesis.markers)).collect::<Vec<_>>();
             ends.sort_by_key(|marker| marker.start);
             ends
         } else {
@@ -1573,53 +1323,33 @@ pub(super) fn detect_paragraphs(
         let first_utf16 = text.utf16(first_start);
         let start = first_utf16 as f64 / text_length.max(1) as f64;
         let span = (text.utf16(last_start) - first_utf16) as f64 / text_length.max(1) as f64;
-        if hypothesis.short {
-            if text_length <= 6_000
+        let accepted = if hypothesis.short {
+            text_length <= 6_000
                 // A provider's catalogue record opens its text, so a rooted count may start late.
                 && (rooted || first_utf16 <= 1_200 || start <= 0.5)
                 // A rooted count standing alone may be an endorsement of a few short paragraphs ("[1] The motion
                 // judge did not err …", "[2] Accordingly, the appeal is dismissed …").
                 && if rooted { counts.iter().sum::<usize>() >= 20 } else { counts.iter().copied().max().unwrap_or(0) >= 30 }
-            {
-                if outnumbered(&hypothesis) {
-                    return parenthesized;
-                }
-                return paragraph_ranges(
-                    text,
-                    &hypothesis.markers,
-                    &boundaries(&hypothesis),
-                    hypothesis.style,
-                    !strict,
-                    excluded,
-                );
-            }
-            continue;
-        }
-        let substantive = counts.iter().filter(|value| **value >= 12).count() as f64
-            / hypothesis.markers.len() as f64;
-        if !(median >= 12.0 || mean >= 20.0 || maximum >= 30)
-            || span < 0.05
-            || (hypothesis.style == MarkerStyle::Bracket
-                && text_length > 6_000
-                && start > 0.7
-                && substantive < 0.5)
-            || (hypothesis.style != MarkerStyle::Bracket && substantive < 0.7)
-            || (hypothesis.style == MarkerStyle::Bare
-                && (median < 20.0 || span < 0.15 || start > 0.7))
-        {
+        } else {
+            let substantive = counts.iter().filter(|value| **value >= 12).count() as f64
+                / hypothesis.markers.len() as f64;
+            (median >= 12.0 || mean >= 20.0 || maximum >= 30)
+                && span >= 0.05
+                && !(hypothesis.style == MarkerStyle::Bracket
+                    && text_length > 6_000
+                    && start > 0.7
+                    && substantive < 0.5)
+                && !(hypothesis.style != MarkerStyle::Bracket && substantive < 0.7)
+                && !(hypothesis.style == MarkerStyle::Bare
+                    && (median < 20.0 || span < 0.15 || start > 0.7))
+        };
+        if !accepted {
             continue;
         }
         if outnumbered(&hypothesis) {
             return parenthesized;
         }
-        return paragraph_ranges(
-            text,
-            &hypothesis.markers,
-            &boundaries(&hypothesis),
-            hypothesis.style,
-            !strict,
-            excluded,
-        );
+        return paragraph_ranges(text, &hypothesis.markers, &ends, hypothesis.style, !strict, excluded);
     }
     if rooted {
         return parenthesized;

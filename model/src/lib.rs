@@ -14,16 +14,11 @@ pub mod definitions;
 pub mod document;
 pub mod docx;
 pub mod fingerprint;
-mod heading_ladder;
 pub mod instrument;
 /// Laid-out pages and lines and note pairs, which the document model builds on.
 pub use legal_layout as layout;
 pub use legal_layout::{NotePairSupportV2, ScalarRange};
-pub mod locator;
-pub mod numeric_sequence;
-pub mod statute;
 pub mod text;
-pub mod transcript;
 
 pub use analysis::{install_structure_analysis, structure_analysis, StructureAnalysis};
 pub use assembly::assemble_in_place;
@@ -38,20 +33,11 @@ pub use docx::{
     DocxCrossReferenceStatus, DocxNumberAnchor, DocxNumberingDuplicate, DocxNumberingGap,
     DocxNumberingResult, DocxStructureFacts,
 };
-pub use heading_ladder::{
-    enumerator_interpretations, parse_heading_ladder, parse_heading_runs, EnumeratorInterpretation, HeadingAction,
-    HeadingAssignment, HeadingFamilyStats, HeadingLadder, HeadingLadderStatus,
-};
 pub use fingerprint::{document_fingerprint, serialization_sha256, DigestWriter, DocumentFingerprint, DocumentFingerprintCounts};
 pub use instrument::{
     InstrumentContentsEntry, InstrumentContentsOutline, InstrumentContentsReading,
     InstrumentContentsRefusal, InstrumentCrossReferenceCounts, InstrumentCrossReferenceEdge,
     InstrumentCrossReferenceGraph, InstrumentCrossReferenceReason, InstrumentCrossReferenceStatus,
-};
-pub use locator::{normalize_compact_numbered_section_locator, normalize_section_locator, parse_ordinal};
-pub use numeric_sequence::{
-    select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy,
-    NumericSequenceSelection,
 };
 pub use text::{
     javascript_whitespace, last_scalars, normalize_decimal_digit, normalize_javascript_whitespace,
@@ -286,6 +272,30 @@ pub enum UnitRole {
     Paragraph,
     Section,
     Item,
+}
+
+/// The locator a provision's grammar value makes it, at its depth (`level`) on its ladder: a word's own, else a clause
+/// at the top and a subclause under it.
+pub fn provision_locator(value: &str, level: usize) -> &'static str {
+    if value.starts_with("sec") {
+        "section"
+    } else if value.starts_with("art") {
+        "article"
+    } else if value.starts_with("part") {
+        "part"
+    } else if value.starts_with("sched") {
+        "schedule"
+    } else if value.starts_with("exh") {
+        "exhibit"
+    } else if value.starts_with("ann") {
+        "annex"
+    } else if value.starts_with("app") {
+        "appendix"
+    } else if level == 0 {
+        "clause"
+    } else {
+        "subclause"
+    }
 }
 
 impl UnitRole {

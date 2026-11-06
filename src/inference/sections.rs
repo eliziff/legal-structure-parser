@@ -610,13 +610,20 @@ pub(super) fn section_guard(value: &[&SectionMark], text: &ScalarText<'_>) -> bo
     !value.is_empty() && length > 0 && text.utf16(value[0].start) as f64 / length as f64 <= 0.7
 }
 
+/// Where a walk over a text's section scopes stands: no scope yet, one leading, or the leader met by a scope reading
+/// other sections at the same place, which only a better scope settles.
+enum ScopeLeader<'a> {
+    Open,
+    Clear(Vec<&'a SectionMark>),
+    Contested(Vec<&'a SectionMark>),
+}
+
 pub(super) fn scope_winner<'a>(
     scopes: Vec<Vec<&'a SectionMark>>,
     marks: &[&'a SectionMark],
     text: &ScalarText<'_>,
 ) -> Option<Vec<&'a SectionMark>> {
-    let mut best: Option<Vec<&'a SectionMark>> = None;
-    let mut ambiguous = false;
+    let mut leader = ScopeLeader::Open;
     for scope in scopes.into_iter().map(|scope| {
         if scope.first().is_some_and(|value| {
             value.style != SectionStyle::DotTerm && section_key(&value.label).count() == 1
@@ -629,9 +636,12 @@ pub(super) fn scope_winner<'a>(
         if !section_guard(&scope, text) {
             continue;
         }
-        let Some(current) = best.as_ref() else {
-            best = Some(scope);
-            continue;
+        let current = match leader {
+            ScopeLeader::Open => {
+                leader = ScopeLeader::Clear(scope);
+                continue;
+            }
+            ScopeLeader::Clear(ref current) | ScopeLeader::Contested(ref current) => current,
         };
         // The same provisions numbered twice, once as a contents list (each number with its
         // title alone, no sentence ended before the next) and once with their text: the second
@@ -656,16 +666,14 @@ pub(super) fn scope_winner<'a>(
             && scope[0].start == current[0].start
             && !same_labels(&scope, current);
         if better {
-            best = Some(scope);
-            ambiguous = false;
+            leader = ScopeLeader::Clear(scope);
         } else if competing {
-            ambiguous = true;
+            leader = ScopeLeader::Contested(current.clone());
         }
     }
-    if ambiguous {
-        None
-    } else {
-        best
+    match leader {
+        ScopeLeader::Clear(scope) => Some(scope),
+        ScopeLeader::Open | ScopeLeader::Contested(_) => None,
     }
 }
 

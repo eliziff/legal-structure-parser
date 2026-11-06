@@ -10,7 +10,7 @@ pub use document_query::*;
 
 use legal_structure_model::document::public_structure_label;
 use legal_structure_model::{
-    javascript_whitespace, locator, text, utf16_len, AuthoritativeTableCell, Derivation,
+    javascript_whitespace, text, utf16_len, AuthoritativeTableCell, Derivation,
     DetectionProfile, DocumentStructure, InstrumentCrossReferenceGraph,
     InstrumentCrossReferenceStatus, NodeKind, ScalarRange, ScalarText, StructureNode,
 };

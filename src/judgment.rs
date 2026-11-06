@@ -61,8 +61,8 @@ pub fn end_matter(value: &str) -> bool {
 pub fn disposition_line(value: &str) -> bool {
     const DISPOSITIONS: [&str; 11] = ["Appeal allowed", "Appeal dismissed", "Appeals allowed", "Appeals dismissed", "Cross-appeal", "Pourvoi accueilli", "Pourvoi rejet", "Pourvois accueillis", "Pourvois rejet", "Pourvoi principal", "Pourvoi et pourvois"];
     // (As the page prints it: "Pourvois\u{a0}rejetés", "cross\u{2011}appeals".)
-    let value = value.replace('\u{a0}', " ").replace('\u{2011}', "-");
-    let value = value.as_str();
+    let printed = value.contains(['\u{a0}', '\u{2011}']).then(|| value.replace('\u{a0}', " ").replace('\u{2011}', "-"));
+    let value = printed.as_deref().unwrap_or(value);
     static NAMED: OnceLock<Regex> = OnceLock::new();
     // (Or names its party or what it disposes of: "East's appeal dismissed.", "Pourvoi de Javid Ahmad rejeté.", "Judgment accordingly.", "Motions dismissed.")
     let named = NAMED.get_or_init(|| Regex::new(r"^(?:\p{Lu}[\p{L}.'’-]*(?:\s\p{Lu}[\p{L}.'’-]*){0,3}['’]s (?:cross-)?appeals? (?:dismissed|allowed)|Appeal and cross-appeals\b|Pourvois? d(?:e |u |['’]).{0,60}(?:rejet|accueilli)|Judgment accordingly|Jugement en cons[ée]quence|Motions? (?:.{0,40} )?(?:dismissed|granted)\.?$)").expect("disposition regex"));

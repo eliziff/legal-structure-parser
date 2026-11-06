@@ -5,7 +5,7 @@
 use legal_structure::{
     analyze_instrument, DocumentLookupStatus, DocumentQuery, DocumentStructure, NodeKind, ScalarRange, ScalarText,
 };
-use legal_structure_model::statute::history_note;
+use legal_structure::statute::history_note;
 use std::collections::{HashMap, HashSet};
 
 /// A line of print: its id, its text, its box (left, top, right, bottom) and its page.

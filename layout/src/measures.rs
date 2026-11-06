@@ -5,6 +5,18 @@
 use crate::{line_font_size, median, quantile, Line, Page};
 use std::collections::HashMap;
 
+/// Whether a line's text ends on one of `stops`, any of `closers` (the closing marks that may follow a stop) and its
+/// trailing space aside: what every reader asks of a line's end, each with its own stops and closers.
+pub fn ends_on(text: &str, closers: &[char], stops: &[char]) -> bool {
+    text.trim_end().trim_end_matches(closers).ends_with(stops)
+}
+
+/// A sentence's end: a full stop, question or exclamation mark or an ellipsis, before any closing
+/// quotes and brackets.
+pub fn sentence_ended(text: &str) -> bool {
+    ends_on(text, &['"', '\'', '\u{2019}', '\u{201d}', '\u{bb}', ')', ']', '}'], &['.', '?', '!', '\u{2026}'])
+}
+
 /// Span flags: superscript, italic, monospaced and bold, as the extraction sets them (bold and
 /// italic from pdf-inspector's reading of the font's descriptor, name and stroke weight).
 pub const SUPERSCRIPT: u32 = 1;

@@ -2,16 +2,11 @@
 use regex::Regex;
 use std::sync::OnceLock;
 
-/// The speaker label opening a transcript's line, after the question number it may carry (with or
-/// without its stop: "1   Q.") and a margin's code ("U/A"): "Q.", "A.", a numbered speaker ("Speaker 1:"),
-/// or a name before a colon ("MR. SMITH:", "THE COURT:", "MS JONES (Counsel):", "Me BRISTOW :"). Returns
-/// the label's byte range in `text`. A caption's, a memo's or a form's own labels ("BETWEEN:", "RE:",
+/// Every speaker label opening a transcript's line, as byte ranges of `text`: the first, after the question number it
+/// may carry (with or without its stop: "1   Q.") and a margin's code ("U/A"): "Q.", "A.", a numbered speaker
+/// ("Speaker 1:"), or a name before a colon ("MR. SMITH:", "THE COURT:", "MS JONES (Counsel):", "Me BRISTOW :"); and a
+/// name's after a "Q." or "A." ("Q.   MR. PHILLIPS:"). A caption's, a memo's or a form's own labels ("BETWEEN:", "RE:",
 /// "APPEARANCES:", "BY MR. X:", "REPORTED BY:", "Email:") name no speaker.
-pub fn speaker_label(text: &str) -> Option<(usize, usize)> {
-    speaker_labels(text).into_iter().next()
-}
-
-/// Every speaker label opening a line: the first, and a name's after a "Q." or "A." ("Q.   MR. PHILLIPS:").
 pub fn speaker_labels(text: &str) -> Vec<(usize, usize)> {
     static LABEL: OnceLock<Regex> = OnceLock::new();
     static NAME: OnceLock<Regex> = OnceLock::new();

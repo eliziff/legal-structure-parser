@@ -1,0 +1,12 @@
+[package]
+name = "legal-locator"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "The canonical spellings of a legal document's printed locators: sections, paragraphs, pages and lines"
+repository = "https://github.com/eliziff/legal-structure-parser"
+
+[dependencies]
+legal-text = { workspace = true }
+regex = "1.11"
+unicode-normalization = "0.1"

@@ -13,7 +13,10 @@ macro_rules! cached_regex {
 
 mod paragraphs;
 use paragraphs::*;
-pub(crate) use paragraphs::{closing_line, run_in_heading};
+pub(crate) use paragraphs::run_in_heading;
+mod tail;
+use tail::*;
+pub(crate) use tail::closing_line;
 mod headings;
 pub(crate) use headings::*;
 mod runs;
@@ -52,6 +55,30 @@ struct Marker {
     sentence: bool,
     /// Under a line ending on a colon: what opens here is what that line introduces.
     introduced: bool,
+}
+
+impl Marker {
+    /// A marker on a line of its own: no heading run in before it, nothing introducing it.
+    fn new(number: u32, start: usize, content_start: usize, style: MarkerStyle, score: f64) -> Self {
+        Self { number, start, content_start, style, score, formal: false, sentence: false, introduced: false }
+    }
+}
+
+/// A passage of running prose the reading found.
+fn prose_block(range: ScalarRange) -> Block {
+    Block {
+        kind: NodeKind::Prose,
+        range,
+        label: None,
+        aliases: Vec::new(),
+        parent_label: None,
+        content_start: None,
+        marker_range: None,
+        note: None,
+        diagnostic: None,
+        source: Derivation::Heuristic,
+        origin_id: ENGINE_ORIGIN,
+    }
 }
 
 #[derive(Clone, Copy)]

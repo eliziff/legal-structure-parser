@@ -1,7 +1,7 @@
-use crate::{
-    javascript_whitespace,
-    text::{trim_javascript_whitespace as js_trim, JS_WHITESPACE_CLASS as JS_WS},
-};
+//! The canonical spellings of a document's printed locators, shared by the structure engine and the queries over it,
+//! neither of which can depend on the other.
+
+use legal_text::{javascript_whitespace, trim_javascript_whitespace as js_trim, JS_WHITESPACE_CLASS as JS_WS};
 use regex::Regex;
 use std::sync::OnceLock;
 

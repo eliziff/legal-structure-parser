@@ -86,21 +86,12 @@ pub(super) fn detect_pages(
         }
         by_last.entry(number).or_default().push(index);
     }
-    let mut best = Vec::new();
-    let mut tied = false;
-    for scope in scopes.into_iter().filter(|scope| scope.len() >= 3) {
-        match scope.len().cmp(&best.len()) {
-            std::cmp::Ordering::Greater => {
-                best = scope;
-                tied = false;
-            }
-            std::cmp::Ordering::Equal => tied = true,
-            std::cmp::Ordering::Less => {}
-        }
-    }
-    if best.is_empty() || tied {
+    // The longest scope of three or more, where no other is as long.
+    let longest = scopes.iter().map(Vec::len).max().unwrap_or(0).max(3);
+    let mut longest_scopes = scopes.into_iter().filter(|scope| scope.len() == longest);
+    let (Some(best), None) = (longest_scopes.next(), longest_scopes.next()) else {
         return Vec::new();
-    }
+    };
     let mut blocks = best
         .windows(2)
         .map(|pair| {

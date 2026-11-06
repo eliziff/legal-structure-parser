@@ -28,6 +28,40 @@ use std::{
     sync::OnceLock,
 };
 
+/// The words a scan of a text has passed: the one it is in (its text, letters and whether any character
+/// is no capital), the one before, and whether that one is a heading's, in capitals ("GENERAL POWERS 49.
+/// The ..."); a word citing a provision ("article 116. The") opens none.
+#[cfg(feature = "structure-inference")]
+#[derive(Default)]
+struct PassedWords {
+    text: String,
+    letters: usize,
+    uncapitalized: bool,
+    before: String,
+    capitals: bool,
+}
+
+#[cfg(feature = "structure-inference")]
+impl PassedWords {
+    fn pass(&mut self, character: char) {
+        if !matches!(character, ' ' | '\t') {
+            self.text.push(character);
+            self.letters += usize::from(character.is_alphabetic());
+            self.uncapitalized |= !character.is_uppercase();
+            return;
+        }
+        if self.letters > 0 {
+            self.capitals = self.letters >= 2 && !self.uncapitalized;
+        }
+        if !self.text.is_empty() {
+            // The word's buffer is kept for the next word.
+            std::mem::swap(&mut self.before, &mut self.text);
+            self.text.clear();
+        }
+        (self.letters, self.uncapitalized) = (0, false);
+    }
+}
+
 #[cfg(feature = "structure-inference")]
 fn split_instrument_space_runs(text: &str) -> Option<String> {
     let mut recovered: Option<String> = None;
@@ -82,11 +116,7 @@ fn split_instrument_sentence_joins(text: &str) -> Option<String> {
     let mut recovered: Option<String> = None;
     let mut previous = None;
     let mut previous_previous = None;
-    // Whether the word before is a heading's, in capitals ("GENERAL POWERS 49. The ..."), and
-    // the word itself: one citing a provision ("article 116. The") opens none.
-    let mut capitals = false;
-    let mut word = (0usize, true);
-    let (mut word_text, mut previous_word) = (String::new(), String::new());
+    let mut words = PassedWords::default();
     // The number of the last article a line was opened for: the next number opens one wherever
     // it stands ("… s. 11. 0 36. Subject …", "§ 1. — General provisions 116. Service …").
     let mut last_article = None::<u32>;
@@ -101,24 +131,7 @@ fn split_instrument_sentence_joins(text: &str) -> Option<String> {
                     Some(')' | ']' | '"' | '\'' | '\u{201d}' | '\u{2019}' | '\u{00bb}')
                 ) && matches!(previous_previous, Some('.' | ';' | ':'))));
         let after = byte + character.len_utf8();
-        if matches!(character, ' ' | '\t') {
-            if word.0 > 0 {
-                capitals = word.0 >= 2 && word.1;
-            }
-            if !word_text.is_empty() {
-                // The word's buffer is kept for the next word.
-                std::mem::swap(&mut previous_word, &mut word_text);
-                word_text.clear();
-            }
-            word = (0, true);
-        } else {
-            word_text.push(character);
-            if character.is_alphabetic() {
-                word = (word.0 + 1, word.1 && character.is_uppercase());
-            } else {
-                word = (word.0, false);
-            }
-        }
+        words.pass(character);
         // Both grammars open with a digit or a heading's first character: a word that cannot
         // open either is not tried.
         let next = text.as_bytes().get(after).copied();
@@ -127,11 +140,11 @@ fn split_instrument_sentence_joins(text: &str) -> Option<String> {
             && article.is_match(&text[after..])
             && {
             let number = text[after..].split(['.', ' ']).next().and_then(|value| value.parse::<u32>().ok());
-            let cites = matches!(previous_word.trim_end_matches(['.', ',']).to_lowercase().as_str(),
+            let cites = matches!(words.before.trim_end_matches(['.', ',']).to_lowercase().as_str(),
                 "article" | "articles" | "art" | "arts" | "section" | "sections" | "s" | "ss" | "a" | "aa"
                 | "subsection" | "paragraph" | "alinéa" | "paragraphe");
             let continues = number.zip(last_article).is_some_and(|(number, last)| number == last || number == last + 1);
-            let opens = !cites && (preceded_by_terminator || capitals || continues);
+            let opens = !cites && (preceded_by_terminator || words.capitals || continues);
             if opens { last_article = number.or(last_article); }
             opens
         };

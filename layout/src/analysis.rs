@@ -46,4 +46,12 @@ pub trait LayoutAnalysis: Sync {
     fn printed_paragraph_number(&self, text: &str) -> Option<usize>;
     /// A quotation's editorial line, wholly in square brackets or an ellipsis alone ("[Emphasis added]").
     fn editorial_line(&self, text: &str) -> bool;
+
+    /// Every speaker label opening a transcript's line, as byte ranges of `text`: the first, and a name's after a "Q."
+    /// or "A." ("Q.   MR. PHILLIPS:").
+    fn speaker_labels(&self, text: &str) -> Vec<(usize, usize)>;
+    /// The speaker label opening a transcript's line, if any.
+    fn speaker_label(&self, text: &str) -> Option<(usize, usize)> {
+        self.speaker_labels(text).into_iter().next()
+    }
 }

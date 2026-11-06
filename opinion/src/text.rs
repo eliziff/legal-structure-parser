@@ -691,7 +691,7 @@ fn notes_of(lines: &[Line<'_>], zones: &[Vec<Zone>], pages: &[(usize, usize)]) -
                     }));
                 }
                 notes.push(OpinionNote {
-                    label: zone.symbol.clone().unwrap_or_else(|| number.to_string()), start: first.start, end: last.end, ranges: vec![ScalarRange { start: first.start, end: last.end }],
+                    items: Vec::new(), label: zone.symbol.clone().unwrap_or_else(|| number.to_string()), start: first.start, end: last.end, ranges: vec![ScalarRange { start: first.start, end: last.end }],
                     references: called, page: None, called_outside: false, pins: Vec::new(),
                 });
             }
@@ -992,7 +992,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
                 headings.push(OpinionHeading { text: String::new(), level: 0, start, end: range.end, page: None, source: "layout", line: at, pins: Vec::new() });
                 // With a number of its own on the next line, it keeps this one where it stands.
                 if body.get(position + 1).is_some_and(|next| numbered.contains_key(next)) {
-                    paragraphs.push(OpinionParagraph { continues: false, block: None, number: Some(number.to_string()), start: range.start, end: start, page: None, quote: false, part: None, speaker: None, pins: Vec::new() });
+                    paragraphs.push(OpinionParagraph { continues: false, item: None, number: Some(number.to_string()), start: range.start, end: start, page: None, quote: false, part: None, speaker: None, pins: Vec::new() });
                 } else {
                     carried = Some(number);
                 }
@@ -1043,7 +1043,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
                 paragraph.end = range.end;
                 paragraph.quote &= quote;
             }
-            None => paragraphs.push(OpinionParagraph { continues: false, block: None, number: number.map(|number| number.to_string()), start: range.start, end: range.end, page: None, quote: quote && number.is_none(), part: None, speaker: None, pins: Vec::new() }),
+            None => paragraphs.push(OpinionParagraph { continues: false, item: None, number: number.map(|number| number.to_string()), start: range.start, end: range.end, page: None, quote: quote && number.is_none(), part: None, speaker: None, pins: Vec::new() }),
         }
         previous = Some(at);
     }

@@ -88,6 +88,25 @@ pub(super) fn number_paragraphs(layer: &mut OpinionLayer) {
     fill_skipped_numbers(layer);
     misread_numbers(layer);
     carry_title_numbers(layer);
+    list_labels(layer);
+}
+
+/// Every paragraph that opens on a list's label keeps it, numbered run or not.
+fn list_labels(layer: &mut OpinionLayer) {
+    static LABEL: OnceLock<Regex> = OnceLock::new();
+    // A block's counter may stand ahead of the label: "6\n(A) verify the wages".
+    let label = LABEL.get_or_init(|| Regex::new(r"^(?:\d{1,4}\s*\n\s*)?(\(?(?:\d{1,3}|[a-zA-Z]|[ivxl]{2,5}|[IVXL]{2,5})\)|(?:\d{1,3}|[a-zA-Z]|[ivxl]{2,5}|[IVXL]{2,5})[.)])\s+\S").unwrap());
+    static WITHIN: OnceLock<Regex> = OnceLock::new();
+    let within = WITHIN.get_or_init(|| Regex::new(r"(?m)^[ \t]*(\(?(?:\d{1,3}|[a-zA-Z]|[ivxl]{2,5}|[IVXL]{2,5})\)|(?:\d{1,3}|[a-zA-Z]|[ivxl]{2,5}|[IVXL]{2,5})[.)])[ \t]+\S").unwrap());
+    let coordinates = ScalarText::new(&layer.text);
+    let items = layer.paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.start..paragraph.end).map(trim_js).and_then(|opening| Some(label.captures(opening)?[1].to_owned()))).collect::<Vec<_>>();
+    for (paragraph, item) in layer.paragraphs.iter_mut().zip(items) {
+        paragraph.item = item;
+    }
+    let lists = layer.notes.iter().map(|note| note.ranges.iter().filter_map(|range| coordinates.slice_utf16(range.start..range.end)).flat_map(|body| within.captures_iter(body).map(|capture| capture[1].to_owned())).collect::<Vec<_>>()).collect::<Vec<_>>();
+    for (note, items) in layer.notes.iter_mut().zip(lists) {
+        note.items = items;
+    }
 }
 
 /// A block's counter split from its words, a paragraph of "57" alone: it opens the paragraph after it.
@@ -100,7 +119,6 @@ fn join_block_counters(layer: &mut OpinionLayer) {
         if bare[index] && !bare[index + 1] && layer.paragraphs[index].number.is_none() {
             let counter = layer.paragraphs.remove(index);
             layer.paragraphs[index].start = counter.start;
-            layer.paragraphs[index].block = counter.block.or(layer.paragraphs[index].block.take());
         }
     }
 }
@@ -113,7 +131,7 @@ fn numbers_off_titles(layer: &mut OpinionLayer) {
     let opening = |paragraph: &OpinionParagraph| coordinates.slice_utf16(paragraph.start..paragraph.end).map(trim_js).unwrap_or("");
     let plain_numbers = layer.paragraphs.iter().filter_map(|paragraph| text::paragraph_marker(opening(paragraph)).filter(|(_, family)| *family == 4).map(|(number, _)| number)).collect::<HashSet<_>>();
     let left_open = |number: u32| !plain_numbers.contains(&number) && plain_numbers.contains(&(number + 1)) && (number == 1 || plain_numbers.contains(&(number - 1)));
-    let stub = |start: usize, end: usize| OpinionParagraph { continues: false, block: None, number: None, start, end, page: None, quote: false, part: None, speaker: None, pins: Vec::new() };
+    let stub = |start: usize, end: usize| OpinionParagraph { continues: false, item: None, number: None, start, end, page: None, quote: false, part: None, speaker: None, pins: Vec::new() };
     // A paragraph that opens with the title already holds its number.
     let held = layer.paragraphs.iter().map(|paragraph| paragraph.start).collect::<HashSet<_>>();
     let mut stubs = Vec::new();
@@ -404,7 +422,7 @@ pub(super) fn speakers(layer: &mut OpinionLayer) {
         let (answers, headings): (Vec<_>, Vec<_>) = std::mem::take(&mut layer.headings).into_iter()
             .partition(|heading| coordinates.slice_utf16(heading.start..heading.end).map(trim_js).is_some_and(|printed| printed.starts_with("A. ") || printed.starts_with("Q. ")));
         layer.headings = headings;
-        layer.paragraphs.extend(answers.into_iter().map(|heading| OpinionParagraph { continues: false, block: None,
+        layer.paragraphs.extend(answers.into_iter().map(|heading| OpinionParagraph { continues: false, item: None,
             number: None, start: heading.start, end: heading.end, page: None, quote: false, part: None, speaker: Some("A.".to_owned()), pins: Vec::new(),
         }));
     }

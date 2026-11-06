@@ -225,7 +225,7 @@ pub(super) fn list_items(layer: &mut OpinionLayer) {
     layer.headings.retain(|heading| {
         index += 1;
         if listed[index - 1] {
-            items.push(OpinionParagraph { continues: false, block: None, number: None, start: heading.start, end: heading.end, page: None, quote: false, part: None, speaker: None, pins: Vec::new() });
+            items.push(OpinionParagraph { continues: false, item: None, number: None, start: heading.start, end: heading.end, page: None, quote: false, part: None, speaker: None, pins: Vec::new() });
         }
         !listed[index - 1]
     });

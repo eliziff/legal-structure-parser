@@ -4,9 +4,9 @@ use legal_structure_model::layout::{
     self, line_font_size, Anchor, DetachedReference, Diagnostic, Footnote, Line, NotePairClaim,
     NotePairKind, Page, PairingOutput, PdfPairingAudit, PdfSourceSpan, SourceAnchor,
 };
+use crate::{select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy};
 use legal_structure_model::{
-    normalize_decimal_digit, normalize_note_symbol, select_numeric_sequence, NotePairSupportV2,
-    NumericSequenceCandidate, NumericSequencePolicy, ScalarText,
+    normalize_decimal_digit, normalize_note_symbol, NotePairSupportV2, ScalarText,
 };
 use regex::Regex;
 use serde_json::{json, Map, Value};

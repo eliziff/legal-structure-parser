@@ -866,7 +866,8 @@ pub fn document_quote_blocks(
 ) -> Vec<QuoteBlockInput> {
     let pdf = source != QuoteSource::Text;
     use legal_document_query::DocumentKind;
-    use legal_structure_model::{parse_ordinal, NodeKind};
+    use legal_structure::parse_ordinal;
+    use legal_structure_model::NodeKind;
     let blocks = query.blocks(document, None).collect::<Vec<_>>();
     let nodes = document.nodes.iter().map(|node| (node.id.as_str(), node)).collect::<HashMap<_, _>>();
     let ancestors = |id: Option<&str>| {

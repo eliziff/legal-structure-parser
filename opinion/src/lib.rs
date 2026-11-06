@@ -75,10 +75,10 @@ pub struct OpinionPage {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct OpinionParagraph {
-    /// The block counter a source sets on it, `<div class="num"><span class="num">14</span>`: no number the court printed, but the
-    /// only one some texts carry. From whichever rendition has it.
+    /// The label of a list's item that opens it, as printed: "(a)", "2.", "iii)". A paragraph's own `number` is the opinion's; this
+    /// is any list's, a finding's or a charge's.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub block: Option<String>,
+    pub item: Option<String>,
     /// It carries on the paragraph before it, a note at a page's foot standing between them.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub continues: bool,
@@ -102,6 +102,9 @@ pub struct OpinionParagraph {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct OpinionNote {
+    /// The labels of a list inside the note, as printed: a quoted statute's "(1)", a note's own "A.".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<String>,
     pub label: String,
     pub start: usize,
     pub end: usize,
@@ -157,6 +160,18 @@ pub struct HeadnoteMark {
     pub end: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page: Option<String>,
+}
+
+/// A block counter a source sets, `<div class="num"><span class="num">14</span>`: no number the court printed, but the only one
+/// some texts carry, and it may stand on a paragraph, a title or a note. `source`: `marked` in this text, `other-rendition`
+/// placed by the words after it, `reckoned` between its neighbours where those words are not in this text.
+#[derive(Clone, Debug, Serialize)]
+pub struct OpinionBlock {
+    pub label: String,
+    pub start: usize,
+    pub source: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pins: Vec<Pin>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -302,6 +317,7 @@ pub struct OpinionLayer {
     pub text: String,
     pub pages: Vec<OpinionPage>,
     pub paragraphs: Vec<OpinionParagraph>,
+    pub blocks: Vec<OpinionBlock>,
     pub notes: Vec<OpinionNote>,
     pub headings: Vec<OpinionHeading>,
     pub headnotes: Vec<OpinionHeadnote>,
@@ -735,7 +751,7 @@ fn from_text(record: &OpinionRecord, name: &str, text: String) -> OpinionLayer {
     OpinionLayer {
         id: record.id.clone(), rendition: name.to_owned(), text, pages: reading.pages, paragraphs: reading.paragraphs, notes: reading.notes,
         headings: reading.headings, headnotes: Vec::new(), headnote_marks: Vec::new(), parts: Vec::new(), front: reading.front,
-        furniture: Vec::new(), unmatched_calls: Vec::new(), tables: reading.tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), cuts: reading.furniture,
+        furniture: Vec::new(), unmatched_calls: Vec::new(), tables: reading.tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks: Vec::new(), page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), cuts: reading.furniture,
     }
 }
 
@@ -890,8 +906,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
                 }
             }
         }
-        paragraphs.push(OpinionParagraph { continues: false,
-            block: (node.kind == NodeKind::Paragraph && counted).then(|| node.label.as_deref()?.strip_prefix("par").map(str::to_owned)).flatten(),
+        paragraphs.push(OpinionParagraph { continues: false, item: None,
             number: (node.kind == NodeKind::Paragraph && !counted).then(|| node.label.as_deref()?.strip_prefix("par").map(str::to_owned)).flatten(),
             start: range.start, end: range.end, page: None,
             quote: node.kind == NodeKind::Quote || node.markup_tag.as_deref().is_some_and(|tag| matches!(tag, "blockquote" | "excerpt")),
@@ -943,19 +958,12 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
             } else if first_text != usize::MAX && start < first_text {
                 front.push(FrontLine { role: "cover".to_owned(), text: squeezed(words), range: Some(range) });
             } else if words.split_whitespace().count() >= 4 || words.bytes().any(|byte| byte.is_ascii_digit()) {
-                paragraphs.push(OpinionParagraph { continues: false, block: None, number: None, start: range.start, end: range.end, page: None, quote: false, part: None, speaker: None, pins: Vec::new() });
+                paragraphs.push(OpinionParagraph { continues: false, item: None, number: None, start: range.start, end: range.end, page: None, quote: false, part: None, speaker: None, pins: Vec::new() });
             }
         }
     }
     paragraphs.sort_by_key(|paragraph| paragraph.start);
-    // A counter stands beside its block's paragraph, or opens it.
-    for (block, at) in block_marks(structure, &coordinates) {
-        let after = paragraphs.partition_point(|paragraph| paragraph.start <= at);
-        let holder = after.checked_sub(1).filter(|before| at < paragraphs[*before].end).unwrap_or(after);
-        if let Some(paragraph) = paragraphs.get_mut(holder) {
-            paragraph.block.get_or_insert(block);
-        }
-    }
+    let blocks = block_marks(structure, &coordinates).into_iter().map(|(label, start)| OpinionBlock { label, start, source: "marked", pins: Vec::new() }).collect::<Vec<_>>();
 
     let notes = structure.notes.iter().map(|note| {
         let (label, echo) = note_label_of(structure, &coordinates, note);
@@ -964,7 +972,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
             first.start = (first.start + echo).min(first.end);
         }
         OpinionNote {
-            label, start: (note.body_range.start + echo).min(note.body_range.end), end: note.body_range.end, ranges,
+            items: Vec::new(), label, start: (note.body_range.start + echo).min(note.body_range.end), end: note.body_range.end, ranges,
             references: note.references.iter().map(|reference| reference.range).collect(), page: None, called_outside: false, pins: Vec::new(),
         }
     }).collect::<Vec<_>>();
@@ -1008,7 +1016,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
     }).collect();
     OpinionLayer {
         id: record.id.clone(), rendition: name.to_owned(), text: text.to_owned(), pages, paragraphs, notes, headings, headnotes,
-        headnote_marks: marks, parts, front, furniture: Vec::new(), unmatched_calls, tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), cuts,
+        headnote_marks: marks, parts, front, furniture: Vec::new(), unmatched_calls, tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks, page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), cuts,
     }
 }
 
@@ -1196,18 +1204,25 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
     const SHINGLE: usize = 5;
     // How far apart, in UTF-16 units, two renditions may set one page's mark.
     const SAME_PLACE: usize = 300;
-    let marks = other.nodes.iter().filter(|node| node.kind == NodeKind::Page && node.grammar.is_none())
-        .map(|node| (node.label.as_deref().unwrap_or("").trim_start_matches("page").to_owned(), other.query_range(node).start))
-        .collect::<Vec<_>>();
     let have = layer.pages.iter().map(|page| (page.label.clone(), page.start)).collect::<HashMap<_, _>>();
+    // One rendition may carry several numberings, a reporter's and a vendor's, each by its page scheme. The one most like ours is
+    // compared with ours; each other stands as its own, a parallel printing.
+    let mut schemes = BTreeMap::<String, Vec<(String, usize)>>::new();
+    for node in other.nodes.iter().filter(|node| node.kind == NodeKind::Page && node.grammar.is_none()) {
+        schemes.entry(series_of(node)).or_default().push((node.label.as_deref().unwrap_or("").trim_start_matches("page").to_owned(), other.query_range(node).start));
+    }
+    let closest = schemes.iter().max_by_key(|(_, marks)| (marks.iter().filter(|(label, _)| have.contains_key(label)).count(), marks.len())).map(|(scheme, _)| scheme.clone());
+    let marks = closest.as_ref().and_then(|scheme| schemes.remove(scheme)).unwrap_or_default();
+    let held_series = layer.pages.iter().map(|page| page.series.clone()).collect::<HashSet<_>>();
+    schemes.retain(|scheme, _| !held_series.contains(scheme));
     let numbers = if counts_its_blocks(other) || layer.paragraphs.iter().any(|paragraph| paragraph.number.is_some()) { Vec::new() } else {
         other.nodes.iter().filter(|node| node.kind == NodeKind::Paragraph).filter_map(|node| {
             Some((node.label.as_deref()?.strip_prefix("par")?.to_owned(), other.query_range(node).start))
         }).collect::<Vec<_>>()
     };
-    let blocks = if layer.paragraphs.iter().all(|paragraph| paragraph.block.is_none()) { block_marks(other, &ScalarText::new(other.query_text())) } else { Vec::new() };
+    let blocks = if layer.blocks.is_empty() { block_marks(other, &ScalarText::new(other.query_text())) } else { Vec::new() };
     // Marks all ours add nothing, and reading where they fall costs a whole index of the text.
-    if witness || marks.iter().any(|(label, _)| !have.contains_key(label)) || !numbers.is_empty() || !blocks.is_empty() {
+    if witness || marks.iter().any(|(label, _)| !have.contains_key(label)) || !numbers.is_empty() || !blocks.is_empty() || !schemes.is_empty() {
         let words = word_starts(&layer.text);
         let theirs = word_starts(other.query_text());
         let shingle = |window: &[(String, usize)]| window.iter().map(|word| word.0.as_str()).collect::<Vec<_>>().join(" ");
@@ -1240,18 +1255,46 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
             }
         }
         place_by_number(layer, &series, unplaced);
+        for (scheme, group) in std::mem::take(&mut schemes) {
+            let mut unplaced = Vec::new();
+            for ((label, _), place) in group.iter().cloned().zip(in_their_order(group.iter().map(|mark| place_of(mark.1)).collect())) {
+                match place {
+                    Some(place) => layer.pages.push(OpinionPage { label, series: scheme.clone(), start: words[place].1, end: 0, marker: None, source: "other-rendition", in_note: false }),
+                    None => unplaced.push(label),
+                }
+            }
+            place_by_number(layer, &scheme, unplaced);
+        }
         if witness && shared {
             let ordered = in_their_order(marks.iter().map(|mark| place_of(mark.1)).collect());
             let found = marks.iter().zip(ordered).filter_map(|((label, _), place)| Some((page_number(label)?, words[place?].1))).collect::<Vec<_>>();
             witness_pages(layer, &found, SAME_PLACE);
         }
-        // A paragraph takes the block counter another rendition sets at its start.
-        for (block, start) in blocks {
-            let Some(place) = place_of(start) else { continue };
-            let at = words[place].1;
-            if let Some(paragraph) = layer.paragraphs.partition_point(|paragraph| paragraph.start <= at).checked_sub(1).map(|index| &mut layer.paragraphs[index]) {
-                if at < paragraph.end { paragraph.block.get_or_insert(block); }
-            }
+        // Counters another rendition sets, each where its words fall; one whose words we lack, between its neighbours.
+        // Scanned texts differ word by word: the nearest words the two share fix the place, after the counter or before it.
+        const BLOCK_REACH: usize = 60;
+        let place_near = |start: usize| place_of(start).or_else(|| {
+            let first = theirs.partition_point(|word| word.1 < start);
+            (1..BLOCK_REACH).find_map(|apart| {
+                let after = theirs.get(first + apart..first + apart + SHINGLE).and_then(|window| index.get(&shingle(window)).copied().flatten()).and_then(|at| at.checked_sub(apart));
+                after.or_else(|| {
+                    let from = first.checked_sub(apart + SHINGLE)?;
+                    index.get(&shingle(&theirs[from..from + SHINGLE])).copied().flatten().map(|at| at + apart + SHINGLE)
+                })
+            })
+        }).filter(|place| *place < words.len());
+        let placed = in_their_order(blocks.iter().map(|block| place_near(block.1)).collect()).into_iter().map(|place| place.map(|place| words[place].1)).collect::<Vec<_>>();
+        let whole = utf16_len(&layer.text);
+        for (index, (label, _)) in blocks.iter().enumerate() {
+            let (start, source) = match placed[index] {
+                Some(start) => (start, "other-rendition"),
+                None => {
+                    let before = placed[..index].iter().enumerate().rev().find_map(|(at, place)| place.map(|place| (at, place))).unwrap_or((0, 0));
+                    let after = placed[index + 1..].iter().enumerate().find_map(|(at, place)| place.map(|place| (index + 1 + at, place))).unwrap_or((blocks.len(), whole));
+                    (before.1 + (after.1.saturating_sub(before.1)) * (index - before.0) / (after.0 - before.0).max(1), "reckoned")
+                }
+            };
+            layer.blocks.push(OpinionBlock { label: label.clone(), start, source, pins: Vec::new() });
         }
         // A paragraph takes the number printed at its start in the other rendition.
         for (number, start) in numbers {
@@ -1504,6 +1547,9 @@ fn place_on_pages(layer: &mut OpinionLayer) {
     let lead_pages = layer.pages.iter().filter(of_the_opinion).filter(|page| Some(page.series.as_str()) == lead).map(|page| (page.start, page.label.clone())).collect::<Vec<_>>();
     let page_at = |offset: usize| lead_pages.partition_point(|page| page.0 <= offset).checked_sub(1).map(|at| lead_pages[at].1.clone());
     let table = pin_table(layer);
+    for block in &mut layer.blocks {
+        block.pins = pins_of(&table, block.start, block.start + 1);
+    }
     for heading in &mut layer.headings {
         heading.page = page_at(heading.start);
         heading.pins = pins_of(&table, heading.start, heading.end);

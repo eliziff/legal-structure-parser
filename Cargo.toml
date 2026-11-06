@@ -9,7 +9,7 @@ readme = "README.md"
 exclude = ["experiments/**"]
 
 [workspace]
-members = ["features", "layout", "model", "opinion", "python", "query"]
+members = ["features", "layout", "locator", "model", "opinion", "python", "query"]
 default-members = ["."]
 resolver = "2"
 
@@ -43,6 +43,7 @@ journal = []
 
 [dependencies]
 legal-structure-model = { path = "model" }
+legal-locator = { path = "locator" }
 legal-document-query = { path = "query", optional = true }
 legal-citations = { workspace = true, optional = true }
 aho-corasick = "1.1"

@@ -1,5 +1,5 @@
+use legal_locator::{literal_page_marker, normalize_section_locator};
 use crate::{
-    locator::{literal_page_marker, normalize_section_locator},
     public_structure_label,
     text::{equal_fold, trim_javascript_whitespace as js_trim, JS_WHITESPACE_CLASS as JS_WS},
     AuthoritativeTableCell, Derivation, DetectionProfile, DocumentBlock, DocumentKind,

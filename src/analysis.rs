@@ -101,6 +101,10 @@ impl LayoutAnalysis for EngineAnalysis {
     fn editorial_line(&self, text: &str) -> bool {
         crate::numbered_paragraphs::editorial_line(text)
     }
+
+    fn speaker_labels(&self, text: &str) -> Vec<(usize, usize)> {
+        crate::transcript::speaker_labels(text)
+    }
 }
 
 impl StructureAnalysis for EngineAnalysis {
@@ -122,6 +126,22 @@ impl StructureAnalysis for EngineAnalysis {
 
     fn disposition_line(&self, line: &str) -> bool {
         crate::judgment::disposition_line(line)
+    }
+
+    fn history_note(&self, line: &str) -> bool {
+        crate::statute::history_note(line)
+    }
+
+    fn marginal_note_shaped(&self, line: &str) -> bool {
+        crate::statute::marginal_note_shaped(line)
+    }
+
+    fn parse_ordinal(&self, kind: &str, raw: &str) -> Option<usize> {
+        crate::parse_ordinal(kind, raw)
+    }
+
+    fn numbered_section_locator(&self, compact: &str) -> String {
+        crate::normalize_compact_numbered_section_locator(compact)
     }
 
     fn detect_structure_candidate_runs(&self, text: &str, refinements: bool) -> Vec<StructureCandidateRun> {

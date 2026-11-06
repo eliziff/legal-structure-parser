@@ -68,7 +68,7 @@ pub(super) fn supply_notes(layer: &mut OpinionLayer, other: &DocumentStructure) 
         layer.text.push_str(body);
         let range = ScalarRange { start, end: start + utf16_len(body) };
         let called_outside = calls.is_empty() && !note.references.is_empty();
-        layer.notes.push(OpinionNote { label, start, end: range.end, ranges: vec![range], references: calls, called_outside, page: None, pins: Vec::new() });
+        layer.notes.push(OpinionNote { items: Vec::new(), label, start, end: range.end, ranges: vec![range], references: calls, called_outside, page: None, pins: Vec::new() });
     }
 }
 
@@ -152,7 +152,7 @@ pub(super) fn anchored_notes(structure: &DocumentStructure, coordinates: &Scalar
     for (index, (range, number, calls, block)) in targets.into_iter().enumerate() {
         let stop = stops.get(index + 1).copied().unwrap_or(end).min(block);
         let start = range.end.min(stop);
-        notes.push(OpinionNote { label: number, start, end: stop, ranges: vec![ScalarRange { start, end: stop }], references: calls, page: None, called_outside: false, pins: Vec::new() });
+        notes.push(OpinionNote { items: Vec::new(), label: number, start, end: stop, ranges: vec![ScalarRange { start, end: stop }], references: calls, page: None, called_outside: false, pins: Vec::new() });
     }
     notes.sort_by_key(|note| note.start);
 }
@@ -240,7 +240,7 @@ pub(super) fn answer_calls(layer: &mut OpinionLayer) {
             for (number, start, end) in found {
                 let label = number.to_string();
                 let references = calls.iter().filter(|call| plain_label(&call.label) == label).map(|call| ScalarRange { start: call.start, end: call.end }).collect();
-                layer.notes.push(OpinionNote { label, start, end, ranges: vec![ScalarRange { start, end }], references, page: None, called_outside: false, pins: Vec::new() });
+                layer.notes.push(OpinionNote { items: Vec::new(), label, start, end, ranges: vec![ScalarRange { start, end }], references, page: None, called_outside: false, pins: Vec::new() });
             }
             let answered = layer.notes.iter().map(|note| plain_label(&note.label)).collect::<HashSet<_>>();
             calls.retain(|call| !answered.contains(plain_label(&call.label)));
@@ -279,7 +279,7 @@ pub(super) fn flat_notes(layer: &mut OpinionLayer) {
         }
         layer.notes.retain(|note| !(note.start <= start && start < note.end));
         let references = calls.iter().filter(|call| call.0 == number).map(|call| ScalarRange { start: call.1, end: call.1 + call.2 }).collect();
-        layer.notes.push(OpinionNote { label: number, start, end: stop, ranges: vec![ScalarRange { start, end: stop }], references, page: None, called_outside: false, pins: Vec::new() });
+        layer.notes.push(OpinionNote { items: Vec::new(), label: number, start, end: stop, ranges: vec![ScalarRange { start, end: stop }], references, page: None, called_outside: false, pins: Vec::new() });
     }
     layer.notes.sort_by_key(|note| note.start);
 }
@@ -315,7 +315,7 @@ pub(super) fn split_note_lists(layer: &mut OpinionLayer) {
         for (index, (label, _, words)) in opens.iter().enumerate() {
             let stop = opens.get(index + 1).map_or(range.end, |next| range.start + utf16_len(&body[..next.1]));
             let begin = range.start + utf16_len(&body[..*words]);
-            added.push(OpinionNote { label: label.to_string(), start: begin, end: stop, ranges: vec![ScalarRange { start: begin, end: stop }], references: Vec::new(), page: None, called_outside: false, pins: Vec::new() });
+            added.push(OpinionNote { items: Vec::new(), label: label.to_string(), start: begin, end: stop, ranges: vec![ScalarRange { start: begin, end: stop }], references: Vec::new(), page: None, called_outside: false, pins: Vec::new() });
         }
     }
     if !added.is_empty() {
