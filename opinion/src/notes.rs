@@ -251,23 +251,35 @@ pub(super) fn answer_calls(layer: &mut OpinionLayer) {
         let opening = OPENING.get_or_init(|| Regex::new(r"^[\[(]{0,2}(\d{1,3})[\])\.]{0,2}(?:\s|\p{Lu})").unwrap());
         let coordinates = ScalarText::new(&layer.text);
         let mut found = Vec::new();
-        let mut next = 0;
+        let printed_of = |paragraph: &OpinionParagraph| coordinates.slice_utf16(paragraph.start..paragraph.end).map(trim_js);
+        // A list of notes stands last, and a list in the opinion may print its numbers first: "(3) Was the conduct ...". Read from
+        // the tail back, each note is the last paragraph that prints its number.
+        let mut chosen = HashMap::new();
+        let mut ceiling = u32::MAX;
+        for paragraph in layer.paragraphs.iter().rev().take_while(|paragraph| paragraph.start >= last_call) {
+            let number = printed_of(paragraph).and_then(|printed| opening.captures(printed)).and_then(|capture| capture[1].parse::<u32>().ok());
+            if let Some(number) = number.filter(|number| *number < ceiling && wanted.contains(number)) {
+                chosen.insert(paragraph.start, number);
+                ceiling = number;
+            }
+        }
         // The paragraphs under a note belong to it only where another note closes them, or a notes title heads the list: past
         // the last note of no list is the opinion, a number having opened a paragraph of it. A paragraph's own mark ends any note.
         let mut under = None;
+        let mut closed = false;
         for paragraph in layer.paragraphs.iter().filter(|paragraph| paragraph.start >= last_call) {
-            let Some(printed) = coordinates.slice_utf16(paragraph.start..paragraph.end).map(trim_js) else { continue };
-            let number = opening.captures(printed).and_then(|capture| capture[1].parse::<u32>().ok());
-            if number.is_some_and(|number| wanted.get(next) == Some(&number)) {
+            let Some(printed) = printed_of(paragraph) else { continue };
+            if let Some(number) = chosen.get(&paragraph.start) {
                 if let (Some(last), Some(end)) = (found.last_mut(), under.take()) {
                     let last: &mut (u32, usize, usize) = last;
                     last.2 = end;
                 }
-                found.push((wanted[next], paragraph.start, paragraph.end));
-                next += 1;
+                found.push((*number, paragraph.start, paragraph.end));
+                closed = false;
             } else if text::says_paragraph(printed) {
-                break;
-            } else if !found.is_empty() {
+                under = None;
+                closed = true;
+            } else if !found.is_empty() && !closed {
                 under = Some(paragraph.end);
             }
         }

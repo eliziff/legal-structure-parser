@@ -471,6 +471,22 @@ impl OpinionLayer {
         stretches
     }
 
+    /// What is left in the text of two faults of the source: letters in the shifted font, and runs of a pleading's line numbers
+    /// (five or more lines in a row opening on numbers that climb by one).
+    pub fn source_faults_left(&self) -> (usize, usize) {
+        static LEAD: OnceLock<Regex> = OnceLock::new();
+        let lead = LEAD.get_or_init(|| Regex::new(r"^\s{0,8}(\d{1,2})(?:\s|$)").unwrap());
+        const RUN: usize = 5;
+        let (mut margins, mut run, mut last) = (0, 0, 0);
+        for line in self.text.lines().filter(|line| !line.trim().is_empty()) {
+            let number = lead.captures(line).and_then(|capture| capture[1].parse::<u32>().ok());
+            run = if number.is_some_and(|number| number == last + 1) { run + 1 } else { 1 };
+            if run == RUN { margins += RUN; } else if run > RUN { margins += 1; }
+            last = number.unwrap_or(0);
+        }
+        (self.text.matches('\u{3}').count(), margins)
+    }
+
     /// Lines inside notes that open on a paragraph's own mark: a note has run on through the opinion.
     pub fn marks_in_notes(&self) -> usize {
         let coordinates = ScalarText::new(&self.text);
@@ -528,7 +544,7 @@ pub fn opinion_layer(record: &OpinionRecord) -> OpinionLayer {
         None => {
             let (name, text) = if plain.trim().is_empty() {
                 let markup = MARKUP.iter().copied().find_map(|name| rendition(name).map(|markup| (name, markup)));
-                let text = markup.and_then(|(_, markup)| structure_of(&record.id, "", markup)).map(|structure| structure.query_text().to_owned());
+                let text = markup.and_then(|(_, markup)| structure_of(&record.id, "", markup)).map(|structure| text::unshifted(structure.query_text()));
                 (markup.map_or("", |pair| pair.0), text.unwrap_or_default())
             } else {
                 ("plain_text.txt", text::unshifted(plain))

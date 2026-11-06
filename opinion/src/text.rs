@@ -431,7 +431,8 @@ fn note_zones(lines: &[Line<'_>], masked: &[bool], pages: &[(usize, usize)], pag
         for index in from..to {
             let line = &lines[index];
             if line.blank() {
-                if !paged && open.as_ref().is_some_and(|zone| zone.lines.len() > 1 || ended_sentence(lines[zone.lines[0]].body)) {
+                let finished = open.as_ref().is_some_and(|zone| zone.lines.last().is_some_and(|last| ended_sentence(lines[*last].body)));
+                if finished || !paged && open.as_ref().is_some_and(|zone| zone.lines.len() > 1) {
                     page.extend(open.take());
                 }
                 continue;
@@ -852,18 +853,32 @@ fn undoubled(line: &str) -> Option<String> {
     })
 }
 
-/// A PDF whose font maps its letters 29 places down writes "7KH\x03FRXUW" for "The court", its spaces \x03: the lines
-/// with such a space and no other are read back, character for character, so every offset holds.
+/// A PDF whose font maps its letters 29 places down writes "7KH\x03FRXUW" for "The court", its spaces \x03. Shifted, no letter
+/// falls past "a": a line with such a space and hardly a letter past it is read back, character for character, so every offset
+/// holds; so is a line of one word between shifted lines, which has no space to show it. Justified lines keep plain spaces too.
 pub(super) fn unshifted(text: &str) -> String {
     const SHIFT: u32 = 29;
     let text = &text.split_inclusive('\n').map(|line| undoubled(line).unwrap_or_else(|| line.to_owned())).collect::<String>();
     if !text.contains('\u{3}') {
         return text.to_owned();
     }
-    text.split_inclusive('\n').map(|line| {
-        let spaces = line.matches('\u{3}').count();
-        if spaces == 0 || spaces < line.matches(' ').count() {
-            return line.to_owned();
+    let past_shift = |line: &str| line.chars().filter(|c| ('b'..='z').contains(c)).count();
+    let lines = text.split_inclusive('\n').collect::<Vec<_>>();
+    let marked = lines.iter().map(|line| line.contains('\u{3}') && past_shift(line) * 20 < line.chars().filter(|c| !c.is_whitespace()).count()).collect::<Vec<_>>();
+    let beside = |index: usize, step: isize| {
+        let mut at = index as isize + step;
+        while let Some(line) = usize::try_from(at).ok().and_then(|at| lines.get(at)) {
+            if !line.trim().is_empty() {
+                return marked[at as usize];
+            }
+            at += step;
+        }
+        false
+    };
+    lines.iter().enumerate().map(|(index, line)| {
+        let lone = !marked[index] && past_shift(line) == 0 && line.chars().any(|c| c.is_ascii_uppercase()) && beside(index, -1) && beside(index, 1);
+        if !marked[index] && !lone {
+            return (*line).to_owned();
         }
         line.chars().map(|c| match c as u32 {
             code @ 0x03..=0x61 if !matches!(c, '\n' | '\r' | '\t' | '\u{c}' | ' ') => char::from_u32(code + SHIFT).unwrap_or(c),
