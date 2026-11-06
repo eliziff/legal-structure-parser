@@ -363,6 +363,9 @@ pub struct OpinionLayer {
     marked_titles: HashSet<String>,
     #[serde(skip)]
     elsewhere: Vec<Elsewhere>,
+    /// The opening words of blocks another rendition sets as quotations.
+    #[serde(skip)]
+    quoted_elsewhere: HashSet<String>,
     /// What is yet to leave the text.
     #[serde(skip)]
     cuts: Vec<ScalarRange>,
@@ -681,8 +684,37 @@ fn headnote_of(kind: &str, text: String, range: Option<ScalarRange>) -> OpinionH
     OpinionHeadnote { kind: kind.to_owned(), number: headnote_number(&text), topic: topic_of(&text), text, range }
 }
 
+/// Points run together in one block, "1. Courts must ... 2. A motion ...": split where the numbers climb by ones after a finished
+/// sentence. One point stands alone only with a second to follow it.
+fn split_points(paragraph: String) -> Vec<String> {
+    static POINT: OnceLock<Regex> = OnceLock::new();
+    let point = POINT.get_or_init(|| Regex::new(r#"(?:^|[.;:!?”")]\s+)(\d{1,3})\.\s+\p{Lu}"#).unwrap());
+    let mut cuts = Vec::new();
+    let mut due = None;
+    for capture in point.captures_iter(&paragraph) {
+        let (Some(number), Some(digits)) = (capture[1].parse::<u32>().ok(), capture.get(1)) else { continue };
+        if due.is_none_or(|due| number == due) {
+            cuts.push(digits.start());
+            due = Some(number + 1);
+        }
+    }
+    if cuts.len() < 2 {
+        return vec![paragraph];
+    }
+    let mut pieces = Vec::with_capacity(cuts.len() + 1);
+    if cuts[0] > 0 { pieces.push(paragraph[..cuts[0]].trim().to_owned()); }
+    for (index, &from) in cuts.iter().enumerate() {
+        pieces.push(paragraph[from..cuts.get(index + 1).copied().unwrap_or(paragraph.len())].trim().to_owned());
+    }
+    pieces
+}
+
 /// A cluster field's paragraphs, whether it is markup or text.
 fn field_paragraphs(id: &str, value: &str) -> Vec<String> {
+    whole_paragraphs(id, value).into_iter().flat_map(split_points).collect()
+}
+
+fn whole_paragraphs(id: &str, value: &str) -> Vec<String> {
     if value.contains('<') {
         if let Some(structure) = structure_of(id, "", value) {
             let coordinates = ScalarText::new(structure.query_text());
@@ -751,7 +783,7 @@ fn from_text(record: &OpinionRecord, name: &str, text: String) -> OpinionLayer {
     OpinionLayer {
         id: record.id.clone(), rendition: name.to_owned(), text, pages: reading.pages, paragraphs: reading.paragraphs, notes: reading.notes,
         headings: reading.headings, headnotes: Vec::new(), headnote_marks: Vec::new(), parts: Vec::new(), front: reading.front,
-        furniture: Vec::new(), unmatched_calls: Vec::new(), tables: reading.tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks: Vec::new(), page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), cuts: reading.furniture,
+        furniture: Vec::new(), unmatched_calls: Vec::new(), tables: reading.tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks: Vec::new(), page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), quoted_elsewhere: HashSet::new(), cuts: reading.furniture,
     }
 }
 
@@ -1017,7 +1049,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
     }).collect();
     OpinionLayer {
         id: record.id.clone(), rendition: name.to_owned(), text: text.to_owned(), pages, paragraphs, notes, headings, headnotes,
-        headnote_marks: marks, parts, front, furniture: Vec::new(), unmatched_calls, tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks, page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), cuts,
+        headnote_marks: marks, parts, front, furniture: Vec::new(), unmatched_calls, tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks, page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), quoted_elsewhere: HashSet::new(), cuts,
     }
 }
 
@@ -1199,6 +1231,11 @@ fn witness_paragraphs(layer: &mut OpinionLayer) {
 }
 
 fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, witness: bool) {
+    {
+        let coordinates = ScalarText::new(other.query_text());
+        layer.quoted_elsewhere.extend(other.nodes.iter().filter(|node| node.kind == NodeKind::Quote || node.markup_tag.as_deref().is_some_and(|tag| matches!(tag, "blockquote" | "excerpt")))
+            .filter_map(|node| { let range = other.query_range(node); coordinates.slice_utf16(range.start..range.end) }).filter_map(opening_words));
+    }
     if witness {
         note_paragraphs_elsewhere(layer, name, other);
     }
@@ -1310,12 +1347,14 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
         }
     }
     let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
-    let wanted = other.nodes.iter().filter(|node| node.kind == NodeKind::Heading)
+    let coordinates = ScalarText::new(other.query_text());
+    // Tagged a heading, or a whole block set apart by centring or emphasis that reads as a title: "ON MOTION FOR REHEARING."
+    let set_apart = |node: &StructureNode| node.kind == NodeKind::Paragraph && emphasized_whole(other, node) && { let range = other.query_range(node); coordinates.slice_utf16(range.start..range.end).is_some_and(|printed| heading_line(printed, true)) };
+    let wanted = other.nodes.iter().filter(|node| node.kind == NodeKind::Heading || set_apart(node))
         .map(|node| other.query_range(node)).collect::<Vec<_>>();
     if wanted.is_empty() {
         return;
     }
-    let coordinates = ScalarText::new(other.query_text());
     let wanted = wanted.into_iter().filter_map(|range| coordinates.slice_utf16(range.start..range.end).map(key)).filter(|text| !text.is_empty()).collect::<HashSet<_>>();
     layer.marked_titles.extend(wanted.iter().cloned());
     let mine = ScalarText::new(&layer.text);
@@ -1353,7 +1392,20 @@ fn supply_head(layer: &mut OpinionLayer, other: &DocumentStructure) {
 }
 
 /// What the readings leave to do, in order: each step needs the ones before it.
+/// A block one rendition sets as a quotation is one in the union, whichever text is read.
+fn quotes_from_elsewhere(layer: &mut OpinionLayer) {
+    if layer.quoted_elsewhere.is_empty() {
+        return;
+    }
+    let coordinates = ScalarText::new(&layer.text);
+    let quoted = layer.paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.start..paragraph.end).and_then(opening_words).is_some_and(|opening| layer.quoted_elsewhere.contains(&opening))).collect::<Vec<_>>();
+    for (paragraph, quoted) in layer.paragraphs.iter_mut().zip(quoted) {
+        paragraph.quote |= quoted;
+    }
+}
+
 fn finish(layer: &mut OpinionLayer) {
+    quotes_from_elsewhere(layer);
     flag_pages_in_notes(layer);
     page_series(layer);
     close_pages(layer);

@@ -99,7 +99,10 @@ fn list_labels(layer: &mut OpinionLayer) {
     static WITHIN: OnceLock<Regex> = OnceLock::new();
     let within = WITHIN.get_or_init(|| Regex::new(r"(?m)^[ \t]*(\(?(?:\d{1,3}|[a-zA-Z]|[ivxl]{2,5}|[IVXL]{2,5})\)|(?:\d{1,3}|[a-zA-Z]|[ivxl]{2,5}|[IVXL]{2,5})[.)])[ \t]+\S").unwrap());
     let coordinates = ScalarText::new(&layer.text);
-    let items = layer.paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.start..paragraph.end).map(trim_js).and_then(|opening| Some(label.captures(opening)?[1].to_owned()))).collect::<Vec<_>>();
+    // A court's own named paragraph: an advisory opinion's question and answer, a certified question.
+    static NAMED: OnceLock<Regex> = OnceLock::new();
+    let named = NAMED.get_or_init(|| Regex::new(r"^(QUESTIONS?(?: (?:NO\. )?(?:\d{1,2}|[IVX]{1,4}))?(?: PRESENTED)?|WE ANSWER|ANSWERS?(?: (?:NO\. )?(?:\d{1,2}|[IVX]{1,4}))?|CERTIFIED QUESTIONS?|Certified [Qq]uestions?|Question(?: (?:No\. )?\d{1,2})?(?: [Pp]resented)?|Answer(?: \d{1,2})?)[:.]").unwrap());
+    let items = layer.paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.start..paragraph.end).map(trim_js).and_then(|opening| Some(label.captures(opening).or_else(|| named.captures(opening))?[1].to_owned()))).collect::<Vec<_>>();
     for (paragraph, item) in layer.paragraphs.iter_mut().zip(items) {
         paragraph.item = item;
     }
@@ -437,20 +440,24 @@ pub(super) fn speakers(layer: &mut OpinionLayer) {
 /// A concurrence or dissent that opens inside a flat body, on a line of its own: "SMITH, J., dissenting.".
 pub(super) fn separate_parts(layer: &mut OpinionLayer) {
     static OPENS: OnceLock<Regex> = OnceLock::new();
-    if layer.parts.len() != 1 {
+    if layer.parts.is_empty() {
         return;
     }
     let opens = OPENS.get_or_init(|| Regex::new(r"(?i)^(?:(?:mr\.\s+|chief\s+|associate\s+)*(?:justice|judge)\s+)?[\p{Lu}][\p{L}'’.\- ]{1,50}?(?:,?\s+(?:c\.\s*)?j\.?j?\.?|,?\s+(?:chief\s+|circuit\s+|district\s+)?(?:judge|justice))?,?\s*\(?(concurring|dissenting|concurs|dissents)\b[^.]{0,80}\.?\)?:?$").unwrap());
     static RUN_IN: OnceLock<Regex> = OnceLock::new();
     let run_in = RUN_IN.get_or_init(|| Regex::new(r"^[\p{Lu}][\p{Lu}'’.\-]+,\s[^.:]{0,100}?\b(concurring|dissenting)\b[^.:]{0,60}[:.]").unwrap());
+    // Any case's name, with the office to say it is a judge: "Hawkins, J., dissenting. I would ..."
+    static NAMED: OnceLock<Regex> = OnceLock::new();
+    let named = NAMED.get_or_init(|| Regex::new(r"^[\p{Lu}][\p{L}'’.\- ]{1,40},\s(?:(?:C\.\s?|P\.\s?)?J\.|Chief Justice|Justice|Judge)[,:]?\s*\(?(concurring|dissenting)\b[^.:]{0,60}[:.)]").unwrap());
     let coordinates = ScalarText::new(&layer.text);
     let mut breaks = layer.paragraphs.iter().filter_map(|paragraph| {
-        let printed = trim_js(coordinates.slice_utf16(paragraph.start..paragraph.end)?);
+        // A block's counter may stand ahead of the author: "5\nCOLE, Judge (dissenting)."
+        let printed = trim_js(trim_js(coordinates.slice_utf16(paragraph.start..paragraph.end)?).trim_start_matches(|c: char| c.is_ascii_digit()));
         if let Some(capture) = opens.captures(printed).filter(|_| printed.len() <= 170) {
             let kind = if capture[1].to_lowercase().starts_with("dissent") { "dissent" } else { "concurrence" };
             return Some((paragraph.start, kind.to_owned(), squeezed(printed)));
         }
-        let capture = run_in.captures(printed)?;
+        let capture = run_in.captures(printed).or_else(|| named.captures(printed))?;
         let kind = if capture[1].to_lowercase().starts_with("dissent") { "dissent" } else { "concurrence" };
         Some((paragraph.start, kind.to_owned(), squeezed(&capture[0])))
     }).collect::<Vec<_>>();
@@ -485,20 +492,20 @@ pub(super) fn separate_parts(layer: &mut OpinionLayer) {
     breaks.sort_by_key(|known| known.0);
     let nexts = breaks.iter().skip(1).map(|known| known.0).chain([usize::MAX]).collect::<Vec<_>>();
     let mut opening = nexts.iter();
+    // A part has text of its own: a paragraph after its line, or a line that runs on into its opinion.
+    const LINE_ALONE: usize = 170;
     breaks.retain(|known| {
         let next = *opening.next().unwrap_or(&usize::MAX);
-        layer.paragraphs.iter().any(|paragraph| known.0 < paragraph.start && paragraph.start < next)
+        layer.paragraphs.iter().any(|paragraph| (known.0 < paragraph.start && paragraph.start < next) || (paragraph.start == known.0 && paragraph.end - paragraph.start > LINE_ALONE))
     });
-    if breaks.is_empty() {
-        return;
-    }
-    let end = layer.parts[0].end;
-    let mut parts = std::mem::take(&mut layer.parts);
-    for (index, (start, kind, author)) in breaks.iter().enumerate() {
-        if let Some(last) = parts.last_mut() {
-            last.end = *start;
+    // What a source already sets apart stands; a break cuts the part it falls in.
+    const SAME_START: usize = 40;
+    for (start, kind, author) in breaks {
+        if layer.parts.iter().any(|part| part.start.abs_diff(start) < SAME_START) {
+            continue;
         }
-        parts.push(OpinionPart { kind: kind.clone(), author: Some(author.clone()), start: *start, end: breaks.get(index + 1).map_or(end, |next| next.0) });
+        let Some(at) = layer.parts.iter().position(|part| part.start < start && start < part.end) else { continue };
+        let end = std::mem::replace(&mut layer.parts[at].end, start);
+        layer.parts.insert(at + 1, OpinionPart { kind, author: Some(author), start, end });
     }
-    layer.parts = parts;
 }

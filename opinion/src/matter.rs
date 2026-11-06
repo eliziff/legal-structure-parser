@@ -381,13 +381,14 @@ pub(super) fn embedded_topics(markup: &str) -> Vec<OpinionHeadnote> {
 /// A syllabus or headnotes the source does not mark: the paragraphs under a heading of that name.
 pub(super) fn divisions_of_headnotes(layer: &mut OpinionLayer) {
     static NAME: OnceLock<Regex> = OnceLock::new();
-    let name = NAME.get_or_init(|| Regex::new(r"(?i)^(?:syllabus(?: by the court)?|headnotes?|digest|note)\.?$").unwrap());
+    let name = NAME.get_or_init(|| Regex::new(r"(?i)^(?:syllabus(?: by the court)?|headnotes?|digest|note|synopsis)\.?$").unwrap());
     let coordinates = ScalarText::new(&layer.text);
     for at in 0..layer.headings.len() {
         let heading = &layer.headings[at];
         let Some(printed) = coordinates.slice_utf16(heading.start..heading.end) else { continue };
         if !name.is_match(trim_js(printed)) { continue; }
-        let kind = if trim_js(printed).to_lowercase().starts_with("note") { "note" } else { "syllabus" };
+        let title = trim_js(printed).to_lowercase();
+        let kind = if title.starts_with("note") { "note" } else if title.starts_with("synopsis") { "summary" } else { "syllabus" };
         let until = layer.headings.iter().map(|other| other.start).filter(|start| *start > heading.end).min().unwrap_or(usize::MAX);
         let start = heading.end;
         static OPENS: OnceLock<Regex> = OnceLock::new();
