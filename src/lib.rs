@@ -84,7 +84,7 @@ pub use native_markup::{analyze_native_markup, NativeMarkupInput};
 pub use numeric_sequence::*;
 #[cfg(feature = "structure-inference")]
 pub use provider_text::{
-    provider_text_document_structure, windows_1252_punctuation, ProviderSectionMap, ProviderTextInput,
+    provider_text_document_structure, windows_1252_punctuation, ProviderPage, ProviderSectionMap, ProviderTextInput,
     ProviderTextSourceKind,
 };
 pub(crate) use tables::AuthoritativeTables;

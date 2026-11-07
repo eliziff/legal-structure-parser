@@ -4,7 +4,7 @@
 //! differ only in the few values they have always given differently, which [`Source`] names.
 
 use legal_structure::{canlii_case_url, canlii_law_url, citation_lookup_key, trim_javascript_whitespace as js_trim, windows_1252_punctuation,
-    ProviderTextInput, ProviderTextSourceKind};
+    ProviderPage, ProviderTextInput, ProviderTextSourceKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::borrow::Cow;
@@ -246,7 +246,7 @@ impl<'a, C: Columns + ?Sized> Document<'a, C> {
         };
         let Some(text) = text else { return Ok(None) };
         let Some(metadata) = self.metadata(language, doc_type)? else { return Ok(None) };
-        Ok(Some(Read { provisions: self.provisions(language)?, metadata, text }))
+        Ok(Some(Read { provisions: self.provisions(language)?, metadata, text, printed_pages: Vec::new() }))
     }
 
     /// The document as a search lists it; None for one without a citation. The store's search reads no text.
@@ -359,17 +359,20 @@ pub struct Read {
     pub metadata: Metadata,
     pub text: String,
     pub provisions: Option<Vec<(String, String)>>,
+    /// The pages a report's print gives the text, where they have been read off it.
+    #[serde(skip)]
+    pub printed_pages: Vec<ProviderPage>,
 }
 
 impl Read {
     /// What the engine derives the document from: its provisions (else its text), and its full text where that is
     /// another. The provisions make the structured read; searches read the provider's own full text.
     pub fn inputs(self) -> (ProviderTextInput, Option<ProviderTextInput>) {
-        let Read { metadata, text, provisions } = self;
+        let Read { metadata, text, provisions, printed_pages } = self;
+        let whole = ProviderTextInput { printed_pages, ..input(&metadata, text, None, None, None) };
         match provisions {
-            Some(provisions) => (input(&metadata, String::new(), Some(provisions), None, None),
-                Some(input(&metadata, text, None, None, None))),
-            None => (input(&metadata, text, None, None, None), None),
+            Some(provisions) => (input(&metadata, String::new(), Some(provisions), None, None), Some(whole)),
+            None => (whole, None),
         }
     }
 }
@@ -410,6 +413,7 @@ fn input(metadata: &Metadata, text: String, provisions: Option<Vec<(String, Stri
         section_map: provisions,
         excerpt_of,
         require_report_start: metadata.doc_type == "cases" && metadata.dataset.to_uppercase() == "SCC",
+        printed_pages: Vec::new(),
     }
 }
 
@@ -437,21 +441,32 @@ pub fn name_words(text: &str) -> Vec<String> {
 }
 
 #[cfg(feature = "a2aj-store")]
-pub use store::{LazyRow, StoreRow};
+pub use store::{reporter_pages, LazyRow, StoreRow};
 
 #[cfg(feature = "a2aj-store")]
 mod store {
-    use super::Columns;
-    use legal_structure::trim_javascript_whitespace as js_trim;
-    use rusqlite::{types::ValueRef, Connection, OptionalExtension};
+    use super::{Columns, Language};
+    use legal_structure::{trim_javascript_whitespace as js_trim, ProviderPage};
+    use rusqlite::{types::ValueRef, Connection, OpenFlags, OptionalExtension};
     use std::borrow::Cow;
     use std::collections::HashMap;
+    use std::path::Path;
 
     /// The store's text columns.
     const COLUMNS: [&str; 21] = ["doc_type", "dataset", "citation_en", "citation_fr", "citation2_en", "citation2_fr",
         "name_en", "name_fr", "document_date_en", "document_date_fr", "url_en", "url_fr", "unofficial_text_en",
         "unofficial_text_fr", "unofficial_sections_en", "unofficial_sections_fr", "cases_cited_en", "cases_cited_fr",
         "cases_citing_en", "cases_citing_fr", "upstream_license"];
+
+    /// The pages a report's print gives a document's text, read off its PDF: reporter-pages.sqlite beside the store, a row
+    /// (document_id, language, pages) with pages [[number, start, end], ...]. None where the file or the row is absent.
+    pub fn reporter_pages(store: &Path, id: i64, language: Language) -> Vec<ProviderPage> {
+        let Ok(connection) = Connection::open_with_flags(store.with_file_name("reporter-pages.sqlite"), OpenFlags::SQLITE_OPEN_READ_ONLY) else { return Vec::new() };
+        let pages: Option<String> = connection.query_row("SELECT pages FROM reporter_pages WHERE document_id = ? AND language = ?",
+            rusqlite::params![id, language.code()], |row| row.get(0)).ok();
+        pages.and_then(|pages| serde_json::from_str::<Vec<(i64, usize, usize)>>(&pages).ok()).unwrap_or_default().into_iter()
+            .map(|(number, start, end)| ProviderPage { label: number.to_string(), start, end }).collect()
+    }
 
     /// A GLOB that a text matches when it holds a character other than JavaScript's white space.
     const NOT_BLANK: &str = "*[^\t\n\u{b}\u{c}\r \u{a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}]*";

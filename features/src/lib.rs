@@ -13,6 +13,8 @@ mod journal_titles;
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
 mod outline;
 #[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
+mod courtlistener_page;
+#[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
 mod passage_links;
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
 mod printed_statute;
@@ -27,7 +29,7 @@ pub use journal_titles::{journal_title_choice, journal_title_searches, JournalTi
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
 pub use outline::{document_outline, OutlineEntry};
 #[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
-pub use passage_links::{cited_passage_link, law_web_link, passage_link, source_link, PassageLink, PassageLinkRequest,
+pub use passage_links::{cited_passage_link, courtlistener_link, law_web_link, CourtListenerAnchor, CourtListenerCluster, CourtListenerOpinion, CourtListenerPage, passage_link, source_link, PassageLink, PassageLinkRequest,
     SourceLinkRequest, SourceLocator, VerifiedPdf};
 #[cfg(feature = "document-query")]
 pub use quote_location::{

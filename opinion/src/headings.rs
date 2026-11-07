@@ -129,6 +129,15 @@ pub(super) fn heading_line(body: &str, set_apart: bool) -> bool {
     if citation.is_match(rest) && (!set_apart || rest.contains(" v. ")) || not_heading.is_match(rest) {
         return false;
     }
+    // A table's row is mostly figures; a sentence that wrapped opens as sentences do.
+    let tokens = rest.split_whitespace().collect::<Vec<_>>();
+    let figures = tokens.iter().filter(|token| token.chars().any(|c| c.is_ascii_digit()) && !token.chars().any(char::is_alphabetic)).count();
+    let measured = tokens.iter().any(|token| token.contains('%') || token.contains('$') || (token.contains('.') && token.chars().filter(char::is_ascii_digit).count() >= 2 && !token.chars().any(char::is_alphabetic) && !token.ends_with('.')));
+    static OPENS_A_SENTENCE: OnceLock<Regex> = OnceLock::new();
+    let sentence = OPENS_A_SENTENCE.get_or_init(|| Regex::new(r"^(?:Moreover|However|Thus|Therefore|Furthermore|Further|Accordingly|Nevertheless|Hence|In addition|The following|It is|IT IS|NOW,)\b|\[\[Image").unwrap());
+    if (tokens.len() >= 3 && figures * 2 >= tokens.len()) || (measured && figures >= 2) || sentence.is_match(rest) {
+        return false;
+    }
     let stem = rest.trim_end_matches(['.', ':', ' ']);
     if section_word(stem) && !rest.starts_with(char::is_lowercase) {
         return true;
@@ -170,7 +179,9 @@ pub(super) fn heading_line(body: &str, set_apart: bool) -> bool {
     if rest.ends_with(['.', '?', '!']) && !(set_apart && (numbered || short_title)) {
         return false;
     }
-    let title = title_cased(rest);
+    // Set apart with no stop, a block is a title in sentence case as well: "The claim that Bank breached its duty of good faith".
+    const PLAIN_TITLE: usize = 14;
+    let title = title_cased(rest) || (set_apart && !rest.ends_with(['.', ':', '?', '!']) && (2..=PLAIN_TITLE).contains(&words.len()));
     (numbered && set_apart && !body.starts_with('(') && words.len() <= 10) || ((numbered || set_apart) && title && words.len() <= 16)
 }
 

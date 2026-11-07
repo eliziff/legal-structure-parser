@@ -187,6 +187,8 @@ fn take_numbers(layer: &mut OpinionLayer, mut taken: Vec<(usize, u32)>) {
 /// the one number due. A count that climbs by ones over most of the opinion is no accident, however its marks were read.
 fn walk_scanned_numbers(layer: &mut OpinionLayer) {
     const LEAST: usize = 4;
+    /// How many marks in a row the walk may find past reading.
+    const STEP: u32 = 2;
     let coordinates = ScalarText::new(&layer.text);
     let mut due = 1;
     let mut taken = Vec::new();
@@ -198,9 +200,11 @@ fn walk_scanned_numbers(layer: &mut OpinionLayer) {
         if opening.split_once('\n').is_some_and(|(line, _)| line.trim().bytes().all(|byte| byte.is_ascii_digit())) {
             continue;
         }
-        if paragraph.number.as_deref() == Some(due.to_string().as_str()) || text::paragraph_marker(opening).is_some_and(|(number, _)| number == due) || scanned_number(opening, due - 1, due + 1).is_some() {
-            taken.push((index, due));
-            due += 1;
+        // A mark may be past reading, "118" for "¶ 13": the next one or two say the count has gone on.
+        let read = (due..=due + STEP).find(|number| paragraph.number.as_deref() == Some(number.to_string().as_str()) || text::paragraph_marker(opening).is_some_and(|(marked, _)| marked == *number) || scanned_number(opening, number - 1, number + 1).is_some());
+        if let Some(number) = read {
+            taken.push((index, number));
+            due = number + 1;
         }
     }
     if taken.len() >= LEAST && taken.len() * 2 >= open && taken.len() > numbers_held(layer) {
@@ -580,34 +584,100 @@ pub(super) fn speakers(layer: &mut OpinionLayer) {
 
 /// A concurrence or dissent that opens inside a flat body, on a line of its own: "SMITH, J., dissenting.".
 pub(super) fn separate_parts(layer: &mut OpinionLayer) {
+    /// A writing's opening line, its joiners named, runs no longer than this.
+    const LINE_LONG: usize = 460;
+    /// How much of a line's text the opening's tests read.
+    const OPENING_READ: usize = 520;
     static OPENS: OnceLock<Regex> = OnceLock::new();
     if layer.parts.is_empty() {
         return;
     }
-    let opens = OPENS.get_or_init(|| Regex::new(r"(?i)^(?:(?:mr\.\s+|chief\s+|associate\s+)*(?:justice|judge)\s+)?[\p{Lu}][\p{L}'’.\- ]{1,50}?(?:,?\s+(?:c\.\s*)?j\.?j?\.?|,?\s+(?:chief\s+|circuit\s+|district\s+)?(?:judge|justice))?,?\s*\(?(concurring|dissenting|concurs|dissents)\b[^.]{0,80}\.?\)?:?$").unwrap());
+    let opens = OPENS.get_or_init(|| Regex::new(r"(?i)^(?:(?:mr\.\s+|chief\s+|associate\s+)*(?:justice|judge)\s+)?[\p{Lu}][\p{L}'’.\- ]{1,50}?(?:,?\s+(?:c\.\s*)?j\.?j?\.?|,\s*(?:[a-z]\.){2,4}|,?\s+(?:chief\s+|circuit\s+|district\s+|presiding\s+)?(?:judge|justice))?(?:,?\s+with\s+wh\w{1,2}\s+[^:]{1,300}?,)?\s*,?\s*\(?(?:specially\s+)?(concurring|dissenting|concurs|dissents)\b[^.]{0,80}\.?\)?:?$").unwrap());
     static RUN_IN: OnceLock<Regex> = OnceLock::new();
     let run_in = RUN_IN.get_or_init(|| Regex::new(r"^[\p{Lu}][\p{Lu}'’.\-]+,\s[^.:]{0,100}?\b(concurring|dissenting)\b[^.:]{0,60}[:.]").unwrap());
     // Any case's name, with the office to say it is a judge: "Hawkins, J., dissenting. I would ..."
     static NAMED: OnceLock<Regex> = OnceLock::new();
     let named = NAMED.get_or_init(|| Regex::new(r"^[\p{Lu}][\p{L}'’.\- ]{1,40},\s(?:(?:C\.\s?|P\.\s?)?J\.|Chief Justice|Justice|Judge)[,:]?\s*\(?(concurring|dissenting)\b[^.:]{0,60}[:.)]").unwrap());
+    // "Justice THOMAS, with whom Justice SCALIA joins in all but\nPart III-A-1-b, dissenting." may run long, wrap, and run on.
+    static WHOM: OnceLock<Regex> = OnceLock::new();
+    let whom = WHOM.get_or_init(|| Regex::new(r"(?is)^.{1,120}?\bwith\s+wh\w{1,2}\b.{1,300}?\b(?:concurring|dissenting)\b[^.]{0,80}\.").unwrap());
+    // What stands ahead of the paragraph's words: a counter, a printed page, a paragraph number.
+    static LEAD: OnceLock<Regex> = OnceLock::new();
+    let lead = LEAD.get_or_init(|| Regex::new(r"^[\s\d*¶.]*").unwrap());
+    // "with whom Mr. Justice Burton concurs, dissenting" is a dissent; "concurring in part and dissenting in part" is both.
+    static VERDICT: OnceLock<Regex> = OnceLock::new();
+    let verdict = VERDICT.get_or_init(|| Regex::new(r"(?i),\s*\(?(?:specially\s+)?(?:concurring|dissenting)\b.*$").unwrap());
+    let kind_of = |line: &str| {
+        let lower = line.to_lowercase();
+        let lower = verdict.find(&lower).map_or(lower.as_str(), |found| found.as_str());
+        match (lower.contains("dissent"), lower.contains("concur")) {
+            (true, true) => "concurrence and dissent",
+            (true, false) => "dissent",
+            _ => "concurrence",
+        }.to_owned()
+    };
     let coordinates = ScalarText::new(&layer.text);
-    let mut breaks = layer.paragraphs.iter().filter_map(|paragraph| {
-        // A block's counter may stand ahead of the author: "5\nCOLE, Judge (dissenting)."
-        let printed = trim_js(trim_js(coordinates.slice_utf16(paragraph.start..paragraph.end)?).trim_start_matches(|c: char| c.is_ascii_digit()));
-        if let Some(capture) = opens.captures(printed).filter(|_| printed.len() <= 170) {
-            let kind = if capture[1].to_lowercase().starts_with("dissent") { "dissent" } else { "concurrence" };
-            return Some((paragraph.start, kind.to_owned(), squeezed(printed)));
+    // Is a writing opening here? `inner` is a line inside a flat body, where only a finished sentence can open one: a wrapped
+    // "Kavanaugh, J., dissenting)." or a running head "ALITO, J., concurring" does not.
+    static A_JUDGE: OnceLock<Regex> = OnceLock::new();
+    let a_judge = A_JUDGE.get_or_init(|| Regex::new(r"(?i)\b(?:justices?|judges?|c\.\s?j|jj?)\b[.,:\s]|^[\p{Lu}'’.\-]+,\s").unwrap());
+    static POSSESSIVE: OnceLock<Regex> = OnceLock::new();
+    let possessive = POSSESSIVE.get_or_init(|| Regex::new(r"(?i)^[^,]{0,60}['’]s?\s+(?:dissent|concurr)").unwrap());
+    // "Concurring Opinion of ACOBA, J., with whom RAMIL, J., joins."
+    static WRITTEN_BY: OnceLock<Regex> = OnceLock::new();
+    let written_by = WRITTEN_BY.get_or_init(|| Regex::new(r"(?i)^(?:concurring|dissenting)(?:\s+and\s+(?:concurring|dissenting))?\s+opinion\s+(?:of|by)\b.{2,120}$").unwrap());
+    let opening = |printed: &str, inner: bool| -> Option<(String, String)> {
+        let finished = |line: &str| !inner || (line.trim_end().ends_with(['.', ':']) && line.matches(')').count() <= line.matches('(').count());
+        let first_line = printed.split('\n').next().unwrap_or(printed).trim_end();
+        let wrapped = first_line.ends_with(',').then(|| printed.match_indices('\n').nth(1).map_or(printed, |(end, _)| &printed[..end])).map(str::trim_end);
+        for line in [whom.find(printed).map(|found| found.as_str()), (!inner).then_some(printed), wrapped, Some(first_line)].into_iter().flatten() {
+            if let Some(capture) = opens.captures(line).filter(|_| line.len() <= LINE_LONG && finished(line) && a_judge.is_match(line) && !possessive.is_match(line)) {
+                // "HALL, J., concurs." says who joined: it opens no writing. One that names an opinion, or runs on, does.
+                if matches!(capture[1].to_lowercase().as_str(), "concurs" | "dissents") && line.ends_with('.') && !line.to_lowercase().contains("opinion") {
+                    return None;
+                }
+                return Some((kind_of(line), squeezed(line)));
+            }
         }
-        let capture = run_in.captures(printed).or_else(|| named.captures(printed))?;
-        let kind = if capture[1].to_lowercase().starts_with("dissent") { "dissent" } else { "concurrence" };
-        Some((paragraph.start, kind.to_owned(), squeezed(&capture[0])))
-    }).collect::<Vec<_>>();
+        if written_by.is_match(first_line) {
+            return Some((kind_of(first_line), squeezed(first_line)));
+        }
+        let capture = run_in.captures(printed).or_else(|| named.captures(printed)).filter(|capture| finished(&capture[0]))?;
+        Some((kind_of(&capture[0]), squeezed(&capture[0])))
+    };
+    let mut breaks = layer.paragraphs.iter().flat_map(|paragraph| {
+        let body = coordinates.slice_utf16(paragraph.start..paragraph.end).unwrap_or("");
+        // Lines start where the line before finished a sentence or stood empty.
+        let (mut places, mut bytes, mut units) = (vec![(0, 0, false)], 0, 0);
+        for line in body.split_inclusive('\n') {
+            bytes += line.len();
+            units += line.encode_utf16().count();
+            if line.trim_end().is_empty() || line.trim_end().ends_with(['.', ':', '!', '?', '”', '"', ')']) {
+                places.push((bytes, units, true));
+            }
+        }
+        places.into_iter().filter(|place| place.0 < body.len()).filter_map(|(byte, unit, inner)| {
+            let rest = &body[byte..];
+            let rest = trim_js(&rest[lead.find(rest).map_or(0, |found| found.end())..]);
+            let read = rest.char_indices().nth(OPENING_READ).map_or(rest, |(end, _)| &rest[..end]);
+            let lower = read.to_lowercase();
+            if !lower.contains("concur") && !lower.contains("dissent") {
+                return None;
+            }
+            opening(read, inner).map(|(kind, author)| (paragraph.start + unit, kind, author))
+        }).collect::<Vec<_>>()
+    }).chain(layer.headings.iter().filter_map(|heading| {
+        // A writing's opening set as a heading.
+        let printed = trim_js(coordinates.slice_utf16(heading.start..heading.end)?);
+        opening(&printed[lead.find(printed).map_or(0, |found| found.end())..], false).map(|(kind, author)| (heading.start, kind, author))
+    })).collect::<Vec<_>>();
     // A second author's line, past the opinion's first text, opens another opinion.
     for line in layer.front.iter().filter(|line| line.role == "author") {
         let Some(range) = line.range else { continue };
         let written = layer.paragraphs.iter().filter(|paragraph| paragraph.end <= range.start).map(|paragraph| paragraph.end - paragraph.start).sum::<usize>();
         if written >= 400 && !breaks.iter().any(|known| known.0.abs_diff(range.start) < 4) {
-            breaks.push((range.start, "opinion".to_owned(), line.text.clone()));
+            let says = { let lower = line.text.to_lowercase(); lower.contains("dissent") || lower.contains("concur") };
+            breaks.push((range.start, if says { kind_of(&line.text) } else { "opinion".to_owned() }, line.text.clone()));
         }
     }
     // A later document stacked in the record, under a title of its own.
@@ -632,12 +702,12 @@ pub(super) fn separate_parts(layer: &mut OpinionLayer) {
     }
     breaks.sort_by_key(|known| known.0);
     let nexts = breaks.iter().skip(1).map(|known| known.0).chain([usize::MAX]).collect::<Vec<_>>();
-    let mut opening = nexts.iter();
+    let mut following = nexts.iter();
     // A part has text of its own: a paragraph after its line, or a line that runs on into its opinion.
     const LINE_ALONE: usize = 170;
     breaks.retain(|known| {
-        let next = *opening.next().unwrap_or(&usize::MAX);
-        layer.paragraphs.iter().any(|paragraph| (known.0 < paragraph.start && paragraph.start < next) || (paragraph.start == known.0 && paragraph.end - paragraph.start > LINE_ALONE))
+        let next = *following.next().unwrap_or(&usize::MAX);
+        layer.paragraphs.iter().any(|paragraph| (known.0 < paragraph.start && paragraph.start < next) || (paragraph.start <= known.0 && paragraph.end > known.0 + LINE_ALONE))
     });
     // What a source already sets apart stands; a break cuts the part it falls in.
     const SAME_START: usize = 40;
@@ -648,5 +718,15 @@ pub(super) fn separate_parts(layer: &mut OpinionLayer) {
         let Some(at) = layer.parts.iter().position(|part| part.start < start && start < part.end) else { continue };
         let end = std::mem::replace(&mut layer.parts[at].end, start);
         layer.parts.insert(at + 1, OpinionPart { kind, author: Some(author), start, end });
+    }
+    // "Justice BAER files a concurring opinion." says what the part under that author's name is.
+    static FILES: OnceLock<Regex> = OnceLock::new();
+    let files = FILES.get_or_init(|| Regex::new(r"(?m)^\s*(?:(?:Mr\.|Mrs\.|Ms\.|Chief|Justice|Judge)\s+)*([\p{Lu}][\p{L}'’\-]+)[^.\n]{0,40}?\b(?:files?|filed)\s+an?\s+((?:concurring|dissenting)(?:\s+and\s+(?:concurring|dissenting))?)\s+opinion").unwrap());
+    let stated = files.captures_iter(&layer.text).map(|capture| (capture[1].to_lowercase(), kind_of(&capture[2]))).collect::<Vec<_>>();
+    for part in layer.parts.iter_mut().filter(|part| part.kind == "opinion") {
+        let author = part.author.as_deref().unwrap_or("").to_lowercase();
+        if let Some((_, kind)) = stated.iter().find(|(name, _)| author.contains(name.as_str())) {
+            part.kind = kind.clone();
+        }
     }
 }

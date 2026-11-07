@@ -9,7 +9,7 @@ description = "What the products build on the structure engine: the A2AJ citator
 default = []
 canada = ["legal-structure/canada"]
 canlii = ["legal-structure/canlii"]
-citator = ["legal-structure/citator", "dep:legal-citations"]
+citator = ["legal-structure/citator", "dep:legal-citations", "dep:scraper", "dep:ego-tree"]
 document-query = ["legal-structure/document-query", "dep:legal-document-query"]
 structure-inference = ["legal-structure/structure-inference"]
 # A document of A2AJ's, read from its API's records or from the local store (src/a2aj.rs).
@@ -31,6 +31,9 @@ sha2 = "0.10"
 unicode-normalization = "0.1"
 rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
 url = { version = "2.5", optional = true }
+# A CourtListener page's markup parsed as a browser parses it (courtlistener_page.rs), as legal-citations reads HTML.
+scraper = { version = "0.27", default-features = false, optional = true }
+ego-tree = { version = "0.11", optional = true }
 
 [build-dependencies]
 sha2 = "0.10"
@@ -39,3 +42,4 @@ sha2 = "0.10"
 name = "citator-graph"
 path = "src/bin/citator_graph.rs"
 required-features = ["citator-graph"]
+

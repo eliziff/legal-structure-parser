@@ -174,6 +174,7 @@ fn case_edges(case: &Case) -> (Vec<Edge>, u64, u64) {
         section_map: None,
         excerpt_of: None,
         require_report_start: case.dataset.eq_ignore_ascii_case("SCC"),
+        printed_pages: Vec::new(),
     }).map(|structure| {
         DocumentQuery::new().anchors(&structure, None)
             .filter(|anchor| anchor.kind() == DocumentKind::Paragraph && anchor.parent_label().is_none())

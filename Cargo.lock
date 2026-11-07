@@ -551,6 +551,7 @@ dependencies = [
 name = "legal-document-query"
 version = "0.1.0"
 dependencies = [
+ "legal-locator",
  "legal-structure-model",
  "regex",
  "serde",
@@ -580,12 +581,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "legal-locator"
+version = "0.1.0"
+dependencies = [
+ "legal-text",
+ "regex",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "legal-opinion-layer"
+version = "0.1.0"
+dependencies = [
+ "legal-citations",
+ "legal-structure",
+ "legal-structure-model",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "legal-structure"
 version = "0.1.0"
 dependencies = [
  "aho-corasick",
  "legal-citations",
  "legal-document-query",
+ "legal-locator",
  "legal-structure-model",
  "regex",
  "serde",
@@ -597,12 +620,14 @@ dependencies = [
 name = "legal-structure-features"
 version = "0.1.0"
 dependencies = [
+ "ego-tree",
  "legal-citations",
  "legal-document-query",
  "legal-structure",
  "legal-structure-model",
  "regex",
  "rusqlite",
+ "scraper",
  "serde",
  "serde_json",
  "sha2",
@@ -616,11 +641,9 @@ version = "0.1.0"
 dependencies = [
  "legal-layout",
  "legal-text",
- "regex",
  "serde",
  "serde_json",
  "sha2",
- "unicode-normalization",
 ]
 
 [[package]]

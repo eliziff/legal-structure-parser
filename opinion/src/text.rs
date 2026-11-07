@@ -877,13 +877,13 @@ pub(super) fn unshifted(text: &str) -> String {
     };
     lines.iter().enumerate().map(|(index, line)| {
         let lone = !marked[index] && past_shift(line) == 0 && line.chars().any(|c| c.is_ascii_uppercase()) && beside(index, -1) && beside(index, 1);
-        if !marked[index] && !lone {
-            return (*line).to_owned();
-        }
-        line.chars().map(|c| match c as u32 {
+        let from = if marked[index] || lone { Some(0) } else { line.find('\u{3}') };
+        let Some(from) = from else { return (*line).to_owned() };
+        let read = line[from..].chars().map(|c| match c as u32 {
             code @ 0x03..=0x61 if !matches!(c, '\n' | '\r' | '\t' | '\u{c}' | ' ') => char::from_u32(code + SHIFT).unwrap_or(c),
             _ => c,
-        }).collect()
+        }).collect::<String>();
+        format!("{}{read}", &line[..from])
     }).collect()
 }
 
@@ -1070,4 +1070,10 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
 
 pub(super) fn ended_sentence(body: &str) -> bool {
     body.trim_end_matches(['"', '”', '’', '\'', ')', ']']).ends_with(['.', ':', ';', '?', '!'])
+}
+
+/// A block of text that is finished, a note's call after its last stop included: "... (Vernon Supp. 2002).\n 5".
+pub(super) fn closed_text(body: &str) -> bool {
+    let body = body.trim_end();
+    ended_sentence(body) || ended_sentence(body.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end())
 }

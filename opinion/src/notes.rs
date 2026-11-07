@@ -396,9 +396,15 @@ pub(super) fn share_note_calls(layer: &mut OpinionLayer) {
     for indices in by_label.values().filter(|indices| indices.len() > 1) {
         let mut calls = indices.iter().flat_map(|&index| layer.notes[index].references.iter().copied()).collect::<Vec<_>>();
         calls.sort_by_key(|call| call.start);
-        if calls.len() == indices.len() {
-            for (&index, call) in indices.iter().zip(calls) {
-                layer.notes[index].references = vec![call];
+        // One call found twice, by the engine and through another rendition's copy of its note, a unit or two apart, is one call.
+        calls.dedup_by(|later, kept| later.start <= kept.end + 2);
+        if calls.len() <= indices.len() {
+            // In the text's order each opinion's series follows the last; a note left over, another rendition's copy set at the
+            // end, has no call of its own and takes none.
+            let mut order = indices.clone();
+            order.sort_by_key(|&index| layer.notes[index].start);
+            for (position, &index) in order.iter().enumerate() {
+                layer.notes[index].references = calls.get(position).copied().into_iter().collect();
             }
         }
     }

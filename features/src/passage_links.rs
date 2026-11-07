@@ -3,7 +3,7 @@
 //! legalSourceLinks.ts makes (buildLegalSourcePinpoint, citedPassageLink, and A2AJ Law Web's).
 
 use legal_structure::{canlii_case_url, canlii_law_url, DocumentKind, DocumentQuery, DocumentStructure, TextFragmentPlan};
-use legal_document_query::source_text_fragment_plan;
+use legal_document_query::{source_text_fragment_plan, TextFragmentPage};
 use regex::Regex;
 use std::sync::OnceLock;
 use legal_citations::reference_names::reference_name_ends;
@@ -12,6 +12,8 @@ use legal_citations::url::{
     publisher_glues_section_labels, publisher_may_repeat_passages, source_anchor, source_url,
 };
 use serde::{Deserialize, Serialize};
+use crate::courtlistener_page::{print_page, PrintedPage};
+pub use crate::courtlistener_page::{CourtListenerAnchor, CourtListenerCluster, CourtListenerOpinion};
 
 /// A PDF of the source a reader may be sent to instead of its page.
 #[derive(Clone, Debug, Deserialize)]
@@ -239,6 +241,224 @@ pub fn law_web_link(query: &DocumentQuery, structure: &DocumentStructure, citati
         return None;
     }
     Some(format!("{}#:~:{}", law_web_document(citation, doc_type), plan.directives.join("&")))
+}
+
+/// A case's page on CourtListener, read from its bulk data alone (courtlistener_page.rs prints it as CourtListener's code
+/// publishes it): the words the page prints (`text`, one line per block), which of them are page labels and note calls,
+/// and the places it can be linked at.
+pub struct CourtListenerPage {
+    page: TextFragmentPage,
+    marks: Vec<(usize, usize)>,
+    anchors: Vec<CourtListenerAnchor>,
+    article: usize,
+    /// The page's letters and digits, lowercase, marks left out; for each byte of them the byte of the text it came from.
+    letters: String,
+    source: Vec<u32>,
+}
+
+/// A word a reader's text glues to the star page before it ("*504light", "*427a" stays a page): the word alone.
+fn unglued_star(word: &str) -> &str {
+    let Some(rest) = word.strip_prefix('*') else { return word };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let tail = &rest[digits..];
+    if digits == 0 || tail.chars().count() <= 1 { word } else { tail }
+}
+
+fn percent_decoded(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%' && at + 2 < bytes.len() + 0 && at + 2 <= bytes.len() - 1 {
+            if let Ok(byte) = u8::from_str_radix(&value[at + 1..at + 3], 16) {
+                out.push(byte);
+                at += 3;
+                continue;
+            }
+        }
+        out.push(bytes[at]);
+        at += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn star_page(word: &str) -> bool {
+    word.strip_prefix('*').is_some_and(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+impl CourtListenerPage {
+    /// The page of a case from its bulk data.
+    pub fn new(cluster: &CourtListenerCluster) -> Self {
+        let PrintedPage { text, marks, anchors, article } = print_page(cluster);
+        let (mut letters, mut source) = (String::with_capacity(text.len()), Vec::with_capacity(text.len()));
+        let mut open = marks.iter().peekable();
+        for (at, character) in text.char_indices() {
+            while open.peek().is_some_and(|mark| mark.1 <= at) {
+                open.next();
+            }
+            if open.peek().is_some_and(|mark| mark.0 <= at) || !character.is_alphanumeric() {
+                continue;
+            }
+            for lower in character.to_lowercase() {
+                letters.push(lower);
+                source.resize(letters.len(), at as u32);
+            }
+        }
+        Self { page: TextFragmentPage::new(text), marks, anchors, article, letters, source }
+    }
+
+    /// The byte of the text where the opinion tab's article begins: above it the site's menu, sidebar and caption.
+    pub fn article_start(&self) -> usize {
+        self.article
+    }
+
+    pub fn text(&self) -> &str {
+        self.page.text()
+    }
+
+    pub fn marks(&self) -> &[(usize, usize)] {
+        &self.marks
+    }
+
+    pub fn anchors(&self) -> &[CourtListenerAnchor] {
+        &self.anchors
+    }
+
+    /// Where `words` print, read past marks, line ends and word breaks: the bytes of the text from their first to their
+    /// last, inside `within` where given.
+    fn locate(&self, words: &str, within: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        // A paragraph's printed number stands in a reader's text; a page holding that paragraph in another record's
+        // printing has none.
+        self.locate_words(words, within).or_else(|| {
+            let (first, rest) = words.trim_start().split_once(char::is_whitespace)?;
+            first.bytes().all(|byte| byte.is_ascii_digit()).then(|| self.locate_words(rest, within)).flatten()
+        })
+    }
+
+    fn locate_words(&self, words: &str, within: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        self.locate_after(words, within.map_or(0, |(start, _)| start), within.map(|(_, end)| end))
+    }
+
+    /// Where `words` print first at or after byte `after` of the text, ending by byte `limit` where given.
+    fn locate_after(&self, words: &str, after: usize, limit: Option<usize>) -> Option<(usize, usize)> {
+        // A reader's text may hold a star page ("stems *76 from"), left out of `letters` as a mark.
+        let wanted = words.split_whitespace().filter(|word| !star_page(word)).map(unglued_star).flat_map(str::chars)
+            .filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+        if wanted.is_empty() {
+            return None;
+        }
+        let from = self.source.partition_point(|&at| (at as usize) < after);
+        let found = from + self.letters[from..].find(&wanted)?;
+        let start = self.source[found] as usize;
+        let last = self.source[found + wanted.len() - 1] as usize;
+        let end = last + self.text()[last..].chars().next().map_or(0, char::len_utf8);
+        limit.is_none_or(|limit| end <= limit).then_some((start, end))
+    }
+
+    /// Where a quotation prints, as a reader may hold it: whole; else its pieces between elisions ("...", "* * *"), each
+    /// after the last; else from its first words to its last, where both print in order no further apart than the
+    /// quotation's own length allows (another printing of the same words: other line breaks, a corrected letter between).
+    fn printed_spans(&self, quote: &str, within: Option<(usize, usize)>) -> Vec<(usize, usize)> {
+        if let Some(span) = self.locate(quote, within).or_else(|| self.locate(quote, None)) {
+            return vec![span];
+        }
+        static ELISION: OnceLock<Regex> = OnceLock::new();
+        let elision = ELISION.get_or_init(|| Regex::new(r"\.\s?\.\s?\.|…|\*\s\*\s\*").unwrap());
+        let pieces = elision.split(quote).map(str::trim).filter(|piece| piece.split_whitespace().count() >= 3).collect::<Vec<_>>();
+        if pieces.len() >= 2 {
+            let mut after = within.map_or(0, |(start, _)| start);
+            let spans = pieces.iter().map_while(|piece| {
+                let span = self.locate_after(piece, after, None)?;
+                after = span.1;
+                Some(span)
+            }).collect::<Vec<_>>();
+            if spans.len() == pieces.len() {
+                return spans;
+            }
+        }
+        let words = quote.split_whitespace().filter(|word| !star_page(word)).collect::<Vec<_>>();
+        if words.len() < 12 {
+            return Vec::new();
+        }
+        let (head, tail) = (words[..6].join(" "), words[words.len() - 6..].join(" "));
+        let after = within.map_or(0, |(start, _)| start);
+        let Some(first) = self.locate_after(&head, after, None) else { return Vec::new() };
+        match self.locate_after(&tail, first.1, None) {
+            Some(last) if last.1 - first.0 <= quote.len() * 3 / 2 + 200 => vec![(first.0, last.1)],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether a text directive with no prefix finds its first term first inside one of `quotes` (each a slice of the
+    /// page's text), by letters and digits as a browser's search folds case and spacing.
+    fn starts_inside(&self, directive: &str, quotes: &[String]) -> bool {
+        let value = directive.strip_prefix("text=").unwrap_or(directive);
+        let mut terms = value.split(',');
+        let Some(first) = terms.next() else { return true };
+        if first.ends_with('-') {
+            return true;
+        }
+        let decoded = percent_decoded(first);
+        let Some(found) = self.locate_after(&decoded, 0, None) else { return true };
+        let text = self.text();
+        quotes.iter().filter_map(|quote| text.find(quote.as_str()).map(|at| (at, at + quote.len())))
+            .any(|(start, end)| start <= found.0 && found.0 < end)
+    }
+
+    /// The anchor of `kind` the page prints once, last at or before `words` of `block`: where a link to them lands.
+    pub fn anchor_before(&self, block: &str, words: &str, kind: &str) -> Option<&CourtListenerAnchor> {
+        let within = self.locate(block, None);
+        let (start, _) = self.locate(words, within).or_else(|| self.locate(words, None))?;
+        self.anchors.iter().filter(|anchor| anchor.kind == kind && anchor.at <= start).last().filter(|anchor| anchor.unique)
+    }
+}
+
+/// The passage's link on its CourtListener page at `url`, at `anchor` where given: the page's text is all a plan reads,
+/// from the case's bulk data, never from the page itself.
+pub fn courtlistener_link(page: &CourtListenerPage, url: &str, anchor: Option<&str>, block_text: &str, quotes: &[String])
+    -> Option<PassageLink> {
+    let base = source_url(url, anchor)?;
+    let text = page.text();
+    let block = page.locate(block_text, None);
+    // A star page inside the words splits them: a term that crosses it ("to *277 exercise") is matched by no page, so
+    // each side is a quotation of its own; so too a run of blanks ("action____").
+    let printed = quotes.iter().flat_map(|quote| page.printed_spans(quote, block)).flat_map(|(start, end)| {
+        let mut pieces = Vec::new();
+        let mut from = start;
+        // A mark inside a word ("stat*342ute", "*36to") leaves no word boundary beside it: the partial words go too.
+        let word = |c: char| c.is_alphanumeric();
+        for &(mark_start, mark_end) in page.marks.iter().filter(|(mark_start, mark_end)| start < *mark_start && *mark_end < end
+            && text[*mark_start..*mark_end].starts_with('*')) {
+            let mut left = mark_start;
+            if text[..mark_start].ends_with(word) {
+                left = text[from..mark_start].rfind(char::is_whitespace).map_or(from, |at| from + at);
+            }
+            pieces.push((from, left));
+            from = mark_end;
+            if text[mark_end..].starts_with(word) {
+                from = text[mark_end..end].find(char::is_whitespace).map_or(end, |at| mark_end + at);
+            }
+        }
+        pieces.push((from, end));
+        pieces.into_iter().flat_map(|(start, end)| text[start..end].split("__").map(|piece| piece.trim_matches(|c: char| c == '_' || c.is_whitespace()).to_owned())
+            .filter(|piece| piece.chars().any(char::is_alphanumeric)).collect::<Vec<_>>()).collect::<Vec<_>>()
+    }).collect::<Vec<_>>();
+    if printed.is_empty() {
+        return Some(PassageLink { target: base, plan: None });
+    }
+    let block = block.map_or_else(|| printed[0].clone(), |(start, end)| text[start..end].to_owned());
+    // A plain-text opinion wraps its lines with <br>, which no term may cross: a short quotation is its lines'.
+    let lined = printed.iter().flat_map(|quote| {
+        let lines = quote.split('\n').map(str::to_owned).collect::<Vec<_>>();
+        if (2..=3).contains(&lines.len()) { lines } else { vec![quote.clone()] }
+    }).collect::<Vec<_>>();
+    let mut plan = source_text_fragment_plan(&block, &page.page, &lined);
+    // Every directive's first word is found on the page first where the quotation stands, as a browser searches it;
+    // a plan of its lines that starts elsewhere ("U.S.C" before the one quoted) gives way to the plan of the whole.
+    if lined != printed && !plan.directives.iter().all(|directive| page.starts_inside(directive, &printed)) {
+        plan = source_text_fragment_plan(&block, &page.page, &printed);
+    }
+    Some(PassageLink { target: append_directives(&base, &plan.directives), plan: Some(plan) })
 }
 
 /// The characters Law Web's reader asks /fetch for first (document.js: `end_char: offset + CHUNK + 1`, CHUNK

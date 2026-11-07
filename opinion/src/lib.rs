@@ -20,6 +20,7 @@ mod readings;
 mod text;
 
 pub use checks::{layer_failures, layer_screens, quote_miss, receipt_miss};
+pub use pages::{citers_numbering, citers_page};
 use clean::*;
 use headings::*;
 use matter::*;
@@ -377,10 +378,14 @@ pub struct OpinionLayer {
 }
 
 fn structure_of(id: &str, plain: &str, markup: &str) -> Option<DocumentStructure> {
+    // The paragraph sign read through the wrong code page, byte B6 as Latin-2 or Thai: "ś 56", "2003 VT 34, ถ 7".
+    static MISREAD_SIGN: OnceLock<Regex> = OnceLock::new();
+    let misread = MISREAD_SIGN.get_or_init(|| Regex::new(r"(?m)(^|[\s>(\[])[śถ](\s?\d)").unwrap());
     // North Dakota's opinions spell the paragraph sign "[&amp;P&amp;12]".
-    let markup = markup.replace("&amp;P&amp;", "¶");
+    let markup = misread.replace_all(markup, "${1}¶${2}").replace("&amp;P&amp;", "¶");
+    let plain = misread.replace_all(plain, "${1}¶${2}");
     let input: NativeMarkupInput = serde_json::from_value(serde_json::json!({
-        "provider": "courtlistener", "id": id, "url": null, "text": plain, "markup": markup, "citation": null,
+        "provider": "courtlistener", "id": id, "url": null, "text": plain.as_ref(), "markup": markup, "citation": null,
     })).ok()?;
     analyze_native_markup(input).ok()
 }
@@ -469,6 +474,32 @@ impl OpinionLayer {
             cursor = cursor.max(end);
         }
         stretches
+    }
+
+    /// Where a passage falls in one numbering. Words in a note stand where the note is called; words past an estimated mark, or
+    /// in a numbering that has only its first page, stand on no page that can be named.
+    pub fn pin_at(&self, series: &str, start: usize, end: usize) -> Option<Pin> {
+        let middle = start + (end.saturating_sub(start)) / 2;
+        if let Some(note) = self.notes.iter().find(|note| note.ranges.iter().any(|range| range.start <= middle && middle < range.end)) {
+            // A note that runs on to the next page carries that page's mark: words past it are on that page, not the call's.
+            let run_on = self.pages.iter().filter(|page| page.in_note && page.series == series && page.source != "stray" && page.start <= middle
+                && note.ranges.iter().any(|range| range.start <= page.start && page.start < range.end)).max_by_key(|page| page.start);
+            if let Some(pin) = note.pins.iter().find(|pin| pin.series == series) {
+                return Some(run_on.map_or_else(|| pin.clone(), |page| Pin { page: page.label.clone(), through: None, ..pin.clone() }));
+            }
+            // A note whose call names no page in this numbering: where its words happen to stand in the text says nothing.
+            if note.references.first().is_some() && note.pins.is_empty() {
+                return None;
+            }
+        }
+        pages::pins_of(&pages::pin_table(self), start, end).into_iter().find(|pin| pin.series == series)
+    }
+
+    /// The paragraph numbers a passage falls under, first and last. Text between numbers, a block quotation's lead-out, is the
+    /// paragraph above it.
+    pub fn numbers_at(&self, start: usize, end: usize) -> Option<(String, String)> {
+        let under = |place: usize| self.paragraphs[..self.paragraphs.partition_point(|paragraph| paragraph.start <= place)].iter().rev().find_map(|paragraph| paragraph.number.as_deref().map(|number| number.trim_matches(['(', ')', '[', ']', '{', '}', '.']).to_owned()));
+        Some((under(start)?, under(end)?))
     }
 
     /// What is left in the text of two faults of the source: letters in the shifted font, and runs of a pleading's line numbers
@@ -683,7 +714,8 @@ fn place_by_number(layer: &mut OpinionLayer, series: &str, labels: Vec<String>) 
     let text_end = utf16_len(&layer.text);
     let word_places = word_starts(&layer.text).into_iter().map(|word| word.1).collect::<Vec<_>>();
     for (number, label) in numbered {
-        if !joined.contains(&number) {
+        let past_the_last = !pages.is_empty() && pages.iter().all(|page| page.0 < number);
+        if !joined.contains(&number) || past_the_last {
             layer.pages.push(OpinionPage { label, series: series.to_owned(), start: text_end, end: text_end, marker: None, source: "stray", in_note: false });
             continue;
         }
@@ -765,7 +797,7 @@ fn complete(mut layer: OpinionLayer, record: &OpinionRecord, plain: &str) -> Opi
             start: 0, end: utf16_len(&layer.text),
         });
     }
-    finish(&mut layer);
+    finish(&mut layer, &record);
     layer
 }
 
@@ -964,6 +996,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
         page.in_note = note_ranges.iter().any(|note| note.start <= page.start && page.start < note.end);
         page.marker = page.marker.or_else(|| printed_mark(&coordinates, page.start, page.end, &page.label));
     }
+    pages::never_down(structure, &mut pages);
     let page_marks = pages.iter().filter_map(|page| page.marker).collect::<Vec<_>>();
     // A range's words without the page marks in it: "*223III." is "III.".
     let bare = |range: ScalarRange| {
@@ -1031,7 +1064,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
             continue;
         }
         if !headings.iter().any(|heading| heading.start < range.end && range.start < heading.end) && node.marker_range.is_none() {
-            let after_a_sentence = paragraphs.last().is_none_or(|last: &OpinionParagraph| !last.quote && text::ended_sentence(span(ScalarRange { start: last.start, end: last.end })));
+            let after_a_sentence = paragraphs.last().is_none_or(|last: &OpinionParagraph| !last.quote && text::closed_text(span(ScalarRange { start: last.start, end: last.end })));
             let opened = trim_js(&printed);
             let whole_title = enumerator_end(opened).is_some_and(|end| title_cased(&opened[end..])) && sentences(opened).len() == 1;
             let alone = whole_title || after_a_sentence && (!text::ended_sentence(opened) || (opened.ends_with('.') && printed.split_whitespace().count() <= 3));
@@ -1516,10 +1549,39 @@ fn quotes_from_elsewhere(layer: &mut OpinionLayer) {
     }
 }
 
-fn finish(layer: &mut OpinionLayer) {
+/// A note found late, by answering its call, can still stand among the paragraphs: its words belong to the note.
+fn notes_out_of_the_body(layer: &mut OpinionLayer) {
+    /// How much of a paragraph must lie in notes for it to be theirs, in fifths.
+    const MOSTLY: usize = 4;
+    let mut ranges = layer.notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
+    ranges.sort_by_key(|range| range.start);
+    layer.paragraphs.retain(|paragraph| {
+        let first = ranges.partition_point(|range| range.end <= paragraph.start);
+        let held = ranges[first..].iter().take_while(|range| range.start < paragraph.end).map(|range| range.end.min(paragraph.end).saturating_sub(range.start.max(paragraph.start))).sum::<usize>();
+        held * 5 < (paragraph.end - paragraph.start) * MOSTLY
+    });
+}
+
+/// Another rendition's marks set ahead of the opinion's first words, "*508" in a heading our text does not hold, were estimated at
+/// its start and named no page. The one just below the first mark placed is the page the opinion opens on; any before it, strays.
+fn opening_from_other_renditions(layer: &mut OpinionLayer) {
+    let from_elsewhere = layer.pages.iter().filter(|page| page.source == "other-rendition").map(|page| page.series.clone()).collect::<HashSet<_>>();
+    for series in from_elsewhere {
+        let first_placed = layer.pages.iter().filter(|page| page.series == series && page.source == "other-rendition").min_by_key(|page| page.start).and_then(|page| page_number(&page.label));
+        let Some(first_placed) = first_placed else { continue };
+        let ahead = layer.pages.iter().enumerate().filter(|(_, page)| page.series == series && page.source == "reckoned" && page.start == 0).filter_map(|(at, page)| Some((at, page_number(&page.label)?))).collect::<Vec<_>>();
+        let opening = ahead.iter().filter(|mark| mark.1 + 1 == first_placed).map(|mark| mark.0).next();
+        for (at, _) in &ahead {
+            layer.pages[*at].source = if Some(*at) == opening { "opening" } else { "stray" };
+        }
+    }
+}
+
+fn finish(layer: &mut OpinionLayer, record: &OpinionRecord) {
+    opening_from_other_renditions(layer);
     quotes_from_elsewhere(layer);
     flag_pages_in_notes(layer);
-    page_series(layer);
+    page_series(layer, record);
     close_pages(layer);
     tidy_paragraphs(layer);
     label_notes(layer);
@@ -1535,6 +1597,7 @@ fn finish(layer: &mut OpinionLayer) {
     reporter_matter(layer);
     cover_matter(layer);
     read_the_text(layer);
+    notes_out_of_the_body(layer);
     place_on_pages(layer);
 }
 
@@ -1586,9 +1649,10 @@ fn close_pages(layer: &mut OpinionLayer) {
         });
     }
     opening_page_first(layer);
+    // A page opened twice is one page; a moved block's page is its block's alone and leaves the opinion's page as it was.
     let mut opened = HashSet::new();
     let pages = std::mem::take(&mut layer.pages);
-    layer.pages = pages.into_iter().filter(|page| page.in_note || !page.series.starts_with("reporter") || page.source == "stray" || opened.insert((page.series.clone(), page.label.clone()))).collect();
+    layer.pages = pages.into_iter().filter(|page| page.in_note || !page.series.starts_with("reporter") || page.source == "stray" || page.source == "moved" || opened.insert((page.series.clone(), page.label.clone()))).collect();
     let count = layer.pages.len();
     for index in 0..count {
         if layer.pages[index].end == 0 || matches!(layer.pages[index].source, "other-rendition" | "reckoned") {
@@ -1702,6 +1766,9 @@ fn read_the_text(layer: &mut OpinionLayer) {
     name_dates(&mut layer.front);
 }
 
+/// How near the next page a note's call may stand, in UTF-16 units (a line and a half), before its note's page is in doubt.
+const CALL_AT_FOOT: usize = 120;
+
 /// The lead numbering's page of everything found, its pins in every numbering, and each paragraph's part.
 fn place_on_pages(layer: &mut OpinionLayer) {
     let of_the_opinion = |page: &&OpinionPage| !page.in_note && page.source != "stray";
@@ -1725,11 +1792,16 @@ fn place_on_pages(layer: &mut OpinionLayer) {
         paragraph.page = page_at(paragraph.start);
         paragraph.part = layer.parts.iter().position(|part| part.start <= paragraph.start && paragraph.start < part.end);
     }
-    // A note's page is its call's: the notes of a text set at its end are still on the page that calls them.
+    // A note's page is its call's: the notes of a text set at its end are still on the page that calls them. But a call on a
+    // page's last line can have its note set on the next page, or run on to it; a source that marks where notes run on (Harvard)
+    // says so, and one that marks no page inside any note cannot: there a call that close to the next page names no page.
+    let marks_run_ons = layer.pages.iter().any(|page| page.in_note && page.source != "stray");
+    let next_turn = |offset: usize| lead_pages.get(lead_pages.partition_point(|page| page.0 <= offset)).map(|page| page.0);
     for note in &mut layer.notes {
         let call = note.references.first().map_or(note.start, |call| call.start);
-        note.page = page_at(call);
-        note.pins = pins_of(&table, call, call + 1);
+        let at_foot = !marks_run_ons && note.references.first().is_some() && next_turn(call).is_some_and(|turn| turn - call <= CALL_AT_FOOT);
+        note.page = if at_foot { None } else { page_at(call) };
+        note.pins = if at_foot { Vec::new() } else { pins_of(&table, call, call + 1) };
     }
     for mark in &mut layer.headnote_marks {
         mark.page = page_at(mark.start);

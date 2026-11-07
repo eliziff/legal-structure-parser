@@ -23,6 +23,14 @@ pub enum ProviderTextSourceKind {
 /// A section map is ordered provider data, not a generic JSON object.
 pub type ProviderSectionMap = Vec<(String, String)>;
 
+/// A page a printed report gives the text: the number it prints and the stretch of the text it holds, in scalars.
+#[derive(Clone, Deserialize)]
+pub struct ProviderPage {
+    pub label: String,
+    pub start: usize,
+    pub end: usize,
+}
+
 #[derive(Deserialize)]
 pub struct ProviderTextInput {
     pub provider: Option<String>,
@@ -38,6 +46,8 @@ pub struct ProviderTextInput {
     pub excerpt_of: Option<String>,
     #[serde(default)]
     pub require_report_start: bool,
+    #[serde(default)]
+    pub printed_pages: Vec<ProviderPage>,
 }
 
 impl ProviderTextInput {
@@ -59,6 +69,7 @@ impl ProviderTextInput {
             section_map: None,
             excerpt_of: None,
             require_report_start: false,
+            printed_pages: Vec::new(),
         }
     }
 }
@@ -155,6 +166,20 @@ fn provider_source(mut text: String, entries: &[(&str, &str)]) -> (String, Vec<N
         });
     }
     (text, claims)
+}
+
+/// The pages a printed report gives the text, claimed as a journal's pages are.
+fn printed_page_claims(pages: &[ProviderPage], length: usize) -> Vec<NativeClaim> {
+    pages.iter().filter(|page| page.start < page.end && page.end <= length).enumerate().map(|(index, page)| NativeClaim {
+        id: format!("page-{:06}", index + 1),
+        kind: EvidenceKind::Page,
+        label: Some(format!("page{}", page.label)),
+        aliases: vec![page.label.clone()],
+        range: ScalarRange { start: page.start, end: page.end },
+        origin_id: ORIGIN,
+        parent_label: None,
+        anchor: None,
+    }).collect()
 }
 
 fn provider_claims(coordinates: &ScalarText<'_>, map: &ProviderSectionMap) -> Vec<NativeClaim> {
@@ -490,6 +515,7 @@ pub fn provider_text_document_structure(
     if let (true, Some(map)) = (has_text, &input.section_map) {
         evidence.native_claims = provider_claims(&coordinates, map);
     }
+    evidence.native_claims.extend(printed_page_claims(&input.printed_pages, coordinates.len()));
     evidence.coverage = crate::whole_document_coverage(coordinates.len(), |kind| {
         if kind == EvidenceKind::Section && !evidence.native_claims.is_empty() {
             CoverageState::Augment
