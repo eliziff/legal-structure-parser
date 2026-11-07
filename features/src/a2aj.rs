@@ -461,9 +461,14 @@ mod store {
     /// The pages a report's print gives a document's text, read off its PDF: reporter-pages.sqlite beside the store, a row
     /// (document_id, language, pages) with pages [[number, start, end], ...]. None where the file or the row is absent.
     pub fn reporter_pages(store: &Path, id: i64, language: Language) -> Vec<ProviderPage> {
-        let Ok(connection) = Connection::open_with_flags(store.with_file_name("reporter-pages.sqlite"), OpenFlags::SQLITE_OPEN_READ_ONLY) else { return Vec::new() };
-        let pages: Option<String> = connection.query_row("SELECT pages FROM reporter_pages WHERE document_id = ? AND language = ?",
-            rusqlite::params![id, language.code()], |row| row.get(0)).ok();
+        // One connection to each store's file, opened at its first read (a document is read many times a run).
+        static OPEN: std::sync::OnceLock<std::sync::Mutex<HashMap<std::path::PathBuf, Option<Connection>>>> = std::sync::OnceLock::new();
+        let file = store.with_file_name("reporter-pages.sqlite");
+        let mut open = OPEN.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(connection) = open.entry(file.clone())
+            .or_insert_with(|| Connection::open_with_flags(&file, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()) else { return Vec::new() };
+        let pages: Option<String> = connection.prepare_cached("SELECT pages FROM reporter_pages WHERE document_id = ? AND language = ?")
+            .and_then(|mut statement| statement.query_row(rusqlite::params![id, language.code()], |row| row.get(0))).ok();
         pages.and_then(|pages| serde_json::from_str::<Vec<(i64, usize, usize)>>(&pages).ok()).unwrap_or_default().into_iter()
             .map(|(number, start, end)| ProviderPage { label: number.to_string(), start, end }).collect()
     }
