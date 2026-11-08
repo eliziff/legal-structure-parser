@@ -4,7 +4,7 @@ use legal_structure_model::layout::{self, line_font_size, Diagnostic, Line, Page
 use legal_structure_model::{Derivation, NodeKind, NotePairing, ScalarRange, StructureNode, NOTE_PAIRING_ORIGIN};
 use crate::{select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy};
 use legal_structure_model::{
-    normalize_decimal_digit, normalize_note_symbol, ScalarText,
+    normalize_decimal_digit, normalize_note_symbol, utf16_len, ScalarText,
 };
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -60,7 +60,11 @@ struct PairLine<'a> {
     page_width: f64,
     page_height: f64,
     zone: Zone,
+    /// The citations the line holds, in UTF-16 code units of its text.
     citation_spans: &'a [ScalarRange],
+    /// Where each of its characters stands in UTF-16, and its end: the pairer reads a line by its characters, as its
+    /// layout does, and places what it finds in UTF-16.
+    units: Vec<usize>,
     outline_spans: Vec<(usize, usize)>,
     note_column_fit: bool,
     small_font: bool,
@@ -85,10 +89,16 @@ impl PairLine<'_> {
         self.region_type == "footnote" && !self.note_region_mode.is_empty() && self.height() > 0.0
     }
 
+    /// Where a character of the line stands in UTF-16.
+    fn unit(&self, at: usize) -> usize {
+        self.units[at.min(self.units.len() - 1)]
+    }
+
     fn protected(&self, start: usize, end: usize) -> bool {
+        let (from, to) = (self.unit(start), self.unit(end));
         self.citation_spans
             .iter()
-            .any(|span| start < span.end && end > span.start)
+            .any(|span| from < span.end && to > span.start)
             || overlaps(&self.outline_spans, start, end)
     }
 }
@@ -354,6 +364,10 @@ fn build_lines<'a>(
                 citation_spans: protected_citation_spans
                     .get(&line.id)
                     .map_or(&[], Vec::as_slice),
+                units: std::iter::once(0).chain(line.text.chars().scan(0, |unit, character| {
+                    *unit += character.len_utf16();
+                    Some(*unit)
+                })).collect(),
                 outline_spans: Vec::new(),
                 note_column_fit: false,
                 small_font: false,
@@ -412,7 +426,7 @@ fn build_lines<'a>(
 }
 
 /// A laid-out document's notes paired with their calls, each a node placed in the reader's text by `place` (a line's id
-/// and a range of its characters), with what the pairing found wanting. The lines of each `part` (a constituent document
+/// and a range of its text in UTF-16 code units), with what the pairing found wanting. The lines of each `part` (a constituent document
 /// or language) are paired on their own, the parts in their order: the notes' ids count on across them, and so do their
 /// numberings' restarts. The notes come in the order their labels stand in the reader's text.
 pub fn pair_footnotes(

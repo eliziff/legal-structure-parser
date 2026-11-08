@@ -313,8 +313,8 @@ pub(super) fn section_mark(
     Some(SectionMark {
         style: section_style(&label, trailing),
         label,
-        start: text.scalar(line.byte_start + lead),
-        content_start: text.scalar(line.byte_end - content.len()),
+        start: text.utf16_of_byte(line.byte_start + lead),
+        content_start: text.utf16_of_byte(line.byte_end - content.len()),
         family,
         aliases: Vec::new(),
     })
@@ -419,7 +419,7 @@ pub(super) fn collect_section_families(
         r"^\d{1,2}(?:[-–]\d{1,2})?\s+(?:ELIZ|Eliz|GEO|Geo|EDW|Edw|VICT|Vict|WILL|Will)\.?\s+(?:\d{1,2}|[IVX]{1,5})\.?$"
     );
     let running = |mark: &SectionMark| {
-        let start = text.byte(mark.start);
+        let start = text.byte_of_utf16(mark.start);
         let end = text.value[start..]
             .find('\n')
             .map_or(text.value.len(), |at| start + at);
@@ -607,7 +607,7 @@ pub(super) fn choose_sections<'a>(
 
 pub(super) fn section_guard(value: &[&SectionMark], text: &ScalarText<'_>) -> bool {
     let length = text.utf16_len();
-    !value.is_empty() && length > 0 && text.utf16(value[0].start) as f64 / length as f64 <= 0.7
+    !value.is_empty() && length > 0 && value[0].start as f64 / length as f64 <= 0.7
 }
 
 /// Where a walk over a text's section scopes stands: no scope yet, one leading, or the leader met by a scope reading
@@ -628,7 +628,7 @@ pub(super) fn scope_winner<'a>(
         if scope.first().is_some_and(|value| {
             value.style != SectionStyle::DotTerm && section_key(&value.label).count() == 1
         }) {
-            expand_descendants(scope, marks, text.len())
+            expand_descendants(scope, marks, text.utf16_len())
         } else {
             scope
         }
@@ -648,7 +648,7 @@ pub(super) fn scope_winner<'a>(
         // is the body.
         let listed = |scope: &[&SectionMark]| {
             scope.windows(2).all(|pair| {
-                let (from, to) = (text.byte(pair[0].content_start), text.byte(pair[1].start));
+                let (from, to) = (text.byte_of_utf16(pair[0].content_start), text.byte_of_utf16(pair[1].start));
                 from <= to
                     && !text.value[from..to]
                         .lines()
@@ -710,7 +710,7 @@ pub(super) fn statute_winner<'a>(
 }
 
 pub(super) fn inline_section(text: &ScalarText<'_>, mark: &SectionMark) -> bool {
-    let start = text.byte(mark.content_start);
+    let start = text.byte_of_utf16(mark.content_start);
     let end = text.value[start..]
         .find('\n')
         .map_or(text.value.len(), |value| start + value);
@@ -718,7 +718,7 @@ pub(super) fn inline_section(text: &ScalarText<'_>, mark: &SectionMark) -> bool 
 }
 
 pub(super) fn next_nonblank<'a>(source: &'a [Line<'a>], start: usize) -> Option<&'a Line<'a>> {
-    source[source.partition_point(|line| line.scalar_start <= start)..]
+    source[source.partition_point(|line| line.start <= start)..]
         .iter()
         .find(|line| !line.text.trim().is_empty())
 }
@@ -744,8 +744,8 @@ pub(super) fn short_root(
         if matches!(value, "1" | "2") {
             candidates.push(SectionMark {
                 label: value.to_owned(),
-                start: line.scalar_start + leading_ascii_space(line.text),
-                content_start: text.scalar(line.byte_end),
+                start: line.start + leading_ascii_space(line.text),
+                content_start: text.utf16_of_byte(line.byte_end),
                 style: SectionStyle::Integer,
                 family: SectionFamily::Bare,
                 aliases: Vec::new(),
@@ -754,7 +754,7 @@ pub(super) fn short_root(
     }
     let mut invalid = false;
     for marker in &mut candidates {
-        let start = text.byte(marker.content_start);
+        let start = text.byte_of_utf16(marker.content_start);
         let end = text.value[start..]
             .find('\n')
             .map_or(text.value.len(), |value| start + value);
@@ -772,7 +772,7 @@ pub(super) fn short_root(
             if !heading.is_match(next_value) && !parenthetical && !status.is_match(next_value) {
                 invalid = true;
             } else {
-                marker.content_start = next.scalar_start + leading_ascii_space(next.text);
+                marker.content_start = next.start + leading_ascii_space(next.text);
             }
         }
     }
@@ -793,7 +793,7 @@ pub(super) fn short_root(
     if twos.next().is_some() || two.is_some_and(|two| two.start <= one.start) {
         return Vec::new();
     }
-    let accepted = text.utf16(one.start) as f64 / text.utf16_len().max(1) as f64 <= 0.7;
+    let accepted = one.start as f64 / text.utf16_len().max(1) as f64 <= 0.7;
     if accepted {
         candidates
     } else {
@@ -848,7 +848,7 @@ pub(super) fn statute_spine_over(
             .copied()
             .collect::<Vec<_>>();
         marks.sort_by_key(|value| value.start);
-        expand_descendants(best, &marks, text.len())
+        expand_descendants(best, &marks, text.utf16_len())
     } else {
         best
     };
@@ -868,7 +868,7 @@ pub(super) fn statute_spine_from_lines(
         let mut last = None::<String>;
         marks.retain(|mark| {
             let repeated = last.as_deref() == Some(mark.label.as_str())
-                && repeated_subsection(&text.value[text.byte(mark.content_start)..]);
+                && repeated_subsection(&text.value[text.byte_of_utf16(mark.content_start)..]);
             last = Some(mark.label.clone());
             !repeated
         });
@@ -938,8 +938,8 @@ pub(super) fn emphasis_sections(text: &ScalarText<'_>, source: &[Line<'_>]) -> V
         }
         candidates.push(SectionMark {
             label: label.to_owned(),
-            start: line.scalar_start + lead,
-            content_start: line.scalar_start
+            start: line.start + lead,
+            content_start: line.start
                 + lead
                 + 2
                 + label.len()
@@ -975,7 +975,7 @@ pub(super) fn emphasis_sections(text: &ScalarText<'_>, source: &[Line<'_>]) -> V
         }
     }
     let length = text.utf16_len();
-    let start = text.utf16(result[0].start);
+    let start = result[0].start;
     if start as f64 / length.max(1) as f64 > 0.7
         || (length - start) as f64 / (length.max(1) as f64) < 0.1
     {
@@ -1020,8 +1020,8 @@ pub(super) fn status_sections(text: &ScalarText<'_>, allow_hyphen: bool) -> Vec<
             let whole = capture.get(0).unwrap();
             Some(SectionMark {
                 label: from.to_string(),
-                start: text.scalar(line_start + whole.start() + leading_ascii_space(whole.as_str())),
-                content_start: text.scalar(line_start + whole.end()),
+                start: text.utf16_of_byte(line_start + whole.start() + leading_ascii_space(whole.as_str())),
+                content_start: text.utf16_of_byte(line_start + whole.end()),
                 style: SectionStyle::Integer,
                 family: SectionFamily::Range,
                 aliases: (from + 1..=to).map(|value| value.to_string()).collect(),
@@ -1213,7 +1213,7 @@ pub(super) fn detect_legislation(
     for (index, section) in sections.iter().enumerate() {
         let end = sections
             .get(index + 1)
-            .map_or(text.len(), |value| value.start);
+            .map_or(text.utf16_len(), |value| value.start);
         let end = schedule_start(text, section.content_start, end);
         let parent = format!("sec{}", section.label);
         let mut top = crate::labelled_node(NodeKind::Section, parent.clone(), section.start, end);
@@ -1257,7 +1257,7 @@ pub(super) fn detect_legislation(
             continue;
         }
         let value = text
-            .slice(claim.range.start..claim.range.end)
+            .slice_utf16(claim.range.start..claim.range.end)
             .expect("native claim range is bounded");
         let lead = leading_ascii_space(value);
         let content_start = value[lead..]

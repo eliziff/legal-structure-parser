@@ -71,11 +71,12 @@ fn prose_block(range: ScalarRange) -> StructureNode {
     StructureNode::new(String::new(), NodeKind::Prose, range, ENGINE_ORIGIN, Derivation::Heuristic, None)
 }
 
+/// A line of the text: its bytes, where it starts in UTF-16, and its text.
 #[derive(Clone, Copy)]
 struct Line<'a> {
     byte_start: usize,
     byte_end: usize,
-    scalar_start: usize,
+    start: usize,
     text: &'a str,
 }
 
@@ -83,42 +84,41 @@ fn lines<'a>(text: &'a ScalarText<'a>) -> impl Iterator<Item = Line<'a>> + 'a {
     text.lines().iter().map(move |line| Line {
         byte_start: line[0],
         byte_end: line[1],
-        scalar_start: line[2],
+        start: line[2],
         text: &text.value[line[0]..line[1]],
     })
 }
 
 fn javascript_lines<'a>(text: &'a ScalarText<'a>) -> Vec<Line<'a>> {
-    // This is JavaScript regexp line segmentation, not coordinate conversion:
-    // CRLF is one break while its two source scalars remain counted.
+    // This is JavaScript regexp line segmentation: CRLF is one break while its two units remain counted.
     let mut result = Vec::new();
     let mut chars = text.value.char_indices().peekable();
-    let (mut byte_start, mut scalar_start, mut scalar) = (0, 0, 0);
+    let (mut byte_start, mut start, mut unit) = (0, 0, 0);
     while let Some((byte, character)) = chars.next() {
         if matches!(character, '\r' | '\n' | '\u{2028}' | '\u{2029}') {
             result.push(Line {
                 byte_start,
                 byte_end: byte,
-                scalar_start,
+                start,
                 text: &text.value[byte_start..byte],
             });
-            scalar += 1;
+            unit += 1;
             let mut next_byte = byte + character.len_utf8();
             if character == '\r' && chars.peek().is_some_and(|(_, next)| *next == '\n') {
                 let (next, _) = chars.next().unwrap();
                 next_byte = next + 1;
-                scalar += 1;
+                unit += 1;
             }
             byte_start = next_byte;
-            scalar_start = scalar;
+            start = unit;
         } else {
-            scalar += 1;
+            unit += character.len_utf16();
         }
     }
     result.push(Line {
         byte_start,
         byte_end: text.value.len(),
-        scalar_start,
+        start,
         text: &text.value[byte_start..],
     });
     result

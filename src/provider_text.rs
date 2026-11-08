@@ -23,7 +23,8 @@ pub enum ProviderTextSourceKind {
 /// A section map is ordered provider data, not a generic JSON object.
 pub type ProviderSectionMap = Vec<(String, String)>;
 
-/// A page a printed report gives the text: the number it prints and the stretch of the text it holds, in scalars.
+/// A page a printed report gives the text: the number it prints and the stretch of the text it holds, in Unicode scalars
+/// as the store of pages records it.
 #[derive(Clone, Deserialize)]
 pub struct ProviderPage {
     pub label: String,
@@ -150,34 +151,32 @@ fn provider_source(mut text: String, entries: &[(&str, &str)]) -> (String, Vec<S
     text.clear();
     text.reserve(entries.iter().map(|(_, value)| value.len() + 1).sum());
     let mut claims = Vec::with_capacity(entries.len());
-    let mut scalar = 0;
+    let mut offset = 0;
     for (label, value) in entries.iter().filter(|(_, value)| {
         !value.trim().is_empty() && !value.trim().eq_ignore_ascii_case("[blank]")
     }) {
         if !text.is_empty() {
             text.push('\n');
-            scalar += 1;
+            offset += 1;
         }
-        let start = scalar;
+        let start = offset;
         text.push_str(value);
-        scalar += value.chars().count();
+        offset += utf16_len(value);
         claims.push(provided(
             format!("native-{:06}", claims.len() + 1),
             NodeKind::Section,
             format!("sec{}", label.trim()),
-            ScalarRange { start, end: scalar },
+            ScalarRange { start, end: offset },
         ));
     }
     (text, claims)
 }
 
-/// The pages a printed report gives the text, claimed as a journal's pages are.
-fn printed_page_claims(pages: &[ProviderPage], length: usize) -> Vec<StructureNode> {
-    pages.iter().filter(|page| page.start < page.end && page.end <= length).enumerate().map(|(index, page)| {
-        let range = ScalarRange { start: page.start, end: page.end };
-        let mut node = provided(format!("page-{:06}", index + 1), NodeKind::Page, format!("{}", page.label), range);
-        node.aliases = Some(vec![page.label.clone()]);
-        node
+/// The pages a printed report gives the text, claimed as a journal's pages are, their stretches read in UTF-16.
+fn printed_page_claims(coordinates: &ScalarText<'_>, pages: &[ProviderPage]) -> Vec<StructureNode> {
+    let utf16 = |page: &ProviderPage| Some(ScalarRange { start: coordinates.utf16_at_scalar(page.start)?, end: coordinates.utf16_at_scalar(page.end)? });
+    pages.iter().filter(|page| page.start < page.end).filter_map(|page| Some((page, utf16(page)?))).enumerate().map(|(index, (page, range))| {
+        provided(format!("page-{:06}", index + 1), NodeKind::Page, page.label.clone(), range)
     }).collect()
 }
 
@@ -242,8 +241,8 @@ fn provider_claims(coordinates: &ScalarText<'_>, map: &ProviderSectionMap) -> Ve
             NodeKind::Section,
             format!("sec{label}"),
             ScalarRange {
-                start: coordinates.scalar(start),
-                end: coordinates.scalar(start + value.len()),
+                start: coordinates.utf16_of_byte(start),
+                end: coordinates.utf16_of_byte(start + value.len()),
             },
         ));
     }
@@ -409,8 +408,8 @@ fn apply_provider_section_evidence(
         let candidates = top_sections.get(&key).map(Vec::as_slice).unwrap_or(&[]);
         if candidates.len() == 1 {
             let index = candidates[0];
-            if spans[0].1 < coordinates.utf16(blocks[index].range.start)
-                || spans[0].2 > coordinates.utf16(blocks[index].range.end)
+            if spans[0].1 < blocks[index].range.start
+                || spans[0].2 > blocks[index].range.end
             {
                 continue;
             }
@@ -438,8 +437,8 @@ fn apply_provider_section_evidence(
             let mut block = crate::labelled_node(
                 NodeKind::Section,
                 provider_label,
-                coordinates.scalar_at_utf16(start).unwrap(),
-                coordinates.scalar_at_utf16(body_utf16_end).unwrap(),
+                start,
+                body_utf16_end,
             );
             block.source = Derivation::Native;
             block.origin_id = ORIGIN.into();
@@ -508,7 +507,7 @@ pub(crate) fn provider_text_reading(
     if let (true, Some(map)) = (has_text, &input.section_map) {
         evidence.structure.nodes = provider_claims(&coordinates, map);
     }
-    evidence.structure.nodes.extend(printed_page_claims(&input.printed_pages, coordinates.len()));
+    evidence.structure.nodes.extend(printed_page_claims(&coordinates, &input.printed_pages));
     let mut inferred = crate::inference::inferred_blocks(&evidence, &coordinates);
     if let (ProviderTextSourceKind::Laws, true, Some(map)) =
         (input.source_kind, has_text, input.section_map.as_ref())

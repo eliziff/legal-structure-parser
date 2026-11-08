@@ -1,13 +1,12 @@
 use super::*;
 
 /// The structure from a reader's evidence: its own nodes, with what inference finds (or the blocks it was given in
-/// place of inference), each node's parent resolved from the label (or id) it names, ranges in UTF-16. The reader takes
+/// place of inference), each node's parent resolved from the label (or id) it names. The reader takes
 /// its revision once it has set all it adds.
 pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNode>>) -> DocumentStructure {
-    let coordinates = ScalarText::new(&evidence.structure.text);
     #[cfg(feature = "structure-inference")]
     let inferred = precomputed.unwrap_or_else(|| {
-        inference::inferred_blocks(&evidence, &coordinates)
+        inference::inferred_blocks(&evidence, &ScalarText::new(&evidence.structure.text))
     });
     #[cfg(not(feature = "structure-inference"))]
     let inferred = precomputed.unwrap_or_default();
@@ -106,8 +105,6 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
                 .map(|parent_position| nodes[parent_position].id.clone());
         }
     }
-    DocumentStructure::project_scalar_parts(&coordinates, &mut nodes);
-    drop(coordinates);
     // A statute is addressed by its printed labels, each provision under the outermost its label's chain reaches; and
     // every node's level is written once its parents stand.
     if evidence.profile == DetectionProfile::Legislation {

@@ -4,12 +4,12 @@
 //! zone, and the lines a paragraph count numbers are paragraph labels the pairer may overturn.
 
 use crate::note_pairing::pair_footnotes;
-use crate::{NodeKind, ScalarRange, ScalarText, StructureNode};
+use crate::{utf16_len, NodeKind, ScalarRange, ScalarText, StructureNode};
 use legal_citations::cues;
 use legal_structure_model::layout::{Line, Page};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-/// The notes of a text whose note list may open at `note_start` (a scalar offset at a line's start),
+/// The notes of a text whose note list may open at `note_start` (an offset at a line's start),
 /// each a block from its label to its last body line, its note carrying the calls the pairer paired
 /// it with. `paragraph_labels` are the starts of the lines a paragraph count numbers.
 pub(crate) fn text_note_blocks(
@@ -32,8 +32,8 @@ pub(crate) fn text_note_blocks(
             let spans = cues::layout_protected_spans(value)
                 .into_iter()
                 .map(|span| ScalarRange {
-                    start: characters.scalar(span.start),
-                    end: characters.scalar(span.end),
+                    start: characters.utf16_of_byte(span.start),
+                    end: characters.utf16_of_byte(span.end),
                 })
                 .collect::<Vec<_>>();
             if !spans.is_empty() {
@@ -100,7 +100,7 @@ pub(crate) fn text_note_blocks(
         }
         expected += 1;
         if !paired.contains(&line[2]) {
-            let start = line[2] + value[..lead].chars().count();
+            let start = line[2] + utf16_len(&value[..lead]);
             notes.push((ScalarRange { start, end: start + length }, line[2], number.to_string(), Vec::new()));
         }
     }
@@ -109,12 +109,12 @@ pub(crate) fn text_note_blocks(
     for (position, (label_range, _, label, references)) in notes.iter().enumerate() {
         let next = notes
             .get(position + 1)
-            .map_or(text.len(), |(_, line_start, ..)| *line_start);
-        let (from, to) = (text.byte(label_range.end), text.byte(next));
+            .map_or(text.utf16_len(), |(_, line_start, ..)| *line_start);
+        let (from, to) = (text.byte_of_utf16(label_range.end), text.byte_of_utf16(next));
         let body = &text.value[from..to];
         let body_range = ScalarRange {
-            start: text.scalar(from + body.len() - body.trim_start().len()),
-            end: text.scalar(from + body.trim_end().len()),
+            start: text.utf16_of_byte(from + body.len() - body.trim_start().len()),
+            end: text.utf16_of_byte(from + body.trim_end().len()),
         };
         if body_range.start >= body_range.end {
             continue;
@@ -170,20 +170,27 @@ pub struct NumberedFootnotePairing {
     pub page_labels: Vec<Option<String>>,
 }
 
-/// The sentence of `text` that the reference `own` marks, with the line's reference markers (`anchors`, character
+/// The sentence of `text` that the reference `own` marks, with the line's reference markers (`anchors`, UTF-16
 /// ranges) left out: the sentence holding the marker, or the one it follows. `before` and `after` are the lines the
 /// text runs on from and into, with their own markers.
 #[cfg(all(feature = "citator", feature = "document-query"))]
 fn sentence_at_reference(text: &str, anchors: &[(usize, usize)], own: usize, before: Option<(&str, &[(usize, usize)])>,
     after: Option<(&str, &[(usize, usize)])>) -> Option<String> {
-    let unmarked = |text: &str, anchors: &[(usize, usize)]| text.chars().enumerate()
-        .filter(|(index, _)| !anchors.iter().any(|&(start, end)| start <= *index && *index < end))
+    // Each character of a line, and where it stands in UTF-16.
+    let placed = |text: &str| text.chars().scan(0, |unit, character| {
+        let at = *unit;
+        *unit += character.len_utf16();
+        Some((at, character))
+    }).collect::<Vec<_>>();
+    let marked = |anchors: &[(usize, usize)], at: usize| anchors.iter().any(|&(start, end)| start <= at && at < end);
+    let unmarked = |text: &str, anchors: &[(usize, usize)]| placed(text).into_iter()
+        .filter(|(at, _)| !marked(anchors, *at))
         .map(|(_, character)| character).collect::<String>();
     let mut clean = before.map(|(text, anchors)| format!("{} ", unmarked(text, anchors).trim_end())).unwrap_or_default();
     let mut at = None;
-    for (index, character) in text.chars().enumerate() {
-        if index == own { at = Some(clean.encode_utf16().count()); }
-        if !anchors.iter().any(|&(start, end)| start <= index && index < end) { clean.push(character); }
+    for (unit, character) in placed(text) {
+        if unit == own { at = Some(clean.encode_utf16().count()); }
+        if !marked(anchors, unit) { clean.push(character); }
     }
     let at = at.unwrap_or_else(|| clean.encode_utf16().count());
     if let Some((text, anchors)) = after { clean = format!("{} {}", clean.trim_end(), unmarked(text, anchors)); }
@@ -221,7 +228,7 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
     page_starts.push(from);
     labels.push(current);
     let coordinates = ScalarText::new(text);
-    // Each line's start in the text (scalars), its length and its page.
+    // Each line's start in the text, its length and its page.
     let mut placed = HashMap::<String, (usize, usize, usize)>::new();
     let mut built = Vec::with_capacity(pages.len());
     let mut protected = BTreeMap::new();
@@ -256,7 +263,7 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
         let mut byte = page_starts[page_index];
         for (position, line) in lines.iter().enumerate() {
             let id = format!("p{page_index}l{position}");
-            placed.insert(id.clone(), (coordinates.scalar(byte), line.chars().count(), page_index));
+            placed.insert(id.clone(), (coordinates.utf16_of_byte(byte), utf16_len(line), page_index));
             byte += line.len() + 1;
             if position < zone && !line.trim().is_empty() {
                 if let Some(previous) = last_body.replace(id.clone()) {
@@ -268,7 +275,7 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
                 let characters = ScalarText::new(line);
                 let spans = cues::layout_protected_spans(line)
                     .into_iter()
-                    .map(|span| ScalarRange { start: characters.scalar(span.start), end: characters.scalar(span.end) })
+                    .map(|span| ScalarRange { start: characters.utf16_of_byte(span.start), end: characters.utf16_of_byte(span.end) })
                     .collect::<Vec<_>>();
                 if !spans.is_empty() {
                     protected.insert(id.clone(), spans);
@@ -305,7 +312,7 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
     let pairing = pair_footnotes(&built, &protected, &|_| 0, &place);
     let line_text: HashMap<&str, &str> = built.iter()
         .flat_map(|page| page.lines.iter().map(|line| (line.id.as_str(), line.text.as_str()))).collect();
-    // The line a call stands on, and every note's calls on each line, in the line's characters.
+    // The line a call stands on, and every note's calls on each line, in the line's UTF-16.
     let line_of = |offset: usize| placed.iter().find(|(_, &(at, length, _))| at <= offset && offset < at + length.max(1)).map(|(id, &(at, _, page))| (id.as_str(), at, page));
     let mut marks = HashMap::<&str, Vec<(usize, usize)>>::new();
     for call in pairing.notes.iter().flat_map(|note| &note.calls) {
@@ -328,7 +335,7 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
         .notes
         .iter()
         .map(|note| {
-            let body = note.ranges.iter().filter_map(|range| coordinates.slice(range.start..range.end)).collect::<Vec<_>>().join(" ");
+            let body = note.ranges.iter().filter_map(|range| coordinates.slice_utf16(range.start..range.end)).collect::<Vec<_>>().join(" ");
             let body = body.trim();
             PairedFootnote {
                 label: note.label.as_deref().unwrap_or("").to_owned(),

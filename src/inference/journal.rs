@@ -40,7 +40,7 @@ pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<StructureNode> {
                 let mut block = crate::labelled_node(
                     NodeKind::Section,
                     format!("sec{}", &capture[1]),
-                    text.scalar(line.byte_start + whole.start()),
+                    text.utf16_of_byte(line.byte_start + whole.start()),
                     0,
                 );
                 block.aliases = Some(std::iter::once(capture[1].to_owned())
@@ -49,7 +49,7 @@ pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<StructureNode> {
                 block
             })
             .collect(),
-        text.len(),
+        text.utf16_len(),
     );
     let note = cached_regex!(NOTE, r"(?u)^[ \t]*(\d{1,5})\t[ \t]*$");
     result.extend(add_ranges(
@@ -61,14 +61,14 @@ pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<StructureNode> {
                 let mut block = crate::labelled_node(
                     NodeKind::Footnote,
                     format!("{}", capture[1].parse::<u32>().unwrap()),
-                    text.scalar(line.byte_start + whole.start()),
+                    text.utf16_of_byte(line.byte_start + whole.start()),
                     0,
                 );
                 block.aliases = Some(vec![capture[1].to_owned()]);
                 block
             })
             .collect(),
-        text.len(),
+        text.utf16_len(),
     ));
     let mut start = None;
     for (index, line) in source.iter().enumerate() {
@@ -78,19 +78,19 @@ pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<StructureNode> {
                 .text
                 .chars()
                 .position(|value| !javascript_whitespace(value))
-                .map(|at| line.scalar_start + at);
+                .map(|at| line.start + at);
         }
         let next_blank = source
             .get(index + 1)
             .is_some_and(|value| value.text.trim_matches([' ', '\t', '\r']).is_empty());
         if let Some(block_start) = start.filter(|_| next_blank || index + 1 == source.len()) {
             let end = if index + 1 == source.len() {
-                text.len()
+                text.utf16_len()
             } else {
-                text.scalar(line.byte_end)
+                text.utf16_of_byte(line.byte_end)
             };
             let value = text
-                .slice(block_start..end)
+                .slice_utf16(block_start..end)
                 .expect("journal block range is bounded");
             let first_line = value.split_once('\n').map_or(value, |(line, _)| line);
             let page_marker = first_line
@@ -100,7 +100,7 @@ pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<StructureNode> {
             let block_start = if page_marker {
                 value
                     .find('\n')
-                    .map_or(end, |at| text.scalar(text.byte(block_start) + at + 1))
+                    .map_or(end, |at| text.utf16_of_byte(text.byte_of_utf16(block_start) + at + 1))
             } else {
                 block_start
             };

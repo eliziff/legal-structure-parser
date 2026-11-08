@@ -17,9 +17,9 @@ pub struct NotePairing {
 /// beside its services on laid-out text. A parser takes this as a dependency on the model alone, so
 /// editing the engine recompiles the engine and the program that supplies it, not every parser.
 pub trait StructureAnalysis: LayoutAnalysis {
-    /// A laid-out document's notes paired with their references, its lines' citations (by line id, in scalar offsets)
+    /// A laid-out document's notes paired with their references, its lines' citations (by line id, in UTF-16 offsets)
     /// protected from being read as either, the lines of each `part` (a constituent document or language) paired on
-    /// their own, each note placed in the reader's text by `place` (a line's id and a range of its characters).
+    /// their own, each note placed in the reader's text by `place` (a line's id and a range of its text in UTF-16).
     fn pair_footnotes(
         &self,
         pages: &[legal_layout::Page],

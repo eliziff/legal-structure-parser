@@ -362,7 +362,7 @@ pub(super) fn admitted_dialects<'a>(
         let trimmed = line.text.trim_start_matches(instrument_space);
         let lead = line.text.len() - trimmed.len();
         line.byte_start += lead;
-        line.scalar_start = text.scalar(line.byte_start);
+        line.start = text.utf16_of_byte(line.byte_start);
         line.text = trimmed.trim_end_matches(instrument_space);
         let value = line.text;
         if value.starts_with('(') {
@@ -632,7 +632,7 @@ pub(super) fn enumerated_children(
     inline_at_root: bool,
     leading_label: Option<&str>,
 ) -> Vec<StructureNode> {
-    let bytes = text.byte(range.start)..text.byte(range.end);
+    let bytes = text.byte_of_utf16(range.start)..text.byte_of_utf16(range.end);
     let value = &text.value[bytes.clone()];
     let mut markers = Vec::new();
     let leading = leading_label.and_then(|label| {
@@ -645,14 +645,14 @@ pub(super) fn enumerated_children(
         let (token, content, close) = legislation_marker(line, newline)?;
         Some(ChildMark {
             token,
-            start: text.scalar(bytes.start + prefix + close),
-            content_start: text.scalar(bytes.start + prefix + content),
+            start: text.utf16_of_byte(bytes.start + prefix + close),
+            content_start: text.utf16_of_byte(bytes.start + prefix + content),
         })
     });
     if let Some(marker) = leading {
         markers.push(marker);
     } else {
-        let inline = &text.value[text.byte(content_start)..bytes.end];
+        let inline = &text.value[text.byte_of_utf16(content_start)..bytes.end];
         let inline_line = inline.lines().next().unwrap_or_default();
         if let Some((token, at, _)) =
             legislation_marker(inline_line, inline_line.len() < inline.len())
@@ -663,7 +663,7 @@ pub(super) fn enumerated_children(
             markers.push(ChildMark {
                 token,
                 start,
-                content_start: text.scalar(text.byte(content_start) + at),
+                content_start: text.utf16_of_byte(text.byte_of_utf16(content_start) + at),
             });
         }
     }
@@ -673,7 +673,7 @@ pub(super) fn enumerated_children(
     let numbered = markers
         .first()
         .is_some_and(|marker| marker.token.starts_with(|c: char| c.is_ascii_digit()));
-    let (mut line_byte, mut line_scalar) = (bytes.start, range.start);
+    let (mut line_byte, mut line_start) = (bytes.start, range.start);
     for raw in value.split_inclusive('\n') {
         let line = raw.strip_suffix('\n').unwrap_or(raw);
         let line = line.strip_suffix('\r').unwrap_or(line);
@@ -682,20 +682,20 @@ pub(super) fn enumerated_children(
         let trimmed = root
             .strip_prefix("sec")
             .and_then(|number| trimmed.strip_prefix(number))
-            .filter(|rest| numbered && line_scalar != range.start && repeated_subsection(rest))
+            .filter(|rest| numbered && line_start != range.start && repeated_subsection(rest))
             .unwrap_or(trimmed);
         let newline = line_byte + line.len() < bytes.end;
         if let Some((token, at, _)) = legislation_marker(trimmed, newline) {
-            if seeded_start != Some(line_scalar) {
+            if seeded_start != Some(line_start) {
                 markers.push(ChildMark {
                     token,
-                    start: line_scalar,
-                    content_start: text.scalar(line_byte + line.len() - trimmed.len() + at),
+                    start: line_start,
+                    content_start: text.utf16_of_byte(line_byte + line.len() - trimmed.len() + at),
                 });
             }
         }
         line_byte += raw.len();
-        line_scalar += raw.chars().count();
+        line_start += utf16_len(raw);
     }
     if markers.is_empty() {
         return Vec::new();
@@ -831,13 +831,13 @@ pub(crate) fn detect_instrument_grammar(
             continue;
         }
         let dialect_marker = dialect_markers.next_if(|mark| mark.0 == line.byte_start);
-        let start = line.scalar_start;
+        let start = line.start;
         let selected = spine
             .next_if(|mark| mark.start == start)
             .map(|mark| (format!("sec{}", mark.label), mark.content_start, false))
             .or_else(|| {
                 instrument_top(value, direct).map(|(label, at, container)| {
-                    (label, text.scalar(line.byte_start + at), container)
+                    (label, text.utf16_of_byte(line.byte_start + at), container)
                 })
             })
             // A subsection repeating the number of the section it is in ("50.4(2) The ...", under "50.4(1) ...") is
@@ -860,7 +860,7 @@ pub(crate) fn detect_instrument_grammar(
                 state.section = None;
             } else {
                 state.section = Some((label, depth));
-                let content_byte = text.byte(content_start);
+                let content_byte = text.byte_of_utf16(content_start);
                 let inline = if content_byte <= line.byte_end {
                     &text.value[content_byte..line.byte_end]
                 } else {
@@ -868,7 +868,7 @@ pub(crate) fn detect_instrument_grammar(
                 };
                 if let Some((token, at)) = instrument_marker(inline, false, false) {
                     numbered = token.starts_with(|c: char| c.is_ascii_digit());
-                    state.child(token, content_start, text.scalar(content_byte + at));
+                    state.child(token, content_start, text.utf16_of_byte(content_byte + at));
                 }
             }
             continue;
@@ -893,7 +893,7 @@ pub(crate) fn detect_instrument_grammar(
             }),
         };
         if let Some((token, at)) = marker {
-            state.child(token, start, text.scalar(line.byte_start + at));
+            state.child(token, start, text.utf16_of_byte(line.byte_start + at));
         }
     }
     let mut open = Vec::<usize>::new();
@@ -908,7 +908,7 @@ pub(crate) fn detect_instrument_grammar(
         open.push(index);
     }
     for index in open {
-        state.nodes[index].0.range.end = text.len();
+        state.nodes[index].0.range.end = text.utf16_len();
     }
     (state.nodes.into_iter().map(|(node, _)| node).collect(), direct)
 }

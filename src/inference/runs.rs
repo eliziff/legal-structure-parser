@@ -27,7 +27,7 @@ pub(crate) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
         // Of two equal numbers, the count takes the one set as most of its style's are: alone
         // on its line or followed there by its text (a list quoted in a paragraph is the other).
         let alone = |marker: &Marker| {
-            text.value[text.byte(marker.content_start)..]
+            text.value[text.byte_of_utf16(marker.content_start)..]
                 .chars()
                 .next()
                 .is_none_or(|next| matches!(next, '\n' | '\r'))
@@ -93,7 +93,7 @@ pub(crate) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
         .chain(&scopes)
         .flatten()
         .map(|marker| marker.start)
-        .chain([text.len()])
+        .chain([text.utf16_len()])
         .collect::<Vec<_>>();
     boundaries.sort_unstable();
     boundaries.dedup();
@@ -108,7 +108,7 @@ pub(crate) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
                 .map(|marker| marker.start)
                 .filter(|start| !span.contains(start))
                 .chain(chain.iter().map(|marker| marker.start))
-                .chain([text.len()])
+                .chain([text.utf16_len()])
                 .collect::<Vec<_>>();
             ends.sort_unstable();
             ends.dedup();
@@ -121,9 +121,9 @@ pub(crate) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
         let candidates = scope
             .iter()
             .map(|marker| {
-                let end = next_boundary(boundaries, marker.start, text.len());
+                let end = next_boundary(boundaries, marker.start, text.utf16_len());
                 let printed = text
-                    .slice(marker.start..marker.content_start)
+                    .slice_utf16(marker.start..marker.content_start)
                     .expect("numeric marker range is bounded");
                 let surface_label = printed.trim().to_owned();
                 StructureMarkerCandidate {
@@ -134,7 +134,7 @@ pub(crate) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
                     },
                     marker_range: ScalarRange {
                         start: marker.start,
-                        end: marker.start + printed.trim_end().chars().count(),
+                        end: marker.start + utf16_len(printed.trim_end()),
                     },
                     label: surface_label,
                     grammar_value: marker.number.to_string(),
@@ -200,15 +200,15 @@ pub(crate) fn raw_bullet_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateRu
         }
         let at = line.byte_start + line.text.len() - trimmed.len();
         by_glyph.entry(glyph).or_default().push((
-            text.scalar(at),
-            text.scalar(at + trimmed.len() - content.len()),
+            text.utf16_of_byte(at),
+            text.utf16_of_byte(at + trimmed.len() - content.len()),
         ));
     }
     let mut starts = by_glyph
         .values()
         .flatten()
         .map(|(start, _)| *start)
-        .chain([text.len()])
+        .chain([text.utf16_len()])
         .collect::<Vec<_>>();
     starts.sort_unstable();
     let mut runs = Vec::new();
@@ -219,7 +219,7 @@ pub(crate) fn raw_bullet_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateRu
                 id: String::new(),
                 range: ScalarRange {
                     start,
-                    end: next_boundary(&starts, start, text.len()),
+                    end: next_boundary(&starts, start, text.utf16_len()),
                 },
                 marker_range: ScalarRange {
                     start,
@@ -259,11 +259,11 @@ pub(crate) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
     for line in lines(text) {
         let trimmed = line.text.trim_start_matches(instrument_space);
         let trimmed_byte = line.byte_start + line.text.len() - trimmed.len();
-        let start = text.scalar(trimmed_byte);
+        let start = text.utf16_of_byte(trimmed_byte);
         let Some((token, at)) = instrument_marker(trimmed, true, true) else {
             continue;
         };
-        let content_start = text.scalar(trimmed_byte + at);
+        let content_start = text.utf16_of_byte(trimmed_byte + at);
         for (family, value) in enum_readings(token).into_iter().flatten() {
             if family == 0 && value.contains('.') {
                 continue;
@@ -289,7 +289,7 @@ pub(crate) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
         .values()
         .flatten()
         .map(|marker| marker.start)
-        .chain([text.len()])
+        .chain([text.utf16_len()])
         .collect::<Vec<_>>();
     boundaries.sort_unstable();
     boundaries.dedup();
@@ -319,9 +319,9 @@ pub(crate) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
             let mut candidates = scope
                 .iter()
                 .map(|marker| {
-                    let end = next_boundary(&boundaries, marker.start, text.len());
+                    let end = next_boundary(&boundaries, marker.start, text.utf16_len());
                     let printed = text
-                        .slice(marker.start..marker.content_start)
+                        .slice_utf16(marker.start..marker.content_start)
                         .expect("enumerator marker range is bounded");
                     let surface_label = printed.trim().to_owned();
                     StructureMarkerCandidate {
@@ -332,7 +332,7 @@ pub(crate) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
                         },
                         marker_range: ScalarRange {
                             start: marker.start,
-                            end: marker.start + printed.trim_end().chars().count(),
+                            end: marker.start + utf16_len(printed.trim_end()),
                         },
                         label: surface_label,
                         grammar_value: format!("{family}:{}", marker.value),

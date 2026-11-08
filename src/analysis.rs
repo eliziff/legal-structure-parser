@@ -37,8 +37,8 @@ impl LayoutAnalysis for EngineAnalysis {
             .into_iter()
             .map(|span| {
                 (
-                    document.scalar_at_byte(span.start).expect("citation start"),
-                    document.scalar_at_byte(span.end).expect("citation end"),
+                    document.utf16_of_byte(span.start),
+                    document.utf16_of_byte(span.end),
                 )
             })
             .collect()

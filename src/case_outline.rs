@@ -7,7 +7,7 @@ use crate::filing::{front_matter_line, FrontMatterLine};
 use crate::analysis::citation_spans;
 use crate::{
     Derivation, DocumentStructure, EngineError, NodeKind, ProviderTextInput, ProviderTextSourceKind, ScalarRange,
-    ScalarText, StructureNode,
+    StructureNode, utf16_len,
 };
 use crate::judgment::{author_line, date_line, signature_line};
 use serde::Serialize;
@@ -221,21 +221,19 @@ fn one_printing(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
         .collect()
 }
 
-/// Each paragraph a judgment's outline reads, in scalars: where its number opens and closes, where its range ends,
-/// and its number as printed ("[12]"), in order. A judgment that numbers no paragraphs has its unnumbered ones, each
-/// without a label.
-fn paragraph_spans(structure: &DocumentStructure, coordinates: &ScalarText<'_>, chars: &[char]) -> Vec<(usize, usize, usize, String)> {
-    let scalar = |at: usize| coordinates.scalar_at_utf16(at).expect("a paragraph's range is on scalar boundaries");
+/// Each paragraph a judgment's outline reads: where its number opens and closes, where its range ends, and its number
+/// as printed ("[12]"), in order. A judgment that numbers no paragraphs has its unnumbered ones, each without a label.
+fn paragraph_spans(structure: &DocumentStructure, units: &[u16]) -> Vec<(usize, usize, usize, String)> {
     let mut paragraphs = structure
         .nodes
         .iter()
         .filter(|node| node.kind == NodeKind::Paragraph)
         .filter_map(|node| {
             let number = node.label.as_deref()?;
-            let marker = format!("[{number}]").chars().collect::<Vec<_>>();
-            let (paragraph_start, end) = (scalar(node.range.start), scalar(node.range.end));
+            let marker = format!("[{number}]").encode_utf16().collect::<Vec<_>>();
+            let (paragraph_start, end) = (node.range.start, node.range.end);
             let start = (paragraph_start..end.saturating_sub(marker.len()) + 1)
-                .find(|at| chars[*at..].starts_with(&marker))
+                .find(|at| units[*at..].starts_with(&marker))
                 .unwrap_or(paragraph_start);
             Some((start, (start + marker.len()).min(end), end, format!("[{number}]")))
         })
@@ -245,10 +243,7 @@ fn paragraph_spans(structure: &DocumentStructure, coordinates: &ScalarText<'_>, 
             .nodes
             .iter()
             .filter(|node| node.kind == NodeKind::Prose && node.label.is_none())
-            .map(|node| {
-                let (start, end) = (scalar(node.range.start), scalar(node.range.end));
-                (start, start, end, String::new())
-            })
+            .map(|node| (node.range.start, node.range.start, node.range.end, String::new()))
             .collect();
     }
     paragraphs.sort_by_key(|paragraph| paragraph.0);
@@ -258,18 +253,18 @@ fn paragraph_spans(structure: &DocumentStructure, coordinates: &ScalarText<'_>, 
 
 /// A judgment's outline from its structure's numbered paragraphs and the lines around them.
 fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
-    let text = structure.text.as_str();
-    let coordinates = ScalarText::new(text);
-    let chars = text.chars().collect::<Vec<_>>();
-    let slice = |start: usize, end: usize| chars[start..end].iter().collect::<String>();
-    // Where each line opens, in scalars.
+    // The text's UTF-16 code units, the outline read over them.
+    let units = structure.text.encode_utf16().collect::<Vec<_>>();
+    let newline = u16::from(b'\n');
+    let slice = |start: usize, end: usize| String::from_utf16_lossy(&units[start..end]);
+    // Where each line opens.
     let line_start = |at: usize| {
-        chars[..at]
+        units[..at]
             .iter()
-            .rposition(|c| *c == '\n')
+            .rposition(|unit| *unit == newline)
             .map_or(0, |at| at + 1)
     };
-    let paragraphs = paragraph_spans(structure, &coordinates, &chars);
+    let paragraphs = paragraph_spans(structure, &units);
 
     let mut entries = Vec::new();
     let mut headings = Levels::default();
@@ -286,8 +281,8 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
             level,
             label,
             text: own.trim().to_owned(),
-            start: coordinates.utf16(start),
-            end: coordinates.utf16(end),
+            start,
+            end,
             role: None,
         });
     };
@@ -302,19 +297,19 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
         let mut lines = Vec::new();
         let mut at = start;
         while at < end {
-            let close = (at..end).find(|at| chars[*at] == '\n').unwrap_or(end);
+            let close = (at..end).find(|at| units[*at] == newline).unwrap_or(end);
             let value = slice(at, close);
             if !value.trim().is_empty() {
                 let lead = value.len() - value.trim_start().len();
                 let trimmed = value.trim();
-                let from = at + value[..lead].chars().count();
-                lines.push((from, from + trimmed.chars().count(), trimmed.to_owned()));
+                let from = at + utf16_len(&value[..lead]);
+                lines.push((from, from + utf16_len(trimmed), trimmed.to_owned()));
             }
             at = close + 1;
         }
         // A heading's path, a level at a time; a sentence heading is one level. The last line, where
         // the paragraph after it opens on that line, is a path its number vouches for.
-        let joined = end > start && end < chars.len() && chars[end - 1] != '\n';
+        let joined = end > start && end < units.len() && units[end - 1] != newline;
         let heading = |index: usize, line: &str| {
             // The last line, its paragraph's number run in after it, is read as the paragraph reader reads it.
             let joined_levels = (joined && index + 1 == lines.len() && may_head(line))
@@ -322,7 +317,7 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
                 .flatten();
             joined_levels.or_else(|| match lines.get(index + 1) {
                 Some((_, _, next)) => heading_between(line, next),
-                None => heading_between(line, &slice(end, (end + 200).min(chars.len()))),
+                None => heading_between(line, &slice(end, (end + 200).min(units.len()))),
             })
         };
         // Before the reasons, only the headings that open them count: the enumerated ones just
@@ -391,17 +386,17 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
     };
     let first = paragraphs
         .first()
-        .map_or(chars.len(), |paragraph| paragraph.0);
+        .map_or(units.len(), |paragraph| paragraph.0);
     // A2AJ opens a decision with its catalogue record (court, date, citation, file numbers) up to
     // a line "Decision Content"; the decision starts after it.
-    let record = "Decision Content".chars().collect::<Vec<_>>();
+    let record = "Decision Content".encode_utf16().collect::<Vec<_>>();
     let opens = (0..first)
         .find(|at| {
-            (*at == 0 || chars[at - 1] == '\n')
-                && chars[*at..].starts_with(&record)
-                && chars
+            (*at == 0 || units[at - 1] == newline)
+                && units[*at..].starts_with(&record)
+                && units
                     .get(at + record.len())
-                    .is_none_or(|c| *c == '\n' || *c == '\r')
+                    .is_none_or(|unit| *unit == newline || *unit == u16::from(b'\r'))
         })
         .map_or(0, |at| at + record.len() + 1);
     between(
@@ -427,9 +422,9 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
         let mut at = *marker_end;
         while at < body_end {
             let close = (at..body_end)
-                .find(|at| chars[*at] == '\n')
+                .find(|at| units[*at] == newline)
                 .unwrap_or(body_end);
-            if !chars[at..close].iter().all(|c| c.is_whitespace()) {
+            if !char::decode_utf16(units[at..close].iter().copied()).all(|c| c.is_ok_and(char::is_whitespace)) {
                 lines.push((at, close));
             }
             at = close + 1;
@@ -453,11 +448,8 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
             if trimmed.is_empty() {
                 continue;
             }
-            let from = from
-                + value[..value.len() - value.trim_start().len()]
-                    .chars()
-                    .count();
-            let to = from + trimmed.chars().count();
+            let from = from + utf16_len(&value[..value.len() - value.trim_start().len()]);
+            let to = from + utf16_len(trimmed);
             match enumerated(trimmed)
                 .and_then(|(token, rest)| list.read(token).map(|level| (token, rest, level)))
             {
@@ -473,7 +465,7 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
                 None => push(&mut entries, "text", 1, String::new(), from, to, trimmed),
             }
         }
-        let gap_end = next.unwrap_or(chars.len());
+        let gap_end = next.unwrap_or(units.len());
         between(
             &mut entries,
             &mut list,
@@ -649,18 +641,16 @@ pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) -> Vec<CaseOutli
             };
         }
     }
-    // A paragraph ends where a heading after it opens what follows: the heading is no paragraph's. (The whitespace
-    // before the heading is walked back over in scalars; the ranges are UTF-16.)
-    let coordinates = ScalarText::new(&structure.text);
-    let chars = structure.text.chars().collect::<Vec<_>>();
+    // A paragraph ends where a heading after it opens what follows, the whitespace before the heading walked back over:
+    // the heading is no paragraph's.
+    let units = structure.text.encode_utf16().collect::<Vec<_>>();
     let heading_starts = added.iter().filter(|node| node.kind == NodeKind::Heading).map(|node| node.range.start).collect::<Vec<_>>();
     for paragraph in structure.nodes.iter_mut().filter(|node| node.kind == NodeKind::Paragraph) {
         let Some(&start) = heading_starts.iter().filter(|&&start| paragraph.range.start < start && start < paragraph.range.end).min() else { continue };
-        let (Some(floor), Some(mut end)) = (coordinates.scalar_at_utf16(paragraph.range.start), coordinates.scalar_at_utf16(start)) else { continue };
-        while end > floor && chars.get(end - 1).is_some_and(|c| c.is_whitespace()) {
+        let (floor, mut end) = (paragraph.range.start, start);
+        while end > floor && units.get(end - 1).and_then(|unit| char::from_u32(u32::from(*unit))).is_some_and(char::is_whitespace) {
             end -= 1;
         }
-        let end = coordinates.utf16(end);
         paragraph.range.end = end;
         for range in &mut paragraph.ranges {
             range.end = range.end.min(end);

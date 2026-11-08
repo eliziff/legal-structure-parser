@@ -1,6 +1,6 @@
 use crate::{
     DefinedTerm, DetectionProfile, DocxStructureFacts, InstrumentContentsReading,
-    InstrumentCrossReferenceGraph, Origin, ScalarRange, ScalarText, Scope,
+    InstrumentCrossReferenceGraph, Origin, ScalarRange, Scope,
     DOCUMENT_STRUCTURE_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
@@ -435,37 +435,6 @@ pub struct DocumentStructure {
 }
 
 impl DocumentStructure {
-    pub fn project_scalar_parts(coordinates: &ScalarText<'_>, nodes: &mut [StructureNode]) {
-        if coordinates.len() == coordinates.utf16_len() {
-            return;
-        }
-        let utf16_range = |range: &mut ScalarRange| {
-            range.start = coordinates.utf16(range.start);
-            range.end = coordinates.utf16(range.end);
-        };
-        for node in nodes {
-            utf16_range(&mut node.range);
-            for range in &mut node.extent {
-                utf16_range(range);
-            }
-            for range in &mut node.ranges {
-                utf16_range(range);
-            }
-            if let Some(range) = &mut node.heading_range {
-                utf16_range(range);
-            }
-            if let Some(start) = &mut node.content_start {
-                *start = coordinates.utf16(*start);
-            }
-            if let Some(range) = &mut node.marker_range {
-                utf16_range(range);
-            }
-            for call in &mut node.calls {
-                utf16_range(call);
-            }
-        }
-    }
-
     /// A structure of `text` from one origin, complete, its digest taken, with no nodes yet: a reader sets on it what
     /// else it knows.
     pub fn new(document_id: String, provider: impl Into<String>, text: String, origin_id: &str) -> Self {

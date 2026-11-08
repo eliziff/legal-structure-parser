@@ -9,7 +9,7 @@ pub(super) fn case_source_line<'a>(text: &ScalarText<'_>, mut line: Line<'a>) ->
     if let Some(at) = line.text[..prefix].rfind('\u{c}') {
         let offset = at + 1;
         line.byte_start += offset;
-        line.scalar_start = text.scalar(line.byte_start);
+        line.start = text.utf16_of_byte(line.byte_start);
         line.text = &line.text[offset..];
     }
     line
@@ -58,7 +58,7 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
             }).unwrap_or(0)
         } else { 0 };
         let value = &value[shift..];
-        let start = if shift > 0 { line.scalar_start + lead + shift } else { line.scalar_start };
+        let start = if shift > 0 { line.start + lead + shift } else { line.start };
         // Public-domain citation courts bracket the number, mostly with a pilcrow: "[¶ 12]",
         // South Dakota's "[¶ 12.]", Ohio's "{¶ 12}", New Mexico's "{12}".
         let pilcrow = courtlistener.then(|| {
@@ -125,7 +125,7 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
             result.push(Marker {
                 introduced: text.value[..line.byte_start].trim_end().ends_with(':'),
                 going_on: value[content..].starts_with(char::is_lowercase),
-                ..Marker::new(number.parse().unwrap(), start, line.scalar_start + lead + shift + content, style, 1.0)
+                ..Marker::new(number.parse().unwrap(), start, line.start + lead + shift + content, style, 1.0)
             });
         }
         {
@@ -145,7 +145,7 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
                     let after = rest[length..].chars().next();
                     if after.is_none_or(|value| value.is_whitespace() || ".,;:—-".contains(value))
                     {
-                        let content = text.scalar(line.byte_start + line.text.len() - rest.len() + length);
+                        let content = text.utf16_of_byte(line.byte_start + line.text.len() - rest.len() + length);
                         result.push(Marker::new(number.parse().unwrap(), start, content, MarkerStyle::Dot, 1.0));
                     }
                 }
@@ -250,7 +250,7 @@ pub(super) fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usiz
                 at += 1;
                 continue;
             };
-            let start = text.scalar(line.byte_start + at);
+            let start = text.utf16_of_byte(line.byte_start + at);
             if known[index].is_some_and(|known| known.contains(&start)) {
                 at = end;
                 continue;
@@ -261,7 +261,7 @@ pub(super) fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usiz
                 && sentence_heading(heading, &text.value[line.byte_start + end..]);
             if formal || sentence {
                 let score = if formal { 0.6 } else { 0.35 };
-                result[index].push(Marker { formal, sentence, ..Marker::new(line.text[digits..tail].parse().unwrap(), start, text.scalar(line.byte_start + end), style, score) });
+                result[index].push(Marker { formal, sentence, ..Marker::new(line.text[digits..tail].parse().unwrap(), start, text.utf16_of_byte(line.byte_start + end), style, score) });
             }
             at = end;
         }
@@ -316,17 +316,17 @@ fn rooted_on_author(text: &ScalarText<'_>, chain: &mut Vec<Marker>) {
     let Some(second) = chain.iter().position(|marker| marker.number == 2).filter(|&at| at <= 1) else { return };
     let (before, style) = (chain[second].start, chain[second].style);
     let author = text.lines().iter().rev().map(|line| (line[0], text.value[line[0]..line[1]].trim_end()))
-        .find(|(start, line)| text.scalar(*start) < before && author_line(line.trim_start()));
+        .find(|(start, line)| text.utf16_of_byte(*start) < before && author_line(line.trim_start()));
     let Some((byte, line)) = author else { return };
     // Who gives the reasons is no paragraph's words: it opens after "delivered by", "rendu par", on the line or on the next.
     let given = ["delivered by", "rendu par", "rendus par"].iter().filter_map(|words| line.find(words).map(|at| at + words.len())).max();
     let start = match given {
-        Some(end) if !line[end..].trim().is_empty() => text.scalar(byte + end + line[end..].len() - line[end..].trim_start().len()),
+        Some(end) if !line[end..].trim().is_empty() => text.utf16_of_byte(byte + end + line[end..].len() - line[end..].trim_start().len()),
         Some(_) => {
             let Some(next) = text.lines().iter().find(|other| other[0] > byte && !text.value[other[0]..other[1]].trim().is_empty()) else { return };
-            text.scalar(next[0])
+            text.utf16_of_byte(next[0])
         }
-        None => text.scalar(byte),
+        None => text.utf16_of_byte(byte),
     };
     if start >= before {
         return;
@@ -492,9 +492,9 @@ pub(super) fn bridge_glued_labels(text: &ScalarText<'_>, candidates: &mut Vec<Ma
         let length = opening.bytes().take(4).take_while(u8::is_ascii_digit).count();
         if length > 0 && matches!(opening.as_bytes().get(length), Some(b']' | b'}')) {
             let following = opening[length + 1..].trim_start_matches([' ', '\t']);
-            let start = text.scalar(line.byte_start + lead);
+            let start = text.utf16_of_byte(line.byte_start + lead);
             if following.starts_with(char::is_uppercase) && !held.contains(&start) {
-                glued.push(Marker::new(opening[..length].parse().unwrap(), start, text.scalar(line.byte_start + lead + length + 1), MarkerStyle::Bracket, 0.2));
+                glued.push(Marker::new(opening[..length].parse().unwrap(), start, text.utf16_of_byte(line.byte_start + lead + length + 1), MarkerStyle::Bracket, 0.2));
             }
         }
         let mut from = 0;
@@ -523,14 +523,14 @@ pub(super) fn bridge_glued_labels(text: &ScalarText<'_>, candidates: &mut Vec<Ma
                 _ => following,
             };
             let number = digits[..length].parse::<u32>().unwrap();
-            let start = text.scalar(line.byte_start + at);
+            let start = text.utf16_of_byte(line.byte_start + at);
             if !following.chars().next().is_some_and(|value| value.is_uppercase()
                 || ['"', '\u{201c}', '\u{2018}', '\'', '\u{ab}'].contains(&value))
             {
                 continue;
             }
             if !held.contains(&start) {
-                glued.push(Marker::new(number, start, text.scalar(line.byte_start + end), MarkerStyle::Bracket, 0.2));
+                glued.push(Marker::new(number, start, text.utf16_of_byte(line.byte_start + end), MarkerStyle::Bracket, 0.2));
             }
         }
     }
@@ -588,7 +588,7 @@ pub(super) fn note_list_start(text: &ScalarText<'_>, candidates: &[Marker]) -> O
     sorted.iter().enumerate().skip(1).rev().filter(|(_, marker)| marker.number == 1).find_map(|(at, marker)| {
         let (before, after) = sorted.split_at(at);
         let (list, first) = (run(after), run(before).len());
-        let tail = list.iter().filter(|start| text.utf16(**start) * 4 > length * 3).count();
+        let tail = list.iter().filter(|start| **start * 4 > length * 3).count();
         // The paragraphs' count going on after it ("[25]", a quoted "[1]" to "[7]", "[26]") makes it quoted:
         // a number after it beyond the count before it that the list does not take. The count before it
         // is read from line openings alone, so it may stop short where a paragraph's number is glued.
@@ -630,10 +630,10 @@ pub(super) fn endnote_shaped(text: &ScalarText<'_>, chain: &[Marker]) -> bool {
     let length = text.utf16_len();
     chain.len() >= 8
         && length > 0
-        && text.utf16(chain[0].start) as f64 > length as f64 * 0.5
+        && chain[0].start as f64 > length as f64 * 0.5
         && chain
             .iter()
-            .filter(|value| text.utf16(value.start) as f64 > length as f64 * 0.75)
+            .filter(|value| value.start as f64 > length as f64 * 0.75)
             .count() as f64
             / chain.len() as f64
             >= 0.7
@@ -648,7 +648,7 @@ pub(super) fn restart_boundaries(text: &ScalarText<'_>, candidates: &[Marker], c
     rest.sort_by_key(|marker| marker.start);
     // A "1" the line before leads into opens no count: a list ("... are as follows:"), or the sentence going on over the
     // line ("[1990]" / "1 R.C.S. 158", "... the s." / "1 analysis", "... of the" / "1 percent").
-    let introduced = |marker: &Marker| text.byte_at_scalar(marker.start).is_some_and(|at| {
+    let introduced = |marker: &Marker| text.byte_at_utf16(marker.start).is_some_and(|at| {
         let before = text.value[..at].trim_end();
         let last = before.split_whitespace().last().unwrap_or_default();
         let year = last.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).is_some_and(|inner| inner.len() == 4 && inner.bytes().all(|byte| byte.is_ascii_digit()));
@@ -702,7 +702,7 @@ pub(super) fn bare_heading_joined(text: &ScalarText<'_>, known: &HashSet<usize>)
             if !opens || number_at == 0 && spaced || cited_figure(&line.text[content..]) {
                 continue;
             }
-            let start = text.scalar(line.byte_start + number_at);
+            let start = text.utf16_of_byte(line.byte_start + number_at);
             if known.contains(&start) {
                 continue;
             }
@@ -718,7 +718,7 @@ pub(super) fn bare_heading_joined(text: &ScalarText<'_>, known: &HashSet<usize>)
             }
             let number = line.text[number_at..number_at + digits].parse().unwrap();
             let score = if formal { 0.6 } else { 0.35 };
-            result.push(Marker { formal, sentence: !formal, ..Marker::new(number, start, text.scalar(line.byte_start + content), MarkerStyle::Bare, score) });
+            result.push(Marker { formal, sentence: !formal, ..Marker::new(number, start, text.utf16_of_byte(line.byte_start + content), MarkerStyle::Bare, score) });
         }
     }
     result
@@ -738,7 +738,7 @@ pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[Scalar
             let after = &rest[digits + 1..];
             let content = after.len() - after.trim_start().len();
             (content > 0 && after.trim_start().chars().next().is_some_and(char::is_uppercase)).then(|| {
-                Marker::new(rest[..digits].parse().unwrap(), line.scalar_start, text.scalar(line.byte_start + lead + 1 + digits + 1 + content), MarkerStyle::Bracket, 1.0)
+                Marker::new(rest[..digits].parse().unwrap(), line.start, text.utf16_of_byte(line.byte_start + lead + 1 + digits + 1 + content), MarkerStyle::Bracket, 1.0)
             })
         })
         .collect::<Vec<_>>();
@@ -758,7 +758,7 @@ pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[Scalar
             {
                 continue;
             }
-            let (start, content) = (text.scalar(line.byte_start + at + 1), text.scalar(line.byte_start + content));
+            let (start, content) = (text.utf16_of_byte(line.byte_start + at + 1), text.utf16_of_byte(line.byte_start + content));
             markers.push(Marker { formal: true, ..Marker::new(rest[..digits].parse().unwrap(), start, content, MarkerStyle::Bracket, 0.6) });
         }
     }
@@ -771,7 +771,7 @@ pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[Scalar
         return Vec::new();
     }
     let length = text.utf16_len().max(1) as f64;
-    let (first, last) = (text.utf16(chain[0].start) as f64, text.utf16(chain[chain.len() - 1].start) as f64);
+    let (first, last) = (chain[0].start as f64, chain[chain.len() - 1].start as f64);
     let gap = (last - first) / (chain.len() - 1) as f64;
     let opening = (last - first) / length < 0.4;
     if opening && (gap < 300.0 || first / length > 0.25) {
@@ -779,7 +779,7 @@ pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[Scalar
     }
     let mut counts = chain
         .windows(2)
-        .map(|pair| word_count(text.slice(pair[0].start..pair[1].start).unwrap_or(""), false))
+        .map(|pair| word_count(text.slice_utf16(pair[0].start..pair[1].start).unwrap_or(""), false))
         .collect::<Vec<_>>();
     if median(&mut counts) < 12.0 {
         return Vec::new();
@@ -790,14 +790,14 @@ pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[Scalar
         let index = text.lines();
         let last_start = chain[chain.len() - 1].start;
         let line = index[index.partition_point(|line| line[2] <= last_start) - 1];
-        let end = text.scalar(line[0] + text.value[line[0]..line[1]].trim_end().len());
+        let end = text.utf16_of_byte(line[0] + text.value[line[0]..line[1]].trim_end().len());
         for block in blocks.iter_mut().filter(|block| block.kind == NodeKind::Paragraph && block.range.start >= last_start) {
             block.range.end = end.max(block.range.start);
         }
         let notes = index.iter().rposition(|line| line[2] > end && {
             let value = text.value[line[0]..line[1]].trim();
             value.starts_with("[1]") || value == "Footnote 1"
-        }).map_or(text.len(), |at| index[at][2]);
+        }).map_or(text.utf16_len(), |at| index[at][2]);
         blocks.extend(unnumbered_paragraphs(text, end, notes));
     }
     blocks
@@ -833,8 +833,8 @@ pub(super) fn unnumbered_paragraphs(text: &ScalarText<'_>, after: usize, until: 
         .filter(|line| prose(value(line)) && !signature_line(value(line)))
         .map(|line| {
             let lead = text.value[line[0]..line[1]].len() - text.value[line[0]..line[1]].trim_start().len();
-            let start = text.scalar(line[0] + lead);
-            let end = text.scalar(line[0] + text.value[line[0]..line[1]].trim_end().len());
+            let start = text.utf16_of_byte(line[0] + lead);
+            let end = text.utf16_of_byte(line[0] + text.value[line[0]..line[1]].trim_end().len());
             prose_block(ScalarRange { start, end })
         })
         .collect()
@@ -890,7 +890,6 @@ pub(super) fn contiguous_scopes(markers: &[Marker]) -> Vec<Vec<Marker>> {
 }
 
 pub(super) fn recover_contiguous(
-    text: &ScalarText<'_>,
     line: Vec<Marker>,
     candidates: &[Marker],
 ) -> Vec<Marker> {
@@ -936,11 +935,11 @@ pub(super) fn recover_contiguous(
     }
     if let Some(first) = line.first().filter(|value| value.number > 1) {
         let end = candidates.partition_point(|value| value.start < first.start);
-        let first_utf16 = text.utf16(first.start);
+        let first_utf16 = first.start;
         let mut matching = candidates[..end].iter().filter(|value| {
             value.number == first.number - 1
                 && value.formal
-                && first_utf16 - text.utf16(value.start) <= 2_000
+                && first_utf16 - value.start <= 2_000
         });
         if let Some(candidate) = matching.next() {
             if matching.next().is_none() {
@@ -983,7 +982,7 @@ pub(super) fn fill_lossy_marker_gaps(
                 candidate.number > 0
                     && candidate.number < right.number
                     && right.number - candidate.number <= 2
-                    && text.utf16(right.start) - text.utf16(candidate.start) <= 2_000
+                    && right.start - candidate.start <= 2_000
             });
         let sentence = before.zip(after).is_some_and(|(left, right)| {
             left.number + 1 == candidate.number && candidate.number + 1 == right.number
@@ -1010,7 +1009,7 @@ pub(super) fn quoted_dot(text: &ScalarText<'_>, marker: &Marker) -> bool {
     if marker.style != MarkerStyle::Dot {
         return false;
     }
-    let start = text.byte(marker.start);
+    let start = text.byte_of_utf16(marker.start);
     let end = text.value[start..]
         .find('\n')
         .map_or(text.value.len(), |at| start + at);
@@ -1046,7 +1045,7 @@ pub(super) fn paragraph_ranges(
         .map(|value| value.start)
         .chain(selected.iter().map(|value| value.start))
         .chain(extra.iter().map(|value| value.start))
-        .chain([text.len()])
+        .chain([text.utf16_len()])
         .collect::<Vec<_>>();
     boundaries.sort_unstable();
     boundaries.dedup();
@@ -1057,7 +1056,7 @@ pub(super) fn paragraph_ranges(
             let end = paragraph_end(
                 text,
                 marker.start,
-                next_boundary(&boundaries, marker.start, text.len()),
+                next_boundary(&boundaries, marker.start, text.utf16_len()),
                 Some(marker.start) == last,
             );
             let mut block = crate::labelled_node(
@@ -1067,9 +1066,9 @@ pub(super) fn paragraph_ranges(
                 end,
             );
             // The number is read from the text, so it is printed there.
-            let printed = text.slice(marker.start..marker.content_start)
+            let printed = text.slice_utf16(marker.start..marker.content_start)
                 .expect("printed paragraph marker is bounded").trim_end();
-            block.marker_range = Some(ScalarRange { start: marker.start, end: marker.start + printed.chars().count() });
+            block.marker_range = Some(ScalarRange { start: marker.start, end: marker.start + utf16_len(printed) });
             block
         })
         .collect()
@@ -1082,8 +1081,8 @@ pub(super) fn paragraph_ranges(
 pub(super) fn paragraph_end(text: &ScalarText<'_>, start: usize, end: usize, last: bool) -> usize {
     let index = text.lines();
     let first = index.partition_point(|line| line[2] <= start).saturating_sub(1);
-    let (start_byte, end_byte) = (text.byte_at_scalar(start).unwrap_or(0), text.byte_at_scalar(end).unwrap_or(text.value.len()));
-    // Each line's words, the scalar its piece of the paragraph opens at, and whether a blank line stands before it.
+    let (start_byte, end_byte) = (text.byte_at_utf16(start).unwrap_or(0), text.byte_at_utf16(end).unwrap_or(text.value.len()));
+    // Each line's words, where its piece of the paragraph opens, and whether a blank line stands before it.
     let (mut pieces, mut separated, mut blank) = (Vec::<(usize, &str)>::new(), Vec::new(), false);
     for line in &index[first..] {
         if line[0] >= end_byte {
@@ -1158,7 +1157,7 @@ pub(super) fn detect_paragraphs(
     let mut by_style: [Vec<Marker>; 3] = std::array::from_fn(|_| Vec::new());
     for marker in markers {
         if courtlistener {
-            let byte = text.byte(marker.start);
+            let byte = text.byte_of_utf16(marker.start);
             let line_end = text.value[byte..].find('\n').map_or(text.value.len(), |at| byte + at);
             // An isolated unadorned number is layout or an unresolved note, not a paragraph.
             if text.value[byte..line_end].trim().bytes().all(|value| value.is_ascii_digit()) {
@@ -1220,7 +1219,7 @@ pub(super) fn detect_paragraphs(
             score = chain_score(&chain);
             // A decision of one paragraph numbers it "[1]", and no note call names it.
             let lone = style == MarkerStyle::Bracket && chain.len() == 1 && chain[0].number == 1 && candidates.len() == 1
-                && !text.value[..text.byte(chain[0].start)].contains("[1]");
+                && !text.value[..text.byte_of_utf16(chain[0].start)].contains("[1]");
             if chain.len() < 2 && !lone || endnote_shaped(text, &chain) {
                 continue;
             }
@@ -1228,9 +1227,9 @@ pub(super) fn detect_paragraphs(
             if !short || (style == MarkerStyle::Bracket
                 // A short ruling numbers its paragraphs "1." to "4." from the head of its reasons, no running prose before
                 // them; after prose, such a count is a list.
-                || style == MarkerStyle::Dot && !text.value[..text.byte(chain[0].start)].lines().any(running_prose)
+                || style == MarkerStyle::Dot && !text.value[..text.byte_of_utf16(chain[0].start)].lines().any(running_prose)
                 // A short ruling's first number stands on its judge: "1 CORY J. — We are all of the view ...". No list opens so.
-                || style == MarkerStyle::Bare && text.value[text.byte(chain[0].content_start)..].lines().next().is_some_and(author_line))
+                || style == MarkerStyle::Bare && text.value[text.byte_of_utf16(chain[0].content_start)..].lines().next().is_some_and(author_line))
                 // A note list after the paragraphs counts from 1 again; the count stands alone before it.
                 && sole_chain(&chain, &counted)
             {
@@ -1240,7 +1239,6 @@ pub(super) fn detect_paragraphs(
         }
         let style_markers: Vec<Marker> = if contiguous && style != MarkerStyle::Bare {
             recover_contiguous(
-                text,
                 std::mem::take(&mut by_style[style_index]),
                 &joined[style_index],
             )
@@ -1322,7 +1320,7 @@ pub(super) fn detect_paragraphs(
     // another short count, a list of its issues ("1. Was the Minister correct …"): its parenthesized count,
     // far the longer, is its paragraphs.
     let parenthesized = if rooted { parenthesized_paragraphs(text, excluded) } else { Vec::new() };
-    let starts = parenthesized.iter().filter(|block| block.kind == NodeKind::Paragraph).map(|block| text.utf16(block.range.start)).collect::<Vec<_>>();
+    let starts = parenthesized.iter().filter(|block| block.kind == NodeKind::Paragraph).map(|block| block.range.start).collect::<Vec<_>>();
     let numbered = starts.len();
     // Spread through the decision, not cornered as a quoted enactment's subsections are; and never in place
     // of a bracketed count, which a decision quoting an enactment keeps.
@@ -1346,7 +1344,7 @@ pub(super) fn detect_paragraphs(
             next.insert(pair[0].start, pair[1].start);
         }
         if let Some(last) = ends.last() {
-            next.insert(last.start, text.len());
+            next.insert(last.start, text.utf16_len());
         }
         let first_start = hypothesis.markers[0].start;
         let last_start = hypothesis.markers.last().unwrap().start;
@@ -1354,10 +1352,10 @@ pub(super) fn detect_paragraphs(
             .markers
             .iter()
             .map(|marker| {
-                let end = next.get(&marker.start).copied().unwrap_or(text.len());
+                let end = next.get(&marker.start).copied().unwrap_or(text.utf16_len());
                 if end >= marker.start {
                     word_count(
-                        text.slice(marker.start..end)
+                        text.slice_utf16(marker.start..end)
                             .expect("section range is bounded"),
                         contiguous,
                     )
@@ -1376,9 +1374,9 @@ pub(super) fn detect_paragraphs(
         let median = median(&mut counts[..bounded]);
         // The structure engine scores the unmodified hypothesis. Lossy heading inference
         // changes only the returned ranges after that hypothesis is accepted.
-        let first_utf16 = text.utf16(first_start);
+        let first_utf16 = first_start;
         let start = first_utf16 as f64 / text_length.max(1) as f64;
-        let span = (text.utf16(last_start) - first_utf16) as f64 / text_length.max(1) as f64;
+        let span = (last_start - first_utf16) as f64 / text_length.max(1) as f64;
         let accepted = if hypothesis.short {
             text_length <= if rooted { 12_000 } else { 6_000 }
                 // A provider's catalogue record opens its text, so a rooted count may start late.
@@ -1456,7 +1454,7 @@ pub(super) fn clipped_case_paragraphs(
         }
         block.range.end > block.range.start
             && text
-                .slice(block.range.start..block.range.end)
+                .slice_utf16(block.range.start..block.range.end)
                 .expect("block range is bounded")
                 .chars()
                 .any(char::is_alphabetic)

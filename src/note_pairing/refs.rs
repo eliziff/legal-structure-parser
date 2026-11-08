@@ -287,7 +287,7 @@ pub(super) fn ref_site_penalty(
             && line
                 .citation_spans
                 .iter()
-                .any(|span| end == span.end && start > span.start);
+                .any(|span| line.unit(end) == span.end && line.unit(start) > span.start);
         if !tail_glued {
             return None;
         }

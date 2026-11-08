@@ -60,7 +60,7 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
             )
         );
         let printed = text
-            .slice(point.range.start..content_start)
+            .slice_utf16(point.range.start..content_start)
             .expect("grammar point range is bounded");
         let label = printed.trim().to_owned();
         entry.0.push(StructureMarkerCandidate {
@@ -68,7 +68,7 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
             range: point.range,
             marker_range: ScalarRange {
                 start: point.range.start,
-                end: point.range.start + printed.trim_end().chars().count(),
+                end: point.range.start + utf16_len(printed.trim_end()),
             },
             label,
             grammar_value,

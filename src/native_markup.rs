@@ -162,7 +162,7 @@ impl NativeMarkupInput {
 }
 
 /// A node of a block the markup declares, as the reader opens it: its kind, label (none where empty) and anchor, its
-/// range in the rendered text's UTF-16 until the reader puts it in scalars; the reader sets its markup on it.
+/// range in the rendered text's UTF-16; the reader sets its markup on it.
 fn markup_node(kind: NodeKind, label: String, anchor: Option<String>) -> StructureNode {
     let mut node = StructureNode::new(String::new(), kind, ScalarRange { start: 0, end: 0 }, ORIGIN, Derivation::Native, None);
     node.label = (!label.is_empty()).then_some(label);
@@ -2007,26 +2007,18 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         Sha256::digest(serde_json::to_vec(&adapter).map_err(EngineError::source)?)
     );
     // Exact UTF-16 in final rendered/fallback text, never source markup.
-    let coordinates = ScalarText::new(&rendered.text);
-    let scalar = |offset: usize| {
-        coordinates
-            .scalar_at_utf16(offset)
-            .ok_or_else(|| EngineError::source("provider UTF-16 range splits a Unicode scalar"))
-    };
-    let text_utf16 = coordinates.utf16_len();
-    // Each block the markup declares is a node, its element's tag and attributes on it, its ranges now in scalars.
+    let text_utf16 = utf16_len(&rendered.text);
+    // Each block the markup declares is a node, its element's tag and attributes on it.
     let mut claims = std::mem::take(&mut rendered.blocks);
     for (index, node) in claims.iter_mut().enumerate() {
         node.id = node.markup_start.map_or_else(
             || format!("native-{:06}", index + 1),
             |start| format!("native-markup-{start}"),
         );
-        node.range = ScalarRange { start: scalar(node.range.start)?, end: scalar(node.range.end.min(text_utf16))? };
+        node.range.end = node.range.end.min(text_utf16);
         // (An "li" is a list item, whatever it declares: `analyze_native_markup` makes it one after derivation.)
         let listed = node.markup_tag.as_deref() == Some("li");
-        node.marker_range = node.marker_range.filter(|_| node.kind == NodeKind::Footnote && !listed).and_then(|marker| {
-            Some(ScalarRange { start: coordinates.scalar_at_utf16(marker.start)?, end: coordinates.scalar_at_utf16(marker.end)? })
-        });
+        node.marker_range = node.marker_range.filter(|_| node.kind == NodeKind::Footnote && !listed);
         if node.kind == NodeKind::Cell && !listed {
             let span = |name: &str| node.markup_attributes.get(name).and_then(|value| value.parse().ok());
             node.row_span = span("rowspan");
@@ -2053,17 +2045,12 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
             heading_exclusions.push(ScalarRange { start: 0, end: text_utf16 });
         }
     }
-    let exclusion = |range: &ScalarRange, applies_to: &[NodeKind]| -> Result<Exclusion, EngineError> {
-        Ok(Exclusion {
-            range: ScalarRange { start: scalar(range.start)?, end: scalar(range.end)? },
-            applies_to: applies_to.to_vec(),
-        })
-    };
+    let exclusion = |range: &ScalarRange, applies_to: &[NodeKind]| Exclusion { range: *range, applies_to: applies_to.to_vec() };
     let exclusions = body_exclusions
         .iter()
         .map(|range| exclusion(range, &[NodeKind::Paragraph, NodeKind::Heading]))
         .chain(heading_exclusions[body_exclusions.len()..].iter().map(|range| exclusion(range, &[NodeKind::Heading])))
-        .collect::<Result<Vec<_>, EngineError>>()?;
+        .collect::<Vec<_>>();
     let scope_kind = match scope.kind.as_str() {
         "complete" => ScopeKind::Complete,
         "excerpt" => ScopeKind::Excerpt,

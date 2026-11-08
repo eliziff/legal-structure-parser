@@ -15,7 +15,7 @@ pub trait LayoutAnalysis: Sync {
 
     /// Every citation in `text`, each with its style of cause, pinpoints and parentheticals.
     fn citations(&self, text: &str) -> Vec<CitationSpan>;
-    /// The spans of a laid-out line a citation protects, in scalar offsets.
+    /// The spans of a laid-out line a citation protects, in UTF-16 offsets.
     fn protected_citation_spans(&self, text: &str) -> Vec<(usize, usize)>;
     /// Whether a short laid-out line reads as a heading's title, by the citation grammar.
     fn heading_text_plausible(&self, text: &str) -> bool;

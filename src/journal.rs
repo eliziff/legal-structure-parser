@@ -1,7 +1,7 @@
 use crate::locator::literal_page_marker;
 use crate::{
     Derivation, DetectionProfile, Evidence, DocumentStructure, EngineError, NodeKind,
-    ScalarRange, ScalarText, StructureNode,
+    ScalarRange, ScalarText, StructureNode, utf16_len,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -171,7 +171,7 @@ pub fn journal_text_document_structure(
     }
     let mut starts = Vec::new();
     let mut clean = String::with_capacity(text.len());
-    let (mut clean_scalars, mut page_cursor) = (0, 0);
+    let (mut clean_offset, mut page_cursor) = (0, 0);
     for line in text.split_inclusive('\n') {
         if let Some(label) = page_marker(line) {
             let row = page_labels[page_cursor..]
@@ -182,10 +182,10 @@ pub fn journal_text_document_structure(
                 page_cursor = index + 1;
                 page_labels[index].pdf_page
             });
-            starts.push((label.to_owned(), pdf_page, clean_scalars));
+            starts.push((label.to_owned(), pdf_page, clean_offset));
         } else {
             clean.push_str(line);
-            clean_scalars += line.chars().count();
+            clean_offset += utf16_len(line);
         }
     }
     let mut claims = Vec::with_capacity(starts.len());
@@ -195,7 +195,7 @@ pub fn journal_text_document_structure(
             public_label(label),
             ScalarRange {
                 start: *start,
-                end: starts.get(index + 1).map_or(clean_scalars, |value| value.2),
+                end: starts.get(index + 1).map_or(clean_offset, |value| value.2),
             },
             vec![label.clone()],
         );
@@ -246,7 +246,7 @@ pub fn journal_document_structure(
         let page_start = offset;
         let page_coordinates = ScalarText::new(&page.text);
         text.push_str(&page.text);
-        offset += page_coordinates.len();
+        offset += page_coordinates.utf16_len();
         let pdf_page = page.pdf_page.filter(|value| *value > 0);
         if let Some(pdf_page) = pdf_page {
             let label = page_labels
@@ -298,11 +298,11 @@ pub fn journal_document_structure(
             let placed = Region {
                 start: page_start
                     + page_coordinates
-                        .scalar_at_byte(start_byte)
+                        .utf16_at_byte(start_byte)
                         .expect("matched journal region starts at a UTF-8 boundary"),
                 end: page_start
                     + page_coordinates
-                        .scalar_at_byte(cursor)
+                        .utf16_at_byte(cursor)
                         .expect("matched journal region ends at a UTF-8 boundary"),
                 pdf_page,
             };

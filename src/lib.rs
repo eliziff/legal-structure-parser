@@ -114,7 +114,7 @@ struct Exclusion {
     applies_to: Vec<NodeKind>,
 }
 
-/// What a reader hands `derive`: the structure it read, its own nodes in scalars, each naming its parent (`parent_id`)
+/// What a reader hands `derive`: the structure it read, its own nodes, each naming its parent (`parent_id`)
 /// by its id or label until `derive` resolves it; the profile inference reads it by; and what it tells inference.
 pub(crate) struct Evidence {
     structure: DocumentStructure,
@@ -159,7 +159,7 @@ impl Evidence {
 
 }
 
-/// A node inference reads, by its kind, label and span in scalars; `derive` numbers it.
+/// A node inference reads, by its kind, label and span; `derive` numbers it.
 fn labelled_node(kind: NodeKind, label: String, start: usize, end: usize) -> StructureNode {
     let mut node = StructureNode::new(
         String::new(),

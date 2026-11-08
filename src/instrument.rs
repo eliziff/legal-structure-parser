@@ -277,14 +277,13 @@ fn endorsed_references(references: &[ProvisionReference]) -> Vec<(String, usize,
 fn instrument_lineation_score_blocks(
     blocks: &[StructureNode],
     endorsed: &[(String, usize, usize)],
-    coordinates: &ScalarText<'_>,
 ) -> usize {
     instrument_lineation_score_sections(
         blocks.iter().filter_map(|block| {
             (block.kind == NodeKind::Section)
                 .then_some(block.label.as_deref())
                 .flatten()
-                .map(|label| (label, coordinates.utf16(block.range.start)))
+                .map(|label| (label, block.range.start))
         }),
         endorsed,
     )
@@ -312,7 +311,7 @@ fn instrument_block_head_span(blocks: &[StructureNode], coordinates: &ScalarText
         blocks.iter().filter_map(|block| {
             let label = block.label.as_deref()?;
             (block.kind == NodeKind::Section)
-                .then_some((label, coordinates.utf16(block.range.start)))
+                .then_some((label, block.range.start))
         }),
         coordinates.utf16_len(),
     )
@@ -366,7 +365,7 @@ fn select_lineation(
     let mut best = if endorsed.is_empty() {
         0
     } else {
-        instrument_lineation_score_blocks(&selected_blocks, endorsed, selected_coordinates)
+        instrument_lineation_score_blocks(&selected_blocks, endorsed)
     };
     drop(selected_view);
     if reconstruct_lineation && best < endorsed.len() {
@@ -377,7 +376,7 @@ fn select_lineation(
             if instrument_block_head_span(&candidate, &candidate_view) < 0.05 {
                 continue;
             }
-            let score = instrument_lineation_score_blocks(&candidate, endorsed, &candidate_view);
+            let score = instrument_lineation_score_blocks(&candidate, endorsed);
             drop(candidate_view);
             if score > best {
                 selected = index + 1;
@@ -461,7 +460,7 @@ pub fn analyze_instrument(
     let mut active_sections = Vec::new();
     let mut owners = Vec::with_capacity(lines.len());
     for line in lines {
-        let start = text.utf16_at_byte(line[0]).unwrap();
+        let start = line[2];
         while next_section < sections.len() && sections[next_section].1.range.start <= start {
             active_sections.push(sections[next_section]);
             next_section += 1;

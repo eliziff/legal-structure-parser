@@ -30,7 +30,7 @@ pub(super) fn detect_case(
         paragraphs = with_endnotes(text, paragraphs);
         if !paragraphs.iter().any(|block| block.kind == NodeKind::Paragraph) {
             let until = paragraphs.iter().filter(|block| block.kind == NodeKind::Endnote)
-                .filter_map(|block| block.marker_range.map(|range| range.start)).min().unwrap_or(text.len());
+                .filter_map(|block| block.marker_range.map(|range| range.start)).min().unwrap_or(text.utf16_len());
             paragraphs.extend(unnumbered_paragraphs(text, 0, until));
         }
     }
@@ -61,7 +61,7 @@ pub(super) fn with_endnotes(text: &ScalarText<'_>, mut paragraphs: Vec<Structure
     let notes = crate::text_notes::text_note_blocks(text, note_start, &labels);
     // A correction restating a paragraph after the reasons ("Paragraph 1 should read as follows: [1] This
     // is an application …") is no note list: its first "note" opens as one of the paragraphs does.
-    let opening_words = |range: ScalarRange| text.slice(range.start..range.end).unwrap_or("").split_whitespace().take(12).collect::<Vec<_>>();
+    let opening_words = |range: ScalarRange| text.slice_utf16(range.start..range.end).unwrap_or("").split_whitespace().take(12).collect::<Vec<_>>();
     let restated = notes.first().is_some_and(|note| {
         let words = opening_words(note.range);
         words.len() >= 6 && paragraphs.iter().filter(|block| block.kind == NodeKind::Paragraph).any(|block| {
@@ -117,18 +117,18 @@ pub(super) fn case_decimal_subheadings(
         let value = line.text.trim();
         let Some(token) = value.split_whitespace().next() else { continue; };
         let lead = line.text.len() - line.text.trim_start().len();
-        let mut range = ScalarRange { start: text.scalar(line.byte_start + lead), end: text.scalar(line.byte_start + lead + value.len()) };
+        let mut range = ScalarRange { start: text.utf16_of_byte(line.byte_start + lead), end: text.utf16_of_byte(line.byte_start + lead + value.len()) };
         if evidence.clip_inference(NodeKind::Heading, range) != Some(range) { continue; }
         if heading_enumerator(token) && heading_levels(value).is_some()
             && heading_title_case(&value.split_whitespace().skip(1).collect::<Vec<_>>()) {
             let inner = token.trim_start_matches('(').trim_end_matches(['.', ')']);
             if enum_readings(inner).into_iter().flatten().any(|(family, _)| family != 0) {
-                parent = Some(line.scalar_start);
+                parent = Some(line.start);
                 continue;
             }
         }
         let Some(parent) = parent else { continue; };
-        let Some(&marker) = markers.get(&line.scalar_start) else { continue; };
+        let Some(&marker) = markers.get(&line.start) else { continue; };
         if !decimal_prefix(value, 4).is_some_and(|(_, length)| value[length..].starts_with('.')) { continue; }
         let mut joined = value.to_owned();
         for continuation in &source_lines[index + 1..] {
@@ -141,7 +141,7 @@ pub(super) fn case_decimal_subheadings(
             if heading_levels(&next).is_none() { break; }
             let lead = continuation.text.len() - continuation.text.trim_start().len();
             let extended = ScalarRange { start: range.start,
-                end: text.scalar(continuation.byte_start + lead + value.len()) };
+                end: text.utf16_of_byte(continuation.byte_start + lead + value.len()) };
             if evidence.clip_inference(NodeKind::Heading, extended) != Some(extended) { break; }
             // A hanging title line retains its literal source span; soft body wraps
             // do not acquire heading status from title grammar alone.
@@ -149,8 +149,8 @@ pub(super) fn case_decimal_subheadings(
             range = extended;
         }
         let following = source_lines[index + 1..].iter().find(|line|
-            line.scalar_start >= range.end && !line.text.trim().is_empty());
-        let title = text.slice(marker.content_start..range.end).unwrap_or("").trim();
+            line.start >= range.end && !line.text.trim().is_empty());
+        let title = text.slice_utf16(marker.content_start..range.end).unwrap_or("").trim();
         let words = title.split_whitespace().collect::<Vec<_>>();
         if heading_levels(&joined).is_some() && title.chars().any(char::is_alphabetic)
             && (heading_title_case(&words) || title.ends_with('?')
@@ -166,16 +166,16 @@ pub(super) fn case_decimal_subheadings(
             let corroborated = scope.iter().filter(|marker| supported.contains(&marker.start)).count();
             if scope.len() < 2 || scope[0].number != 1 || corroborated < 2 || corroborated * 2 < scope.len() { continue; }
             let separated = scope.windows(2).filter(|pair| {
-                let body = text.slice(titles[&pair[0].start].end..pair[1].start).unwrap_or("");
+                let body = text.slice_utf16(titles[&pair[0].start].end..pair[1].start).unwrap_or("");
                 word_count(body, true) >= 12
             }).flat_map(|pair| [pair[0].start, pair[1].start]).collect::<HashSet<_>>();
             let bracketed = scope.windows(3).filter(|triple| {
                 if supported.contains(&triple[1].start) || !supported.contains(&triple[0].start)
                     || !supported.contains(&triple[2].start) || !triple.windows(2).all(|pair|
-                        word_count(text.slice(titles[&pair[0].start].end..pair[1].start).unwrap_or(""), true) >= 12) { return false; }
+                        word_count(text.slice_utf16(titles[&pair[0].start].end..pair[1].start).unwrap_or(""), true) >= 12) { return false; }
                 let column = titles[&triple[0].start].start - triple[0].start;
                 if !triple.iter().all(|marker| titles[&marker.start].start - marker.start == column) { return false; }
-                let title = text.slice(titles[&triple[1].start].start..titles[&triple[1].start].end).unwrap_or("");
+                let title = text.slice_utf16(titles[&triple[1].start].start..titles[&triple[1].start].end).unwrap_or("");
                 if title.contains('\n') {
                     heading_levels(&title.split_whitespace().collect::<Vec<_>>().join(" ")).is_some()
                 } else { heading_levels(title).is_some() }
@@ -184,7 +184,7 @@ pub(super) fn case_decimal_subheadings(
                 (supported.contains(&marker.start) || bracketed.contains(&marker.start))
                     && separated.contains(&marker.start)) {
                 let range = titles[&marker.start];
-                let title = text.slice(range.start..range.end).unwrap().trim().to_owned();
+                let title = text.slice_utf16(range.start..range.end).unwrap().trim().to_owned();
                 result.push(crate::labelled_node(NodeKind::Heading, title, range.start, range.end));
             }
         }
@@ -205,17 +205,17 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
         } else if text.value.as_bytes().get(end) == Some(&b'\n') {
             end + 1
         } else { end };
-        text.scalar(end)
+        text.utf16_of_byte(end)
     };
     let form_feeds = text.value.char_indices()
         .filter(|(_, character)| *character == '\u{c}')
-        .map(|(byte, _)| text.scalar(byte))
+        .map(|(byte, _)| text.utf16_of_byte(byte))
         .collect::<Vec<_>>();
     let physical_page = |start: usize| {
         let at = form_feeds.partition_point(|boundary| *boundary < start);
         ScalarRange {
             start: at.checked_sub(1).map_or(0, |index| form_feeds[index] + 1),
-            end: form_feeds.get(at).copied().unwrap_or(text.len()),
+            end: form_feeds.get(at).copied().unwrap_or(text.utf16_len()),
         }
     };
     let mut body_indents = source_lines.iter()
@@ -228,9 +228,9 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
     for line in &source_lines {
         let value = line.text.trim();
         if value.is_empty() { continue; }
-        let physical = physical_page(line.scalar_start);
+        let physical = physical_page(line.start);
         if first_lines.insert(physical.start) && physical.start > 0 {
-            running.entry(value).or_default().push(line.scalar_start);
+            running.entry(value).or_default().push(line.start);
         }
     }
     for starts in running.into_values().filter(|starts| starts.len() >= 3) {
@@ -238,7 +238,7 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
     }
     let numeric = paragraph_markers(text, false, true);
     let line_by_start = source_lines.iter().enumerate().map(|(index, line)|
-        (line.scalar_start, index)).collect::<HashMap<_, _>>();
+        (line.start, index)).collect::<HashMap<_, _>>();
     let mut margin_numbers = HashSet::new();
     let mut ruled = Vec::new();
     let alone =|marker: &Marker| source_lines[line_by_start[&marker.start]].text.trim().bytes().all(|byte| byte.is_ascii_digit());
@@ -283,22 +283,22 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
     // A gutter numeral is not the text's: the line it numbers keeps its words.
     for marker in numeric.iter().filter(|marker| margin_numbers.contains(&marker.start)) {
         let line = source_lines[line_by_start[&marker.start]];
-        let value = text.slice(marker.start..text.scalar(line.byte_end)).unwrap_or("");
+        let value = text.slice_utf16(marker.start..text.utf16_of_byte(line.byte_end)).unwrap_or("");
         let lead = leading_ascii_space(value);
         let digits = value[lead..].bytes().take_while(u8::is_ascii_digit).count();
         result.gutter.push(ScalarRange { start: marker.start, end: marker.start + lead + digits });
     }
     let decimal_headings = case_decimal_subheadings(evidence, text, &source_lines, &numeric);
     for scope in monotone_scopes(numeric.iter().filter(|marker| marker.style == MarkerStyle::Dot), 1) {
-        if scope.len() < 5 || scope[0].number != 1 || scope[0].start > text.len() / 5 { continue; }
-        let earlier_prose = source_lines.iter().take_while(|line| line.scalar_start < scope[0].start)
+        if scope.len() < 5 || scope[0].number != 1 || scope[0].start > text.utf16_len() / 5 { continue; }
+        let earlier_prose = source_lines.iter().take_while(|line| line.start < scope[0].start)
             .filter(|line| line.text.split_whitespace().filter(|word|
                 word.chars().next().is_some_and(char::is_lowercase)).take(3).count() == 3)
             .filter(|line| line.text.trim_end().ends_with(['.', '?', '!']))
             .map(|line| line.text.chars().count()).sum::<usize>();
         if earlier_prose > 120 { continue; }
         let topical = scope.iter().filter(|marker| {
-            let byte = text.byte(marker.content_start);
+            let byte = text.byte_of_utf16(marker.content_start);
             let line = text.value[byte..].split('\n').next().unwrap_or("");
             let Some((topic, _)) = line.split_once('.') else { return false; };
             let words = topic.split_whitespace().collect::<Vec<_>>();
@@ -308,9 +308,9 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
         // A repeated early editorial topic catalogue does not number judicial paragraphs.
         // Keep its source and native declarations; suppress only the unsupported role at markers.
         for marker in scope {
-            let at = source_lines.partition_point(|line| line.scalar_start <= marker.start);
+            let at = source_lines.partition_point(|line| line.start <= marker.start);
             if let Some(line) = at.checked_sub(1).map(|index| source_lines[index]) {
-                result.exclusions.push(ScalarRange { start: marker.start, end: text.scalar(line.byte_end) });
+                result.exclusions.push(ScalarRange { start: marker.start, end: text.utf16_of_byte(line.byte_end) });
             }
         }
     }
@@ -318,8 +318,8 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
     for line in &source_lines {
         let value = line.text.trim();
         let lead = line.text.len() - line.text.trim_start().len();
-        let mut start = text.scalar(line.byte_start + lead);
-        let end = text.scalar(line.byte_start + lead + value.len());
+        let mut start = text.utf16_of_byte(line.byte_start + lead);
+        let end = text.utf16_of_byte(line.byte_start + lead + value.len());
         let wrapped = value.starts_with('-') && value.ends_with('-');
         let number = value.trim_matches('-').trim();
         let explicit = value.rfind("Page ").and_then(|offset| {
@@ -334,9 +334,9 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
                 (length == value.trim_matches('-').trim().len()).then_some(number))
         }) else { continue; };
         let physical = physical_page(start);
-        let before = text.slice(physical.start..line.scalar_start).unwrap_or("");
-        let line_end = text.scalar(line.byte_end);
-        let after = text.slice(line_end..physical.end).unwrap_or("");
+        let before = text.slice_utf16(physical.start..line.start).unwrap_or("");
+        let line_end = text.utf16_of_byte(line.byte_end);
+        let after = text.slice_utf16(line_end..physical.end).unwrap_or("");
         let header = before.trim().is_empty();
         let footer = after.trim().is_empty();
         if let Some((offset, _)) = explicit {
@@ -346,7 +346,7 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
             // heads each filed page as well as footing it.
             let stamp = value.starts_with("Case ") && value.contains(" Document ") && value.contains(" Filed ");
             if offset > 0 && (form_feeds.is_empty() || !(footer || stamp && header)) { continue; }
-            start = text.scalar(line.byte_start + lead + offset);
+            start = text.utf16_of_byte(line.byte_start + lead + offset);
         }
         let centered = leading_ascii_space(line.text) >= body_indent + 12;
         // Boundary position and a repeated counter support roles; form feeds alone do not.
@@ -357,7 +357,7 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
         pages.push(SourcePageMarker {
             marker: Marker::new(number.parse().unwrap(), start, end, MarkerStyle::Bare, 1.0),
             range: ScalarRange { start, end },
-            line: ScalarRange { start: line.scalar_start, end: line_end },
+            line: ScalarRange { start: line.start, end: line_end },
             after_line: after_line(*line),
             physical,
             header: !form_feeds.is_empty() && header && !footer,
@@ -373,13 +373,13 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
                 let right = page_by_start[&scope[1].start];
                 if left.physical == right.physical || [left, right].iter().any(|page|
                     form_feeds.binary_search(&page.physical.end).is_err())
-                    || word_count(text.slice(left.after_line..right.line.start).unwrap_or(""), true) < 80 { continue; }
+                    || word_count(text.slice_utf16(left.after_line..right.line.start).unwrap_or(""), true) < 80 { continue; }
             }
             let mut scope = scope;
             // A filing stamp's numbering yields to the document's own printed pages: it reads only where
             // they read none (an exhibit stamped in another court keeps the record's page numbers).
             if header && accepted_pages.iter().any(|page: &&SourcePageMarker| !page.header)
-                && scope.iter().all(|marker| text.slice(page_by_start[&marker.start].line.start..page_by_start[&marker.start].line.end)
+                && scope.iter().all(|marker| text.slice_utf16(page_by_start[&marker.start].line.start..page_by_start[&marker.start].line.end)
                     .is_some_and(|line| line.contains(" Document ") && line.contains(" Filed "))) {
                 continue;
             }
@@ -390,10 +390,10 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
                 let held = scope.windows(2).enumerate().take_while(|(position, pair)| {
                     let left = page_by_start[&pair[0].start];
                     let right = page_by_start[&pair[1].start];
-                    let words = word_count(text.slice(left.line.end..right.line.start).unwrap_or(""), true);
+                    let words = word_count(text.slice_utf16(left.line.end..right.line.start).unwrap_or(""), true);
                     words >= 80 || position + 2 == length && words >= 12
                         && left.range.start - left.line.start == right.range.start - right.line.start
-                        && text.slice(right.after_line..text.len()).unwrap_or("").trim().is_empty()
+                        && text.slice_utf16(right.after_line..text.len()).unwrap_or("").trim().is_empty()
                 }).count() + 1;
                 if held < length && held < 3 { continue; }
                 scope.truncate(held);
@@ -409,7 +409,6 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
                         let end = page.line.start;
                         if end == 0 { continue; }
                         let mut block = crate::labelled_node(NodeKind::Page, marker.number.to_string(), 0, end);
-                        block.aliases = Some(vec![marker.number.to_string()]);
                         block.marker_range = Some(page.range);
                         result.blocks.push(block);
                         continue;
@@ -422,7 +421,6 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
                 };
                 if start >= end { continue; }
                 let mut block = crate::labelled_node(NodeKind::Page, marker.number.to_string(), start, end);
-                block.aliases = Some(vec![marker.number.to_string()]);
                 block.marker_range = Some(page.range);
                 result.blocks.push(block);
             }
@@ -445,7 +443,7 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
         let prefix = text.value[..byte].split_whitespace().next_back().unwrap_or("");
         if matches!(prefix, "n." | "nn.") { continue; }
         references.entry(number.parse().unwrap()).or_default().push(ScalarRange {
-            start: text.scalar(byte), end: text.scalar(byte + length),
+            start: text.utf16_of_byte(byte), end: text.utf16_of_byte(byte + length),
         });
     }
     let declared_paragraph_markers = evidence.structure.nodes.iter()
@@ -474,14 +472,14 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
         reference.map(|reference| (marker.start, reference))
     }).collect::<HashMap<_, _>>();
     for marker in &note_markers {
-        let at = source_lines.partition_point(|line| line.scalar_start <= marker.start);
+        let at = source_lines.partition_point(|line| line.start <= marker.start);
         let Some(line) = at.checked_sub(1).map(|index| source_lines[index]) else { continue; };
         let value = line.text.trim();
         let Some((number, length)) = decimal_prefix(value, 3) else { continue; };
         // Standalone labels have independent source-layout evidence. Corroborated
         // adjacent inline labels can bound a fragment without assigning a note role.
         if value.len() != length { continue; }
-        let label_start = text.scalar(line.byte_start + line.text.len() - line.text.trim_start().len());
+        let label_start = text.utf16_of_byte(line.byte_start + line.text.len() - line.text.trim_start().len());
         let label_range = ScalarRange { start: label_start, end: label_start + length };
         // A number the markup sets as a heading ("<h2>1</h2>") or in a table is that, however alone it stands.
         if evidence.structure.nodes.iter().any(|claim| matches!(claim.kind, NodeKind::Heading | NodeKind::Table | NodeKind::Row | NodeKind::Cell)
@@ -501,9 +499,9 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
         }
         let (mut body_seen, mut blanks, mut blank_start) = (false, 0, 0);
         let fragment_limit = body_end;
-        for following in source_lines.iter().skip(at).take_while(|line| line.scalar_start < fragment_limit) {
+        for following in source_lines.iter().skip(at).take_while(|line| line.start < fragment_limit) {
             if following.text.trim().is_empty() {
-                if blanks == 0 { blank_start = following.scalar_start; }
+                if blanks == 0 { blank_start = following.start; }
                 blanks += 1;
                 if body_seen && blanks >= 2 {
                     body_end = blank_start;
@@ -519,8 +517,8 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
             && claim.range.start <= body_start && body_start < claim.range.end) {
             body_end = body_end.min(block.range.end);
         }
-        if body_start >= body_end || word_count(text.slice(body_start..body_end).unwrap_or(""), true) < 3
-            || !source_lines.iter().skip(at).take_while(|line| line.scalar_start < body_end)
+        if body_start >= body_end || word_count(text.slice_utf16(body_start..body_end).unwrap_or(""), true) < 3
+            || !source_lines.iter().skip(at).take_while(|line| line.start < body_end)
                 .find(|line| !line.text.trim().is_empty())
                 .is_some_and(|line| line.text.chars().any(char::is_alphabetic)) { continue; }
         let body_range = ScalarRange { start: body_start, end: body_end };
@@ -532,7 +530,7 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
         // trailing matter: preserve it verbatim without manufacturing paragraph/heading roles inside it.
         // Text with no page breaks bounds nothing after the note's body, so the text after it stays readable.
         let limit = if form_feeds.is_empty() { body_end } else { fragment_limit };
-        result.exclusions.push(ScalarRange { start: line.scalar_start, end: limit });
+        result.exclusions.push(ScalarRange { start: line.start, end: limit });
         result.note_ranges.push(ScalarRange { start: body_start, end: limit });
         result.blocks.push(block);
     }
@@ -584,8 +582,8 @@ pub(super) fn detect_case_headings(evidence: &Evidence, text: &ScalarText<'_>, l
         let value = line.text.trim();
         let lead = line.text.len() - line.text.trim_start().len();
         ScalarRange {
-            start: text.scalar(line.byte_start + lead),
-            end: text.scalar(line.byte_start + lead + value.len()),
+            start: text.utf16_of_byte(line.byte_start + lead),
+            end: text.utf16_of_byte(line.byte_start + lead + value.len()),
         }
     };
     let mut candidates = Vec::<(StructureNode, bool)>::new();
@@ -596,7 +594,7 @@ pub(super) fn detect_case_headings(evidence: &Evidence, text: &ScalarText<'_>, l
         let range = line_range(*line);
         if evidence.clip_inference(NodeKind::Heading, range) != Some(range)
             || notes.iter().any(|note| overlaps(range, note))
-            || layout.running_heads.contains(&line.scalar_start)
+            || layout.running_heads.contains(&line.start)
             // This is a judicial byline; native source heading declarations stay intact.
             || value.trim_end_matches(':').eq_ignore_ascii_case("per curiam")
             || !value.chars().any(char::is_alphabetic)
@@ -740,7 +738,7 @@ pub(super) fn detect_case_prose(
     }
     let line_range = |line: Line<'_>| {
         let lead = line.text.len() - line.text.trim_start().len();
-        ScalarRange { start: text.scalar(line.byte_start + lead), end: text.scalar(line.byte_end) }
+        ScalarRange { start: text.utf16_of_byte(line.byte_start + lead), end: text.utf16_of_byte(line.byte_end) }
     };
     let mut excluded = evidence.exclusions.iter().filter(|item|
         item.applies_to.iter().any(|kind| matches!(kind, NodeKind::Paragraph | NodeKind::Prose)))
@@ -764,15 +762,15 @@ pub(super) fn detect_case_prose(
     let mut uncovered = Vec::new();
     let mut cursor = 0;
     for range in &merged {
-        if range.start > cursor && text.slice(cursor..range.start)
+        if range.start > cursor && text.slice_utf16(cursor..range.start)
             .is_some_and(|value| !value.trim().is_empty()) {
             uncovered.push(ScalarRange { start: cursor, end: range.start });
         }
         cursor = cursor.max(range.end);
     }
-    if cursor < text.len() && text.slice(cursor..text.len())
+    if cursor < text.utf16_len() && text.slice_utf16(cursor..text.len())
         .is_some_and(|value| !value.trim().is_empty()) {
-        uncovered.push(ScalarRange { start: cursor, end: text.len() });
+        uncovered.push(ScalarRange { start: cursor, end: text.utf16_len() });
     }
     if uncovered.is_empty() { return Vec::new(); }
     // Visit cached lines only in uncovered intervals. Fully represented opinions
@@ -780,8 +778,8 @@ pub(super) fn detect_case_prose(
     let cached_lines = text.lines();
     let mut source = Vec::new();
     for range in &uncovered {
-        let start = text.byte(range.start);
-        let end = text.byte(range.end);
+        let start = text.byte_of_utf16(range.start);
+        let end = text.byte_of_utf16(range.end);
         let mut index = cached_lines.partition_point(|line| line[0] <= start).saturating_sub(1);
         while let Some(line) = cached_lines.get(index).filter(|line| line[0] < end) {
             let mut byte_start = line[0].max(start);
@@ -789,15 +787,15 @@ pub(super) fn detect_case_prose(
             // A margin numeral opening the line is the page's gutter: read the line after it,
             // indented to the column its text stands at.
             let mut gutter = 0;
-            let first = text.scalar(byte_start + leading_ascii_space(&text.value[byte_start..byte_end]));
+            let first = text.utf16_of_byte(byte_start + leading_ascii_space(&text.value[byte_start..byte_end]));
             let at = layout.gutter.partition_point(|range| range.end <= first);
             if let Some(range) = layout.gutter.get(at).filter(|range| range.start <= first) {
-                gutter = text.byte(range.end).min(byte_end) - byte_start;
+                gutter = text.byte_of_utf16(range.end).min(byte_end) - byte_start;
                 byte_start += gutter;
             }
             if byte_start < byte_end {
                 let fragment = case_source_line(text, Line {
-                    byte_start, byte_end, scalar_start: text.scalar(byte_start),
+                    byte_start, byte_end, start: text.utf16_of_byte(byte_start),
                     text: &text.value[byte_start..byte_end],
                 });
                 if !fragment.text.trim().is_empty() {
@@ -819,7 +817,7 @@ pub(super) fn detect_case_prose(
             .flat_map(|block| [block.range.start, block.range.end]))
         .chain(merged.iter().flat_map(|range| [range.start, range.end]))
         .chain(text.value.char_indices().filter(|(_, character)| *character == '\u{c}')
-            .map(|(byte, _)| text.scalar(byte)))
+            .map(|(byte, _)| text.utf16_of_byte(byte)))
         .collect::<Vec<_>>();
     boundaries.sort_unstable();
     boundaries.dedup();
@@ -832,7 +830,7 @@ pub(super) fn detect_case_prose(
             && word.chars().filter(|character| character.is_alphabetic()).take(3).count() == 3).count();
     let sentence_end = |value: &str| ends_on(value, &['"', '\'', '\u{201d}', '\u{2019}', ')', ']'], &['.', '?', '!']);
     let ordinary_line = |line: Line<'_>| !blocked(line_range(line))
-        && !layout.running_heads.contains(&line.scalar_start)
+        && !layout.running_heads.contains(&line.start)
         && word_count(line.text, true) >= 8 && lowercase_words(line.text) >= 2;
     let mut indents = source.iter().filter(|(_, line, _)| ordinary_line(*line))
         .map(|(_, _, indent)| *indent).collect::<Vec<_>>();
@@ -851,7 +849,7 @@ pub(super) fn detect_case_prose(
     let wrap_gap = if wrap_gaps.len() >= 3 { median(&mut wrap_gaps) as usize } else { 0 };
     let mut result = Vec::new();
     let mut emit = |range: ScalarRange| {
-        let value = text.slice(range.start..range.end).unwrap_or("");
+        let value = text.slice_utf16(range.start..range.end).unwrap_or("");
         let (words, lowercase) = (word_count(value, true), lowercase_words(value));
         // Prose a page break or a note cuts before its sentence ends is still prose.
         if words >= 12 && lowercase >= 4
@@ -873,7 +871,7 @@ pub(super) fn detect_case_prose(
     for (position, &(index, line, indent)) in source.iter().enumerate() {
         let value = line.text.trim();
         let range = line_range(line);
-        if blocked(range) || layout.running_heads.contains(&line.scalar_start)
+        if blocked(range) || layout.running_heads.contains(&line.start)
             || crosses(range.start.saturating_add(1), range.end.saturating_sub(1)) {
             if let Some(block) = open.take() { emit(block.range); }
             continue;
@@ -883,7 +881,7 @@ pub(super) fn detect_case_prose(
         let previous = open.map(|block| block.last);
         let continued_wrap = !enumerated && indent <= body_indent
             && open.is_some_and(|block| block.body) && previous.is_some_and(|(previous_index, previous_range)| {
-                let preceding = text.slice(previous_range.start..previous_range.end).unwrap_or("");
+                let preceding = text.slice_utf16(previous_range.start..previous_range.end).unwrap_or("");
                 index.saturating_sub(previous_index + 1) <= wrap_gap
                     && previous_range.end - previous_range.start <= 120
                     && !sentence_end(preceding) && !preceding.trim_end().ends_with(':')
@@ -907,7 +905,7 @@ pub(super) fn detect_case_prose(
         let numeral = words.first().map_or("", |word| word.trim_start_matches('(').trim_end_matches(['.', ')']));
         let numbered = opening && !numeral.is_empty() && numeral.bytes().all(|byte| byte.is_ascii_digit())
             && previous.is_none_or(|(_, previous_range)|
-                sentence_end(text.slice(previous_range.start..previous_range.end).unwrap_or("")));
+                sentence_end(text.slice_utf16(previous_range.start..previous_range.end).unwrap_or("")));
         let separated = numbered || previous.is_some_and(|(previous_index, previous_range)|
             index.saturating_sub(previous_index + 1) > wrap_gap || first_line_indent
                 || crosses(previous_range.end, range.start));

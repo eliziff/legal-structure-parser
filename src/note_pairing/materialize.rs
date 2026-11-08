@@ -147,16 +147,20 @@ pub(super) fn materialize(
         let body_start = start_of_body + after.chars().count()
             - after.trim_start_matches(|character: char| character.is_whitespace() || ".)],:;-".contains(character)).chars().count();
         let display = pair.label.note_id();
-        // Placed in the reader's text: the label, the calls, and each body line (the label's from where the body opens).
-        let label_range = place(&label_line.id, pair.label.start, pair.label.end).filter(|range| range.start < range.end);
-        let calls = pair.refs.iter().map(|reference| place(&lines[reference.line].id, reference.start, reference.end)
-            .filter(|range| range.start < range.end)).collect::<Option<Vec<_>>>();
-        let whole = body_lines.iter().any(|line| place(&line.id, 0, line.text.chars().count()).is_some_and(|range| range.start < range.end));
+        // Placed in the reader's text, in UTF-16: the label, the calls, and each body line (the label's from where the body
+        // opens).
+        let label_range = place(&label_line.id, label_line.unit(pair.label.start), label_line.unit(pair.label.end))
+            .filter(|range| range.start < range.end);
+        let calls = pair.refs.iter().map(|reference| {
+            let line = &lines[reference.line];
+            place(&line.id, line.unit(reference.start), line.unit(reference.end)).filter(|range| range.start < range.end)
+        }).collect::<Option<Vec<_>>>();
+        let whole = body_lines.iter().any(|line| place(&line.id, 0, utf16_len(&line.text)).is_some_and(|range| range.start < range.end));
         let (Some(label_range), Some(calls), true) = (label_range, calls, whole && (!pair.refs.is_empty() || label_only)) else {
             continue;
         };
         let ranges: Vec<ScalarRange> = body_lines.iter()
-            .filter_map(|line| place(&line.id, if line.id == label_line.id { body_start } else { 0 }, line.text.chars().count()))
+            .filter_map(|line| place(&line.id, if line.id == label_line.id { line.unit(body_start) } else { 0 }, utf16_len(&line.text)))
             .filter(|range| range.start < range.end)
             .collect();
         if pair.refs.is_empty() {

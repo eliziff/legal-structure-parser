@@ -36,8 +36,8 @@ pub(super) fn page_markers(text: &ScalarText<'_>, report_start: Option<u32>) -> 
             if report_start.is_some_and(|start| number < start) {
                 continue;
             }
-            let start = text.scalar(line.byte_start + whole.start());
-            let content_start = text.scalar(line.byte_start + whole.end());
+            let start = text.utf16_of_byte(line.byte_start + whole.start());
+            let content_start = text.utf16_of_byte(line.byte_start + whole.end());
             result.push(PageMarker {
                 number,
                 start,
@@ -121,7 +121,7 @@ pub(super) fn detect_pages(
 /// still a page. It takes the number the printed pages count it to, else its place in the text.
 pub(super) fn form_feed_pages(evidence: &Evidence, text: &ScalarText<'_>, blocks: &[StructureNode]) -> Vec<StructureNode> {
     let form_feeds = text.value.char_indices().filter(|(_, character)| *character == '\u{c}')
-        .map(|(byte, _)| text.scalar(byte)).collect::<Vec<_>>();
+        .map(|(byte, _)| text.utf16_of_byte(byte)).collect::<Vec<_>>();
     if form_feeds.is_empty() {
         return Vec::new();
     }
@@ -142,19 +142,17 @@ pub(super) fn form_feed_pages(evidence: &Evidence, text: &ScalarText<'_>, blocks
     let labels = pages.iter().filter_map(|(_, label, _)| *label).collect::<HashSet<_>>();
     let mut result = Vec::new();
     let mut start = 0;
-    for (index, end) in form_feeds.iter().copied().chain([text.len()]).enumerate() {
+    for (index, end) in form_feeds.iter().copied().chain([text.utf16_len()]).enumerate() {
         let range = ScalarRange { start, end };
         start = end + 1;
         let number = index as i64 + 1 + offset;
         let label = number.to_string();
         if number < 1 || labels.contains(label.as_str())
-            || text.slice(range.start..range.end).is_none_or(|value| value.trim().is_empty())
+            || text.slice_utf16(range.start..range.end).is_none_or(|value| value.trim().is_empty())
             || pages.iter().any(|(page, _, _)| page.start < range.end && range.start < page.end) {
             continue;
         }
-        let mut block = crate::labelled_node(NodeKind::Page, label.clone(), range.start, range.end);
-        block.aliases = Some(vec![label]);
-        result.push(block);
+        result.push(crate::labelled_node(NodeKind::Page, label, range.start, range.end));
     }
     result
 }

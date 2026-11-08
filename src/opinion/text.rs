@@ -627,7 +627,7 @@ fn notes_of(lines: &[Line<'_>], zones: &[Vec<Zone>], pages: &[(usize, usize)]) -
             if body.bytes().any(|byte| byte.is_ascii_digit()) {
                 let characters = ScalarText::new(body);
                 let spans = cues::layout_protected_spans(body).into_iter()
-                    .map(|span| ScalarRange { start: characters.scalar(span.start), end: characters.scalar(span.end) })
+                    .map(|span| ScalarRange { start: characters.utf16_of_byte(span.start), end: characters.utf16_of_byte(span.end) })
                     .collect::<Vec<_>>();
                 if !spans.is_empty() { protected.insert(id.clone(), spans); }
             }
@@ -660,8 +660,7 @@ fn notes_of(lines: &[Line<'_>], zones: &[Vec<Zone>], pages: &[(usize, usize)]) -
     let place = |line_id: &str, start: usize, end: usize| -> Option<ScalarRange> {
         let line = &lines[line_id.strip_prefix('l')?.parse::<usize>().ok()?];
         let origin = line.body_range().start;
-        let unit = |scalars: usize| line.body.chars().take(scalars).map(char::len_utf16).sum::<usize>();
-        Some(ScalarRange { start: origin + unit(start), end: origin + unit(end) })
+        Some(ScalarRange { start: origin + start, end: origin + end })
     };
     let pairing = pair_footnotes(&laid, &protected, &|_| 0, &place);
     // Each note's calls, by its label's line.
