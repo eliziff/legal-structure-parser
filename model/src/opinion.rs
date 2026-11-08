@@ -83,11 +83,10 @@ pub struct OpinionHeadnote {
     /// `headnotes`, `syllabus`, `summary`, `arguments`, `history`, `posture`, `procedural_history`, `cross_reference`,
     /// `correction`, `seealso`, `note` (a reporter's or editor's), `held`, `catchword`, `topics`, `topic_index`, `papers`.
     pub kind: String,
+    /// The number it stands under where that is printed apart from its words: a topic index's code, a list's item number.
+    /// A number its words open on, "[3]" or "3.", is read from them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub number: Option<String>,
-    /// The point's subject, where it leads with one: "APPEAL — Time for Perfecting. ..."
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub topic: Option<String>,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub range: Option<ScalarRange>,

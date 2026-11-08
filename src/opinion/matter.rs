@@ -361,7 +361,7 @@ pub(super) fn topic_index(plain: &str) -> Vec<OpinionHeadnote> {
     let Some(from) = plain.find("Topic Index for") else { return Vec::new() };
     let entry = ENTRY.get_or_init(|| Regex::new(r"(?m)^[ \t]*([A-Z]{2}(?:-[A-Z]{2,4})?)[ \t]{2,}(\S.*?)[ \t]*$").unwrap());
     entry.captures_iter(&plain[from..]).map(|capture| OpinionHeadnote {
-        kind: "topic_index".to_owned(), number: Some(capture[1].to_owned()), topic: None, text: squeezed(&capture[2]), range: None,
+        kind: "topic_index".to_owned(), number: Some(capture[1].to_owned()), text: squeezed(&capture[2]), range: None,
     }).collect()
 }
 
@@ -374,7 +374,7 @@ pub(super) fn embedded_topics(markup: &str) -> Vec<OpinionHeadnote> {
     let starts = items.captures_iter(list.as_str()).map(|capture| (capture.get(0).unwrap().start(), capture.get(0).unwrap().end(), capture[1].to_owned())).collect::<Vec<_>>();
     starts.iter().enumerate().map(|(index, (_, from, number))| {
         let to = starts.get(index + 1).map_or(list.as_str().len(), |next| next.0);
-        OpinionHeadnote { kind: "topics".to_owned(), number: Some(number.clone()), topic: None, text: squeezed(&list.as_str()[*from..to]), range: None }
+        OpinionHeadnote { kind: "topics".to_owned(), number: Some(number.clone()), text: squeezed(&list.as_str()[*from..to]), range: None }
     }).collect()
 }
 

@@ -419,6 +419,7 @@ pub fn opinion_structure(record: &OpinionRecord, url: Option<String>) -> Documen
     structure.nodes.sort_by_key(|node| (node.range.start, node.range.end != node.range.start, std::cmp::Reverse(node.range.end)));
     structure.url = url;
     structure.text_sha256 = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(structure.text.as_bytes()));
+    legal_structure_model::write_levels(&mut structure.nodes).expect("an opinion's parts hold its paragraphs, and nothing holds a part");
     structure.refresh_revision().expect("Typed document structure is serializable");
     structure
 }
@@ -671,13 +672,8 @@ fn squeezed(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn topic_of(text: &str) -> Option<String> {
-    static TOPIC: OnceLock<Regex> = OnceLock::new();
-    TOPIC.get_or_init(|| Regex::new(r"^(?:\d{1,3}\.\s*)?([^—–.]{2,60}?)\s?[—–]").unwrap()).captures(text).map(|capture| capture[1].to_owned())
-}
-
 fn headnote_of(kind: &str, text: String, range: Option<ScalarRange>) -> OpinionHeadnote {
-    OpinionHeadnote { kind: kind.to_owned(), number: headnote_number(&text), topic: topic_of(&text), text, range }
+    OpinionHeadnote { kind: kind.to_owned(), number: None, text, range }
 }
 
 /// Points run together in one block, "1. Courts must ... 2. A motion ...": split where the numbers climb by ones after a finished
@@ -1072,7 +1068,8 @@ fn emphasized_whole(structure: &DocumentStructure, node: &StructureNode) -> bool
         || element.attributes.get("align").is_some_and(|align| align.eq_ignore_ascii_case("center"))
 }
 
-fn headnote_number(printed: &str) -> Option<String> {
+/// The number a headnote prints at its head, "[3]" or "3.".
+pub fn headnote_number(printed: &str) -> Option<String> {
     static NUMBER: OnceLock<Regex> = OnceLock::new();
     NUMBER.get_or_init(|| Regex::new(r"^(?:\[(\d{1,3})\]|(\d{1,3})\.\s)").unwrap()).captures(printed)
         .and_then(|capture| capture.get(1).or_else(|| capture.get(2))).map(|number| number.as_str().to_owned())
