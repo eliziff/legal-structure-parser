@@ -59,7 +59,6 @@ impl NodeKind {
 pub enum Derivation {
     Native,
     Heuristic,
-    Model,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]

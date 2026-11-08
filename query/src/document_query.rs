@@ -3,7 +3,7 @@ use crate::{
     public_structure_label,
     text::{equal_fold, trim_javascript_whitespace as js_trim, JS_WHITESPACE_CLASS as JS_WS},
     AuthoritativeTableCell, Derivation, DetectionProfile, DocumentBlock, DocumentKind,
-    DocumentOrigin, DocumentStructure, InstrumentCrossReferenceGraph,
+    DocumentStructure, InstrumentCrossReferenceGraph,
     InstrumentCrossReferenceStatus, NodeKind, ScalarRange, ScalarText, StructureNode,
 };
 use legal_structure_model::InstrumentCrossReferenceEdge;
@@ -757,11 +757,7 @@ impl DocumentQuery {
             position_label(document, position),
             range.start,
             range.end,
-            if node.source == Derivation::Native {
-                DocumentOrigin::Native
-            } else {
-                DocumentOrigin::Heuristic
-            },
+            node.source,
         );
         if projection_order(document.profile) == ProjectionOrder::StablePosition
             && node.kind != NodeKind::Prose
@@ -1085,11 +1081,11 @@ impl DocumentQuery {
         }).collect()
     }
 
-    pub fn has_origin(&self, document: &DocumentStructure, origin: DocumentOrigin) -> bool {
+    pub fn has_origin(&self, document: &DocumentStructure, origin: Derivation) -> bool {
         document.nodes.iter().any(|node| {
             projected_kind(node).is_some()
                 && (node.kind == NodeKind::Prose || node.label.is_some())
-                && (node.source == Derivation::Native) == (origin == DocumentOrigin::Native)
+                && node.source == origin
         })
     }
 

@@ -1,6 +1,6 @@
 use legal_structure_core::{
     pair_numbered_footnotes as pair, provider_text_document_structure, utf16_len, DocumentBlock,
-    DocumentKind, DocumentOrigin, DocumentQuery, DocumentStructure, ProviderTextInput,
+    Derivation, DocumentKind, DocumentQuery, DocumentStructure, ProviderTextInput,
     ProviderTextSourceKind, ScalarText,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -49,10 +49,10 @@ fn pair_numbered_footnotes<'py>(
     Ok(output)
 }
 
-fn origin_name(origin: DocumentOrigin) -> &'static str {
+fn origin_name(origin: Derivation) -> &'static str {
     match origin {
-        DocumentOrigin::Native => "native",
-        DocumentOrigin::Heuristic => "heuristic",
+        Derivation::Native => "native",
+        Derivation::Heuristic => "heuristic",
     }
 }
 

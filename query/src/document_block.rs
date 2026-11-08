@@ -1,4 +1,5 @@
 use serde::ser::{SerializeStruct, Serializer};
+use legal_structure_model::Derivation;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
@@ -11,13 +12,6 @@ pub enum DocumentKind {
     Table,
     Row,
     Cell,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DocumentOrigin {
-    Native,
-    Heuristic,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -39,7 +33,7 @@ pub struct DocumentBlock {
     pub label: String,
     pub start: usize,
     pub end: usize,
-    pub origin: DocumentOrigin,
+    pub origin: Derivation,
     pub anchor: Option<String>,
     #[serde(default)]
     pub aliases: Vec<String>,
@@ -59,7 +53,7 @@ impl DocumentBlock {
         label: impl Into<String>,
         start: usize,
         end: usize,
-        origin: DocumentOrigin,
+        origin: Derivation,
     ) -> Self {
         Self {
             node_id: None,

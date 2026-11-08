@@ -82,7 +82,6 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>
         let source = match block.source {
             Derivation::Native => "native",
             Derivation::Heuristic => "heuristic",
-            Derivation::Model => "model",
         };
         let id = format!("{source}-{}-{:06}", block.kind.name(), ordinal);
         if let Some(code) = block.diagnostic {
