@@ -233,6 +233,12 @@ impl StructureNode {
         };
         self.label.as_deref().map(|label| format!("{mark}{label}"))
     }
+
+    /// Whether the node prints its label where it stands: its marker holds text ("[12]" before a paragraph), not a
+    /// number its reader inferred.
+    pub fn prints_label(&self) -> bool {
+        self.marker_range.is_some_and(|range| range.start < range.end)
+    }
 }
 
 /// The members of a JSON object as serde_json writes it, compact: each `"key":value`, in order.
