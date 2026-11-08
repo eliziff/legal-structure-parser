@@ -6,7 +6,7 @@
 use crate::note_pairing::pair_footnotes;
 use crate::{NodeKind, ScalarRange, ScalarText, StructureNode};
 use legal_citations::cues;
-use legal_structure_model::layout::{Line, Page, PdfSourceSpan};
+use legal_structure_model::layout::{Line, Page};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The notes of a text whose note list may open at `note_start` (a scalar offset at a line's start),
@@ -31,7 +31,7 @@ pub(crate) fn text_note_blocks(
             let characters = ScalarText::new(value);
             let spans = cues::layout_protected_spans(value)
                 .into_iter()
-                .map(|span| PdfSourceSpan {
+                .map(|span| ScalarRange {
                     start: characters.scalar(span.start),
                     end: characters.scalar(span.end),
                 })
@@ -269,7 +269,7 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
                 let characters = ScalarText::new(line);
                 let spans = cues::layout_protected_spans(line)
                     .into_iter()
-                    .map(|span| PdfSourceSpan { start: characters.scalar(span.start), end: characters.scalar(span.end) })
+                    .map(|span| ScalarRange { start: characters.scalar(span.start), end: characters.scalar(span.end) })
                     .collect::<Vec<_>>();
                 if !spans.is_empty() {
                     protected.insert(id.clone(), spans);
