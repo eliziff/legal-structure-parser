@@ -308,12 +308,20 @@ pub fn document_outline(
     // text between them. An enactment's title pages (its title block, assent, a consolidation's
     // cover) are the pages before its first section.
     let start = |node: &StructureNode| node.rendered_range.unwrap_or(node.range).start;
-    // Entries start in the query text: the rendered text where the document has one.
-    let text = structure
-        .rendered_text
-        .as_deref()
-        .unwrap_or(&structure.text);
-    let paragraph = legal_structure::case_paragraph_start(text);
+    // Where the reasons open: the structure's first numbered paragraph, else (a judgment numbering none) its first
+    // passage of prose.
+    let first = |numbered: bool| {
+        structure
+            .nodes
+            .iter()
+            .filter(|node| match numbered {
+                true => node.kind == NodeKind::Paragraph && node.label.as_deref().is_some_and(|label| label.starts_with("par")),
+                false => node.kind == NodeKind::Prose && node.label.is_none(),
+            })
+            .map(start)
+            .min()
+    };
+    let paragraph = first(true).or_else(|| first(false));
     if paragraph.is_none() {
         // A judgment's section nodes are a misreading; an enactment's sections are its printed reading's.
         if let Some(page) = entries

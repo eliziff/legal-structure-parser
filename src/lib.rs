@@ -187,7 +187,7 @@ pub use statute_outline::{statute_outline, statute_provision_spans, StatuteOutli
 #[cfg(feature = "structure-inference")]
 mod case_outline;
 #[cfg(feature = "structure-inference")]
-pub use case_outline::{case_outline, case_paragraph_start, judgment_division, judgment_end, reasons_go_on, CaseOutlineEntry, LIST_NUMBERS};
+pub use case_outline::{case_outline, judgment_division, judgment_end, reasons_go_on, CaseOutlineEntry, LIST_NUMBERS};
 pub use judgment::{date_line, figure_caption};
 
 #[cfg(feature = "structure-inference")]

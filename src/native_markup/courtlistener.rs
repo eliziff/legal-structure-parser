@@ -3352,11 +3352,13 @@ pub(super) fn evidence(
                     block.range.start = marker.end;
                 }
             }
-            if let Some((label, _)) = block
+            // (A sibling's number marks the note too where nothing else marked it.)
+            if let Some((label, marker)) = block
                 .markup_start
                 .and_then(|start| sibling_note_markers.get(&start))
             {
                 block.label = Some(label.clone());
+                block.marker_range.get_or_insert(*marker);
             }
         }
     }

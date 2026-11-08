@@ -457,7 +457,9 @@ pub fn provider_text_document_structure(
     let source_kind = input.source_kind;
     let mut structure = provider_text_reading(input)?;
     match source_kind {
-        ProviderTextSourceKind::Cases => crate::case_outline::add_case_nodes(&mut structure),
+        ProviderTextSourceKind::Cases => {
+            crate::case_outline::add_case_nodes(&mut structure);
+        }
         ProviderTextSourceKind::Laws => {
             structure.cross_references = Some(crate::instrument::cross_reference_graph(&structure)?);
         }

@@ -177,6 +177,7 @@ struct TextPage {
     page_scheme: Option<String>,
 }
 
+#[derive(Default)]
 struct RenderedMarkup {
     text: String,
     blocks: Vec<StructureNode>,
@@ -1904,7 +1905,7 @@ struct AdapterRevision<'a> {
     page_citations: &'a [String],
     markup_ancestors: &'a [MarkupAncestor],
     scope: AdapterScope<'a>,
-    profile: &'a str,
+    profile: DetectionProfile,
 }
 
 pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructure, EngineError> {
@@ -1940,7 +1941,7 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
             )
         })
         .transpose()?;
-    let rendered = if let Some(mut rendered) = rendered {
+    let mut rendered = if let Some(mut rendered) = rendered {
         if rendered.text.is_empty() {
             rendered.text = fallback_text;
         }
@@ -1956,58 +1957,28 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
                     .as_bytes(),
             ),
         );
-        RenderedMarkup {
-            text: fallback_text,
-            blocks: Vec::new(),
-            recovered_body_blocks: Vec::new(),
-            elements: Vec::new(),
-            matched_role_starts: HashSet::new(),
-            exclusions: Vec::new(),
-            cited_authorities: Vec::new(),
-            note_references: Vec::new(),
-            source_hash,
-            harvard_casebody: false,
-        }
+        RenderedMarkup { text: fallback_text, source_hash, ..RenderedMarkup::default() }
     };
-    let RenderedMarkup {
-        text,
-        blocks: rendered_blocks,
-        recovered_body_blocks,
-        elements,
-        matched_role_starts,
-        exclusions: rendered_exclusions,
-        cited_authorities,
-        note_references,
-        source_hash: representation_revision,
-        harvard_casebody: harvard,
-    } = rendered;
-    #[cfg(feature = "courtlistener")]
-    let (mut rendered_blocks, mut rendered_exclusions) = (rendered_blocks, rendered_exclusions);
     #[cfg(feature = "courtlistener")]
     let printed_notes = if provider.is_courtlistener() {
         courtlistener::evidence(
-            markup.as_deref(), &scope, &elements, &text, &mut rendered_blocks, &mut rendered_exclusions,
-            recovered_body_blocks, &matched_role_starts,
+            markup.as_deref(), &scope, &rendered.elements, &rendered.text, &mut rendered.blocks, &mut rendered.exclusions,
+            std::mem::take(&mut rendered.recovered_body_blocks), &rendered.matched_role_starts,
         )
     } else {
-        courtlistener::sibling_note_labels(&elements, &text, &mut rendered_blocks);
+        courtlistener::sibling_note_labels(&rendered.elements, &rendered.text, &mut rendered.blocks);
         Vec::new()
     };
     #[cfg(not(feature = "courtlistener"))]
-    let printed_notes = {
-        drop(recovered_body_blocks);
-        Vec::new()
-    };
-    let profile = if harvard {
-        "case_lossy"
-    } else if provider.is_courtlistener() {
-        "case_contiguous_complete"
+    let printed_notes = Vec::<(StructureNode, Vec<ScalarRange>)>::new();
+    let profile = if provider.is_courtlistener() && !rendered.harvard_casebody {
+        DetectionProfile::CaseContiguousComplete
     } else {
-        "case_lossy"
+        DetectionProfile::CaseLossy
     };
     let adapter = AdapterRevision {
         provider: provider.as_str(),
-        representation_revision: &representation_revision,
+        representation_revision: &rendered.source_hash,
         citation: citation.as_deref(),
         page_citations: &page_citations,
         markup_ancestors: &markup_ancestors,
@@ -2023,23 +1994,15 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         Sha256::digest(serde_json::to_vec(&adapter).map_err(EngineError::source)?)
     );
     // Exact UTF-16 in final rendered/fallback text, never source markup.
-    let coordinates = ScalarText::new(&text);
+    let coordinates = ScalarText::new(&rendered.text);
     let scalar = |offset: usize| {
         coordinates
             .scalar_at_utf16(offset)
             .ok_or_else(|| EngineError::source("provider UTF-16 range splits a Unicode scalar"))
     };
     let text_utf16 = coordinates.utf16_len();
-    #[cfg(feature = "courtlistener")]
-    let sibling_note_markers = if provider.is_courtlistener() {
-        courtlistener_sibling_note_markers(&elements, &text)
-    } else {
-        HashMap::new()
-    };
-    #[cfg(not(feature = "courtlistener"))]
-    let sibling_note_markers = HashMap::<usize, (String, ScalarRange)>::new();
     // Each block the markup declares is a node, its element's tag and attributes on it, its ranges now in scalars.
-    let mut claims = rendered_blocks;
+    let mut claims = std::mem::take(&mut rendered.blocks);
     for (index, node) in claims.iter_mut().enumerate() {
         node.id = node.markup_start.map_or_else(
             || format!("native-{:06}", index + 1),
@@ -2048,16 +2011,9 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         node.range = ScalarRange { start: scalar(node.range.start)?, end: scalar(node.range.end.min(text_utf16))? };
         // (An "li" is a list item, whatever it declares: `analyze_native_markup` makes it one after derivation.)
         let listed = node.markup_tag.as_deref() == Some("li");
-        node.marker_range = if node.kind == NodeKind::Footnote && !listed {
-            node.marker_range
-                .or_else(|| node.markup_start.and_then(|start| sibling_note_markers.get(&start).map(|(_, range)| *range)))
-                .and_then(|marker| Some(ScalarRange {
-                    start: coordinates.scalar_at_utf16(marker.start)?,
-                    end: coordinates.scalar_at_utf16(marker.end)?,
-                }))
-        } else {
-            None
-        };
+        node.marker_range = node.marker_range.filter(|_| node.kind == NodeKind::Footnote && !listed).and_then(|marker| {
+            Some(ScalarRange { start: coordinates.scalar_at_utf16(marker.start)?, end: coordinates.scalar_at_utf16(marker.end)? })
+        });
         if node.kind == NodeKind::Cell && !listed {
             let span = |name: &str| node.markup_attributes.get(name).and_then(|value| value.parse().ok());
             node.row_span = span("rowspan");
@@ -2067,11 +2023,12 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
     // Where inference reads nothing, in UTF-16 as the CourtListener passes after derivation read it: in the markup's
     // notes no paragraph or heading, and in matter no heading opens in (head matter, a quotation, the parties, or all
     // of a text whose enclosing markup is such matter).
-    let body_exclusions = rendered_exclusions;
+    let body_exclusions = std::mem::take(&mut rendered.exclusions);
     let mut heading_exclusions = body_exclusions.clone();
     if provider.is_courtlistener() {
         heading_exclusions.extend(
-            elements
+            rendered
+                .elements
                 .iter()
                 .filter(|element| source_heading_exclusion(&element.tag, &element.attributes))
                 .map(|element| element.range),
@@ -2099,21 +2056,17 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         "excerpt" => ScopeKind::Excerpt,
         _ => return Err(EngineError::source("invalid native-markup scope")),
     };
-    let mut structure = DocumentStructure::new(id, provider.as_str(), text, ORIGIN);
+    let mut structure = DocumentStructure::new(id, provider.as_str(), rendered.text, ORIGIN);
     structure.url = url;
     structure.doc_type = Some("cases".to_owned());
     structure.source_sha256 = Some(adapter_revision);
     structure.scope = Scope { kind: scope_kind, excerpt_of: scope.excerpt_of };
     structure.nodes = claims;
-    let profile = match profile {
-        "case_contiguous_complete" => DetectionProfile::CaseContiguousComplete,
-        _ => DetectionProfile::CaseLossy,
-    };
-    structure.cited_authorities = cited_authorities;
+    structure.cited_authorities = rendered.cited_authorities;
     if provider.is_courtlistener() {
-        structure.markup_elements = elements;
+        structure.markup_elements = rendered.elements;
         structure.markup_ancestors = markup_ancestors;
-        structure.markup_sha256 = Some(representation_revision);
+        structure.markup_sha256 = Some(rendered.source_hash);
     }
     let evidence = Evidence {
         report_start_page: report_start(citation.as_deref()),
@@ -2129,10 +2082,10 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         }
     }
     #[cfg(not(feature = "courtlistener"))]
-    let _ = (note_references, matched_role_starts, printed_notes, heading_exclusions, body_exclusions);
+    let _ = (rendered.note_references, rendered.matched_role_starts, printed_notes, heading_exclusions, body_exclusions);
     #[cfg(feature = "courtlistener")]
     if provider.is_courtlistener() {
-        courtlistener::finish(&mut structure, note_references, &matched_role_starts, printed_notes, &heading_exclusions, &body_exclusions);
+        courtlistener::finish(&mut structure, rendered.note_references, &rendered.matched_role_starts, printed_notes, &heading_exclusions, &body_exclusions);
     }
     structure.refresh_revision().expect("Typed document structure is serializable");
     Ok(structure)

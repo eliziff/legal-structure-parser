@@ -66,24 +66,12 @@ enum Place {
 /// paragraphs are the structure layer's; the headings are the lines between them its heading
 /// grammar takes as headings.
 pub fn case_outline(text: &str) -> Result<Vec<CaseOutlineEntry>, EngineError> {
-    let mut structure = reading(text)?;
-    add_case_nodes(&mut structure);
-    Ok(read(&structure))
+    Ok(add_case_nodes(&mut reading(text)?))
 }
 
 /// A judgment's text read as a provider gives it, before the nodes its outline adds (`add_case_nodes`).
 fn reading(text: &str) -> Result<DocumentStructure, EngineError> {
     crate::provider_text::provider_text_reading(ProviderTextInput::new("", ProviderTextSourceKind::Cases, text))
-}
-
-/// Where a judgment's outline opens its first paragraph (`case_outline`'s first "paragraph" entry), in UTF-16 code
-/// units: where its reading's first paragraph opens, which the headings and lists its outline adds leave in place.
-pub fn case_paragraph_start(text: &str) -> Option<usize> {
-    let structure = reading(text).ok()?;
-    let coordinates = ScalarText::new(&structure.text);
-    let chars = structure.text.chars().collect::<Vec<_>>();
-    let first = paragraph_spans(&structure, &coordinates, &chars).first()?.0;
-    Some(coordinates.utf16(first))
 }
 
 /// A line ending a judge's paragraphs by what it says: the next reasons' introduction, the matter after the reasons.
@@ -504,8 +492,9 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
 /// A judgment's reading beyond its numbered paragraphs, as nodes: its headings, each under the
 /// heading it falls within; the lists within a paragraph, each item under its list (a nested item
 /// under the item it continues); and the passages a paragraph quotes. A line after a list that
-/// carries on the paragraph's sentence in lower case is the paragraph's own words.
-pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) {
+/// carries on the paragraph's sentence in lower case is the paragraph's own words. Returns the outline they are read
+/// from (`case_outline`).
+pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) -> Vec<CaseOutlineEntry> {
     let entries = read(structure);
     let paragraphs = structure
         .nodes
@@ -679,4 +668,5 @@ pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) {
         paragraph.ranges.retain(|range| range.start < range.end);
     }
     structure.nodes.extend(added);
+    entries
 }
