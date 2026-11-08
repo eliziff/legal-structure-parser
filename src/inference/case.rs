@@ -450,7 +450,7 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
     }
     let declared_paragraph_markers = evidence.structure.nodes.iter()
         .filter(|claim| claim.kind == NodeKind::Paragraph)
-        .filter_map(|claim| Some((claim.range.start, claim.label.as_deref()?.strip_prefix("par")?.parse::<u32>().ok()?)))
+        .filter_map(|claim| Some((claim.range.start, claim.label.as_deref()?.parse::<u32>().ok()?)))
         .collect::<HashSet<_>>();
     let note_markers = numeric.into_iter()
         .filter(|marker| marker.style == MarkerStyle::Bare)
@@ -525,7 +525,7 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
                 .is_some_and(|line| line.text.chars().any(char::is_alphabetic)) { continue; }
         let body_range = ScalarRange { start: body_start, end: body_end };
         if evidence.clip_inference(NodeKind::Footnote, body_range) != Some(body_range) { continue; }
-        let mut block = crate::labelled_node(NodeKind::Footnote, format!("fn{number}"), body_start, body_end);
+        let mut block = crate::labelled_node(NodeKind::Footnote, format!("{number}"), body_start, body_end);
         block.marker_range = Some(label_range);
         block.calls = vec![reference];
         // A later separate block on the note's physical page is unresolved note continuation or

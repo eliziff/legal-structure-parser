@@ -430,7 +430,7 @@ fn page_identity(
     }
     let numeric = page_label.len() <= 5 && page_label.bytes().all(|byte| byte.is_ascii_digit());
     let label = if numeric {
-        format!("page{}", page_label.parse::<u32>().ok()?)
+        format!("{}", page_label.parse::<u32>().ok()?)
     } else {
         format!(
             "page{}",
@@ -489,7 +489,7 @@ fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<Stru
         });
     if let Some(number) = numbered.or_else(|| marker.is_empty().then(|| numbered_id(id)).flatten())
     {
-        let mut note = markup_node(NodeKind::Footnote, format!("fn{}", number.parse::<u32>().ok()?), anchor);
+        let mut note = markup_node(NodeKind::Footnote, format!("{}", number.parse::<u32>().ok()?), anchor);
         note.aliases = (marker != number && !marker.is_empty())
             .then(|| vec![marker.to_owned(), format!("footnote {marker}")]);
         return Some(note);
@@ -511,11 +511,7 @@ fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<Stru
     } else {
         return None;
     };
-    let label = if symbol.as_bytes().get(..2).is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"fn")) {
-        symbol.to_owned()
-    } else {
-        format!("fn{symbol}")
-    };
+    let label = if symbol.as_bytes().get(..2).is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"fn")) { &symbol[2..] } else { symbol }.to_owned();
     let mut note = markup_node(NodeKind::Footnote, label, anchor);
     note.aliases = (!marker.is_empty()).then(|| vec![marker.to_owned(), format!("footnote {marker}")]);
     Some(note)
@@ -615,7 +611,7 @@ fn native_identity(
     if let Some(paragraph) = paragraph.filter(|_| {
         provider.is_tna() || provider.is_courtlistener()
     }) {
-        return Some(markup_node(NodeKind::Paragraph, format!("par{}", paragraph.parse::<u32>().ok()?), anchor));
+        return Some(markup_node(NodeKind::Paragraph, format!("{}", paragraph.parse::<u32>().ok()?), anchor));
     }
     // Source positions identify unanchored structure without inventing browser IDs.
     let source_kind = match tag {
@@ -1052,9 +1048,9 @@ fn render_markup_in_context<'a>(
                 let TextPage { mut page, citation_index, page_scheme } = text_page.take().unwrap();
                 let numeric = label.len() <= 5 && label.bytes().all(|byte| byte.is_ascii_digit());
                 page.label = Some(if numeric {
-                    format!("page{}", label.parse::<u32>().map_err(EngineError::source)?)
+                    format!("{}", label.parse::<u32>().map_err(EngineError::source)?)
                 } else {
-                    format!("page{}", label.chars().filter(|value| !javascript_whitespace(*value)).collect::<String>())
+                    format!("{}", label.chars().filter(|value| !javascript_whitespace(*value)).collect::<String>())
                 });
                 page.aliases = page_aliases(&label, citation_index, page_citations, page_scheme.as_deref());
                 page_starts.push((page, None));
@@ -1606,7 +1602,7 @@ fn render_markup_in_context<'a>(
             } else {
                 None
             };
-            let mut page = element_node(NodeKind::Page, format!("page{}", label.parse::<u32>().map_err(EngineError::source)?), parent);
+            let mut page = element_node(NodeKind::Page, format!("{}", label.parse::<u32>().map_err(EngineError::source)?), parent);
             page.aliases = accessible_span.then(|| vec![format!("*{label}")]);
             page_starts.push((page, scope));
         }
@@ -1643,7 +1639,7 @@ fn render_markup_in_context<'a>(
             };
             // This literal marker has no accessibility-label child. Its page
             // ends within the actual opinion, before separate notes or a footer.
-            let mut page = element_node(NodeKind::Page, format!("page{}", label.parse::<u32>().map_err(EngineError::source)?), element);
+            let mut page = element_node(NodeKind::Page, format!("{}", label.parse::<u32>().map_err(EngineError::source)?), element);
             page.aliases = Some(vec![printed.to_owned()]);
             page_starts.push((page, Some(scope)));
         }
@@ -1670,7 +1666,7 @@ fn render_markup_in_context<'a>(
             {
                 continue;
             }
-            let page = element_node(NodeKind::Page, format!("page{}", label.parse::<u32>().map_err(EngineError::source)?), element);
+            let page = element_node(NodeKind::Page, format!("{}", label.parse::<u32>().map_err(EngineError::source)?), element);
             page_starts.push((page, courtlistener_opinion_page_scope(&elements, element)));
         }
         if page_starts.len() != original_page_starts {

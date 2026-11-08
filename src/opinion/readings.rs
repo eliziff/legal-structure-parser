@@ -21,7 +21,7 @@ pub(super) fn defined_terms(text: &str, ranges: &[(usize, usize)]) -> Vec<Define
             let term = squeezed(term);
             if !term.is_empty() && seen.insert(term.to_lowercase()) {
                 let at = start + utf16_len(&raw[..from]);
-                found.push(DefinedTerm { term, form: form.to_owned(), start: at, end: at + utf16_len(&raw[from..to]), page: None });
+                found.push(DefinedTerm { term, form: form.to_owned(), start: at, end: at + utf16_len(&raw[from..to]) });
             }
         };
         let framed = raw.contains('(');
@@ -77,7 +77,7 @@ pub(super) fn quotations(text: &str, paragraphs: &[StructureNode]) -> Vec<Opinio
     for paragraph in paragraphs {
         let Some(raw) = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end) else { continue };
         if paragraph.kind == NodeKind::Quote {
-            quotes.push(OpinionQuote { block: true, start: paragraph.range.start, end: paragraph.range.end, marks: marks_of(raw, paragraph.range.start), page: None });
+            quotes.push(OpinionQuote { block: true, start: paragraph.range.start, end: paragraph.range.end, marks: marks_of(raw, paragraph.range.start) });
             continue;
         }
         for found in inline.find_iter(raw) {
@@ -91,7 +91,7 @@ pub(super) fn quotations(text: &str, paragraphs: &[StructureNode]) -> Vec<Opinio
             let mut marks = marks_of(found.as_str(), start);
             let tail_base = start + utf16_len(found.as_str());
             marks.extend(marks_of(&after[..tail], tail_base).into_iter().filter(|mark| mark.kind == "emphasis"));
-            quotes.push(OpinionQuote { block: false, start, end: start + utf16_len(found.as_str()), marks, page: None });
+            quotes.push(OpinionQuote { block: false, start, end: start + utf16_len(found.as_str()), marks });
         }
     }
     quotes

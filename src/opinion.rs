@@ -82,7 +82,7 @@ fn node(kind: NodeKind, start: usize, end: usize, source: Derivation) -> Structu
 
 pub(crate) fn read_page(label: impl std::fmt::Display, series: impl Into<String>, start: usize, end: usize, marker: Option<ScalarRange>, source: &str) -> StructureNode {
     let mut page = node(NodeKind::Page, start, end, if matches!(source, "markup" | "printed") { Derivation::Native } else { Derivation::Heuristic });
-    page.label = Some(format!("page{label}"));
+    page.label = Some(format!("{label}"));
     page.series = series.into();
     page.marker_range = marker;
     page.grammar = Some(source.to_owned());
@@ -91,7 +91,7 @@ pub(crate) fn read_page(label: impl std::fmt::Display, series: impl Into<String>
 
 pub(crate) fn read_paragraph(start: usize, end: usize, number: Option<String>) -> StructureNode {
     let mut paragraph = node(NodeKind::Paragraph, start, end, Derivation::Native);
-    paragraph.label = number.map(|number| format!("par{number}"));
+    paragraph.label = number.map(|number| format!("{number}"));
     paragraph
 }
 
@@ -115,7 +115,7 @@ pub(crate) fn read_part(writing: String, author: Option<String>, start: usize, e
 /// "A."), one a line, and `called_outside` where its call stands in words of the case this text lacks.
 pub(crate) fn read_note(label: impl std::fmt::Display, start: usize, end: usize, ranges: Vec<ScalarRange>, calls: Vec<ScalarRange>) -> StructureNode {
     let mut note = node(NodeKind::Footnote, start, end, Derivation::Native);
-    note.label = Some(format!("fn{label}"));
+    note.label = Some(format!("{label}"));
     note.ranges = ranges;
     note.calls = calls;
     note
@@ -189,7 +189,7 @@ fn printed_numbers(structure: &DocumentStructure) -> (bool, Vec<(u32, usize)>) {
     let read = if of_name.len() >= LEAST { of_name } else { text::own_numbers(openings.iter().enumerate().map(|(index, (_, opening))| (index, *opening)), LEAST) };
     let named = read.keys().any(|index| text::says_paragraph(openings[*index].1));
     let mut found = if named || read.len() * 2 >= openings.len() { read.into_iter().map(|(index, number)| (openings[index].0, number)).collect::<BTreeMap<_, _>>() } else { BTreeMap::new() };
-    found.extend(nodes.iter().filter_map(|node| Some((structure.query_range(node).start, node.label.as_deref()?.strip_prefix("par")?.parse::<u32>().ok()?))));
+    found.extend(nodes.iter().filter_map(|node| Some((structure.query_range(node).start, node.label.as_deref()?.parse::<u32>().ok()?))));
     (named, found.into_iter().map(|(start, number)| (number, start)).collect())
 }
 
@@ -206,15 +206,15 @@ fn same_opinion(ours: &str, theirs: &str) -> bool {
     theirs.is_empty() || ours.is_empty() || theirs.iter().filter(|place| held.contains(place)).count() * SHARE >= ours.len().min(theirs.len())
 }
 
-/// The stretches of the text no paragraph, heading or note among `nodes`, headnote or line of the front holds.
-pub(crate) fn unheld_stretches<'a>(structure: &DocumentStructure, nodes: impl Iterator<Item = &'a StructureNode>) -> Vec<(usize, usize)> {
+/// The stretches of the text no paragraph, heading or note among `nodes`, headnote or line of the front (`opinion`'s) holds.
+pub(crate) fn unheld_stretches<'a>(structure: &DocumentStructure, opinion: &OpinionReading, nodes: impl Iterator<Item = &'a StructureNode>) -> Vec<(usize, usize)> {
     let mut held = nodes.flat_map(|node| match node.kind {
             NodeKind::Paragraph | NodeKind::Quote | NodeKind::Heading => vec![(node.range.start, node.range.end)],
             NodeKind::Footnote => node.ranges.iter().map(|range| (range.start, range.end)).collect(),
             _ => Vec::new(),
         })
-        .chain(reading(structure).headnotes.iter().filter_map(|headnote| headnote.range).map(|range| (range.start, range.end)))
-        .chain(reading(structure).front.iter().filter_map(|line| line.range).map(|range| (range.start, range.end)))
+        .chain(opinion.headnotes.iter().filter_map(|headnote| headnote.range).map(|range| (range.start, range.end)))
+        .chain(opinion.front.iter().filter_map(|line| line.range).map(|range| (range.start, range.end)))
         .collect::<Vec<_>>();
     held.sort_unstable();
     let whole = utf16_len(&structure.text);
@@ -256,7 +256,7 @@ pub fn marks_in_notes(structure: &DocumentStructure) -> usize {
 pub fn unheld_text(structure: &DocumentStructure) -> (usize, String) {
     let coordinates = ScalarText::new(&structure.text);
     let (mut total, mut longest) = (0, (0, String::new()));
-    for (start, end) in unheld_stretches(structure, structure.nodes.iter().filter(|node| node.origin_id == ORIGIN)) {
+    for (start, end) in unheld_stretches(structure, reading(structure), structure.nodes.iter().filter(|node| node.origin_id == ORIGIN)) {
         let printed = coordinates.slice_utf16(start..end).map_or("", trim_js);
         let size = printed.chars().filter(|c| !c.is_whitespace()).count();
         total += size;
@@ -266,8 +266,9 @@ pub fn unheld_text(structure: &DocumentStructure) -> (usize, String) {
     }
     (total, longest.1)
 }
-/// The nodes the parse works on while it reads, a list each: its pages, its paragraphs (quotations set apart among them),
-/// its notes, headings and parts. The structure holds the rest, and takes these when the parse ends (`into_nodes`).
+/// What the parse works on while it reads: a list each of its pages, its paragraphs (quotations set apart among them), its
+/// notes, headings and parts, and its readings that are no node. The structure holds the rest, and takes these when the
+/// parse ends.
 #[derive(Default)]
 pub(crate) struct Kinds {
     pub(crate) pages: Vec<StructureNode>,
@@ -275,6 +276,7 @@ pub(crate) struct Kinds {
     pub(crate) notes: Vec<StructureNode>,
     pub(crate) headings: Vec<StructureNode>,
     pub(crate) parts: Vec<StructureNode>,
+    pub(crate) opinion: OpinionReading,
 }
 
 impl Kinds {
@@ -282,15 +284,13 @@ impl Kinds {
         self.pages.iter_mut().chain(&mut self.paragraphs).chain(&mut self.notes).chain(&mut self.headings).chain(&mut self.parts)
     }
 
-    fn into_nodes(self) -> impl Iterator<Item = StructureNode> {
-        self.pages.into_iter().chain(self.paragraphs).chain(self.notes).chain(self.headings).chain(self.parts)
+    /// The structure takes what the parse read.
+    fn finish(self, structure: &mut DocumentStructure) {
+        structure.opinion = Some(Box::new(self.opinion));
+        structure.nodes.extend(self.pages.into_iter().chain(self.paragraphs).chain(self.notes).chain(self.headings).chain(self.parts));
     }
 }
 
-/// The opinion's readings, as the parse writes them.
-pub(crate) fn opinion_mut(structure: &mut DocumentStructure) -> &mut OpinionReading {
-    structure.opinion.get_or_insert_with(Default::default)
-}
 /// The structure's nodes of a kind the opinion parse wrote, in the text's order.
 pub fn nodes(structure: &DocumentStructure, kind: NodeKind) -> impl Iterator<Item = &StructureNode> {
     structure.nodes.iter().filter(move |node| node.kind == kind && node.origin_id == ORIGIN)
@@ -315,14 +315,25 @@ pub fn pin_at(structure: &DocumentStructure, series: &str, start: usize, end: us
         // A note that runs on to the next page carries that page's mark: words past it are on that page, not the call's.
         let run_on = nodes(structure, NodeKind::Page).filter(|page| page.properties.contains_key("in_note") && page.series == series && page.grammar.as_deref() != Some("stray")
             && page.range.start <= middle && note.ranges.iter().any(|range| range.start <= page.range.start && page.range.start < range.end)).max_by_key(|page| page.range.start);
-        if let Some(pin) = note.pins.iter().find(|pin| pin.series == series) {
-            return Some(run_on.map_or_else(|| pin.clone(), |page| Pin { page: page.printed_label().to_owned(), through: None, ..pin.clone() }));
-        }
-        // A note whose call names no page in this numbering: where its words happen to stand in the text says nothing.
-        if !note.calls.is_empty() && note.pins.is_empty() {
+        // A call on a page's last line names no page: its note may be set on the next.
+        if note.properties.contains_key("call_at_foot") {
             return None;
         }
+        let call = note.calls.first().map_or(note.range.start, |call| call.start);
+        let pin = pin_of(structure, series, call, call + 1);
+        // A note whose call names no page in this numbering: where its words happen to stand in the text says nothing.
+        if pin.is_none() && !note.calls.is_empty() {
+            return None;
+        }
+        if let Some(pin) = pin {
+            return Some(run_on.map_or(pin.clone(), |page| Pin { page: page.label.as_deref().unwrap_or("").to_owned(), through: None, ..pin }));
+        }
     }
+    pin_of(structure, series, start, end)
+}
+
+/// Where a stretch of the text falls in one numbering, by the page marks alone.
+fn pin_of(structure: &DocumentStructure, series: &str, start: usize, end: usize) -> Option<Pin> {
     pages::pins_of(&pages::pin_table(nodes(structure, NodeKind::Page), &reading(structure).page_series), start, end).into_iter().find(|pin| pin.series == series)
 }
 
@@ -331,7 +342,7 @@ pub fn pin_at(structure: &DocumentStructure, series: &str, start: usize, end: us
 pub fn numbers_at(structure: &DocumentStructure, start: usize, end: usize) -> Option<(String, String)> {
     let paragraphs = paragraphs(structure).collect::<Vec<_>>();
     let under = |place: usize| paragraphs[..paragraphs.partition_point(|paragraph| paragraph.range.start <= place)].iter().rev()
-        .find_map(|paragraph| paragraph.label.as_deref()?.strip_prefix("par").map(|number| number.trim_matches(['(', ')', '[', ']', '{', '}', '.']).to_owned()));
+        .find_map(|paragraph| paragraph.label.is_some().then(|| paragraph.label.as_deref().unwrap_or("").trim_matches(['(', ')', '[', ']', '{', '}', '.']).to_owned()));
     Some((under(start)?, under(end)?))
 }
 
@@ -359,12 +370,12 @@ pub fn opinion_structure(record: &OpinionRecord, url: Option<String>) -> Documen
                     }
                     if let Some(other_structure) = structure_of(&record.id, plain, text) {
                         if !same_opinion(&structure.text, other_structure.query_text()) {
-                            opinion_mut(&mut structure).other_opinion.push(other.to_owned());
+                            kinds.opinion.other_opinion.push(other.to_owned());
                             continue;
                         }
                         supply_from(&mut structure, &mut kinds, &mut pending, other, &other_structure, record.witness);
                         supply_notes(&mut structure, &mut kinds, &other_structure);
-                        supply_head(&mut structure, &other_structure);
+                        supply_head(&mut kinds, &other_structure);
                     }
                 }
             }
@@ -381,11 +392,11 @@ pub fn opinion_structure(record: &OpinionRecord, url: Option<String>) -> Documen
             from_text(record, name, text, &mut pending)
         }
     };
-    if reading(&structure).rendition != "plain_text.txt" && !plain.trim().is_empty() {
+    if kinds.opinion.rendition != "plain_text.txt" && !plain.trim().is_empty() {
         supply_plain_pages(&mut structure, &mut kinds, &text::unshifted(plain), record.page_count);
     }
     complete(&mut structure, &mut kinds, &mut pending, record, plain);
-    structure.nodes.extend(kinds.into_nodes());
+    kinds.finish(&mut structure);
     // Each node its id by kind and place, all of them in the text's order.
     let mut counts = HashMap::<NodeKind, usize>::new();
     for node in structure.nodes.iter_mut().filter(|node| node.id.is_empty()) {
@@ -404,20 +415,20 @@ pub fn opinion_structure(record: &OpinionRecord, url: Option<String>) -> Documen
 
 /// The structure the parse writes into (the reading text, the record's id, the rendition read), beside the nodes a reader
 /// read, each in its kind's list.
-fn opinion_document(record: &OpinionRecord, rendition: &str, text: String, kinds: Kinds) -> (DocumentStructure, Kinds) {
+fn opinion_document(record: &OpinionRecord, rendition: &str, text: String, mut kinds: Kinds) -> (DocumentStructure, Kinds) {
     let mut structure = DocumentStructure::new(record.id.clone(), "courtlistener", text, ORIGIN);
     structure.doc_type = Some("cases".to_owned());
     structure.profile = Some(crate::DetectionProfile::CaseLossy);
-    structure.opinion = Some(Box::new(OpinionReading { rendition: rendition.to_owned(), ..OpinionReading::default() }));
+    kinds.opinion.rendition = rendition.to_owned();
     (structure, kinds)
 }
 
 /// Where another rendition prints a page at a place in this text, what does this structure say there? At that page's own start in any
 /// of its numberings, within `tolerance`, it agrees; otherwise the nearest numbering answers, by how many pages it is off.
-fn witness_pages(structure: &mut DocumentStructure, kinds: &Kinds, marks: &[(u32, usize)], tolerance: usize) {
+fn witness_pages(kinds: &mut Kinds, marks: &[(u32, usize)], tolerance: usize) {
     let mut numberings = HashMap::<&str, Vec<(usize, u32, &str)>>::new();
     for page in kinds.pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray")) {
-        if let Some(number) = page_number(&page.printed_label()) {
+        if let Some(number) = page_number(page.label.as_deref().unwrap_or("")) {
             numberings.entry(page.series.as_str()).or_default().push((page.range.start, number, page.grammar.as_deref().unwrap_or("")));
         }
     }
@@ -435,7 +446,7 @@ fn witness_pages(structure: &mut DocumentStructure, kinds: &Kinds, marks: &[(u32
         verdicts.extend(verdict);
     }
     for (source, verdict) in verdicts {
-        structure.opinion.as_mut().unwrap().page_witness.entry(source.to_owned()).or_default()[verdict] += 1;
+        kinds.opinion.page_witness.entry(source.to_owned()).or_default()[verdict] += 1;
     }
 }
 
@@ -507,8 +518,8 @@ fn witness_headings(structure: &mut DocumentStructure, kinds: &mut Kinds, pendin
     // In the order of their words, so that one record reads alike on every run.
     unheld.sort_unstable();
     let text = if unheld.is_empty() { String::new() } else { format!(" {} ", key(&structure.text)) };
-    structure.opinion.as_mut().unwrap().titles_not_held = unheld.iter().filter(|title| text.contains(&format!(" {title} "))).map(|title| (*title).clone()).collect();
-    structure.opinion.as_mut().unwrap().heading_witness = [wanted.len() - unheld.len(), structure.opinion.as_ref().unwrap().titles_not_held.len(), unheld.len() - structure.opinion.as_ref().unwrap().titles_not_held.len()];
+    kinds.opinion.titles_not_held = unheld.iter().filter(|title| text.contains(&format!(" {title} "))).map(|title| (*title).clone()).collect();
+    kinds.opinion.heading_witness = [wanted.len() - unheld.len(), kinds.opinion.titles_not_held.len(), unheld.len() - kinds.opinion.titles_not_held.len()];
 }
 
 /// Marks found by their words keep their order: one out of it found the words somewhere else, a caption restated.
@@ -522,7 +533,7 @@ fn in_their_order(places: Vec<Option<usize>>) -> Vec<Option<usize>> {
 /// do, else reckoned by number between the pages either side. A mark that joins no run of the numbering, like the "*Page 1"
 /// some renditions close on, is held as a stray: printed, and no page of the run.
 fn place_by_number(structure: &mut DocumentStructure, kinds: &mut Kinds, series: &str, labels: Vec<String>) {
-    let held = |pages: &[StructureNode]| pages.iter().filter(|page| page.series == series).filter_map(|page| Some((page_number(&page.printed_label())?, page.range.start))).collect::<Vec<_>>();
+    let held = |pages: &[StructureNode]| pages.iter().filter(|page| page.series == series).filter_map(|page| Some((page_number(page.label.as_deref().unwrap_or(""))?, page.range.start))).collect::<Vec<_>>();
     let mut known = held(&kinds.pages).into_iter().map(|page| page.0).collect::<HashSet<_>>();
     let open = known.is_empty();
     let mut numbered = labels.into_iter().filter_map(|label| Some((page_number(&label)?, label))).collect::<Vec<_>>();
@@ -580,8 +591,8 @@ fn supply_plain_pages(structure: &mut DocumentStructure, kinds: &mut Kinds, plai
     let mut unplaced = HashMap::<String, Vec<String>>::new();
     for (page, place) in plain_pages.into_iter().zip(places) {
         match place {
-            Some(place) => kinds.pages.push(read_page(page.printed_label(), page.series.clone(), words[place].1, 0, None, "other-rendition")),
-            None => unplaced.entry(page.series.clone()).or_default().push(page.printed_label().to_owned()),
+            Some(place) => kinds.pages.push(read_page(page.label.as_deref().unwrap_or(""), page.series.clone(), words[place].1, 0, None, "other-rendition")),
+            None => unplaced.entry(page.series.clone()).or_default().push(page.label.as_deref().unwrap_or("").to_owned()),
         }
     }
     for (series, labels) in unplaced {
@@ -598,24 +609,24 @@ fn complete(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut 
     split_note_lists(structure, kinds);
     answer_calls(structure, kinds);
     excise(structure, kinds, std::mem::take(&mut pending.cuts), &mut pending.printed_elsewhere);
-    opinion_mut(structure).citations = record.citations.clone();
-    if opinion_mut(structure).headnotes.is_empty() {
+    kinds.opinion.citations = record.citations.clone();
+    if kinds.opinion.headnotes.is_empty() {
         let found = record.renditions.iter().filter(|(_, text)| names_a_digest(text)).find_map(|(name, text)| {
             let read = if name.ends_with(".txt") { text::unshifted(text) } else { structure_of(&record.id, "", text)?.query_text().to_owned() };
             titled_digest(&read)
         });
-        opinion_mut(structure).headnotes.extend(found.map(|(kind, body)| headnote_of(kind, body, None)));
+        kinds.opinion.headnotes.extend(found.map(|(kind, body)| headnote_of(kind, body, None)));
     }
     // Lawbox alone may hold the case's own citation.
-    if !opinion_mut(structure).front.iter().any(|line| line.role == "citation") {
+    if !kinds.opinion.front.iter().any(|line| line.role == "citation") {
         static OWN: OnceLock<Regex> = OnceLock::new();
         let own = OWN.get_or_init(|| Regex::new(r"<center><b>([^<]{5,60}\(\d{4}\))</b></center>").unwrap());
         if let Some(capture) = rendition("html_lawbox.html").and_then(|markup| own.captures(markup)) {
-            opinion_mut(structure).front.push(FrontLine { role: "citation".to_owned(), text: squeezed(&capture[1]), range: None });
+            kinds.opinion.front.push(FrontLine { role: "citation".to_owned(), text: squeezed(&capture[1]), range: None });
         }
     }
-    opinion_mut(structure).headnotes.extend(topic_index(plain));
-    opinion_mut(structure).headnotes.extend(rendition("html_columbia.html").map(embedded_topics).unwrap_or_default());
+    kinds.opinion.headnotes.extend(topic_index(plain));
+    kinds.opinion.headnotes.extend(rendition("html_columbia.html").map(embedded_topics).unwrap_or_default());
     if kinds.parts.is_empty() {
         kinds.parts.push(read_part(record.opinion_type.clone().unwrap_or_else(|| "opinion".to_owned()), record.author.clone(), 0, utf16_len(&structure.text)));
     }
@@ -714,7 +725,7 @@ fn from_cluster(structure: &mut DocumentStructure, kinds: &mut Kinds, record: &O
     let field = |name: &str| record.cluster.iter().find(|(field, _)| field == name).map(|(_, value)| value.as_str());
     for kind in ["syllabus", "headnotes", "summary", "arguments", "history", "posture", "procedural_history", "cross_reference", "correction"] {
         if let Some(value) = field(kind) {
-            structure.opinion.as_mut().unwrap().headnotes.extend(field_paragraphs(&record.id, value).into_iter().map(|text| headnote_of(kind, text, None)));
+            kinds.opinion.headnotes.extend(field_paragraphs(&record.id, value).into_iter().map(|text| headnote_of(kind, text, None)));
         }
     }
     for (name, role) in [("case_name", "case_name"), ("case_name_full", "case_name_full"), ("case_name_short", "case_name_short"), ("date_filed", "date_filed"),
@@ -725,13 +736,13 @@ fn from_cluster(structure: &mut DocumentStructure, kinds: &mut Kinds, record: &O
         ("date_terminated", "date_terminated"), ("scdb_votes_majority", "votes_majority"), ("scdb_votes_minority", "votes_minority"),
         ("citation_count", "cited_by")] {
         if let Some(value) = field(name) {
-            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: role.to_owned(), text: squeezed(value), range: None });
+            kinds.opinion.front.push(FrontLine { role: role.to_owned(), text: squeezed(value), range: None });
         }
     }
     let Some(matter) = field("headmatter").and_then(|text| structure_of(&record.id, "", text)) else { return };
     supply_notes(structure, kinds, &matter);
     let coordinates = ScalarText::new(matter.query_text());
-    let had = structure.opinion.as_ref().unwrap().headnotes.iter().map(|headnote| headnote.kind.clone()).collect::<HashSet<_>>();
+    let had = kinds.opinion.headnotes.iter().map(|headnote| headnote.kind.clone()).collect::<HashSet<_>>();
     let elements = &matter.markup_elements;
     for node in &matter.nodes {
         let range = matter.query_range(node);
@@ -741,21 +752,21 @@ fn from_cluster(structure: &mut DocumentStructure, kinds: &mut Kinds, record: &O
         }
         if node.role == Some(PrimaryRole::Headnote) {
             let kind = headnote_kind(&matter, node);
-            if !had.contains(&kind) { structure.opinion.as_mut().unwrap().headnotes.push(headnote_of(&kind, printed, None)); }
+            if !had.contains(&kind) { kinds.opinion.headnotes.push(headnote_of(&kind, printed, None)); }
         } else if let Some(role) = node.role.and_then(front_name).filter(|role| !matches!(*role, "judges" | "counsel")) {
-            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: role.to_owned(), text: printed, range: None });
+            kinds.opinion.front.push(FrontLine { role: role.to_owned(), text: printed, range: None });
         }
     }
     for element in elements.iter().filter(|element| element.tag == "citation") {
         if let Some(printed) = coordinates.slice_utf16(element.range.start..element.range.end).map(squeezed).filter(|text| !text.is_empty()) {
-            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: "citation".to_owned(), text: printed, range: None });
+            kinds.opinion.front.push(FrontLine { role: "citation".to_owned(), text: printed, range: None });
         }
     }
 }
 
 fn from_text(record: &OpinionRecord, name: &str, text: String, pending: &mut Pending) -> (DocumentStructure, Kinds) {
     let reading = text::read(&text, record.page_count);
-    { let (mut document, kinds) = opinion_document(record, name, text, reading.kinds); let opinion = opinion_mut(&mut document); opinion.front = reading.front; opinion.tables = reading.tables; pending.cuts = reading.furniture; (document, kinds) }
+    { let (document, mut kinds) = opinion_document(record, name, text, reading.kinds); let opinion = &mut kinds.opinion; opinion.front = reading.front; opinion.tables = reading.tables; pending.cuts = reading.furniture; (document, kinds) }
 }
 
 fn front_name(role: PrimaryRole) -> Option<&'static str> {
@@ -796,8 +807,8 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
     let span = |range: ScalarRange| coordinates.slice_utf16(range.start..range.end).map(trim_js).unwrap_or("");
     let mut pages = structure.nodes.iter().filter(|node| node.kind == NodeKind::Page).map(|node| {
         let range = structure.query_range(node);
-        read_page(node.label.as_deref().unwrap_or("").trim_start_matches("page").to_owned(), {
-                let label = node.label.as_deref().unwrap_or("").trim_start_matches("page");
+        read_page(node.label.as_deref().unwrap_or("").to_owned(), {
+                let label = node.label.as_deref().unwrap_or("");
                 let series = if page_source(node) == "printed" && series_of(node) == "reporter" { "slip".to_owned() } else { series_of(node) };
                 label_run(label).map_or_else(|| series.clone(), |run| format!("{series}/{run}"))
             }, range.start, range.end, node.marker_range, page_source(node))
@@ -809,7 +820,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
     pages.sort_by_key(|page| page.range.start);
     for page in &mut pages {
         if note_ranges.iter().any(|note| note.start <= page.range.start && page.range.start < note.end) { page.properties.insert("in_note".to_owned(), String::new()); } else { page.properties.remove("in_note"); }
-        page.marker_range = page.marker_range.or_else(|| printed_mark(&coordinates, page.range.start, page.range.end, &page.printed_label()));
+        page.marker_range = page.marker_range.or_else(|| printed_mark(&coordinates, page.range.start, page.range.end, page.label.as_deref().unwrap_or("")));
     }
     pages::never_down(structure, &mut pages);
     let page_marks = pages.iter().filter_map(|page| page.marker_range).collect::<Vec<_>>();
@@ -959,7 +970,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
         }
     }
     paragraphs.sort_by_key(|paragraph| paragraph.range.start);
-    let blocks = block_marks(name, structure, &coordinates).into_iter().map(|(label, start)| OpinionBlock { label, start, source: "marked".to_owned(), pins: Vec::new() }).collect::<Vec<_>>();
+    let blocks = block_marks(name, structure, &coordinates).into_iter().map(|(label, start)| OpinionBlock { label, start, source: "marked".to_owned() }).collect::<Vec<_>>();
 
     let notes = footnotes.iter().map(|note| {
         let (label, echo) = note_label_of(&coordinates, note);
@@ -1006,9 +1017,9 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
             }
             return None;
         };
-        Some(HeadnoteMark { numbers, start: element.range.start, end: element.range.end, page: None })
+        Some(HeadnoteMark { numbers, start: element.range.start, end: element.range.end })
     }).collect();
-    { let (mut document, kinds) = opinion_document(record, name, text.to_owned(), Kinds { pages, paragraphs, notes, headings, parts }); let opinion = opinion_mut(&mut document); opinion.headnotes = headnotes; opinion.headnote_marks = marks; opinion.front = front; opinion.unmatched_calls = unmatched_calls; opinion.tables = tables; opinion.blocks = blocks; pending.cuts = cuts; (document, kinds) }
+    { let (document, mut kinds) = opinion_document(record, name, text.to_owned(), Kinds { pages, paragraphs, notes, headings, parts, ..Kinds::default() }); let opinion = &mut kinds.opinion; opinion.headnotes = headnotes; opinion.headnote_marks = marks; opinion.front = front; opinion.unmatched_calls = unmatched_calls; opinion.tables = tables; opinion.blocks = blocks; pending.cuts = cuts; (document, kinds) }
 }
 
 /// Where the `count`th word of a text starts.
@@ -1038,7 +1049,7 @@ fn data_tables(structure: &DocumentStructure, first_block: usize) -> Vec<Opinion
         !elements.iter().any(|other| other.tag == "table" && other.markup_start < element.markup_start && element.markup_end < other.markup_end)
     }).filter(|table| {
         elements.iter().filter(|row| matches!(row.tag.as_str(), "tr" | "row") && table.markup_start < row.markup_start && row.markup_end <= table.markup_end).count() >= 2
-    }).map(|table| OpinionTable { start: table.range.start, end: table.range.end, page: None }).collect()
+    }).map(|table| OpinionTable { start: table.range.start, end: table.range.end }).collect()
 }
 
 fn emphasized_whole(structure: &DocumentStructure, node: &StructureNode) -> bool {
@@ -1115,8 +1126,8 @@ fn note_paragraphs_elsewhere(pending: &mut Pending, name: &str, other: &Document
         name: name.to_owned(),
         openings: paragraphs().filter_map(printed).filter_map(opening_words).collect(),
         places: places(other.query_text()),
-        pages: other.nodes.iter().filter(|node| node.kind == NodeKind::Page && node.grammar.is_none()).filter_map(|node| Some(node.label.as_deref()?.trim_start_matches("page").to_owned())).collect(),
-        numbers: if counts_its_blocks(other) { Vec::new() } else { paragraphs().filter_map(|node| Some(node.label.as_deref()?.strip_prefix("par")?.to_owned())).collect() },
+        pages: other.nodes.iter().filter(|node| node.kind == NodeKind::Page && node.grammar.is_none()).filter_map(|node| Some(node.label.as_deref()?.to_owned())).collect(),
+        numbers: if counts_its_blocks(other) { Vec::new() } else { paragraphs().filter_map(|node| Some(node.label.as_deref()?.to_owned())).collect() },
         notes: other.nodes.iter().filter(|node| node.kind == NodeKind::Footnote).filter_map(|note| coordinates.slice_utf16(note.range.start..note.range.end)).filter_map(opening_words).collect(),
         headnotes: other.nodes.iter().filter(|node| node.role == Some(PrimaryRole::Headnote)).filter_map(printed).filter_map(opening_words).collect(),
     });
@@ -1124,11 +1135,11 @@ fn note_paragraphs_elsewhere(pending: &mut Pending, name: &str, other: &Document
 
 /// Item by item, what another rendition offers against the finished structure. Text counts as not held only in a run of words none
 /// of which stand in ours: a scanner's slips break a run long before that.
-fn witness_union(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending, text: &HashSet<String>) {
+fn witness_union(kinds: &mut Kinds, pending: &mut Pending, text: &HashSet<String>) {
     const TEXT_RUN: usize = 40;
-    let held_pages = kinds.pages.iter().filter(|page| page.grammar.as_deref() != Some("stray")).map(|page| page.printed_label()).collect::<HashSet<_>>();
-    let held_numbers = kinds.paragraphs.iter().filter_map(|paragraph| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par"))).collect::<HashSet<_>>();
-    let summaries = structure.opinion.as_ref().unwrap().headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
+    let held_pages = kinds.pages.iter().filter(|page| page.grammar.as_deref() != Some("stray")).map(|page| page.label.as_deref().unwrap_or("")).collect::<HashSet<_>>();
+    let held_numbers = kinds.paragraphs.iter().filter_map(|paragraph| paragraph.label.as_deref()).collect::<HashSet<_>>();
+    let summaries = kinds.opinion.headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
     let mut tally = BTreeMap::<&'static str, [usize; 2]>::new();
     let mut samples = Vec::new();
     for other in &pending.elsewhere {
@@ -1160,8 +1171,8 @@ fn witness_union(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: 
         words[0] += other.places.len();
         words[1] += lost;
     }
-    structure.opinion.as_mut().unwrap().union_test = tally.into_iter().map(|(name, counts)| (name.to_owned(), counts)).collect();
-    structure.opinion.as_mut().unwrap().union_samples = samples;
+    kinds.opinion.union_test = tally.into_iter().map(|(name, counts)| (name.to_owned(), counts)).collect();
+    kinds.opinion.union_samples = samples;
 }
 
 /// Each other rendition that sets paragraphs at all against ours. One with under half our count has lost its breaks and says
@@ -1170,7 +1181,7 @@ fn witness_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pend
     let coordinates = ScalarText::new(&structure.text);
     let ours = kinds.paragraphs.iter().filter_map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end)).filter_map(opening_words).collect::<HashSet<_>>();
     let text = places(&structure.text).into_iter().collect::<HashSet<_>>();
-    witness_union(structure, kinds, pending, &text);
+    witness_union(kinds, pending, &text);
     for other in std::mem::take(&mut pending.elsewhere) {
         let (name, openings) = (other.name, other.openings);
         if openings.len() * 2 < ours.len() {
@@ -1180,11 +1191,11 @@ fn witness_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pend
         let mut run_on = openings.iter().filter(|opening| !ours.contains(*opening) && text.contains(*opening)).cloned().collect::<Vec<_>>();
         let mut split = ours.iter().filter(|opening| !openings.contains(*opening) && words.contains(*opening)).cloned().collect::<Vec<_>>();
         let alike = openings.iter().filter(|opening| ours.contains(*opening)).count();
-        structure.opinion.as_mut().unwrap().paragraph_witness.insert(name, [alike, run_on.len(), openings.len() - alike - run_on.len(), split.len()]);
+        kinds.opinion.paragraph_witness.insert(name, [alike, run_on.len(), openings.len() - alike - run_on.len(), split.len()]);
         run_on.sort_unstable();
         split.sort_unstable();
-        structure.opinion.as_mut().unwrap().paragraphs_run_on.extend(run_on.into_iter().take(SHOWN));
-        structure.opinion.as_mut().unwrap().paragraphs_split.extend(split.into_iter().take(SHOWN));
+        kinds.opinion.paragraphs_run_on.extend(run_on.into_iter().take(SHOWN));
+        kinds.opinion.paragraphs_split.extend(split.into_iter().take(SHOWN));
     }
 }
 
@@ -1200,12 +1211,12 @@ fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &m
     const SHINGLE: usize = 5;
     // How far apart, in UTF-16 units, two renditions may set one page's mark.
     const SAME_PLACE: usize = 300;
-    let have = kinds.pages.iter().map(|page| (page.printed_label().to_owned(), page.range.start)).collect::<HashMap<_, _>>();
+    let have = kinds.pages.iter().map(|page| (page.label.as_deref().unwrap_or("").to_owned(), page.range.start)).collect::<HashMap<_, _>>();
     // One rendition may carry several numberings, a reporter's and a vendor's, each by its page scheme. The one most like ours is
     // compared with ours; each other stands as its own, a parallel printing.
     let mut schemes = BTreeMap::<String, Vec<(String, usize)>>::new();
     for node in other.nodes.iter().filter(|node| node.kind == NodeKind::Page && node.grammar.is_none()) {
-        schemes.entry(series_of(node)).or_default().push((node.label.as_deref().unwrap_or("").trim_start_matches("page").to_owned(), other.query_range(node).start));
+        schemes.entry(series_of(node)).or_default().push((node.label.as_deref().unwrap_or("").to_owned(), other.query_range(node).start));
     }
     let closest = schemes.iter().max_by_key(|(_, marks)| (marks.iter().filter(|(label, _)| have.contains_key(label)).count(), marks.len())).map(|(scheme, _)| scheme.clone());
     let marks = closest.as_ref().and_then(|scheme| schemes.remove(scheme)).unwrap_or_default();
@@ -1213,7 +1224,7 @@ fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &m
     schemes.retain(|scheme, _| !held_series.contains(scheme));
     let counted = block_marks(name, other, &ScalarText::new(other.query_text()));
     let (named, numbers) = if counts_its_blocks(other) || !counted.is_empty() { (false, Vec::new()) } else { printed_numbers(other) };
-    let blocks = if structure.opinion.as_ref().unwrap().blocks.is_empty() { counted } else { Vec::new() };
+    let blocks = if kinds.opinion.blocks.is_empty() { counted } else { Vec::new() };
     // Marks all ours add nothing, and reading where they fall costs a whole index of the text.
     if witness || marks.iter().any(|(label, _)| !have.contains_key(label)) || !numbers.is_empty() || !blocks.is_empty() || !schemes.is_empty() {
         let words = word_starts(&structure.text);
@@ -1261,7 +1272,7 @@ fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &m
         if witness && shared {
             let ordered = in_their_order(marks.iter().map(|mark| place_of(mark.1)).collect());
             let found = marks.iter().zip(ordered).filter_map(|((label, _), place)| Some((page_number(label)?, words[place?].1))).collect::<Vec<_>>();
-            witness_pages(structure, kinds, &found, SAME_PLACE);
+            witness_pages(kinds, &found, SAME_PLACE);
         }
         // Counters another rendition sets, each where its words fall; one whose words we lack, between its neighbours.
         // Scanned texts differ word by word: the nearest words the two share fix the place, after the counter or before it.
@@ -1287,7 +1298,7 @@ fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &m
                     (before.1 + (after.1.saturating_sub(before.1)) * (index - before.0) / (after.0 - before.0).max(1), "reckoned")
                 }
             };
-            structure.opinion.as_mut().unwrap().blocks.push(OpinionBlock { label: label.clone(), start, source: source.to_owned(), pins: Vec::new() });
+            kinds.opinion.blocks.push(OpinionBlock { label: label.clone(), start, source: source.to_owned() });
         }
         let printed = numbers.iter().filter_map(|(number, start)| Some((*number, words[place_near(*start)?].1))).collect::<Vec<_>>();
         if !printed.is_empty() {
@@ -1316,10 +1327,10 @@ fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &m
 }
 
 /// Head lines and headnotes this rendition lacks and another prints: a role or a kind of headnote none of ours fills.
-fn supply_head(structure: &mut DocumentStructure, other: &DocumentStructure) {
+fn supply_head(kinds: &mut Kinds, other: &DocumentStructure) {
     let coordinates = ScalarText::new(other.query_text());
-    let roles = structure.opinion.as_ref().unwrap().front.iter().map(|line| line.role.clone()).collect::<HashSet<_>>();
-    let kinds = structure.opinion.as_ref().unwrap().headnotes.iter().map(|headnote| headnote.kind.clone()).collect::<HashSet<_>>();
+    let roles = kinds.opinion.front.iter().map(|line| line.role.clone()).collect::<HashSet<_>>();
+    let filled = kinds.opinion.headnotes.iter().map(|headnote| headnote.kind.clone()).collect::<HashSet<_>>();
     for node in other.nodes.iter().filter(|node| node.role == Some(PrimaryRole::Headnote) || node.role.and_then(front_name).is_some_and(|role| !roles.contains(role))) {
         let range = other.query_range(node);
         let printed = coordinates.slice_utf16(range.start..range.end).map(squeezed).unwrap_or_default();
@@ -1329,12 +1340,12 @@ fn supply_head(structure: &mut DocumentStructure, other: &DocumentStructure) {
         if node.role == Some(PrimaryRole::Headnote) {
             let kind = headnote_kind(other, node);
             // A kind ours fills may still say more: a union keeps every headnote it does not already hold.
-            let known = opening_words(&printed).is_some_and(|opening| structure.opinion.as_ref().unwrap().headnotes.iter().any(|headnote| places(&headnote.text).contains(&opening)));
-            if !kinds.contains(&kind) || !known {
-                structure.opinion.as_mut().unwrap().headnotes.push(headnote_of(&kind, printed, None));
+            let known = opening_words(&printed).is_some_and(|opening| kinds.opinion.headnotes.iter().any(|headnote| places(&headnote.text).contains(&opening)));
+            if !filled.contains(&kind) || !known {
+                kinds.opinion.headnotes.push(headnote_of(&kind, printed, None));
             }
         } else if let Some(role) = node.role.and_then(front_name).filter(|role| !roles.contains(*role)) {
-            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: role.to_owned(), text: printed, range: None });
+            kinds.opinion.front.push(FrontLine { role: role.to_owned(), text: printed, range: None });
         }
     }
 }
@@ -1370,9 +1381,9 @@ fn notes_out_of_the_body(kinds: &mut Kinds) {
 fn opening_from_other_renditions(kinds: &mut Kinds) {
     let from_elsewhere = kinds.pages.iter().filter(|page| page.grammar.as_deref() == Some("other-rendition")).map(|page| page.series.clone()).collect::<HashSet<_>>();
     for series in from_elsewhere {
-        let first_placed = kinds.pages.iter().filter(|page| page.series == series && page.grammar.as_deref() == Some("other-rendition")).min_by_key(|page| page.range.start).and_then(|page| page_number(&page.printed_label()));
+        let first_placed = kinds.pages.iter().filter(|page| page.series == series && page.grammar.as_deref() == Some("other-rendition")).min_by_key(|page| page.range.start).and_then(|page| page_number(page.label.as_deref().unwrap_or("")));
         let Some(first_placed) = first_placed else { continue };
-        let ahead = kinds.pages.iter().enumerate().filter(|(_, page)| page.series == series && page.grammar.as_deref() == Some("reckoned") && page.range.start == 0).filter_map(|(at, page)| Some((at, page_number(&page.printed_label())?))).collect::<Vec<_>>();
+        let ahead = kinds.pages.iter().enumerate().filter(|(_, page)| page.series == series && page.grammar.as_deref() == Some("reckoned") && page.range.start == 0).filter_map(|(at, page)| Some((at, page_number(page.label.as_deref().unwrap_or(""))?))).collect::<Vec<_>>();
         let opening = ahead.iter().filter(|mark| mark.1 + 1 == first_placed).map(|mark| mark.0).next();
         for (at, _) in &ahead {
             kinds.pages[*at].grammar = Some((if Some(*at) == opening { "opening" } else { "stray" }).to_owned());
@@ -1384,7 +1395,7 @@ fn finish(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pe
     opening_from_other_renditions(kinds);
     quotes_from_elsewhere(structure, kinds, pending);
     flag_pages_in_notes(kinds);
-    page_series(structure, kinds, record);
+    page_series(kinds, record);
     close_pages(structure, kinds);
     tidy_paragraphs(structure, kinds, pending);
     label_notes(structure, kinds);
@@ -1392,7 +1403,7 @@ fn finish(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pe
     take_marked_titles(structure, kinds, pending);
     title_headings(structure, kinds);
     list_items(kinds);
-    sift_headings(structure, kinds);
+    sift_headings(kinds);
     witness_headings(structure, kinds, pending);
     witness_paragraphs(structure, kinds, pending);
     divisions_of_headnotes(structure, kinds);
@@ -1401,7 +1412,7 @@ fn finish(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pe
     cover_matter(structure, kinds);
     read_the_text(structure, kinds);
     notes_out_of_the_body(kinds);
-    place_on_pages(structure, kinds);
+    place_on_pages(kinds);
 }
 
 /// Marks placed from other renditions fall in notes too, and a note's page says nothing of the opinion's.
@@ -1418,7 +1429,7 @@ fn flag_pages_in_notes(kinds: &mut Kinds) {
 fn opening_page_first(kinds: &mut Kinds) {
     let mut lowered = false;
     let series = kinds.pages.iter().enumerate().filter(|(_, page)| !page.properties.contains_key("in_note") && page.series.starts_with("reporter")).fold(BTreeMap::<&str, Vec<(usize, u32)>>::new(), |mut all, (index, page)| {
-        if let Some(number) = page_number(&page.printed_label()) { all.entry(&page.series).or_default().push((index, number)); }
+        if let Some(number) = page_number(page.label.as_deref().unwrap_or("")) { all.entry(&page.series).or_default().push((index, number)); }
         all
     }).into_values().collect::<Vec<_>>();
     let mut opening = Vec::new();
@@ -1435,16 +1446,16 @@ fn opening_page_first(kinds: &mut Kinds) {
         lowered = true;
     }
     if lowered {
-        kinds.pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.printed_label())).cmp(&(&right.series, right.range.start, page_number(right.printed_label()))));
+        kinds.pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.label.as_deref().unwrap_or(""))).cmp(&(&right.series, right.range.start, page_number(right.label.as_deref().unwrap_or("")))));
     }
 }
 
 /// Each numbering's pages in the text's order, each running to the next.
 fn close_pages(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     let text_end = utf16_len(&structure.text);
-    kinds.pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.printed_label())).cmp(&(&right.series, right.range.start, page_number(right.printed_label()))));
+    kinds.pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.label.as_deref().unwrap_or(""))).cmp(&(&right.series, right.range.start, page_number(right.label.as_deref().unwrap_or("")))));
     // A plain text can print a page's number twice, at its head and its foot: one page.
-    if structure.opinion.as_ref().unwrap().rendition == "plain_text.txt" {
+    if kinds.opinion.rendition == "plain_text.txt" {
         kinds.pages.dedup_by(|later, kept| {
             let same = later.series == kept.series && later.label == kept.label;
             if same { kept.range.end = kept.range.end.max(later.range.end); }
@@ -1454,7 +1465,7 @@ fn close_pages(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     opening_page_first(kinds);
     // A page opened twice is one page; a moved block's page is its block's alone and leaves the opinion's page as it was.
     let mut opened = HashSet::new();
-    kinds.pages.retain(|page| page.properties.contains_key("in_note") || !page.series.starts_with("reporter") || page.grammar.as_deref() == Some("stray") || page.grammar.as_deref() == Some("moved") || opened.insert((page.series.clone(), page.printed_label().to_owned())));
+    kinds.pages.retain(|page| page.properties.contains_key("in_note") || !page.series.starts_with("reporter") || page.grammar.as_deref() == Some("stray") || page.grammar.as_deref() == Some("moved") || opened.insert((page.series.clone(), page.label.as_deref().unwrap_or("").to_owned())));
     let count = kinds.pages.len();
     for index in 0..count {
         if kinds.pages[index].range.end == 0 || matches!(kinds.pages[index].grammar.as_deref(), Some("other-rendition" | "reckoned")) {
@@ -1485,14 +1496,14 @@ fn tidy_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending
 fn label_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     share_note_calls(structure, kinds);
     // Notes a source left unlabelled and unnumbered are numbered as they stand.
-    if kinds.notes.iter().all(|note| note.printed_label().is_empty()) {
+    if kinds.notes.iter().all(|note| note.label.as_deref().unwrap_or("").is_empty()) {
         for (index, note) in kinds.notes.iter_mut().enumerate() {
-            note.label = Some(format!("fn{}", index + 1));
+            note.label = Some(format!("{}", index + 1));
         }
     }
     let mut answered = kinds.notes.iter().flat_map(|note| note.calls.iter().copied()).collect::<Vec<_>>();
     answered.sort_by_key(|known| known.start);
-    structure.opinion.as_mut().unwrap().unmatched_calls.retain(|call| {
+    kinds.opinion.unmatched_calls.retain(|call| {
         answered[..answered.partition_point(|known| known.start < call.end)].last().is_none_or(|known| known.end <= call.start)
     });
 }
@@ -1529,16 +1540,16 @@ fn title_headings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 }
 
 /// A heading's words decide last: a mark, a rule, a list's title or a contents line is none.
-fn sift_headings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+fn sift_headings(kinds: &mut Kinds) {
     for heading in std::mem::take(&mut kinds.headings) {
         let range = Some(ScalarRange { start: heading.range.start, end: heading.range.end });
         if !heading.display_value.as_deref().unwrap_or("").chars().any(char::is_alphanumeric) {
             continue;
         }
         if text::contents_line(&heading.display_value.as_deref().unwrap_or("")) {
-            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: "contents".to_owned(), text: heading.display_value.clone().unwrap_or_default(), range });
+            kinds.opinion.front.push(FrontLine { role: "contents".to_owned(), text: heading.display_value.clone().unwrap_or_default(), range });
         } else if let Some(numbers) = heading.display_value.as_deref().unwrap_or("").starts_with('[').then(|| headnote_numbers(&heading.display_value.as_deref().unwrap_or(""))).flatten() {
-            structure.opinion.as_mut().unwrap().headnote_marks.push(HeadnoteMark { numbers, start: heading.range.start, end: heading.range.end, page: None });
+            kinds.opinion.headnote_marks.push(HeadnoteMark { numbers, start: heading.range.start, end: heading.range.end });
         } else {
             kinds.headings.push(heading);
         }
@@ -1549,82 +1560,56 @@ fn sift_headings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 fn read_the_text(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     let searched = kinds.paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end))
         .chain(kinds.notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end)))).collect::<Vec<_>>();
-    structure.opinion.as_mut().unwrap().defined_terms = defined_terms(&structure.text, &searched);
-    structure.opinion.as_mut().unwrap().quotes = quotations(&structure.text, &kinds.paragraphs);
-    structure.opinion.as_mut().unwrap().instruments = instruments(&structure.text, &kinds.paragraphs);
+    kinds.opinion.defined_terms = defined_terms(&structure.text, &searched);
+    kinds.opinion.quotes = quotations(&structure.text, &kinds.paragraphs);
+    kinds.opinion.instruments = instruments(&structure.text, &kinds.paragraphs);
     let gaps = record_gaps(structure, kinds);
-    structure.opinion.as_mut().unwrap().record_gaps = gaps;
-    structure.opinion.as_mut().unwrap().document_kind = document_kind(&structure.text).to_owned();
+    kinds.opinion.record_gaps = gaps;
+    kinds.opinion.document_kind = document_kind(&structure.text).to_owned();
     // Blocks past the last paragraph, or lines of the foot, may carry the order the kinds.paragraphs do not.
     let last_text = kinds.paragraphs.iter().map(|paragraph| paragraph.range.start).max().unwrap_or(0);
     let closing = kinds.headings.iter().map(|heading| ScalarRange { start: heading.range.start, end: heading.range.end })
-        .chain(structure.opinion.as_ref().unwrap().headnotes.iter().filter(|headnote| headnote.kind == "topics").filter_map(|headnote| headnote.range))
-        .chain(structure.opinion.as_ref().unwrap().front.iter().filter_map(|line| line.range))
+        .chain(kinds.opinion.headnotes.iter().filter(|headnote| headnote.kind == "topics").filter_map(|headnote| headnote.range))
+        .chain(kinds.opinion.front.iter().filter_map(|line| line.range))
         .filter(|range| range.start >= last_text)
         // A slip's head may print its disposition: "AFFIRMED."
-        .chain(structure.opinion.as_ref().unwrap().front.iter().filter(|line| line.role == "cover").filter_map(|line| line.range)).collect::<Vec<_>>();
+        .chain(kinds.opinion.front.iter().filter(|line| line.role == "cover").filter_map(|line| line.range)).collect::<Vec<_>>();
     let (lines, outcomes) = dispositions(&structure.text, &kinds.paragraphs, &kinds.parts, &closing);
-    structure.opinion.as_mut().unwrap().front.extend(lines);
-    structure.opinion.as_mut().unwrap().outcomes = outcomes;
-    name_dates(&mut structure.opinion.as_mut().unwrap().front);
+    kinds.opinion.front.extend(lines);
+    kinds.opinion.outcomes = outcomes;
+    name_dates(&mut kinds.opinion.front);
 }
 
 /// How near the next page a note's call may stand, in UTF-16 units (a line and a half), before its note's page is in doubt.
 const CALL_AT_FOOT: usize = 120;
 
 /// The lead numbering's page of everything found, its pins in every numbering, and each paragraph's part.
-fn place_on_pages(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+fn place_on_pages(kinds: &mut Kinds) {
     let of_the_opinion = |page: &&StructureNode| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray");
     let mut counts = HashMap::<&str, usize>::new();
     for page in kinds.pages.iter().filter(of_the_opinion) {
         *counts.entry(page.series.as_str()).or_default() += 1;
     }
     let lead = counts.iter().max_by_key(|(series, count)| (series.starts_with("reporter"), **count, std::cmp::Reverse(**series))).map(|(series, _)| *series);
-    let lead_pages = kinds.pages.iter().filter(of_the_opinion).filter(|page| Some(page.series.as_str()) == lead).map(|page| (page.range.start, page.printed_label().to_owned())).collect::<Vec<_>>();
-    let page_at = |offset: usize| lead_pages.partition_point(|page| page.0 <= offset).checked_sub(1).map(|at| lead_pages[at].1.clone());
+    let lead_turns = kinds.pages.iter().filter(of_the_opinion).filter(|page| Some(page.series.as_str()) == lead).map(|page| page.range.start).collect::<Vec<_>>();
     // Each page under the names a pin cites it by: "*702", and "226 La. 702" where its numbering is a printing's.
     for page in kinds.pages.iter_mut() {
-        let mut aliases = vec![format!("*{}", page.printed_label())];
-        aliases.extend(structure.opinion.as_ref().unwrap().page_series.iter().filter(|series| series.series == page.series).map(|series| format!("{} {}", series.reporter, page.printed_label())));
+        let mut aliases = vec![format!("*{}", page.label.as_deref().unwrap_or(""))];
+        aliases.extend(kinds.opinion.page_series.iter().filter(|series| series.series == page.series).map(|series| format!("{} {}", series.reporter, page.label.as_deref().unwrap_or(""))));
         page.aliases = Some(aliases);
     }
     for (index, part) in kinds.parts.iter_mut().enumerate() {
         part.id = format!("opinion-part-{}", index + 1);
     }
-    let table = pin_table(&kinds.pages, &structure.opinion.as_mut().unwrap().page_series);
-    for block in &mut structure.opinion.as_mut().unwrap().blocks {
-        block.pins = pins_of(&table, block.start, block.start + 1);
-    }
-    for heading in kinds.headings.iter_mut() {
-        heading.pins = pins_of(&table, heading.range.start, heading.range.end);
-    }
     for paragraph in kinds.paragraphs.iter_mut() {
-        paragraph.pins = pins_of(&table, paragraph.range.start, paragraph.range.end);
         paragraph.parent_id = kinds.parts.iter().find(|part| part.range.start <= paragraph.range.start && paragraph.range.start < part.range.end).map(|part| part.id.clone());
     }
     // A note's page is its call's: the kinds.notes of a text set at its end are still on the page that calls them. But a call on a
     // page's last line can have its note set on the next page, or run on to it; a source that marks where kinds.notes run on (Harvard)
     // says so, and one that marks no page inside any note cannot: there a call that close to the next page names no page.
     let marks_run_ons = kinds.pages.iter().any(|page| page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray"));
-    let next_turn = |offset: usize| lead_pages.get(lead_pages.partition_point(|page| page.0 <= offset)).map(|page| page.0);
-    for note in kinds.notes.iter_mut() {
-        let call = note.calls.first().map_or(note.range.start, |call| call.start);
-        let at_foot = !marks_run_ons && note.calls.first().is_some() && next_turn(call).is_some_and(|turn| turn - call <= CALL_AT_FOOT);
-        note.pins = if at_foot { Vec::new() } else { pins_of(&table, call, call + 1) };
-    }
-    for mark in &mut structure.opinion.as_mut().unwrap().headnote_marks {
-        mark.page = page_at(mark.start);
-    }
-    for call in &mut structure.opinion.as_mut().unwrap().unmatched_calls {
-        call.page = page_at(call.start);
-    }
-    for table in &mut structure.opinion.as_mut().unwrap().tables {
-        table.page = page_at(table.start);
-    }
-    for term in &mut structure.opinion.as_mut().unwrap().defined_terms {
-        term.page = page_at(term.start);
-    }
-    for quote in &mut structure.opinion.as_mut().unwrap().quotes {
-        quote.page = page_at(quote.start);
+    let next_turn = |offset: usize| lead_turns.get(lead_turns.partition_point(|turn| *turn <= offset)).copied();
+    for note in kinds.notes.iter_mut().filter(|note| !marks_run_ons && note.calls.first().is_some_and(|call| next_turn(call.start).is_some_and(|turn| turn - call.start <= CALL_AT_FOOT))) {
+        note.properties.insert("call_at_foot".to_owned(), String::new());
     }
 }

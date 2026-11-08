@@ -97,7 +97,7 @@ pub(super) fn detect_pages(
         .map(|pair| {
             crate::labelled_node(
                 NodeKind::Page,
-                format!("page{}", pair[0].number),
+                format!("{}", pair[0].number),
                 pair[0].content_start,
                 pair[1].start,
             )
@@ -108,7 +108,7 @@ pub(super) fn detect_pages(
             0,
             crate::labelled_node(
                 NodeKind::Page,
-                format!("page{}", report_start.unwrap()),
+                format!("{}", report_start.unwrap()),
                 0,
                 best[0].start,
             ),

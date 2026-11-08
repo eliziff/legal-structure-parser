@@ -980,7 +980,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
     }
 
     let table_runs = flat_tables(&lines, &body, head_end);
-    let tables = table_runs.iter().map(|&(first, last)| OpinionTable { start: lines[first].start, end: lines[last].body_range().end, page: None }).collect();
+    let tables = table_runs.iter().map(|&(first, last)| OpinionTable { start: lines[first].start, end: lines[last].body_range().end }).collect();
     let in_table = |at: usize| table_runs.iter().any(|&(first, last)| first <= at && at <= last);
 
     let mut paragraphs = Vec::<StructureNode>::new();
@@ -1067,7 +1067,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
     // A title with no text under it is a name at the foot of the opinion.
     let last_text = paragraphs.last().map_or(0, |paragraph| paragraph.range.end);
     headings.retain(|heading| heading.range.start < last_text);
-    Reading { kinds: Kinds { pages, paragraphs, notes, headings, parts: Vec::new() }, furniture, front, tables }
+    Reading { kinds: Kinds { pages, paragraphs, notes, headings, ..Kinds::default() }, furniture, front, tables }
 }
 
 pub(super) fn ended_sentence(body: &str) -> bool {

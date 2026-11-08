@@ -42,7 +42,7 @@ pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furni
     let compound = |left: &str| matches!(left, "self" | "non" | "pre" | "co" | "anti" | "quasi" | "cross" | "ex" | "well" | "full" | "long" | "short" | "post" | "multi" | "semi" | "sub" | "over" | "under" | "third" | "first" | "second");
     let mut repairs = Vec::<(usize, usize, &'static str)>::new();
     // A word a line's end broke: "pro-\nvided" is whole, "self-\ninsured" keeps its hyphen.
-    if reading(structure).rendition == "plain_text.txt" {
+    if kinds.opinion.rendition == "plain_text.txt" {
         for capture in BROKEN.get_or_init(|| Regex::new(r"(\p{Ll}{2,})-[ \t]*\r?\n[ \t\u{c}]*(\p{Ll}{2,})").unwrap()).captures_iter(&structure.text) {
             let (left, right) = (capture.get(1).unwrap(), capture.get(2).unwrap());
             let (last, first) = (left.as_str().to_lowercase(), right.as_str());
@@ -84,8 +84,8 @@ pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furni
         cuts.push(Cut { start: unit, end: unit + utf16_len(&structure.text[start..end]), keep });
     }
     // A note's call is out of the words too, its place kept: "defendant7 s" reads "defendant s", the note still called there.
-    if reading(structure).rendition != "plain_text.txt" {
-        for call in kinds.notes.iter().flat_map(|note| note.calls.iter()).map(|call| (call.start, call.end)).chain(reading(structure).unmatched_calls.iter().map(|call| (call.start, call.end))) {
+    if kinds.opinion.rendition != "plain_text.txt" {
+        for call in kinds.notes.iter().flat_map(|note| note.calls.iter()).map(|call| (call.start, call.end)).chain(kinds.opinion.unmatched_calls.iter().map(|call| (call.start, call.end))) {
             if call.1 > call.0 && call.1 - call.0 <= 8 {
                 cuts.push(Cut { start: call.0, end: call.1, keep: "" });
             }
@@ -135,7 +135,7 @@ pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furni
     for (_, numbers) in printed_elsewhere.iter_mut() {
         numbers.iter_mut().for_each(|number| number.1 = moved(number.1));
     }
-    let opinion = opinion_mut(structure);
+    let opinion = &mut kinds.opinion;
     for block in &mut opinion.blocks {
         block.start = moved(block.start);
     }

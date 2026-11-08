@@ -14,7 +14,7 @@ pub fn paragraph_printings(document: &DocumentStructure) -> Vec<(usize, Vec<usiz
     let translated = |index: usize| document.nodes[index].grammar.as_deref() == Some("translation");
     let mut by_number = BTreeMap::<usize, Vec<usize>>::new();
     for (index, node) in document.nodes.iter().enumerate().filter(|(_, node)| node.kind == NodeKind::Paragraph) {
-        let number = node.label.as_deref().and_then(|label| label.strip_prefix("par")).and_then(|n| n.parse::<usize>().ok());
+        let number = node.label.as_deref().and_then(|n| n.parse::<usize>().ok());
         if let Some(number) = number {
             by_number.entry(number).or_default().push(index);
         }

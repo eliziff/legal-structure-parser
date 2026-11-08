@@ -40,7 +40,7 @@ pub(super) fn settle(paragraphs: &mut Vec<StructureNode>, headings: &[StructureN
         }
         if let Some(last) = kept.last_mut() {
             if paragraph.range.start <= last.range.start + 2 {
-                if last.label.as_deref().and_then(|label| label.strip_prefix("par")).is_none() && paragraph.label.is_some() {
+                if last.label.as_deref().is_none() && paragraph.label.is_some() {
                     *last = paragraph;
                 }
                 continue;
@@ -68,10 +68,10 @@ pub(super) fn number_paragraphs(structure: &mut DocumentStructure, kinds: &mut K
     let numbered = text::own_numbers(openings.iter().copied(), 3);
     let lettered = lettered_paragraphs(&openings, &numbered);
     for (index, number) in numbered {
-        kinds.paragraphs[index].label.get_or_insert(format!("par{number}"));
+        kinds.paragraphs[index].label.get_or_insert(format!("{number}"));
     }
     for (index, label) in lettered {
-        kinds.paragraphs[index].label.get_or_insert(format!("par{label}"));
+        kinds.paragraphs[index].label.get_or_insert(format!("{label}"));
     }
     // A certified question's own number.
     static QUESTION: OnceLock<Regex> = OnceLock::new();
@@ -80,7 +80,7 @@ pub(super) fn number_paragraphs(structure: &mut DocumentStructure, kinds: &mut K
         Some((index, question.captures(trim_js(coordinates.slice_utf16(paragraph.range.start..paragraph.range.end)?))?[1].to_owned()))
     }).collect::<Vec<_>>();
     for (index, label) in asked {
-        kinds.paragraphs[index].label = Some(format!("par{}", label));
+        kinds.paragraphs[index].label = Some(format!("{}", label));
     }
     split_numbered_blocks(structure, kinds);
     fill_skipped_numbers(structure, kinds);
@@ -102,7 +102,7 @@ fn closing_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     if numbers_held(&mut kinds.paragraphs) < LEAST {
         return;
     }
-    let Some((from, mut due)) = kinds.paragraphs.iter().rev().find_map(|paragraph| Some((paragraph.range.end, paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()?.parse::<u32>().ok()? + 1))) else { return };
+    let Some((from, mut due)) = kinds.paragraphs.iter().rev().find_map(|paragraph| Some((paragraph.range.end, paragraph.label.as_deref().as_deref()?.parse::<u32>().ok()? + 1))) else { return };
     let coordinates = ScalarText::new(&structure.text);
     let Some(rest) = coordinates.slice_utf16(from..utf16_len(&structure.text)) else { return };
     let held = kinds.paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end)).chain(kinds.notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end)))).collect::<Vec<_>>();
@@ -132,11 +132,11 @@ pub(super) fn hold_leftovers(structure: &mut DocumentStructure, kinds: &mut Kind
     let Some(first) = kinds.paragraphs.iter().map(|paragraph| paragraph.range.start).min() else { return };
     static BLANK: OnceLock<Regex> = OnceLock::new();
     let blank = BLANK.get_or_init(|| Regex::new(r"\n[ \t]*\n").unwrap());
-    let plain = structure.opinion.as_ref().unwrap().rendition == "plain_text.txt";
+    let plain = kinds.opinion.rendition == "plain_text.txt";
     let coordinates = ScalarText::new(&structure.text);
-    let summaries = structure.opinion.as_ref().unwrap().headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
+    let summaries = kinds.opinion.headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
     let mut found = Vec::new();
-    for (start, end) in unheld_stretches(structure, kinds.paragraphs.iter().chain(&kinds.headings).chain(&kinds.notes)) {
+    for (start, end) in unheld_stretches(structure, &kinds.opinion, kinds.paragraphs.iter().chain(&kinds.headings).chain(&kinds.notes)) {
         let Some(raw) = coordinates.slice_utf16(start..end) else { continue };
         let cuts = if plain { blank.find_iter(raw).map(|cut| (cut.start(), cut.end())).collect::<Vec<_>>() } else { raw.match_indices('\n').map(|(at, _)| (at, at + 1)).collect() };
         let mut from = 0;
@@ -160,7 +160,7 @@ pub(super) fn hold_leftovers(structure: &mut DocumentStructure, kinds: &mut Kind
 
 /// How many of the paragraphs carry a number.
 fn numbers_held(paragraphs: &[StructureNode]) -> usize {
-    paragraphs.iter().filter(|paragraph| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref().is_some_and(|number| number.parse::<u32>().is_ok())).count()
+    paragraphs.iter().filter(|paragraph| paragraph.label.as_deref().as_deref().is_some_and(|number| number.parse::<u32>().is_ok())).count()
 }
 
 /// A better reading replaces a worse one. A number of ours that stands between its new neighbours may stay: the reading can
@@ -174,12 +174,12 @@ fn take_numbers(kinds: &mut Kinds, mut taken: Vec<(usize, u32)>) {
         }
         let low = at.checked_sub(1).map_or(0, |before| taken[before].1);
         let high = taken.get(at).map_or(u32::MAX, |entry| entry.1);
-        if kinds.paragraphs[index].label.as_deref().and_then(|label| label.strip_prefix("par")).and_then(|number| number.parse::<u32>().ok()).is_some_and(|number| number <= low || number >= high) {
+        if kinds.paragraphs[index].label.as_deref().and_then(|number| number.parse::<u32>().ok()).is_some_and(|number| number <= low || number >= high) {
             kinds.paragraphs[index].label = None;
         }
     }
     for (index, number) in taken {
-        kinds.paragraphs[index].label = Some(format!("par{}", number.to_string()));
+        kinds.paragraphs[index].label = Some(format!("{}", number.to_string()));
     }
 }
 
@@ -201,7 +201,7 @@ fn walk_scanned_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
             continue;
         }
         // A mark may be past reading, "118" for "¶ 13": the next one or two say the count has gone on.
-        let read = (due..=due + STEP).find(|number| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref() == Some(number.to_string().as_str()) || text::paragraph_marker(opening).is_some_and(|(marked, _)| marked == *number) || scanned_number(opening, number - 1, number + 1).is_some());
+        let read = (due..=due + STEP).find(|number| paragraph.label.as_deref().as_deref() == Some(number.to_string().as_str()) || text::paragraph_marker(opening).is_some_and(|(marked, _)| marked == *number) || scanned_number(opening, number - 1, number + 1).is_some());
         if let Some(number) = read {
             taken.push((index, number));
             due = number + 1;
@@ -317,14 +317,14 @@ fn pilcrow_read_as_one(structure: &mut DocumentStructure, kinds: &mut Kinds) {
         kinds.paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map_or(false, |opening| trim_js(opening).trim_start_matches(['[', '{']).starts_with('¶'))).collect::<Vec<_>>()
     };
     let shed = |number: u32| number.to_string().strip_prefix('1').and_then(|rest| rest.parse::<u32>().ok()).filter(|rest| *rest > 0);
-    let numbered = kinds.paragraphs.iter().enumerate().filter_map(|(index, paragraph)| Some((index, paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()?.parse::<u32>().ok()?))).collect::<Vec<_>>();
+    let numbered = kinds.paragraphs.iter().enumerate().filter_map(|(index, paragraph)| Some((index, paragraph.label.as_deref().as_deref()?.parse::<u32>().ok()?))).collect::<Vec<_>>();
     let mut last = 0;
     for (at, &(index, number)) in numbered.iter().enumerate() {
         let fits = shed(number).filter(|rest| !printed[index] && number > last + 3 && *rest > last && *rest <= last + 3).filter(|rest| {
             numbered.get(at + 1).is_none_or(|next| next.1 > *rest && next.1 <= rest + 3 || shed(next.1).is_some_and(|after| after > *rest && after <= rest + 3))
         });
         if let Some(rest) = fits {
-            kinds.paragraphs[index].label = Some(format!("par{}", rest.to_string()));
+            kinds.paragraphs[index].label = Some(format!("{}", rest.to_string()));
         }
         last = fits.unwrap_or(number);
     }
@@ -337,10 +337,10 @@ fn carry_title_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
         coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).is_some_and(|opening| text::says_paragraph(opening) && text::past_marker(opening).is_empty())
     }).map(|(index, _)| index).collect::<Vec<_>>();
     for index in bare.into_iter().rev() {
-        if kinds.paragraphs.get(index + 1).is_some_and(|next| next.label.as_deref().and_then(|label| label.strip_prefix("par")).is_none() && !(next.kind == NodeKind::Quote)) {
+        if kinds.paragraphs.get(index + 1).is_some_and(|next| next.label.as_deref().is_none() && !(next.kind == NodeKind::Quote)) {
             let removed = kinds.paragraphs.remove(index);
-        let number = removed.label.as_deref().and_then(|label| label.strip_prefix("par"));
-            kinds.paragraphs[index].label = number.map(|number| format!("par{number}"));
+        let number = removed.label.as_deref();
+            kinds.paragraphs[index].label = number.map(|number| format!("{number}"));
         }
     }
 }
@@ -348,7 +348,7 @@ fn carry_title_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 /// In an opinion that numbers its paragraphs a number its neighbours contradict was misread: "1, 2, 8, 4" is 3, and "1, 3, 2, 4" two
 /// marks swapped. The neighbours say so only where they run by ones either side.
 fn misread_numbers(_structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut numbered = kinds.paragraphs.iter().enumerate().filter_map(|(index, paragraph)| Some((index, paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()?.parse::<u32>().ok()?))).collect::<Vec<_>>();
+    let mut numbered = kinds.paragraphs.iter().enumerate().filter_map(|(index, paragraph)| Some((index, paragraph.label.as_deref().as_deref()?.parse::<u32>().ok()?))).collect::<Vec<_>>();
     if numbered.len() * 2 < kinds.paragraphs.len() {
         return;
     }
@@ -356,12 +356,12 @@ fn misread_numbers(_structure: &mut DocumentStructure, kinds: &mut Kinds) {
         let (before, here, after) = (numbered[at - 1].1, numbered[at].1, numbered[at + 1].1);
         if after == before + 2 && here != before + 1 {
             numbered[at].1 = before + 1;
-            kinds.paragraphs[numbered[at].0].label = Some(format!("par{}", (before + 1).to_string()));
+            kinds.paragraphs[numbered[at].0].label = Some(format!("{}", (before + 1).to_string()));
         } else if here == before + 2 && after == before + 1 && numbered.get(at + 2).is_some_and(|next| next.1 == before + 3) {
             numbered[at].1 = before + 1;
             numbered[at + 1].1 = before + 2;
-            kinds.paragraphs[numbered[at].0].label = Some(format!("par{}", (before + 1).to_string()));
-            kinds.paragraphs[numbered[at + 1].0].label = Some(format!("par{}", (before + 2).to_string()));
+            kinds.paragraphs[numbered[at].0].label = Some(format!("{}", (before + 1).to_string()));
+            kinds.paragraphs[numbered[at + 1].0].label = Some(format!("{}", (before + 2).to_string()));
         }
     }
 }
@@ -369,7 +369,7 @@ fn misread_numbers(_structure: &mut DocumentStructure, kinds: &mut Kinds) {
 /// Where a number due next stands in a block's course after a finished sentence, "... complaints. ¶21 On appeal", a new
 /// paragraph opens. It is due while the numbered paragraphs that follow have not printed it.
 fn split_numbered_blocks(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let number_of = |paragraph: &StructureNode| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref().and_then(|number| number.parse::<u32>().ok());
+    let number_of = |paragraph: &StructureNode| paragraph.label.as_deref().as_deref().and_then(|number| number.parse::<u32>().ok());
     if kinds.paragraphs.iter().filter(|paragraph| number_of(paragraph).is_some()).count() < 3 {
         return;
     }
@@ -391,7 +391,7 @@ fn split_numbered_blocks(structure: &mut DocumentStructure, kinds: &mut Kinds) {
             let split = paragraph.range.start + utf16_len(&raw[..place]);
             let mut next = paragraph.clone();
             next.range.start = split;
-            next.label = Some(format!("par{}", number.to_string()));
+            next.label = Some(format!("{}", number.to_string()));
             paragraph.range.end = split;
             kept.push(std::mem::replace(&mut paragraph, next));
             due = Some(number + 1);
@@ -440,7 +440,7 @@ fn scanned_number(opening: &str, low: u32, high: u32) -> Option<u32> {
 /// A number the reader passed over inside a run: "1, 2, 4" where the paragraph between them opens "3.".
 pub(super) fn fill_skipped_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     let coordinates = ScalarText::new(&structure.text);
-    let numbered = kinds.paragraphs.iter().enumerate().filter_map(|(index, paragraph)| Some((index, paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()?.parse::<u32>().ok()?))).collect::<Vec<_>>();
+    let numbered = kinds.paragraphs.iter().enumerate().filter_map(|(index, paragraph)| Some((index, paragraph.label.as_deref().as_deref()?.parse::<u32>().ok()?))).collect::<Vec<_>>();
     let marked_between = |span: std::ops::Range<usize>, low: u32, high: u32| {
         let (mut last, mut found) = (low, Vec::new());
         for index in span {
@@ -481,7 +481,7 @@ pub(super) fn fill_skipped_numbers(structure: &mut DocumentStructure, kinds: &mu
         }
     }
     for (index, number) in filled {
-        kinds.paragraphs[index].label = Some(format!("par{}", number.to_string()));
+        kinds.paragraphs[index].label = Some(format!("{}", number.to_string()));
     }
 }
 
@@ -517,15 +517,15 @@ pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure, kinds: &mut K
     let coordinates = ScalarText::new(&structure.text);
     let printed = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
     // A plain text's short lines are its wrapping, not its margin.
-    let columned = structure.opinion.as_ref().unwrap().rendition != "plain_text.txt";
+    let columned = kinds.opinion.rendition != "plain_text.txt";
     let interleaved = (1..kinds.paragraphs.len().saturating_sub(1)).filter(|&index| {
         let (before, line, after) = (&kinds.paragraphs[index - 1], &kinds.paragraphs[index], &kinds.paragraphs[index + 1]);
-        columned && !(line.kind == NodeKind::Quote) && line.label.as_deref().and_then(|label| label.strip_prefix("par")).is_none() && printed(line).len() < 60 && printed(line).starts_with(char::is_uppercase)
+        columned && !(line.kind == NodeKind::Quote) && line.label.as_deref().is_none() && printed(line).len() < 60 && printed(line).starts_with(char::is_uppercase)
             && !text::ended_sentence(printed(before)) && printed(after).starts_with(char::is_lowercase)
     }).collect::<Vec<_>>();
     for &index in interleaved.iter().rev() {
         let line = kinds.paragraphs.remove(index);
-        structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("catchword", squeezed(printed(&line)), Some(ScalarRange { start: line.range.start, end: line.range.end })));
+        kinds.opinion.headnotes.push(headnote_of("catchword", squeezed(printed(&line)), Some(ScalarRange { start: line.range.start, end: line.range.end })));
     }
     let mut kept = Vec::<StructureNode>::with_capacity(kinds.paragraphs.len());
     let mut titles = kinds.headings.iter().map(|heading| heading.range.start).collect::<Vec<_>>();
@@ -671,7 +671,7 @@ pub(super) fn separate_parts(structure: &mut DocumentStructure, kinds: &mut Kind
         opening(&printed[lead.find(printed).map_or(0, |found| found.end())..], false).map(|(kind, author)| (heading.range.start, kind, author))
     })).collect::<Vec<_>>();
     // A second author's line, past the opinion's first text, opens another opinion.
-    for line in structure.opinion.as_ref().unwrap().front.iter().filter(|line| line.role == "author") {
+    for line in kinds.opinion.front.iter().filter(|line| line.role == "author") {
         let Some(range) = line.range else { continue };
         let written = kinds.paragraphs.iter().filter(|paragraph| paragraph.range.end <= range.start).map(|paragraph| paragraph.range.end - paragraph.range.start).sum::<usize>();
         if written >= 400 && !breaks.iter().any(|known| known.0.abs_diff(range.start) < 4) {

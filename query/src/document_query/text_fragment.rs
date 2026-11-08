@@ -270,7 +270,7 @@ impl<'a> FragmentText<'a> {
                 let content = node.content_start.or_else(|| {
                     // Some inferred paragraphs retain the label and range only.
                     // Match that known label at the node boundary, never an arbitrary number.
-                    let label = node.label.as_deref()?.strip_prefix("par")?;
+                    let label = node.label.as_deref()?;
                     let tail = self
                         .slice(node.range.start, node.range.end)
                         .strip_prefix(label)?;

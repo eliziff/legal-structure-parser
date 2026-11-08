@@ -70,11 +70,8 @@ struct Title {
     aliases: Vec<String>,
 }
 
-fn public_label(prefix: &str, value: &str) -> String {
-    let value = value
-        .parse::<u64>()
-        .map_or_else(|_| value.to_owned(), |value| value.to_string());
-    format!("{prefix}{value}")
+fn public_label(value: &str) -> String {
+    value.parse::<u64>().map_or_else(|_| value.to_owned(), |value| value.to_string())
 }
 
 fn title(value: &str) -> (Option<String>, Vec<String>) {
@@ -195,7 +192,7 @@ pub fn journal_text_document_structure(
     for (index, (label, pdf_page, start)) in starts.iter().enumerate() {
         let mut item = claim(
             NodeKind::Page,
-            public_label("page", label),
+            public_label(label),
             ScalarRange {
                 start: *start,
                 end: starts.get(index + 1).map_or(clean_scalars, |value| value.2),
@@ -260,7 +257,7 @@ pub fn journal_document_structure(
                 .unwrap_or_else(|| pdf_page.to_string());
             let mut item = claim(
                 NodeKind::Page,
-                public_label("page", &label),
+                public_label(&label),
                 ScalarRange {
                     start: page_start,
                     end: offset,
@@ -313,7 +310,7 @@ pub fn journal_document_structure(
                 paragraphs += 1;
                 claims.push(claim(
                     NodeKind::Paragraph,
-                    format!("par{paragraphs}"),
+                    format!("{paragraphs}"),
                     ScalarRange {
                         start: placed.start,
                         end: placed.end,
@@ -392,7 +389,7 @@ pub fn journal_document_structure(
         let Some(region) = region else { continue };
         let mut item = claim(
             NodeKind::Footnote,
-            public_label("fn", &note),
+            public_label(&note),
             ScalarRange {
                 start: region.start,
                 end: region.end,

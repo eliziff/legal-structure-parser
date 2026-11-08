@@ -16,16 +16,16 @@ pub fn parse_failures(structure: &DocumentStructure) -> Vec<(&'static str, Strin
     if paragraphs.is_empty() {
         failures.push(("no paragraphs", format!("{} chars", structure.text.len())));
     }
-    if structure.opinion.as_ref().unwrap().outcomes.is_empty() && paragraphs.len() > 3 && structure.opinion.as_ref().unwrap().document_kind == "court-opinion" {
+    if super::reading(structure).outcomes.is_empty() && paragraphs.len() > 3 && super::reading(structure).document_kind == "court-opinion" {
         failures.push(("no outcome", String::new()));
     }
     let mut series = HashMap::<&str, Vec<&str>>::new();
     for page in opinion_pages() {
-        series.entry(&page.series).or_default().push(page.printed_label());
+        series.entry(&page.series).or_default().push(page.label.as_deref().unwrap_or(""));
     }
     for (name, labels) in &series {
         let printed = name.starts_with("reporter") || name.starts_with("html");
-        if printed && !name.contains('/') && !structure.opinion.as_ref().unwrap().page_series.iter().any(|known| known.series == *name) {
+        if printed && !name.contains('/') && !super::reading(structure).page_series.iter().any(|known| known.series == *name) {
             failures.push(("numbering without a citation", format!("{name} {:?}", &labels[..labels.len().min(3)])));
         }
         let numbers = labels.iter().filter_map(|label| page_number(label)).collect::<Vec<_>>();
@@ -40,20 +40,20 @@ pub fn parse_failures(structure: &DocumentStructure) -> Vec<(&'static str, Strin
     if uncalled > 0 {
         failures.push(("notes without a call", format!("{uncalled} of {}", notes.len())));
     }
-    if !structure.opinion.as_ref().unwrap().unmatched_calls.is_empty() {
-        failures.push(("calls without a note", structure.opinion.as_ref().unwrap().unmatched_calls.iter().take(8).map(|call| call.label.as_str()).collect::<Vec<_>>().join(" ")));
+    if !super::reading(structure).unmatched_calls.is_empty() {
+        failures.push(("calls without a note", super::reading(structure).unmatched_calls.iter().take(8).map(|call| call.label.as_str()).collect::<Vec<_>>().join(" ")));
     }
     // An opinion names its own notes: "footnote 7", "note 7, supra". One the structure does not hold was missed.
     static NAMED: OnceLock<Regex> = OnceLock::new();
     let named = NAMED.get_or_init(|| Regex::new(r"(?i)\b(?:footnote|fn\.|n\.|note) (\d{1,3}),? (?:supra|infra|above|below)\b|\bsee (?:also )?(?:footnote|note) (\d{1,3})[,.;)]? *(?:$|\p{Lu})").unwrap());
-    let held = notes.iter().filter_map(|note| plain_label(&note.printed_label()).parse::<u32>().ok()).collect::<HashSet<_>>();
+    let held = notes.iter().filter_map(|note| plain_label(note.label.as_deref().unwrap_or("")).parse::<u32>().ok()).collect::<HashSet<_>>();
     let unheld = named.captures_iter(&structure.text).filter_map(|capture| capture.get(1).or_else(|| capture.get(2))?.as_str().parse::<u32>().ok()).filter(|number| !held.contains(number)).collect::<HashSet<_>>();
     if !unheld.is_empty() {
         let mut numbers = unheld.into_iter().collect::<Vec<_>>();
         numbers.sort_unstable();
         failures.push(("note named, not held", format!("{:?}", &numbers[..numbers.len().min(8)])));
     }
-    let mut labels = notes.iter().filter_map(|note| note.printed_label().parse::<u32>().ok()).collect::<Vec<_>>();
+    let mut labels = notes.iter().filter_map(|note| note.label.as_deref().unwrap_or("").parse::<u32>().ok()).collect::<Vec<_>>();
     labels.sort_unstable();
     // A separate opinion carries on its case's numbering.
     let separate = parts.first().is_some_and(|part| part.display_value.as_deref().unwrap_or("").contains("concur") || part.display_value.as_deref().unwrap_or("").contains("dissent") || part.display_value.as_deref().unwrap_or("").contains("rehearing"));
@@ -63,7 +63,7 @@ pub fn parse_failures(structure: &DocumentStructure) -> Vec<(&'static str, Strin
     if labels.windows(2).any(|pair| pair[1] > pair[0] + 1) {
         failures.push(("note numbers skip", format!("{:?}", &labels[..labels.len().min(16)])));
     }
-    let numbers = paragraphs.iter().filter_map(|paragraph| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()?.parse::<u32>().ok()).collect::<Vec<_>>();
+    let numbers = paragraphs.iter().filter_map(|paragraph| paragraph.label.as_deref().as_deref()?.parse::<u32>().ok()).collect::<Vec<_>>();
     // An opinion names its own paragraphs too: "¶ 12, supra", "paragraph 12 above".
     static OWN_PARAGRAPH: OnceLock<Regex> = OnceLock::new();
     let own = OWN_PARAGRAPH.get_or_init(|| Regex::new(r"(?i)(?:¶¶?|\bparagraph) ?(\d{1,4}),? (?:supra|infra|above|below)\b").unwrap());
@@ -105,9 +105,9 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
     let mut held = paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end))
         .chain(headings.iter().map(|heading| (heading.range.start, heading.range.end)))
         .chain(notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end))))
-        .chain(structure.opinion.as_ref().unwrap().front.iter().filter_map(|line| line.range).map(|range| (range.start, range.end)))
-        .chain(structure.opinion.as_ref().unwrap().headnotes.iter().filter_map(|headnote| headnote.range).map(|range| (range.start, range.end)))
-        .chain(structure.opinion.as_ref().unwrap().tables.iter().map(|table| (table.start, table.end)))
+        .chain(super::reading(structure).front.iter().filter_map(|line| line.range).map(|range| (range.start, range.end)))
+        .chain(super::reading(structure).headnotes.iter().filter_map(|headnote| headnote.range).map(|range| (range.start, range.end)))
+        .chain(super::reading(structure).tables.iter().map(|table| (table.start, table.end)))
         .collect::<Vec<_>>();
     held.sort_unstable();
     let (mut reached, mut loose, mut widest) = (0, 0, (0, 0));
@@ -126,7 +126,7 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
     // Text the reading lost or left dirty.
     static TAGS: OnceLock<Regex> = OnceLock::new();
     let tags = TAGS.get_or_init(|| Regex::new(r"<[^>]*>").unwrap());
-    if let Some((_, source)) = record.renditions.iter().find(|(name, _)| *name == structure.opinion.as_ref().unwrap().rendition) {
+    if let Some((_, source)) = record.renditions.iter().find(|(name, _)| *name == super::reading(structure).rendition) {
         let words = |text: &str| text.split_whitespace().count();
         let (ours, theirs) = (words(&structure.text), words(&tags.replace_all(source, " ")));
         if theirs > 300 && ours * 10 < theirs * 7 {
@@ -182,7 +182,7 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
 
     // Notes.
     if let Some(note) = notes.iter().find(|note| note.ranges.iter().map(|range| range.end - range.start).sum::<usize>() > LONG_NOTE) {
-        found.push(("screen: very long note", format!("note {}: {}", note.printed_label(), quoted(note.range.start, note.range.end))));
+        found.push(("screen: very long note", format!("note {}: {}", note.label.as_deref().unwrap_or(""), quoted(note.range.start, note.range.end))));
     }
     let in_notes = notes.iter().flat_map(|note| note.ranges.iter()).map(|range| range.end - range.start).sum::<usize>();
     if size > 5_000 && in_notes * 2 > size {
@@ -200,7 +200,7 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
     // A closed "2." is more often a list the note quotes.
     let next = NEXT.get_or_init(|| Regex::new(r"(?m)^[ \t]*(\d{1,3}) +\p{Lu}").unwrap());
     let swallowed = notes.iter().filter(|note| note.ranges.len() == 1).filter_map(|note| {
-        let number = note.printed_label().parse::<u32>().ok()?;
+        let number = note.label.as_deref().unwrap_or("").parse::<u32>().ok()?;
         let body = coordinates.slice_utf16(note.range.start..note.range.end)?;
         next.captures_iter(body).skip_while(|capture| capture.get(0).is_some_and(|whole| whole.start() == 0)).any(|capture| capture[1].parse::<u32>().is_ok_and(|inner| inner == number + 1)).then_some(number)
     }).take(3).collect::<Vec<_>>();
@@ -209,7 +209,7 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
     }
 
     // Calls that climb past the last note held: the notes after it are missing.
-    if let Some(last) = notes.iter().filter_map(|note| note.printed_label().parse::<u32>().ok()).max() {
+    if let Some(last) = notes.iter().filter_map(|note| note.label.as_deref().unwrap_or("").parse::<u32>().ok()).max() {
         static TIGHT: OnceLock<Regex> = OnceLock::new();
         let tight = TIGHT.get_or_init(|| Regex::new(r#"[a-z)”"][.,;]?["”]?(\d{1,3})\s+\p{Lu}"#).unwrap());
         let outside = |at: usize| !notes.iter().flat_map(|note| note.ranges.iter()).any(|range| range.start <= at && at < range.end);
@@ -233,7 +233,8 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
     }
     // Paragraphs with no pin where the text has pages.
     let paged = pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray")).count();
-    let unpinned = paragraphs.iter().filter(|paragraph| paragraph.pins.is_empty()).count();
+    let table = super::pages::pin_table(pages.iter().copied(), &super::reading(structure).page_series);
+    let unpinned = paragraphs.iter().filter(|paragraph| super::pages::pins_of(&table, paragraph.range.start, paragraph.range.end).is_empty()).count();
     if paged >= 2 && unpinned * 5 > paragraphs.len() {
         found.push(("screen: paragraphs without a pin", format!("{unpinned} of {}", paragraphs.len())));
     }
@@ -265,7 +266,7 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
     }
 
     // Headnotes.
-    if structure.opinion.as_ref().unwrap().headnotes.is_empty() {
+    if super::reading(structure).headnotes.is_empty() {
         if let Some((name, _)) = record.cluster.iter().find(|(name, value)| matches!(name.as_str(), "syllabus" | "headnotes" | "summary") && value.trim().len() > 40) {
             found.push(("screen: the cluster has a headnote, the structure none", name.clone()));
         }
@@ -308,7 +309,7 @@ pub fn quote_miss(structure: &DocumentStructure, target: &'static str, quote: &s
     // A note's quote may open on its label, or be the list's title.
     let wanted = match target {
         "note" if notes_title(wanted.as_str()) => return None,
-        "note" => wanted.split_once(' ').filter(|(first, _)| nodes(structure, NodeKind::Footnote).any(|note| plain_label(&note.printed_label()) == *first)).map_or(wanted.clone(), |(_, rest)| rest.to_owned()),
+        "note" => wanted.split_once(' ').filter(|(first, _)| nodes(structure, NodeKind::Footnote).any(|note| plain_label(note.label.as_deref().unwrap_or("")) == *first)).map_or(wanted.clone(), |(_, rest)| rest.to_owned()),
         _ => wanted,
     };
     let coordinates = ScalarText::new(&structure.text);
@@ -316,7 +317,7 @@ pub fn quote_miss(structure: &DocumentStructure, target: &'static str, quote: &s
     let found = match target {
         // A page mark's number, in any numbering.
         "page" => {
-            let labels = nodes(structure, NodeKind::Page).filter_map(|page| page_number(&page.printed_label()).map(|number| number.to_string())).collect::<HashSet<_>>();
+            let labels = nodes(structure, NodeKind::Page).filter_map(|page| page_number(page.label.as_deref().unwrap_or("")).map(|number| number.to_string())).collect::<HashSet<_>>();
             let mut numbers = wanted.split(' ').filter(|word| word.bytes().all(|byte| byte.is_ascii_digit())).peekable();
             numbers.peek().is_none() || numbers.any(|number| labels.contains(number))
         }
@@ -324,12 +325,12 @@ pub fn quote_miss(structure: &DocumentStructure, target: &'static str, quote: &s
             let body = note.ranges.iter().map(|range| printed(range.start, range.end)).collect::<Vec<_>>().join(" ");
             body.contains(&wanted) || wanted.contains(&body) && !body.is_empty()
         }) || reading(structure).headnotes.iter().any(|headnote| key(&headnote.text).contains(&wanted))
-            || nodes(structure, NodeKind::Footnote).any(|note| plain_label(&note.printed_label()) == wanted.trim_start_matches("footnote ")),
+            || nodes(structure, NodeKind::Footnote).any(|note| plain_label(note.label.as_deref().unwrap_or("")) == wanted.trim_start_matches("footnote ")),
         "heading" => nodes(structure, NodeKind::Heading).any(|heading| {
             let title = key(&heading.display_value.as_deref().unwrap_or(""));
             !title.is_empty() && (title.contains(&wanted) || wanted.contains(&title))
         }) || reading(structure).front.iter().any(|line| line.role == "author" && key(&line.text) == wanted),
-        "paragraph number" => wanted.split(' ').find(|word| word.bytes().all(|byte| byte.is_ascii_digit())).is_none_or(|number| paragraphs(structure).any(|paragraph| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref().is_some_and(|printed| printed.trim_matches(['(', ')']) == number))),
+        "paragraph number" => wanted.split(' ').find(|word| word.bytes().all(|byte| byte.is_ascii_digit())).is_none_or(|number| paragraphs(structure).any(|paragraph| paragraph.label.as_deref().as_deref().is_some_and(|printed| printed.trim_matches(['(', ')']) == number))),
         "headnote" => reading(structure).headnotes.iter().any(|headnote| {
             let text = key(&headnote.text);
             text.contains(&wanted) || wanted.contains(&text) && !text.is_empty()

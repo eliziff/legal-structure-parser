@@ -39,16 +39,6 @@ impl NodeKind {
         Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
 
-    /// The prefix the kind gives every label of it: "page702", "par12", "fn3"; none for the rest.
-    pub fn label_prefix(self) -> &'static str {
-        match self {
-            Self::Page => "page",
-            Self::Paragraph | Self::Quote | Self::Prose => "par",
-            Self::Footnote | Self::Endnote => "fn",
-            _ => "",
-        }
-    }
-
     pub fn name(self) -> &'static str {
         match self {
             Self::Paragraph => "paragraph",
@@ -180,9 +170,6 @@ pub struct StructureNode {
     /// Where a note is called: each mark in the text that points to it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<ScalarRange>,
-    /// Where the node stands in each of the document's page numberings: "226 La." at 123, running to 124.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pins: Vec<crate::opinion::Pin>,
     /// What a reader knows of the node past its kind and place, each under the reader's own name: a paragraph's list
     /// item or speaker.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -235,15 +222,19 @@ impl StructureNode {
             proof: None,
             series: String::new(),
             calls: Vec::new(),
-            pins: Vec::new(),
             properties: BTreeMap::new(),
         }
     }
 
-    /// The label as the document prints it, past the prefix its kind gives every label: "page702" is 702, "par12" 12,
-    /// "fn3" 3; empty where there is none.
-    pub fn printed_label(&self) -> &str {
-        self.label.as_deref().map_or("", |label| label.strip_prefix(self.kind.label_prefix()).unwrap_or(label))
+    /// The node's place as a link names it, its kind's mark before its label: "par12", "page702", "fn3".
+    pub fn fragment(&self) -> Option<String> {
+        let mark = match self.kind {
+            NodeKind::Page => "page",
+            NodeKind::Paragraph | NodeKind::Quote | NodeKind::Prose => "par",
+            NodeKind::Footnote | NodeKind::Endnote => "fn",
+            _ => "",
+        };
+        self.label.as_deref().map(|label| format!("{mark}{label}"))
     }
 }
 

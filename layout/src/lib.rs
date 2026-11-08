@@ -3,7 +3,6 @@
 //! of the document model, so a parser that reads only lines recompiles for neither.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 use std::ops::Range;
 
 mod analysis;

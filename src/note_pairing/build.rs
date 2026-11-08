@@ -235,9 +235,6 @@ pub(super) fn build_pairs<'a>(
             if primary.is_none() && !label_only_supported(backbone, position, &lines) {
                 continue;
             }
-            let primary_ref = primary
-                .as_ref()
-                .map(|reference| (reference.line, reference.start, reference.end));
             let mut refs = primary.into_iter().collect::<Vec<_>>();
             if !refs.is_empty() {
                 refs.extend(repeated.get(&value).into_iter().flatten().cloned());
@@ -245,7 +242,6 @@ pub(super) fn build_pairs<'a>(
             pairs.push(Pair {
                 label: label.clone(),
                 refs,
-                primary_ref,
                 restart_sequence: segment_index + 1,
                 // Count the whole run, including labels later omitted as unsupported.
                 sequence_labels: backbone.len(),
@@ -292,9 +288,6 @@ pub(super) fn build_pairs<'a>(
         {
             continue;
         }
-        let primary_ref = reference
-            .as_ref()
-            .map(|candidate| (candidate.line, candidate.start, candidate.end));
         if let Some(reference) = &reference {
             used_symbols.insert(reference.pos(&lines));
         }
@@ -302,7 +295,6 @@ pub(super) fn build_pairs<'a>(
             label: label.clone(),
             sequence_labels: 1,
             refs: reference.into_iter().collect(),
-            primary_ref,
             restart_sequence: 1,
             endnote: false,
             provenance: "article_start_custom_symbol_label".to_owned(),

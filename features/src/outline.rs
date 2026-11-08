@@ -279,7 +279,7 @@ pub fn document_outline(
             .nodes
             .iter()
             .filter(|node| match numbered {
-                true => node.kind == NodeKind::Paragraph && node.label.as_deref().is_some_and(|label| label.starts_with("par")),
+                true => node.kind == NodeKind::Paragraph && node.label.is_some(),
                 false => node.kind == NodeKind::Prose && node.label.is_none(),
             })
             .map(start)

@@ -242,16 +242,11 @@ fn projected_kind(node: &StructureNode) -> Option<NodeKind> {
     }
 }
 
-/// A block's label as the document prints it, past the prefix its kind gives every label ("par12" is "12").
-fn printed(kind: NodeKind, label: &str) -> &str {
-    label.strip_prefix(kind.label_prefix()).unwrap_or(label)
-}
-
 fn position_label<'a>(document: &'a DocumentStructure, position: &BlockPosition) -> Cow<'a, str> {
     let node = &document.nodes[position.node];
     let label = position.prose.map_or_else(
         || Cow::Borrowed(node.label.as_deref().expect("projected node has a label")),
-        |number| Cow::Owned(format!("par{number}")),
+        |number| Cow::Owned(number.to_string()),
     );
     if projection_order(document.profile) == ProjectionOrder::Legislation {
         match label {
@@ -766,7 +761,6 @@ impl DocumentQuery {
             block.field_order = crate::document_block::BlockFieldOrder::EndLast;
         }
         block.node_id = Some(node.id.clone());
-        block.printed = printed(block.kind, &block.label).to_owned();
         block.printed_label = node.label.is_some()
             && node.marker_range.is_some_and(|range| range.start < range.end);
         block.ranges = document.query_ranges(node).into_owned();
@@ -809,7 +803,7 @@ impl DocumentQuery {
                     level
                 }),
                 kind: projected_kind(node).expect("projected node kind"),
-                printed: printed(projected_kind(node).expect("projected node kind"), &position_label(document, position)).to_owned(),
+                printed: position_label(document, position).into_owned(),
                 label: position_label(document, position),
                 start: range.start,
                 end: end.map_or(range.end, |end| range.end.min(end)),

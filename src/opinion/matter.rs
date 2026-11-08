@@ -85,7 +85,7 @@ pub(super) fn head_lines(structure: &mut DocumentStructure, kinds: &mut Kinds) {
         paragraph.label.is_none() && !printed.starts_with("We ") && !printed.starts_with("I ")
     }));
     let mut lines = Vec::new();
-    for (index, paragraph) in kinds.paragraphs.iter().enumerate().take_while(|(_, paragraph)| paragraph.label.is_none() && (!(paragraph.kind == NodeKind::Quote) || structure.opinion.as_ref().unwrap().rendition == "plain_text.txt") && paragraph.range.start < first_heading) {
+    for (index, paragraph) in kinds.paragraphs.iter().enumerate().take_while(|(_, paragraph)| paragraph.label.is_none() && (!(paragraph.kind == NodeKind::Quote) || kinds.opinion.rendition == "plain_text.txt") && paragraph.range.start < first_heading) {
         let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(squeezed).unwrap_or_default();
         if byline.is_some_and(|at| index <= at) {
             lines.push(FrontLine { role: front_role(&printed).unwrap_or("cover").to_owned(), text: printed, range: Some(ScalarRange { start: paragraph.range.start, end: paragraph.range.end }) });
@@ -110,10 +110,10 @@ pub(super) fn head_lines(structure: &mut DocumentStructure, kinds: &mut Kinds) {
         kinds.paragraphs.drain(..lines.len());
         let none_taken = lines.is_empty();
         let head_end = kinds.paragraphs.first().map_or(0, |first| first.range.start);
-        structure.opinion.as_mut().unwrap().front.extend(lines);
+        kinds.opinion.front.extend(lines);
         let (head, kept_headings): (Vec<_>, Vec<_>) = std::mem::take(&mut kinds.headings).into_iter().partition(|heading| heading.range.start < head_end && !section(heading) && !title.is_match(&heading.display_value.as_deref().unwrap_or("")) && (!none_taken || front_role(&heading.display_value.as_deref().unwrap_or("")).is_some() || heading.display_value.as_deref().unwrap_or("").contains(|c: char| c.is_ascii_digit())));
         kinds.headings = kept_headings;
-        structure.opinion.as_mut().unwrap().front.extend(head.into_iter().map(|heading| FrontLine {
+        kinds.opinion.front.extend(head.into_iter().map(|heading| FrontLine {
             role: front_role(&heading.display_value.as_deref().unwrap_or("")).unwrap_or("cover").to_owned(), range: Some(ScalarRange { start: heading.range.start, end: heading.range.end }), text: heading.display_value.clone().unwrap_or_default(),
         }));
     }
@@ -152,7 +152,7 @@ pub(super) fn reporter_matter(structure: &mut DocumentStructure, kinds: &mut Kin
         let start = start + utf16_len(&line[..lead]);
         FrontLine { role: "publication".to_owned(), text: squeezed(words), range: Some(ScalarRange { start, end: start + utf16_len(words) }) }
     }).collect::<Vec<_>>();
-    structure.opinion.as_mut().unwrap().front.extend(standing);
+    kinds.opinion.front.extend(standing);
     let coordinates = ScalarText::new(&structure.text);
     let count = kinds.paragraphs.len();
     let mut kept = Vec::with_capacity(count);
@@ -168,7 +168,7 @@ pub(super) fn reporter_matter(structure: &mut DocumentStructure, kinds: &mut Kin
                 None
             };
             if let Some(role) = role {
-                structure.opinion.as_mut().unwrap().front.push(FrontLine { role: role.to_owned(), text: printed.clone(), range });
+                kinds.opinion.front.push(FrontLine { role: role.to_owned(), text: printed.clone(), range });
                 // A numbered paragraph is the opinion's, whatever it says; so is a record's only text.
                 if paragraph.label.is_none() && !kept.is_empty() {
                     continue;
@@ -176,35 +176,35 @@ pub(super) fn reporter_matter(structure: &mut DocumentStructure, kinds: &mut Kin
             }
         }
         if printed.len() <= 80 && front_role(&printed) == Some("author") {
-            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: "author".to_owned(), text: printed.clone(), range });
+            kinds.opinion.front.push(FrontLine { role: "author".to_owned(), text: printed.clone(), range });
         }
         // An Appellate Division memorandum opens on its disposition; an Attorney General's opinion on its digest.
         if index < 2 && printed.starts_with("Memorandum.") {
-            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: "disposition".to_owned(), text: printed.clone(), range });
+            kinds.opinion.front.push(FrontLine { role: "disposition".to_owned(), text: printed.clone(), range });
         }
         if index < 2 && printed.starts_with("OPINION") && printed.contains("AG —") {
-            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("summary", printed.clone(), range));
+            kinds.opinion.headnotes.push(headnote_of("summary", printed.clone(), range));
         }
         if note.is_match(&printed) {
-            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("note", printed, range));
+            kinds.opinion.headnotes.push(headnote_of("note", printed, range));
             continue;
         }
         if index + 8 >= count && printed.len() <= 240 && afterward.is_match(&printed) {
-            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("history", printed, range));
+            kinds.opinion.headnotes.push(headnote_of("history", printed, range));
             continue;
         }
         if index == 0 && printed.len() > 60 && printed.starts_with('[') && printed.ends_with(']') {
-            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("summary", printed, range));
+            kinds.opinion.headnotes.push(headnote_of("summary", printed, range));
             continue;
         }
         if topic.is_match(&printed) {
-            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("digest", printed, range));
+            kinds.opinion.headnotes.push(headnote_of("digest", printed, range));
             continue;
         }
         if held.is_match(&printed) {
-            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("held", printed, range));
+            kinds.opinion.headnotes.push(headnote_of("held", printed, range));
         } else if papers.is_match(&printed) {
-            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("papers", printed, range));
+            kinds.opinion.headnotes.push(headnote_of("papers", printed, range));
         }
         kept.push(paragraph);
     }
@@ -215,7 +215,7 @@ pub(super) fn reporter_matter(structure: &mut DocumentStructure, kinds: &mut Kin
     kinds.notes = kept_notes;
     for called in editorial {
         let printed = coordinates.slice_utf16(called.range.start..called.range.end).map(squeezed).unwrap_or_default();
-        structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("note", printed, Some(ScalarRange { start: called.range.start, end: called.range.end })));
+        kinds.opinion.headnotes.push(headnote_of("note", printed, Some(ScalarRange { start: called.range.start, end: called.range.end })));
     }
     // Capitals past the last text are an index's subjects, no heading.
     let last_text = kinds.paragraphs.iter().map(|paragraph| paragraph.range.end).max().unwrap_or(0);
@@ -224,7 +224,7 @@ pub(super) fn reporter_matter(structure: &mut DocumentStructure, kinds: &mut Kin
             && !["OPINION", "REHEARING", "APPENDIX"].iter().any(|word| heading.display_value.as_deref().unwrap_or("").contains(word))
     });
     kinds.headings = kept_headings;
-    structure.opinion.as_mut().unwrap().headnotes.extend(trailing.into_iter().map(|heading| {
+    kinds.opinion.headnotes.extend(trailing.into_iter().map(|heading| {
         let range = Some(ScalarRange { start: heading.range.start, end: heading.range.end });
         headnote_of("topics", heading.display_value.clone().unwrap_or_default(), range)
     }));
@@ -332,7 +332,7 @@ pub(super) fn cover_matter(structure: &mut DocumentStructure, kinds: &mut Kinds)
     static BOARD: OnceLock<Regex> = OnceLock::new();
     static CHARGE: OnceLock<Regex> = OnceLock::new();
     static MEMORANDUM: OnceLock<Regex> = OnceLock::new();
-    if structure.opinion.as_ref().unwrap().rendition != "plain_text.txt" {
+    if kinds.opinion.rendition != "plain_text.txt" {
         return;
     }
     let units = |byte: usize| utf16_len(&structure.text[..byte]);
@@ -352,7 +352,7 @@ pub(super) fn cover_matter(structure: &mut DocumentStructure, kinds: &mut Kinds)
         let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(squeezed).unwrap_or_default();
         headnote_of(kind, printed, Some(ScalarRange { start: paragraph.range.start, end: paragraph.range.end }))
     }).collect::<Vec<_>>();
-    structure.opinion.as_mut().unwrap().headnotes.extend(entries);
+    kinds.opinion.headnotes.extend(entries);
 }
 
 /// The topic index New Mexico's texts end on: "Topic Index for ...", a code and its subject to the line.
@@ -402,7 +402,7 @@ pub(super) fn divisions_of_headnotes(structure: &mut DocumentStructure, kinds: &
         }).map_or(until, |paragraph| paragraph.range.start);
         let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut kinds.paragraphs).into_iter().partition(|paragraph| paragraph.range.start >= start && paragraph.range.start < until);
         kinds.paragraphs = rest;
-        structure.opinion.as_mut().unwrap().headnotes.extend(taken.into_iter().map(|paragraph| {
+        kinds.opinion.headnotes.extend(taken.into_iter().map(|paragraph| {
             let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(squeezed).unwrap_or_default();
             headnote_of(kind, printed, Some(ScalarRange { start: paragraph.range.start, end: paragraph.range.end }))
         }));
@@ -453,10 +453,10 @@ pub(super) fn printed_headnote_marks(structure: &mut DocumentStructure, kinds: &
         let printed = raw.trim_start_matches(javascript_whitespace);
         let found = mark.find(printed)?;
         let start = paragraph.range.start + utf16_len(&raw[..raw.len() - printed.len()]);
-        Some(HeadnoteMark { numbers: headnote_numbers(found.as_str())?, start, end: start + utf16_len(found.as_str()), page: None })
+        Some(HeadnoteMark { numbers: headnote_numbers(found.as_str())?, start, end: start + utf16_len(found.as_str()) })
     }).collect::<Vec<_>>();
     if marks.len() >= 2 {
-        structure.opinion.as_mut().unwrap().headnote_marks.extend(marks);
+        kinds.opinion.headnote_marks.extend(marks);
     }
 }
 

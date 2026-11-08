@@ -231,7 +231,7 @@ fn paragraph_spans(structure: &DocumentStructure, coordinates: &ScalarText<'_>, 
         .iter()
         .filter(|node| node.kind == NodeKind::Paragraph)
         .filter_map(|node| {
-            let number = node.label.as_deref()?.strip_prefix("par")?;
+            let number = node.label.as_deref()?;
             let marker = format!("[{number}]").chars().collect::<Vec<_>>();
             let (paragraph_start, end) = (scalar(node.range.start), scalar(node.range.end));
             let start = (paragraph_start..end.saturating_sub(marker.len()) + 1)

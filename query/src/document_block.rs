@@ -19,9 +19,6 @@ pub struct DocumentBlock {
     pub printed_label: bool,
     pub kind: NodeKind,
     pub label: String,
-    /// The label as the document prints it, past the prefix its kind gives every label: "par12" is "12".
-    #[serde(default)]
-    pub printed: String,
     pub start: usize,
     pub end: usize,
     pub origin: Derivation,
@@ -52,7 +49,6 @@ impl DocumentBlock {
             ranges: vec![legal_structure_model::ScalarRange { start, end }],
             kind,
             label: label.into(),
-            printed: String::new(),
             start,
             end,
             origin,
@@ -66,7 +62,7 @@ impl DocumentBlock {
     }
 
     fn fields(&self) -> usize {
-        7 + usize::from(self.node_id.is_some())
+        6 + usize::from(self.node_id.is_some())
             + usize::from(!self.ranges.is_empty())
             + usize::from(self.anchor.is_some())
             + usize::from(!self.aliases.is_empty())
@@ -88,7 +84,6 @@ impl Serialize for DocumentBlock {
         row.serialize_field("printedLabel", &self.printed_label)?;
         row.serialize_field("kind", &self.kind)?;
         row.serialize_field("label", &self.label)?;
-        row.serialize_field("printed", &self.printed)?;
         row.serialize_field("start", &self.start)?;
         match self.field_order {
             BlockFieldOrder::Projected => {

@@ -172,7 +172,7 @@ pub(super) fn materialize(
         node.page_indexes = body_lines.iter().map(|line| line.page_index).collect::<BTreeSet<_>>().into_iter().collect();
         node.marker_range = Some(label_range);
         node.calls = calls;
-        node.label = Some(format!("fn{display}"));
+        node.label = Some(format!("{display}"));
         last_restart = last_restart.max(restarts + pair.restart_sequence);
         node.series = (restarts + pair.restart_sequence).to_string();
         if !pair.provenance.is_empty() {

@@ -175,7 +175,7 @@ fn provider_source(mut text: String, entries: &[(&str, &str)]) -> (String, Vec<S
 fn printed_page_claims(pages: &[ProviderPage], length: usize) -> Vec<StructureNode> {
     pages.iter().filter(|page| page.start < page.end && page.end <= length).enumerate().map(|(index, page)| {
         let range = ScalarRange { start: page.start, end: page.end };
-        let mut node = provided(format!("page-{:06}", index + 1), NodeKind::Page, format!("page{}", page.label), range);
+        let mut node = provided(format!("page-{:06}", index + 1), NodeKind::Page, format!("{}", page.label), range);
         node.aliases = Some(vec![page.label.clone()]);
         node
     }).collect()

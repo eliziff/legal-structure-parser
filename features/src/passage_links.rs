@@ -61,9 +61,9 @@ pub struct SourceLinkRequest {
     /// `cases` or `laws`.
     #[serde(default)]
     pub doc_type: String,
-    /// The passage's locator where the citation pinpoints one, as the structure labels it and the citation engine
-    /// writes its fragment (`par12`, `sec5(2)`, `page3`): its kind is read from its prefix.
-    pub locator: Option<String>,
+    /// The passage's locator where the citation pinpoints one: its kind (`paragraph`, `section`, `page`) and the label
+    /// the document prints (`12`, `5(2)`, `3`).
+    pub locator: Option<SourceLocator>,
     pub block_text: String,
     #[serde(default)]
     pub quotes: Vec<String>,
@@ -74,16 +74,10 @@ pub struct SourceLinkRequest {
     pub verified_pdf: Option<VerifiedPdf>,
 }
 
-/// The kind of passage a locator names, as the structure labels it: a paragraph's number (`par12`), a page's (`page3`,
-/// `page=3`), else a provision (`sec5(2)`, `part2`).
-fn locator_kind(label: &str) -> &'static str {
-    if label.strip_prefix(NodeKind::Paragraph.label_prefix()).is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit())) {
-        "paragraph"
-    } else if label.starts_with(NodeKind::Page.label_prefix()) {
-        "page"
-    } else {
-        "section"
-    }
+#[derive(Clone, Debug, Deserialize)]
+pub struct SourceLocator {
+    pub kind: String,
+    pub label: String,
 }
 
 /// The link a passage of an A2AJ document is routed to, planned against `structure` (the document's text): on the
@@ -96,12 +90,11 @@ pub fn source_link(query: &DocumentQuery, structure: &DocumentStructure, request
     // A pinpoint cited without a quotation: its paragraph's or provision's anchor in the engine's form (`par12`,
     // `sec6subsec1`; a provision's part, "6(1)(c)", is anchored at its provision and painted from `pinpoints`), as the
     // measured routing linked it.
-    let locator = request.locator.as_deref().map(|label| (locator_kind(label), label));
+    let locator = request.locator.as_ref().map(|locator| (locator.kind.as_str(), locator.label.as_str()));
     let pinpoint = request.quotes.is_empty().then_some(locator).flatten()
         .and_then(|(kind, label)| match kind {
-            "paragraph" => Some(("paragraph", label.to_owned())),
+            "paragraph" => Some(("paragraph", format!("par{label}"))),
             "section" => {
-                let label = label.strip_prefix("sec").unwrap_or(label);
                 let provision = label.split('(').next().unwrap_or(label).trim();
                 (!provision.is_empty()).then(|| ("section", format!("sec{provision}")))
             }

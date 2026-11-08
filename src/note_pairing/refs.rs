@@ -2,42 +2,6 @@
 
 use super::*;
 
-/// Preserve the old extractor's detached-marker evidence when the faster PDF
-/// backend emits the same raised run inline. A visibly separated line-final
-/// digit is the exact case PyMuPDF exposed as its own row; contiguous native
-/// superscripts remain on the monotone pairing path.
-pub(super) fn isolated_inline_references(line: &Line) -> Vec<DetachedReference> {
-    let text_len = line.text.chars().count();
-    line.spans
-        .iter()
-        .filter_map(|marker| {
-            let selected = marker.text.trim();
-            if !marker.superscript
-                || marker.end != text_len
-                || marker.start >= marker.end
-                || selected.is_empty()
-                || selected.len() > 4
-                || !selected.chars().all(|character| character.is_ascii_digit())
-            {
-                return None;
-            }
-            let host = line
-                .spans
-                .iter()
-                .filter(|span| !span.superscript && span.end == marker.start)
-                .max_by_key(|span| span.end)?;
-            let gap = marker.bbox[0] - host.bbox[2];
-            (gap >= host.size.max(1.0) * 0.25).then(|| DetachedReference {
-                note_id: selected.to_owned(),
-                selected_text: selected.to_owned(),
-                start_offset: marker.start,
-                end_offset: marker.end,
-                source_line_id: line.id.clone(),
-            })
-        })
-        .collect()
-}
-
 /// What a reference read on the line scores for where the line stands: a running head's or
 /// number's line holds one only where it reads as prose. The page's furniture read as body (its
 /// running foot and folio at the foot, its line labels) holds none.

@@ -101,8 +101,6 @@ pub struct HeadnoteMark {
     pub numbers: Vec<u32>,
     pub start: usize,
     pub end: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
 }
 
 /// A block counter a source sets, `<div class="num"><span class="num">14</span>`: no number the court printed, but the only one
@@ -113,8 +111,6 @@ pub struct OpinionBlock {
     pub label: String,
     pub start: usize,
     pub source: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pins: Vec<Pin>,
 }
 
 /// A line of the case's front matter: `court`, `docket`, `date`, `judges`, `counsel`, `caption`, `author`, `title`,
@@ -134,8 +130,6 @@ pub struct UnmatchedCall {
     pub label: String,
     pub start: usize,
     pub end: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
 }
 
 /// A short name the opinion gives something: `("Debtor")`, `Administrative Procedure Act (APA)`, `"Lease" means`.
@@ -146,8 +140,6 @@ pub struct DefinedTerm {
     pub form: String,
     pub start: usize,
     pub end: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
 }
 
 /// An editor's mark in a quotation.
@@ -167,8 +159,6 @@ pub struct OpinionQuote {
     pub end: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub marks: Vec<QuoteMark>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
 }
 
 /// A document the opinion reproduces: the quoted passages a lead-in names, "the will provides as follows:".
@@ -233,8 +223,6 @@ pub struct Pin {
 pub struct OpinionTable {
     pub start: usize,
     pub end: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
 }
 
 /// A line the reading text leaves out of its flow: a page's running title, number or stamp, and where it stood.

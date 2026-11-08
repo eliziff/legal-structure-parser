@@ -42,7 +42,7 @@ pub(super) fn courtlistener_sibling_note_markers(
         let leading = raw.len() - raw.trim_start_matches(javascript_whitespace).len();
         let start = element.range.start + utf16_len(&raw[..leading]);
         let marker = (
-            format!("fn{}", label.parse::<u32>().unwrap()),
+            format!("{}", label.parse::<u32>().unwrap()),
             ScalarRange {
                 start,
                 end: start + utf16_len(label),
@@ -1102,7 +1102,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                 let Some(parent) = elements[body_index].parent else {
                     continue;
                 };
-                let number = label.strip_prefix("fn").unwrap();
+                let number = label.as_str();
                 let mut markers = elements.iter().enumerate().filter_map(|(index, element)| {
                     let number_index = element.parent?;
                     let number_element = &elements[number_index];
@@ -1158,10 +1158,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                                 .any(|class| class == "footnote")
                         })))
             {
-                let Some(label_id) = node.label.as_deref() else {
-                    continue;
-                };
-                let Some(number) = label_id.strip_prefix("fn").filter(|number| {
+                let Some(number) = node.label.as_deref().filter(|number| {
                     *number == "*"
                         || (!number.is_empty()
                             && number.len() <= 5
@@ -1175,12 +1172,12 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                         .strip_prefix("op")
                         .and_then(|value| value.split_once('-'));
                     (element.tag == "sup"
-                        && (id == label_id
+                        && (id.strip_prefix("fn") == Some(number)
                             || scoped_label.is_some_and(|(opinion, label)| {
                                 node.markup_tag.as_deref() == Some("div")
                                     && !opinion.is_empty()
                                     && opinion.bytes().all(|byte| byte.is_ascii_digit())
-                                    && label == label_id
+                                    && label.strip_prefix("fn") == Some(number)
                             }))
                         && identities.get(id.as_str()).copied().flatten() == Some(index)
                         && note_owner(index) == node.markup_start
@@ -1286,11 +1283,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
             let reference_name = format!("_ftnref{number}");
             let owner_scope = document_owners[owner_index];
             if node.source == Derivation::Native
-                && node
-                    .label
-                    .as_deref()
-                    .and_then(|label| label.strip_prefix("fn"))
-                    == Some(number)
+                && node.label.as_deref() == Some(number)
                 && owner.attributes.get("id").map(String::as_str) == Some(body_id)
                 && !identities.contains_key(body_name.as_str())
                 && !identities.contains_key(reference_name.as_str())
@@ -2830,7 +2823,7 @@ pub(super) fn courtlistener_printed_star_pages(structure: &mut DocumentStructure
             Derivation::Heuristic,
             None,
         );
-        node.label = Some(format!("page{number}"));
+        node.label = Some(format!("{number}"));
         node.aliases = Some(vec![format!("*{number}")]);
         node.marker_range = Some(ScalarRange { start, end: marker_end });
         node.grammar = Some("courtlistener-printed-star-page".to_owned());
@@ -2886,7 +2879,7 @@ pub(super) fn courtlistener_slip_notes(structure: &mut DocumentStructure) {
             Derivation::Heuristic,
             None,
         );
-        node.label = Some(format!("fn{number}"));
+        node.label = Some(format!("{number}"));
         node.marker_range = Some(label);
         node.grammar = Some("courtlistener-slip-notes".to_owned());
         node.calls = refs;
@@ -2922,7 +2915,7 @@ pub(super) fn courtlistener_opening_pages(structure: &mut DocumentStructure) {
     let mut opening = Vec::new();
     for ((track, parent), (index, range)) in firsts {
         let first = &structure.nodes[index];
-        let Some(printed) = first.label.as_deref().and_then(|label| label.strip_prefix("page")) else {
+        let Some(printed) = first.label.as_deref() else {
             continue;
         };
         let Some(before) = previous_page(printed) else {
@@ -2952,7 +2945,7 @@ pub(super) fn courtlistener_opening_pages(structure: &mut DocumentStructure) {
             Derivation::Heuristic,
             parent,
         );
-        node.label = Some(format!("page{before}"));
+        node.label = Some(format!("{before}"));
         node.aliases = first.aliases.as_ref().map(|aliases| aliases.iter()
             .filter_map(|alias| alias.strip_suffix(printed).map(|stem| format!("{stem}{before}")))
             .collect());
@@ -2993,7 +2986,7 @@ pub(super) fn courtlistener_resource_paragraph_markers(structure: &mut DocumentS
         {
             return None;
         }
-        let number = node.label.as_deref()?.strip_prefix("par")?;
+        let number = node.label.as_deref()?;
         let element = elements.binary_search_by_key(&node.markup_start?, |element| element.markup_start).ok()?;
         let span = elements[element + 1..].iter()
             .take_while(|child| child.markup_start < elements[element].markup_end)
@@ -3056,7 +3049,7 @@ pub(super) fn courtlistener_bracketnum_divisions(structure: &mut DocumentStructu
     for (index, number, marker) in divisions {
         let node = &mut structure.nodes[index];
         node.kind = NodeKind::Paragraph;
-        node.label = Some(format!("par{number}"));
+        node.label = Some(format!("{number}"));
         node.marker_range = Some(marker);
     }
 }

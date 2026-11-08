@@ -84,7 +84,7 @@ pub(crate) fn text_note_blocks(
         .filter_map(|note| {
             let range = note.marker_range?;
             let line_start = starts.get(note.line_ids.first()?.as_str())?.0;
-            (range.start >= note_start).then(|| (range, line_start, note.printed_label().to_owned(), note.calls.clone()))
+            (range.start >= note_start).then(|| (range, line_start, note.label.as_deref().unwrap_or("").to_owned(), note.calls.clone()))
         })
         .collect::<Vec<_>>();
     // The list counts from 1 whether or not its calls survived the flattening: a label the pairer
@@ -121,7 +121,7 @@ pub(crate) fn text_note_blocks(
         }
         let mut block = crate::labelled_node(
             NodeKind::Endnote,
-            format!("fn{label}"),
+            format!("{label}"),
             body_range.start,
             body_range.end,
         );
@@ -331,11 +331,11 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
             let body = note.ranges.iter().filter_map(|range| coordinates.slice(range.start..range.end)).collect::<Vec<_>>().join(" ");
             let body = body.trim();
             PairedFootnote {
-                label: note.printed_label().to_owned(),
+                label: note.label.as_deref().unwrap_or("").to_owned(),
                 restart_sequence: note.series.parse().unwrap_or(0),
                 note_page_index: note.page_indexes.first().copied().unwrap_or(0),
                 ref_page_index: note.calls.first().and_then(|call| line_of(call.start)).map(|(.., page)| page),
-                body: if body.is_empty() { note.printed_label().to_owned() } else { body.to_owned() },
+                body: if body.is_empty() { note.label.as_deref().unwrap_or("").to_owned() } else { body.to_owned() },
                 proposition: note.calls.first().and_then(proposition),
             }
         })

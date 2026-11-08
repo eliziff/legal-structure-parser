@@ -1,13 +1,12 @@
 use legal_citations::cues;
 use legal_citations::cues::is_counter_noun as counter_noun;
-use legal_structure_model::layout::{self, line_font_size, DetachedReference, Diagnostic, Line, Page};
+use legal_structure_model::layout::{self, line_font_size, Diagnostic, Line, Page};
 use legal_structure_model::{Derivation, NodeKind, NotePairing, ScalarRange, StructureNode, NOTE_PAIRING_ORIGIN};
 use crate::{select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy};
 use legal_structure_model::{
     normalize_decimal_digit, normalize_note_symbol, ScalarText,
 };
 use regex::Regex;
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::OnceLock;
@@ -72,7 +71,6 @@ struct PairLine<'a> {
     /// The line is the page's furniture, which holds no note's reference.
     furniture: bool,
     note_sequence_restart: bool,
-    detached_references: Cow<'a, [DetachedReference]>,
 }
 
 impl PairLine<'_> {
@@ -146,7 +144,6 @@ impl Candidate {
 struct Pair {
     label: Candidate,
     refs: Vec<Candidate>,
-    primary_ref: Option<(usize, usize, usize)>,
     restart_sequence: usize,
     sequence_labels: usize,
     endnote: bool,
@@ -344,18 +341,6 @@ fn build_lines<'a>(
         .filter(|(_, (_, line))| !line.exclude_from_body)
         .enumerate()
         .map(|(idx, (source_order, (page, line)))| {
-            let isolated_references = isolated_inline_references(line);
-            let detached_references = if isolated_references.is_empty() {
-                Cow::Borrowed(line.detached_references.as_slice())
-            } else {
-                Cow::Owned(
-                    line.detached_references
-                        .iter()
-                        .cloned()
-                        .chain(isolated_references)
-                        .collect(),
-                )
-            };
             let text_len = line.text.chars().count();
             PairLine {
                 line,
@@ -385,7 +370,6 @@ fn build_lines<'a>(
                 edge_folio: is_edge_folio(line),
                 furniture: is_furniture(line),
                 note_sequence_restart: false,
-                detached_references,
             }
         })
         .collect();

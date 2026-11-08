@@ -60,7 +60,7 @@ pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<StructureNode> {
                 let whole = capture.get(0).unwrap();
                 let mut block = crate::labelled_node(
                     NodeKind::Footnote,
-                    format!("fn{}", capture[1].parse::<u32>().unwrap()),
+                    format!("{}", capture[1].parse::<u32>().unwrap()),
                     text.scalar(line.byte_start + whole.start()),
                     0,
                 );

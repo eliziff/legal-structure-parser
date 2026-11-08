@@ -9,7 +9,7 @@ pub(super) fn plain_label(label: &str) -> &str {
 
 /// A note's printed label, and how much of its body merely repeats it.
 pub(super) fn note_label_of(coordinates: &ScalarText, note: &StructureNode) -> (String, usize) {
-    note_opening(coordinates.slice_utf16(note.range.start..note.range.end).unwrap_or(""), note.printed_label().to_owned())
+    note_opening(coordinates.slice_utf16(note.range.start..note.range.end).unwrap_or(""), note.label.as_deref().unwrap_or("").to_owned())
 }
 
 /// Notes another text of the case prints and this reading lacks: another rendition's, or the head matter's, where a
@@ -53,7 +53,7 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds,
         }
         let calls = note.calls.iter().filter_map(|call| placed(*call)).collect::<Vec<_>>();
         if let Some(same) = held.iter().position(|ours| words.iter().filter(|word| ours.contains(*word)).count() * 2 > words.len()) {
-            structure.opinion.as_mut().unwrap().note_witness[usize::from(kinds.notes[same].calls.is_empty())] += 1;
+            kinds.opinion.note_witness[usize::from(kinds.notes[same].calls.is_empty())] += 1;
             if kinds.notes[same].calls.is_empty() {
                 if calls.is_empty() && !note.calls.is_empty() {
                     kinds.notes[same].properties.insert("called_outside".to_owned(), String::new());
@@ -62,7 +62,7 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds,
             }
             continue;
         }
-        structure.opinion.as_mut().unwrap().note_witness[2] += 1;
+        kinds.opinion.note_witness[2] += 1;
         structure.text.push('\n');
         let start = utf16_len(&structure.text);
         structure.text.push_str(body);
@@ -83,8 +83,8 @@ pub(super) fn opens_on_reporter(words: &str) -> bool {
 pub(super) fn join_citation_fragments(notes: Vec<StructureNode>, coordinates: &ScalarText) -> Vec<StructureNode> {
     let mut joined = Vec::<StructureNode>::with_capacity(notes.len());
     for note in notes {
-        let number = note.printed_label().parse::<u32>().ok();
-        let before = joined.iter().rev().find_map(|held| held.printed_label().parse::<u32>().ok());
+        let number = note.label.as_deref().unwrap_or("").parse::<u32>().ok();
+        let before = joined.iter().rev().find_map(|held| held.label.as_deref().unwrap_or("").parse::<u32>().ok());
         let fragment = number.zip(before).is_some_and(|(number, before)| number > before + 1)
             && coordinates.slice_utf16(note.range.start..note.range.end).is_some_and(opens_on_reporter);
         match joined.last_mut().filter(|_| fragment) {
@@ -210,7 +210,7 @@ pub(super) fn unmatched_calls(structure: &DocumentStructure, coordinates: &Scala
             return None;
         }
         let known = answered[answered.partition_point(|known| known.end <= range.start)..].iter().take_while(|known| known.start < range.end || known.end <= range.end).any(|known| known.start < range.end);
-        (!known).then_some(UnmatchedCall { label, start: range.start, end: range.end, page: None })
+        (!known).then_some(UnmatchedCall { label, start: range.start, end: range.end })
     }).collect()
 }
 
@@ -218,16 +218,16 @@ pub(super) fn unmatched_calls(structure: &DocumentStructure, coordinates: &Scala
 /// past the last call that run through their labels are the notes, set as text.
 pub(super) fn answer_calls(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     static OPENING: OnceLock<Regex> = OnceLock::new();
-    let mut calls = std::mem::take(&mut structure.opinion.as_mut().unwrap().unmatched_calls);
+    let mut calls = std::mem::take(&mut kinds.opinion.unmatched_calls);
     calls.sort_by_key(|call| call.start);
     for note in kinds.notes.iter_mut().filter(|note| note.calls.is_empty()) {
-        if let Some(at) = calls.iter().position(|call| plain_label(&call.label) == plain_label(&note.printed_label())) {
+        if let Some(at) = calls.iter().position(|call| plain_label(&call.label) == plain_label(note.label.as_deref().unwrap_or(""))) {
             let call = calls.remove(at);
             note.calls.push(ScalarRange { start: call.start, end: call.end });
         }
     }
     calls.retain(|call| {
-        let Some(note) = kinds.notes.iter_mut().find(|note| plain_label(&note.printed_label()) == plain_label(&call.label)) else { return true };
+        let Some(note) = kinds.notes.iter_mut().find(|note| plain_label(note.label.as_deref().unwrap_or("")) == plain_label(&call.label)) else { return true };
         note.calls.push(ScalarRange { start: call.start, end: call.end });
         false
     });
@@ -292,12 +292,12 @@ pub(super) fn answer_calls(structure: &mut DocumentStructure, kinds: &mut Kinds)
                 let references = calls.iter().filter(|call| plain_label(&call.label) == label).map(|call| ScalarRange { start: call.start, end: call.end }).collect();
                 kinds.notes.push(read_note(label, start, end, vec![ScalarRange { start, end }], references));
             }
-            let answered = kinds.notes.iter().map(|note| plain_label(&note.printed_label())).collect::<HashSet<_>>();
+            let answered = kinds.notes.iter().map(|note| plain_label(note.label.as_deref().unwrap_or(""))).collect::<HashSet<_>>();
             calls.retain(|call| !answered.contains(plain_label(&call.label)));
             kinds.notes.sort_by_key(|note| note.range.start);
         }
     }
-    structure.opinion.as_mut().unwrap().unmatched_calls = calls;
+    kinds.opinion.unmatched_calls = calls;
 }
 
 /// Notes set flat in the text, each under its own "Footnote 1:" or "[Note 1]", with the calls that name them ("[FN1]",
@@ -325,7 +325,7 @@ pub(super) fn flat_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     static BROKEN: OnceLock<Regex> = OnceLock::new();
     let past = PAST.get_or_init(|| Regex::new(r"\n[ \t]*\n|\n[ \t]*[\[{(]?¶").unwrap());
     let broken = BROKEN.get_or_init(|| Regex::new(r"\n").unwrap());
-    let closes = if structure.opinion.as_ref().unwrap().rendition == "plain_text.txt" { past } else { broken };
+    let closes = if kinds.opinion.rendition == "plain_text.txt" { past } else { broken };
     let mut units = Units::new(&structure.text);
     let stops = opened.iter().enumerate().map(|(index, open)| {
         let limit = opened.get(index + 1).map_or(structure.text.len(), |next| next.0);
@@ -335,7 +335,7 @@ pub(super) fn flat_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     }).collect::<Vec<_>>();
     let found = opened.iter().enumerate().map(|(index, (_, _, number))| (number.clone(), starts[index], stops[index])).collect::<Vec<_>>();
     for (number, start, stop) in found {
-        if kinds.notes.iter().any(|note| note.printed_label() == number && note.range.start <= start && start < note.range.end) {
+        if kinds.notes.iter().any(|note| note.label.as_deref().unwrap_or("") == number && note.range.start <= start && start < note.range.end) {
             continue;
         }
         kinds.notes.retain(|note| !(note.range.start <= start && start < note.range.end));
@@ -352,10 +352,10 @@ pub(super) fn split_note_lists(structure: &mut DocumentStructure, kinds: &mut Ki
     static NUMBER: OnceLock<Regex> = OnceLock::new();
     let number = NUMBER.get_or_init(|| Regex::new(r"(?-u:\b)(\d{1,3})\. +\p{Lu}").unwrap());
     let coordinates = ScalarText::new(&structure.text);
-    let called = structure.opinion.as_ref().unwrap().unmatched_calls.iter().filter_map(|call| plain_label(&call.label).parse::<u32>().ok()).collect::<HashSet<_>>();
+    let called = kinds.opinion.unmatched_calls.iter().filter_map(|call| plain_label(&call.label).parse::<u32>().ok()).collect::<HashSet<_>>();
     let mut added = Vec::new();
     for note in kinds.notes.iter_mut().filter(|note| note.ranges.len() == 1) {
-        let Ok(mut next) = note.printed_label().parse::<u32>().map(|label| label + 1) else { continue };
+        let Ok(mut next) = note.label.as_deref().unwrap_or("").parse::<u32>().map(|label| label + 1) else { continue };
         let range = note.ranges[0];
         let Some(body) = coordinates.slice_utf16(range.start..range.end) else { continue };
         let mut opens = Vec::new();
@@ -391,7 +391,7 @@ pub(super) fn share_note_calls(structure: &mut DocumentStructure, kinds: &mut Ki
     static CALL: OnceLock<Regex> = OnceLock::new();
     let mut by_label = HashMap::<String, Vec<usize>>::new();
     for (index, note) in kinds.notes.iter().enumerate() {
-        by_label.entry(note.printed_label().to_owned()).or_default().push(index);
+        by_label.entry(note.label.as_deref().unwrap_or("").to_owned()).or_default().push(index);
     }
     for indices in by_label.values().filter(|indices| indices.len() > 1) {
         let mut calls = indices.iter().flat_map(|&index| kinds.notes[index].calls.iter().copied()).collect::<Vec<_>>();
@@ -408,7 +408,7 @@ pub(super) fn share_note_calls(structure: &mut DocumentStructure, kinds: &mut Ki
             }
         }
     }
-    if !kinds.notes.iter().any(|note| note.calls.is_empty() && note.printed_label().bytes().all(|byte| byte.is_ascii_digit())) {
+    if !kinds.notes.iter().any(|note| note.calls.is_empty() && note.label.as_deref().unwrap_or("").bytes().all(|byte| byte.is_ascii_digit())) {
         return;
     }
     let mut units = Units::new(&structure.text);
@@ -424,7 +424,7 @@ pub(super) fn share_note_calls(structure: &mut DocumentStructure, kinds: &mut Ki
     }
     let used = kinds.notes.iter().flat_map(|note| note.calls.iter().map(|call| call.start)).collect::<HashSet<_>>();
     for note in kinds.notes.iter_mut().filter(|note| note.calls.is_empty()) {
-        if let Some(calls) = printed.get_mut(note.printed_label()) {
+        if let Some(calls) = printed.get_mut(note.label.as_deref().unwrap_or("")) {
             calls.retain(|call| !used.contains(&call.start));
             if !calls.is_empty() {
                 note.calls.push(calls.remove(0));

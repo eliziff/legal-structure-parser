@@ -1062,7 +1062,7 @@ pub(super) fn paragraph_ranges(
             );
             let mut block = crate::labelled_node(
                 NodeKind::Paragraph,
-                format!("par{}", marker.number),
+                format!("{}", marker.number),
                 marker.start,
                 end,
             );
