@@ -1,4 +1,4 @@
-use legal_locator::{literal_page_marker, normalize_section_locator};
+use legal_locator::{literal_page_marker, normalize_section_locator, parse_ordinal};
 use crate::{
     text::{equal_fold, trim_javascript_whitespace as js_trim, JS_WHITESPACE_CLASS as JS_WS},
     AuthoritativeTableCell, Derivation, DetectionProfile,
@@ -231,7 +231,8 @@ fn projection_order(profile: Option<DetectionProfile>) -> ProjectionOrder {
 }
 
 /// Whether a node is one the query serves: a paragraph, prose, a page, a provision, a footnote, a table, its row or its
-/// cell; a heading, an endnote, a list, its item and a quotation are none.
+/// cell; a heading, an endnote, a list, its item, a quotation and a span (a reading of the text that is no block of it:
+/// a headnote, a front line, a defined term) are none. The structure holds them; the usual calls leave them out.
 fn projected(node: &StructureNode) -> bool {
     matches!(node.kind, NodeKind::Prose | NodeKind::Paragraph | NodeKind::Page | NodeKind::Section | NodeKind::Footnote
         | NodeKind::Table | NodeKind::Row | NodeKind::Cell)
@@ -1441,50 +1442,15 @@ impl DocumentQuery {
     }
 }
 
+/// The label a typed locator names among a document's nodes of `kind`: a paragraph's, page's or note's number as it prints
+/// ("para. 12" is "12"), a provision's place ("s. 5(2)" is "sec5(2)"); empty where it names none.
 pub fn normalize_document_locator(kind: NodeKind, locator: &str) -> String {
-    static FOOTNOTE: OnceLock<Regex> = OnceLock::new();
-    static PARAGRAPH: OnceLock<Regex> = OnceLock::new();
-    static PAGE: OnceLock<Regex> = OnceLock::new();
-    let value = js_trim(locator);
-    let numbered = |capture: &regex::Captures<'_>, prefix: &str| {
-        format!("{prefix}{}", capture[1].parse::<usize>().unwrap_or(0))
-    };
     match kind {
-        NodeKind::Footnote => {
-            return regex_parts(
-                &[
-                    r"(?iu)^(?:fn|footnotes?|notes?)?(?:",
-                    JS_WS,
-                    r"|[#.])*(\d{1,5})$",
-                ],
-                &FOOTNOTE,
-            )
-            .captures(value)
-            .map_or_else(String::new, |capture| numbered(&capture, "fn"))
+        NodeKind::Paragraph | NodeKind::Page | NodeKind::Footnote => {
+            parse_ordinal(kind.name(), locator).map_or_else(String::new, |number| number.to_string())
         }
-        NodeKind::Paragraph => {
-            return regex_parts(
-                &[
-                    r"(?iu)^(?:\[",
-                    JS_WS,
-                    r"*)?(?:paras?\.?|paragraphs?|par)?",
-                    JS_WS,
-                    r"*(\d{1,4})(?:",
-                    JS_WS,
-                    r"*\])?$",
-                ],
-                &PARAGRAPH,
-            )
-            .captures(value)
-            .map_or_else(String::new, |capture| numbered(&capture, "par"))
-        }
-        NodeKind::Page => {
-            return regex_parts(&[r"(?iu)^(?:pages?|pp?\.)?", JS_WS, r"*(\d{1,4})$"], &PAGE)
-                .captures(value)
-                .map_or_else(String::new, |capture| numbered(&capture, "page"))
-        }
-        NodeKind::Section => return normalize_section_locator(locator),
-        _ => return String::new(),
+        NodeKind::Section => normalize_section_locator(locator),
+        _ => String::new(),
     }
 }
 

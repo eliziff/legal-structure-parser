@@ -100,26 +100,49 @@ pub fn numbered_section_label(compact: &str) -> Option<String> {
     (numeric.is_match(compact) || alphanumeric.is_match(compact)).then(|| compact.to_owned())
 }
 
-/// Parse a numeric printed paragraph, page or transcript line locator using its canonical
-/// spelling grammar.
-pub fn parse_ordinal(kind: &str, raw: &str) -> Option<usize> {
-    static PAGE: OnceLock<Regex> = OnceLock::new();
+/// A typed locator of a kind with the words it may open on taken off, as the number or label it names is written:
+/// "para. 12", "¶ 12", "[12]", "#par12" are "12"; "pp. 4-6" is "4-6"; "fn 3", "note #3" are "3". `kind`: `paragraph`,
+/// `page`, `line` or `footnote`.
+fn bare(kind: &str, raw: &str) -> String {
     static PARAGRAPH: OnceLock<Regex> = OnceLock::new();
+    static PAGE: OnceLock<Regex> = OnceLock::new();
     static LINE: OnceLock<Regex> = OnceLock::new();
+    static FOOTNOTE: OnceLock<Regex> = OnceLock::new();
     use unicode_normalization::UnicodeNormalization;
     let value = raw.nfkc().collect::<String>();
-    let captures = if kind == "line" {
-        LINE.get_or_init(|| Regex::new(r"(?i)^(?:(?:lines?|ll?\.?)[\s:_=-]*)?0*(\d{1,6})$").unwrap())
-            .captures(value.trim())
-    } else if kind == "page" {
-        PAGE.get_or_init(|| {
-            Regex::new(r"(?i)^#?\s*\[?\s*(?:(?:pages?|pp?\.?)[\s:_=-]*)?0*(\d{1,6})\s*\]?$")
-                .unwrap()
-        })
-        .captures(value.trim())
-    } else {
-        PARAGRAPH.get_or_init(|| Regex::new(r"(?i)^#?\s*(?:(?:paragraphs?|paras?|pars?|¶)\.?\s*)?(?:(?:paragraph|para|par)[\s:_=-]*)?0*(\d{1,6})$" ).unwrap()).captures(value.trim())
-    }?;
-    captures.get(1)?.as_str().parse().ok()
+    let value = value.trim().trim_start_matches('#').trim();
+    let value = value.strip_prefix('[').and_then(|value| value.strip_suffix(']')).unwrap_or(value).trim();
+    let words = match kind {
+        "page" => PAGE.get_or_init(|| Regex::new(r"(?i)^(?:pages?|pp?)\.?[\s:_=-]*").unwrap()),
+        "line" => LINE.get_or_init(|| Regex::new(r"(?i)^(?:lines?|ll?)\.?[\s:_=-]*").unwrap()),
+        "footnote" => FOOTNOTE.get_or_init(|| Regex::new(r"(?i)^(?:footnotes?|notes?|fn)?[\s#.:_=-]*").unwrap()),
+        _ => PARAGRAPH.get_or_init(|| Regex::new(r"(?i)^(?:paragraphs?|paras?|pars?|¶)\.?[\s:_=-]*").unwrap()),
+    };
+    words.replace(value, "").trim().to_owned()
+}
+
+/// The number a typed paragraph, page, transcript line or note locator names ("para. 012" is 12); none where it names
+/// no one number.
+pub fn parse_ordinal(kind: &str, raw: &str) -> Option<usize> {
+    let number = bare(kind, raw);
+    (!number.is_empty() && number.len() <= 6 && number.bytes().all(|byte| byte.is_ascii_digit())).then(|| number.parse().ok()).flatten()
+}
+
+/// The first and last numbers a typed range of paragraphs, pages or lines names ("paras 142-54" runs from 142 to 154,
+/// "138-9" to 139, "4 to 6" from 4 to 6).
+pub fn ordinal_range(kind: &str, raw: &str) -> Option<(usize, usize)> {
+    static RANGE: OnceLock<Regex> = OnceLock::new();
+    let bare = bare(kind, raw);
+    let captures = RANGE.get_or_init(|| Regex::new(r"(?i)^(\d{1,6})\s*(?:-|–|—|\.\.|to)\s*(\d{1,6})$").unwrap()).captures(&bare)?;
+    // An end shorter than its start keeps the start's leading figures.
+    let (first, end) = (&captures[1], &captures[2]);
+    let last = if end.len() < first.len() { format!("{}{end}", &first[..first.len() - end.len()]) } else { end.to_owned() };
+    Some((first.parse().ok()?, last.parse().ok()?))
+}
+
+/// A typed note locator as a note's label is written ("fn 3" is "3", "note *" is "*"), lowercased.
+pub fn note_label(raw: &str) -> String {
+    let label = bare("footnote", raw).to_lowercase();
+    label.parse::<usize>().map_or(label, |number| number.to_string())
 }
 

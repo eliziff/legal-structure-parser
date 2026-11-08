@@ -117,14 +117,6 @@ impl StructureAnalysis for EngineAnalysis {
         crate::statute::marginal_note_shaped(line)
     }
 
-    fn parse_ordinal(&self, kind: &str, raw: &str) -> Option<usize> {
-        crate::parse_ordinal(kind, raw)
-    }
-
-    fn numbered_section_locator(&self, compact: &str) -> String {
-        crate::normalize_compact_numbered_section_locator(compact)
-    }
-
     fn detect_structure_candidate_runs(&self, text: &str, refinements: bool) -> Vec<StructureCandidateRun> {
         crate::detect_structure_candidate_runs(text, refinements)
     }

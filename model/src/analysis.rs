@@ -85,12 +85,6 @@ pub trait StructureAnalysis: LayoutAnalysis {
 
     /// Whether a line reads as a statute's marginal note.
     fn marginal_note_shaped(&self, line: &str) -> bool;
-
-    /// A numeric printed paragraph, page or transcript line locator (`kind`) read in its canonical spelling grammar.
-    fn parse_ordinal(&self, kind: &str, raw: &str) -> Option<usize>;
-
-    /// A numbered section locator's canonical spelling, whitespace already out ("" where it is none).
-    fn numbered_section_locator(&self, compact: &str) -> String;
 }
 
 static STRUCTURE_ANALYSIS: std::sync::OnceLock<&'static dyn StructureAnalysis> = std::sync::OnceLock::new();
