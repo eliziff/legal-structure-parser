@@ -18,10 +18,10 @@ pub mod instrument;
 pub mod opinion;
 /// Laid-out pages and lines and note pairs, which the document model builds on.
 pub use legal_layout as layout;
-pub use legal_layout::{NotePairSupportV2, ScalarRange};
+pub use legal_layout::{ScalarRange};
 pub mod text;
 
-pub use analysis::{install_structure_analysis, structure_analysis, NotePairing, StructureAnalysis, NOTE_PAIRING_ORIGIN};
+pub use analysis::{install_structure_analysis, structure_analysis, NotePairing, PdfPairingAudit, StructureAnalysis, NOTE_PAIRING_ORIGIN};
 pub use assembly::assemble_in_place;
 pub use legal_layout::{ablated, CitationSpan, LayoutAnalysis, NumberingMarker, PARTY_ROLES};
 pub use definitions::{DefinedTerm, DefinitionOccurrence};

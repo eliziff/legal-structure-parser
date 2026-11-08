@@ -61,46 +61,6 @@ impl ScalarRange {
     }
 }
 
-/// Evidence from an occurrence-level assignment within one numbering restart.
-/// Counts concern distinct labels, not repeated references to the same note.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
-pub struct NotePairSupportV2 {
-    pub sequence_id: usize,
-    pub sequence_labels: usize,
-    pub sequence_observed_pairs: usize,
-    pub sequence_note_labels: usize,
-    pub observed_pair: bool,
-    pub typographic_reference: bool,
-    pub note_region: bool,
-    /// The label stands in its page's note band, which is final: its note stands whether or not a
-    /// reference to it was read.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub note_band: bool,
-}
-
-impl NotePairSupportV2 {
-    /// The pair stands in a run of labels whose references the text shows for a third of it at
-    /// least: the note sequence itself is the evidence, whatever region the lines were given.
-    pub fn corroborated_sequence(&self) -> bool {
-        self.sequence_observed_pairs >= 3 && 3 * self.sequence_observed_pairs >= self.sequence_labels
-    }
-
-    pub fn supports_label_only(&self) -> bool {
-        self.note_band
-            || (self.note_region
-                && (self.sequence_observed_pairs >= 2
-                    && self.sequence_labels <= 3 * self.sequence_observed_pairs
-                    || self.sequence_note_labels >= 3
-                        && 4 * self.sequence_note_labels >= 3 * self.sequence_labels))
-    }
-
-    /// Plain numbers alone are not positive evidence for a note.
-    pub fn supports_note(&self) -> bool {
-        (self.observed_pair && (self.typographic_reference || self.note_region || self.corroborated_sequence()))
-            || self.supports_label_only()
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Word {
     pub id: String,
@@ -322,12 +282,6 @@ impl Diagnostic {
 pub struct PdfSourceSpan {
     pub start: usize,
     pub end: usize,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PdfPairingAudit {
-    pub markers: Vec<Value>,
-    pub pairing_summary: Value,
 }
 
 /// Capitals stand about seven tenths of the type size in common text faces (Times 0.66, Arial

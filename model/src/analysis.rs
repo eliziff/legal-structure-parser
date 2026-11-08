@@ -2,22 +2,31 @@ use crate::{
     AuthoritativeTableCell, CandidateEvidenceV2, CandidateRoleV2, DocumentStructure, EngineError,
     StructureCandidateRun, };
 use legal_layout::LayoutAnalysis;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// The pairer's audit of a document's markers, where asked for: each marker's reading and the pairing's summary.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PdfPairingAudit {
+    pub markers: Vec<Value>,
+    pub pairing_summary: Value,
+}
+
+/// The origin of the notes the pairer writes.
+pub const NOTE_PAIRING_ORIGIN: &str = "legal-structure.note-pairing";
+
+/// A laid-out document's notes as the pairer writes them: each a Footnote (or Endnote) node placed in the reader's text,
+/// its body its ranges, its label its marker range, its calls; the diagnostics of what it could not pair or place; and,
+/// where asked for, its audit of the markers.
+pub struct NotePairing {
+    pub notes: Vec<crate::StructureNode>,
+    pub diagnostics: Vec<legal_layout::Diagnostic>,
+    pub audit: Option<PdfPairingAudit>,
+}
 
 /// The structure engine's document reading, as parsers that build documents on the model call it,
 /// beside its services on laid-out text. A parser takes this as a dependency on the model alone, so
 /// editing the engine recompiles the engine and the program that supplies it, not every parser.
-/// A laid-out document's notes as the pairer writes them: each a Footnote (or Endnote) node placed in the reader's text,
-/// its body its ranges, its label its marker range, its calls; the diagnostics of what it could not pair or place; and,
-/// where asked for, its audit of the markers.
-/// The origin of the notes the pairer writes.
-pub const NOTE_PAIRING_ORIGIN: &str = "legal-structure.note-pairing";
-
-pub struct NotePairing {
-    pub notes: Vec<crate::StructureNode>,
-    pub diagnostics: Vec<legal_layout::Diagnostic>,
-    pub audit: Option<legal_layout::PdfPairingAudit>,
-}
-
 pub trait StructureAnalysis: LayoutAnalysis {
     /// A laid-out document's notes paired with their references, its lines' citations (by line id, in scalar offsets)
     /// protected from being read as either, each note placed in the reader's text by `place` (a line's id and a range
