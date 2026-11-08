@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-const COMPONENTS: [&str; 12] = [
+const COMPONENTS: [&str; 11] = [
     "identity",
     "text",
     "nodes",
