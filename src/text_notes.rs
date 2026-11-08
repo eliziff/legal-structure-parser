@@ -4,7 +4,7 @@
 //! zone, and the lines a paragraph count numbers are paragraph labels the pairer may overturn.
 
 use crate::note_pairing::pair_footnotes;
-use crate::{Block, NodeKind, Note, NoteKindV2, NoteReference, ScalarRange, ScalarText};
+use crate::{Block, NodeKind, ScalarRange, ScalarText};
 use legal_citations::cues;
 use legal_structure_model::layout::{Anchor, Line, Page, PdfSourceSpan};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -139,25 +139,7 @@ pub(crate) fn text_note_blocks(
             body_range.end,
         );
         block.marker_range = Some(*label_range);
-        block.note = Some(Note {
-            id: String::new(),
-            node_id: None,
-            kind: NoteKindV2::Endnote,
-            label_range: *label_range,
-            body_range,
-            label_ranges: vec![*label_range],
-            body_ranges: vec![body_range],
-            primary_reference: references.first().copied(),
-            references: references
-                .iter()
-                .map(|&range| NoteReference {
-                    range,
-                    anchor: None,
-                    page_indexes: Vec::new(),
-                    line_ids: Vec::new(),
-                })
-                .collect(),
-        });
+        block.calls = references.clone();
         blocks.push(block);
     }
     blocks

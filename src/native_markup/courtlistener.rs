@@ -2,7 +2,7 @@
 //! Westlaw, OSCN, public.resource.org): what their markup and printed text supply beyond the generic reading.
 
 use super::*;
-use crate::{Derivation, Note, NoteKindV2};
+use crate::Derivation;
 
 pub(super) fn courtlistener_sibling_note_markers(
     elements: &[MarkupElement],
@@ -133,7 +133,7 @@ pub(super) fn supplement_courtlistener_declared_note_references(
 ) {
     let updates = {
         let elements = &structure.markup_elements;
-        if structure.notes.is_empty() {
+        if !structure.nodes.iter().any(|node| node.kind == NodeKind::Footnote) {
             return;
         }
         let has_class = |element: &MarkupElement, class: &str| {
@@ -189,11 +189,7 @@ pub(super) fn supplement_courtlistener_declared_note_references(
             .filter(|node| node.kind == NodeKind::Footnote)
             .filter_map(|node| Some((node.markup_start?, node.id.as_str())))
             .collect::<HashMap<_, _>>();
-        let notes = structure
-            .notes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, note)| note.node_id.as_deref().map(|id| (id, index)))
+        let notes = structure.nodes.iter().enumerate().filter(|(_, node)| node.kind == NodeKind::Footnote).map(|(index, node)| (node.id.as_str(), index))
             .collect::<HashMap<_, _>>();
         let mut identities = HashMap::<&str, Option<usize>>::new();
         let mut direct_targets = HashMap::<&str, Option<usize>>::new();
@@ -277,7 +273,7 @@ pub(super) fn supplement_courtlistener_declared_note_references(
                     .and_then(|parent| nodes.get(&elements[parent].markup_start))
                     .and_then(|node| notes.get(node))
                     .copied()
-                    .filter(|note| structure.notes[*note].label_range == range);
+                    .filter(|note| structure.nodes[*note].marker_range == Some(range));
                 // Repeated declarations, including an unqualified second body,
                 // cannot establish a unique whole-field reference relationship.
                 numbered_targets
@@ -379,16 +375,16 @@ pub(super) fn supplement_courtlistener_declared_note_references(
                         .get(&element.markup_start)
                         .and_then(|node| notes.get(node))
                         .copied()?;
-                    let body = &structure.notes[note];
+                    let body = &structure.nodes[note];
                     (element.parent == Some(footer)
                         && writing_owners[index].is_none()
                         && matched_role_starts.contains(&element.markup_start)
                         && native_owners.contains_key(&element.markup_start)
-                        && body.label_range == marker
-                        && body.body_range.start == marker.end
-                        && body.body_range.end == element.range.end
-                        && body.references.is_empty()
-                        && body.primary_reference.is_none()
+                        && body.marker_range == Some(marker)
+                        && body.range.start == marker.end
+                        && body.range.end == element.range.end
+                        && body.calls.is_empty()
+                        && body.calls.is_empty()
                         && elements[index + 1..]
                             .iter()
                             .take_while(|child| child.markup_start < element.markup_end)
@@ -580,23 +576,17 @@ pub(super) fn supplement_courtlistener_declared_note_references(
         updates
     };
     for (index, range, anchor) in updates {
-        let note = &mut structure.notes[index];
+        let note = &mut structure.nodes[index];
         if !note
-            .references
+            .calls
             .iter()
             .any(|reference| reference.range == range)
         {
             // IDREF markers retain only their own actual unique ID, if any.
             // Label-only same-opinion relationships supply no source fragment.
-            note.references.push(NoteReference {
-                range,
-                anchor,
-                page_indexes: Vec::new(),
-                line_ids: Vec::new(),
-            });
+            note.calls.push(range);
         }
-        if note.primary_reference.is_none() {
-            note.primary_reference = note.references.first().map(|reference| reference.range);
+        if note.calls.is_empty() {
         }
     }
 }
@@ -635,28 +625,26 @@ pub(super) fn clip_courtlistener_pre_note_bodies(structure: &mut DocumentStructu
                 start += utf16_len(line);
             }
         }
-        structure
-            .notes
-            .iter()
+        structure.nodes.iter().filter(|node| node.kind == NodeKind::Footnote)
             .filter_map(|note| {
                 let node = structure
                     .nodes
                     .iter()
-                    .find(|node| note.node_id.as_deref() == Some(node.id.as_str()))?;
+                    .find(|node| Some(note.id.as_str()) == Some(node.id.as_str()))?;
                 if node.kind != NodeKind::Footnote
                     || node.source != Derivation::Heuristic
-                    || note.primary_reference.is_none()
+                    || note.calls.is_empty()
                 {
                     return None;
                 }
                 let label =
-                    coordinates.slice_utf16(note.label_range.start..note.label_range.end)?;
+                    coordinates.slice_utf16(note_label(note).start..note_label(note).end)?;
                 let number = label.parse::<u32>().ok()?;
                 let owner = pre.iter().find(|element| {
-                    element.range.start <= note.label_range.start
-                        && note.label_range.end <= element.range.end
+                    element.range.start <= note_label(note).start
+                        && note_label(note).end <= element.range.end
                 })?;
-                let prefix = coordinates.slice_utf16(owner.range.start..note.label_range.start)?;
+                let prefix = coordinates.slice_utf16(owner.range.start..note_label(note).start)?;
                 let prefix = prefix.rsplit('\n').next()?;
                 if !prefix.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
                     return None;
@@ -666,12 +654,12 @@ pub(super) fn clip_courtlistener_pre_note_bodies(structure: &mut DocumentStructu
                     .filter(|(next, start, indent)| {
                         *next == number + 1
                             && *indent == prefix.len()
-                            && note.body_range.start < *start
-                            && *start < note.body_range.end
+                            && note.range.start < *start
+                            && *start < note.range.end
                     })
                     .map(|(_, start, _)| *start)
                     .min()?;
-                Some((note.node_id.clone()?, end))
+                Some((note.id.clone(), end))
             })
             .collect::<HashMap<_, _>>()
     };
@@ -683,10 +671,10 @@ pub(super) fn clip_courtlistener_pre_note_bodies(structure: &mut DocumentStructu
             node.range.end = *end;
         }
     }
-    for note in &mut structure.notes {
-        if let Some(end) = note.node_id.as_ref().and_then(|id| ends.get(id)) {
-            note.body_range.end = *end;
-            note.body_ranges.retain_mut(|range| {
+    for note in structure.nodes.iter_mut().filter(|node| node.kind == NodeKind::Footnote) {
+        if let Some(end) = Some(&note.id).and_then(|id| ends.get(id)) {
+            note.range.end = *end;
+            note.ranges.retain_mut(|range| {
                 range.end = range.end.min(*end);
                 range.start < range.end
             });
@@ -695,7 +683,7 @@ pub(super) fn clip_courtlistener_pre_note_bodies(structure: &mut DocumentStructu
 }
 
 pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut DocumentStructure) {
-    if structure.notes.is_empty() {
+    if !structure.nodes.iter().any(|node| node.kind == NodeKind::Footnote) {
         return;
     }
     let (updates, printed_updates) = {
@@ -1031,8 +1019,8 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                     .or_insert(0usize) += 1;
             }
         }
-        for (note_index, note) in structure.notes.iter().enumerate() {
-            let Some(&node) = note.node_id.as_deref().and_then(|id| note_nodes.get(id)) else {
+        for (note_index, note) in structure.nodes.iter().enumerate().filter(|(_, node)| node.kind == NodeKind::Footnote) {
+            let Some(&node) = Some(note.id.as_str()).and_then(|id| note_nodes.get(id)) else {
                 continue;
             };
             if let Some((identity, marker, printed)) = node
@@ -1048,12 +1036,12 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                     continue;
                 };
                 let label = identity.label.as_str();
-                if note.label_range.start != note.label_range.end && note.label_range != *marker {
+                if note_label(note).start != note_label(note).end && note.marker_range != Some(*marker) {
                     continue;
                 }
                 let mut references = Vec::new();
-                if note.references.is_empty()
-                    && note.primary_reference.is_none()
+                if note.calls.is_empty()
+                    && note.calls.is_empty()
                     && fn_body_counts.get(&(fn_writings[body_index], label)) == Some(&1)
                 {
                     let mut container = elements[body_index].parent;
@@ -1087,12 +1075,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                             if let Some((_, range, _)) = numeric_marker(index)
                                 .filter(|(reference, _, _)| reference.label == label)
                             {
-                                references.push(NoteReference {
-                                    range,
-                                    anchor: None,
-                                    page_indexes: Vec::new(),
-                                    line_ids: Vec::new(),
-                                });
+                                references.push(range);
                             }
                         }
                     }
@@ -1111,9 +1094,9 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                 .and_then(|start| sibling_markers.get(&start))
             {
                 if node.label.as_ref() != Some(label)
-                    || note.label_range != *range
-                    || !note.references.is_empty()
-                    || note.primary_reference.is_some()
+                    || note.marker_range != Some(*range)
+                    || !note.calls.is_empty()
+                    || !note.calls.is_empty()
                 {
                     continue;
                 }
@@ -1172,7 +1155,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                 }
                 continue;
             }
-            if note.label_range.start != note.label_range.end {
+            if note_label(note).start != note_label(note).end {
                 continue;
             }
             if node.anchor.is_none()
@@ -1211,7 +1194,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                         && identities.get(id.as_str()).copied().flatten() == Some(index)
                         && note_owner(index) == node.markup_start
                         && printed_range(index, number)
-                            .is_some_and(|range| range.start == note.body_range.start))
+                            .is_some_and(|range| range.start == note.range.start))
                     .then_some(index)
                 });
                 let Some(marker_index) = markers.next() else {
@@ -1227,15 +1210,15 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                 if !marker.tag.eq_ignore_ascii_case("sup")
                     || node.markup_start.is_none()
                     || note_owner(marker_index) != node.markup_start
-                    || label_range.start != note.body_range.start
+                    || label_range.start != note.range.start
                     || !coordinates
-                        .slice_utf16(label_range.end..note.body_range.end)
+                        .slice_utf16(label_range.end..note.range.end)
                         .is_some_and(|body| body.chars().any(char::is_alphabetic))
                 {
                     continue;
                 }
                 updates.push((note_index, Some(label_range), None));
-                if !note.references.is_empty() || note.primary_reference.is_some() {
+                if !note.calls.is_empty() || !note.calls.is_empty() {
                     continue;
                 }
                 let forward_href = format!("#{}", marker.attributes["id"]);
@@ -1341,12 +1324,12 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                     (coordinates.slice_utf16(range.start..range.end) == Some(printed_label)
                         && note_owner(index) == Some(owner.markup_start)
                         && document_owners[index] == owner_scope
-                        && range.start == note.body_range.start)
+                        && range.start == note.range.start)
                         .then_some(range)
                 });
                 if let Some(label_range) = labels.next().filter(|range| {
                     coordinates
-                        .slice_utf16(range.end..note.body_range.end)
+                        .slice_utf16(range.end..note.range.end)
                         .is_some_and(|body| body.chars().any(char::is_alphabetic))
                 }) {
                     if labels.next().is_some() {
@@ -1355,7 +1338,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                     // A printed label is independent of whether the
                     // corresponding reference is absent or already known.
                     updates.push((note_index, Some(label_range), None));
-                    if !note.references.is_empty() || note.primary_reference.is_some() {
+                    if !note.calls.is_empty() || !note.calls.is_empty() {
                         continue;
                     }
                     let mut references = anonymous_markers.iter().filter_map(|&index| {
@@ -1412,7 +1395,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                             && parent_tag(sup_index, "a") == Some(index))
                         .then(|| printed_range(sup_index, printed))
                         .flatten()
-                        .filter(|range| range.start == note.body_range.start)
+                        .filter(|range| range.start == note.range.start)
                     });
                 let superscript = superscripts.next();
                 if superscripts.next().is_some() {
@@ -1433,9 +1416,9 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
             }
             if body_bookmark.markup_end > label.markup_start
                 || body_bookmark.range.start != label_range.start
-                || label_range.start != note.body_range.start
+                || label_range.start != note.range.start
                 || !coordinates
-                    .slice_utf16(label_range.end..note.body_range.end)
+                    .slice_utf16(label_range.end..note.range.end)
                     .is_some_and(|body| body.chars().any(char::is_alphabetic))
             {
                 continue;
@@ -1443,7 +1426,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
             // The leading declared label is independent of a reference's
             // printed text or href. Keep a conflict without losing the label.
             updates.push((note_index, Some(label_range), None));
-            if !note.references.is_empty() || note.primary_reference.is_some() {
+            if !note.calls.is_empty() || !note.calls.is_empty() {
                 continue;
             }
             let Some(reference_bookmark_index) =
@@ -1510,35 +1493,26 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
         (updates, printed_updates)
     };
     for (index, label_range, reference) in updates {
-        let note = &mut structure.notes[index];
+        let note = &mut structure.nodes[index];
         if let Some(label_range) = label_range {
-            note.label_range = label_range;
-            note.label_ranges = vec![label_range];
-            note.body_range.start = label_range.end;
-            note.body_ranges.retain_mut(|range| {
+            note.marker_range = Some(label_range);
+            note.range.start = label_range.end;
+            note.ranges.retain_mut(|range| {
                 range.start = range.start.max(label_range.end);
                 range.start < range.end
             });
         }
         if let Some((reference_range, reference_name)) = reference {
-            note.primary_reference = Some(reference_range);
-            note.references.push(NoteReference {
-                range: reference_range,
-                anchor: reference_name,
-                page_indexes: Vec::new(),
-                line_ids: Vec::new(),
-            });
+            note.calls.push(reference_range);
         }
     }
     let mut markers = HashMap::new();
     for (index, marker, label, printed, references) in printed_updates {
-        let note = &mut structure.notes[index];
-        note.label_range = marker;
-        note.label_ranges = vec![marker];
-        if let Some(id) = &note.node_id { markers.insert(id.clone(), (marker, label, printed)); }
+        let note = &mut structure.nodes[index];
+        note.marker_range = Some(marker);
+        markers.insert(note.id.clone(), (marker, label, printed));
         if !references.is_empty() {
-            note.primary_reference = references.first().map(|reference| reference.range);
-            note.references = references;
+            note.calls = references;
         }
     }
     // The body is already supplied. Attach its printed marker/reference
@@ -1811,7 +1785,7 @@ pub(super) fn courtlistener_printed_note_blocks(
     elements: &[MarkupElement],
     text: &ScalarText<'_>,
     existing: &[RawBlock],
-) -> Vec<(RawBlock, Vec<NoteReference>)> {
+) -> Vec<(RawBlock, Vec<ScalarRange>)> {
     if !elements.iter().any(|element| {
         element.tag == "h2"
             && text
@@ -1939,7 +1913,7 @@ pub(super) fn courtlistener_printed_note_blocks(
         if bodies.is_empty() {
             continue;
         }
-        let mut references = HashMap::<&str, Vec<NoteReference>>::new();
+        let mut references = HashMap::<&str, Vec<ScalarRange>>::new();
         for (index, element) in
             elements[..heading_index]
                 .iter()
@@ -1974,12 +1948,7 @@ pub(super) fn courtlistener_printed_note_blocks(
             {
                 continue;
             }
-            references.entry(marker).or_default().push(NoteReference {
-                range,
-                anchor: None,
-                page_indexes: Vec::new(),
-                line_ids: Vec::new(),
-            });
+            references.entry(marker).or_default().push(range);
         }
         let mut counts = HashMap::new();
         for (_, marker, _) in &bodies {
@@ -2031,15 +2000,15 @@ pub(super) fn courtlistener_printed_note_blocks(
 
 pub(super) fn supplement_courtlistener_printed_notes(
     structure: &mut DocumentStructure,
-    notes: Vec<(RawBlock, Vec<NoteReference>)>,
+    notes: Vec<(RawBlock, Vec<ScalarRange>)>,
 ) {
     for (raw, references) in notes {
         let Some(marker) = raw.metadata.note_marker else {
             continue;
         };
-        if structure.notes.iter().any(|note| {
-            note.label_range == marker
-                || (note.body_range.start <= marker.start && marker.end <= note.body_range.end)
+        if structure.nodes.iter().filter(|node| node.kind == NodeKind::Footnote).any(|note| {
+            note.marker_range == Some(marker)
+                || (note.range.start <= marker.start && marker.end <= note.range.end)
         }) {
             continue;
         }
@@ -2063,17 +2032,7 @@ pub(super) fn supplement_courtlistener_printed_notes(
         node.markup_attributes = raw.metadata.attributes;
         node.marker_range = Some(marker);
         node.grammar = Some("courtlistener-notes-sup".to_owned());
-        structure.notes.push(Note {
-            id: format!("note-{}", node.id),
-            node_id: Some(node.id.clone()),
-            kind: NoteKindV2::Footnote,
-            label_range: marker,
-            body_range: node.range,
-            label_ranges: vec![marker],
-            body_ranges: vec![node.range],
-            primary_reference: references.first().map(|reference| reference.range),
-            references,
-        });
+        node.calls = references;
         structure.nodes.push(node);
     }
 }
@@ -2081,8 +2040,8 @@ pub(super) fn supplement_courtlistener_printed_notes(
 /// A printed note's label is not a paragraph number: a recovered numbered paragraph that a
 /// note's own marker opens is that note, not the opinion's prose.
 pub(super) fn drop_note_numbered_paragraphs(structure: &mut DocumentStructure) {
-    let labels = structure.notes.iter()
-        .flat_map(|note| note.label_ranges.iter().copied().chain([note.label_range]))
+    let labels = structure.nodes.iter().filter(|node| node.kind == NodeKind::Footnote)
+        .filter_map(|note| note.marker_range)
         .filter(|range| range.start < range.end)
         .collect::<Vec<_>>();
     let dropped = structure.nodes.iter()
@@ -3021,23 +2980,10 @@ pub(super) fn courtlistener_slip_notes(structure: &mut DocumentStructure) {
         node.label = Some(format!("fn{number}"));
         node.marker_range = Some(label);
         node.grammar = Some("courtlistener-slip-notes".to_owned());
-        let note = Note {
-            id: format!("note-{}", node.id),
-            node_id: Some(node.id.clone()),
-            kind: NoteKindV2::Footnote,
-            label_range: label,
-            body_range: range,
-            label_ranges: vec![label],
-            body_ranges: vec![range],
-            primary_reference: refs.first().copied(),
-            references: refs.into_iter().map(|range| NoteReference { range, anchor: None, page_indexes: Vec::new(), line_ids: Vec::new() }).collect(),
-        };
-        additions.push((node, note));
+        node.calls = refs;
+        additions.push(node);
     }
-    for (node, note) in additions {
-        structure.nodes.push(node);
-        structure.notes.push(note);
-    }
+    structure.nodes.extend(additions);
 }
 
 /// An opinion's opening page: the text before the first page marker of a numbering sits on the
@@ -3373,7 +3319,7 @@ pub(super) fn finish(
     structure: &mut DocumentStructure,
     note_references: Vec<(String, Option<String>, ScalarRange)>,
     matched_role_starts: &HashSet<usize>,
-    printed_notes: Vec<(RawBlock, Vec<NoteReference>)>,
+    printed_notes: Vec<(RawBlock, Vec<ScalarRange>)>,
     heading_exclusions: &[ScalarRange],
     body_exclusions: &[ScalarRange],
 ) {
@@ -3381,57 +3327,22 @@ pub(super) fn finish(
     prefer_source_note_markers(structure);
     clip_courtlistener_paragraphs_to_opinions(structure, matched_role_starts);
     native_table_coordinates(structure);
-    let mut references = HashMap::<String, Vec<NoteReference>>::new();
-    for (target, anchor, range) in note_references {
-        references.entry(target).or_default().push(NoteReference {
-            range,
-            anchor,
-            page_indexes: Vec::new(),
-            line_ids: Vec::new(),
-        });
+    let mut references = HashMap::<String, Vec<ScalarRange>>::new();
+    for (target, _, range) in note_references {
+        references.entry(target).or_default().push(range);
     }
-    let mut anchor_counts = HashMap::<&str, usize>::new();
+    // Each note the markup declares its calls, by its anchor where one node alone holds that anchor.
+    let mut anchor_counts = HashMap::<String, usize>::new();
     for node in &structure.nodes {
-        if let Some(anchor) = node.anchor.as_deref() {
-            *anchor_counts.entry(anchor).or_default() += 1;
+        if let Some(anchor) = &node.anchor {
+            *anchor_counts.entry(anchor.clone()).or_default() += 1;
         }
     }
-    let mut derived_notes = std::mem::take(&mut structure.notes)
-        .into_iter()
-        .filter_map(|note| note.node_id.clone().map(|id| (id, note)))
-        .collect::<HashMap<_, _>>();
-    structure.notes = structure
-        .nodes
-        .iter()
-        .filter(|node| node.kind == NodeKind::Footnote)
-        .map(|node| {
-            if let Some(note) = derived_notes.remove(&node.id) {
-                return note;
-            }
-            let references = node
-                .anchor
-                .as_deref()
-                .filter(|anchor| anchor_counts.get(anchor) == Some(&1))
-                .and_then(|anchor| references.remove(anchor))
-                .unwrap_or_default();
-            Note {
-                id: format!("note-{}", node.id),
-                node_id: Some(node.id.clone()),
-                kind: NoteKindV2::Footnote,
-                // Attribute-only labels have no rendered span; a source
-                // label or sibling number retains its separate range.
-                label_range: node.marker_range.unwrap_or(ScalarRange {
-                    start: node.range.start,
-                    end: node.range.start,
-                }),
-                body_range: node.range,
-                label_ranges: node.marker_range.into_iter().filter(|range| range.start < range.end).collect(),
-                body_ranges: if node.ranges.is_empty() { vec![node.range] } else { node.ranges.clone() },
-                primary_reference: references.first().map(|reference| reference.range),
-                references,
-            }
-        })
-        .collect();
+    for node in structure.nodes.iter_mut().filter(|node| node.kind == NodeKind::Footnote && node.source == Derivation::Native) {
+        if let Some(calls) = node.anchor.as_deref().filter(|anchor| anchor_counts.get(*anchor) == Some(&1)).and_then(|anchor| references.remove(anchor)) {
+            node.calls = calls;
+        }
+    }
     supplement_courtlistener_bookmarked_notes(structure);
     supplement_courtlistener_declared_note_references(structure, matched_role_starts);
     clip_courtlistener_pre_note_bodies(structure);
@@ -3465,7 +3376,7 @@ pub(super) fn evidence(
     rendered_exclusions: &mut Vec<ScalarRange>,
     mut recovered_body_blocks: Vec<RawBlock>,
     matched_role_starts: &HashSet<usize>,
-) -> Vec<(RawBlock, Vec<NoteReference>)> {
+) -> Vec<(RawBlock, Vec<ScalarRange>)> {
     if scope.kind == "complete"
         && matches!(
             scope.markup_serialization,
@@ -3571,4 +3482,9 @@ pub(super) fn sibling_note_labels(elements: &[MarkupElement], text: &str, render
             }
         }
     }
+}
+
+/// A note's label: its marker, or an empty range at its body's start where it prints none.
+fn note_label(note: &crate::StructureNode) -> ScalarRange {
+    note.marker_range.unwrap_or(ScalarRange { start: note.range.start, end: note.range.start })
 }

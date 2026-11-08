@@ -27,7 +27,7 @@ pub use legal_layout::{ablated, CitationSpan, LayoutAnalysis, NumberingMarker, P
 pub use definitions::{DefinedTerm, DefinitionOccurrence};
 pub use document::{
     CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,
-    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, PrimaryRole, SourceFragment, StructureDiagnostic, StructureNode,
+    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, PrimaryRole, SourceFragment, StructureDiagnostic, StructureNode,
 };
 pub use docx::{
     DocxAttachmentReference, DocxAttachmentReferenceStatus, DocxCrossReference,
@@ -214,34 +214,6 @@ pub enum CandidateObservationV2 {
     /// The witnesses of the marker's line, composed over its page and document, read it as a
     /// numbered paragraph.
     ComposedParagraph,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-pub struct TextAnchorV2 {
-    pub range: ScalarRange,
-    pub page_index: usize,
-    pub line_id: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-pub struct NoteBodyV2 {
-    pub range: ScalarRange,
-    /// Exact source membership; `range` is its searchable envelope.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ranges: Vec<ScalarRange>,
-    pub page_indexes: Vec<usize>,
-    pub line_ids: Vec<String>,
-}
-
-
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-pub struct NotePairClaimV2 {
-    pub pair_id: String,
-    pub support: NotePairSupportV2,
-    pub kind: NoteKindV2,
-    pub label: TextAnchorV2,
-    pub body: NoteBodyV2,
-    pub references: Vec<TextAnchorV2>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]

@@ -47,8 +47,7 @@ pub(crate) fn supplement_source_formatted_headings(
     };
     let notes = structure.nodes.iter()
         .filter(|node| matches!(node.kind, NodeKind::Footnote | NodeKind::Endnote))
-        .flat_map(|node| structure.query_ranges(node).into_owned())
-        .chain(structure.notes.iter().flat_map(|note| note.label_ranges.iter().chain(&note.body_ranges).copied()))
+        .flat_map(|node| structure.query_ranges(node).into_owned().into_iter().chain(node.marker_range))
         .collect::<Vec<_>>();
     let blocked_headings = merge_ranges(heading_exclusions.iter().copied()
         .chain(notes.iter().copied()).collect());

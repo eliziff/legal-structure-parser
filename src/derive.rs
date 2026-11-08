@@ -62,7 +62,6 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>
     let mut counters = HashMap::<NodeKind, usize>::new();
     let mut generated_parents = Vec::new();
     let mut diagnostics = Vec::new();
-    let mut notes = Vec::new();
     for mut block in inferred {
         let Some(range) = evidence.clip_inference(block.kind.evidence(), block.range) else {
             continue;
@@ -109,13 +108,7 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>
         node.aliases = (!block.aliases.is_empty()).then_some(block.aliases);
         node.content_start = block.content_start;
         node.marker_range = block.marker_range;
-        if let Some(mut note) = block.note {
-            note.id = format!("note-{}", node.id);
-            note.node_id = Some(node.id.clone());
-            note.body_range = block.range;
-            note.body_ranges = vec![block.range];
-            notes.push(note);
-        }
+        node.calls = block.calls;
         nodes.push(node);
     }
     if native_parents
@@ -181,7 +174,7 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>
                 .map(|parent_position| nodes[parent_position].id.clone());
         }
     }
-    DocumentStructure::project_scalar_parts(&coordinates, &mut nodes, &mut notes, &mut diagnostics);
+    DocumentStructure::project_scalar_parts(&coordinates, &mut nodes, &mut diagnostics);
     drop(coordinates);
     let document_id = std::mem::take(&mut evidence.document_id);
     let provider = std::mem::take(&mut evidence.provider);
@@ -205,7 +198,6 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>
         scope,
         origins,
         nodes,
-        notes,
         diagnostics,
     );
     structure

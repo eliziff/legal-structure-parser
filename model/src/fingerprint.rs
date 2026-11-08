@@ -1,16 +1,15 @@
-use crate::{DocumentStructure, ScalarRange};
+use crate::{DocumentStructure, NodeKind, ScalarRange};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-const COMPONENTS: [&str; 13] = [
+const COMPONENTS: [&str; 12] = [
     "identity",
     "text",
     "nodes",
     "markup",
     "document",
-    "notes",
     "authorities",
     "definitions",
     "docx",
@@ -140,7 +139,6 @@ pub fn document_fingerprint(document: &DocumentStructure) -> DocumentFingerprint
             "document",
             serialization_sha256(&(query_text_sha256, rendered_ranges)),
         ),
-        ("notes", serialization_sha256(&document.notes)),
         (
             "authorities",
             serialization_sha256(&document.cited_authorities),
@@ -163,7 +161,7 @@ pub fn document_fingerprint(document: &DocumentStructure) -> DocumentFingerprint
     let counts = DocumentFingerprintCounts {
         nodes: document.nodes.len(),
         markup_elements: document.markup_elements.len(),
-        notes: document.notes.len(),
+        notes: document.nodes.iter().filter(|node| matches!(node.kind, NodeKind::Footnote | NodeKind::Endnote)).count(),
         authorities: document.cited_authorities.len(),
         definitions: document.definitions.len(),
         diagnostics: document.diagnostics.len(),

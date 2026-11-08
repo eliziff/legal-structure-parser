@@ -65,7 +65,7 @@ pub use canlii::{canlii_case_url, canlii_court_route, canlii_law_url};
 pub(crate) use document::node_depths;
 pub use document::{
     CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,
-    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, Note, NoteKindV2, NoteReference, PrimaryRole, SourceFragment, StructureDiagnostic, StructureNode,
+    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, PrimaryRole, SourceFragment, StructureDiagnostic, StructureNode,
 };
 pub use docx_lint::*;
 pub use docx_numbering::*;
@@ -101,8 +101,8 @@ pub use text::{
 pub(crate) use legal_structure_model::EvidenceKind;
 pub use legal_structure_model::{
     CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, CandidateRoleV2, DetectionProfile, EngineError,
-    NoteBodyV2, NotePairClaimV2, NotePairSupportV2, Origin, ResolutionProofV2, ResolutionRuleV2, ScalarRange, Scope,
-    LayoutAnalysis, ScopeKind, StructureAnalysis, StructureCandidateRun, StructureMarkerCandidate, TextAnchorV2,
+    NotePairSupportV2, Origin, ResolutionProofV2, ResolutionRuleV2, ScalarRange, Scope,
+    LayoutAnalysis, ScopeKind, StructureAnalysis, StructureCandidateRun, StructureMarkerCandidate,
     UnitRole, DOCUMENT_STRUCTURE_SCHEMA,
 };
 pub const ENGINE_SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_ENGINE_SHA256");
@@ -228,7 +228,7 @@ struct Block {
     parent_label: Option<String>,
     content_start: Option<usize>,
     marker_range: Option<ScalarRange>,
-    note: Option<Note>,
+    calls: Vec<ScalarRange>,
     diagnostic: Option<&'static str>,
     source: Derivation,
     origin_id: &'static str,
@@ -244,7 +244,7 @@ impl Block {
             parent_label: None,
             content_start: None,
             marker_range: None,
-            note: None,
+            calls: Vec::new(),
             diagnostic: None,
             source: Derivation::Heuristic,
             origin_id: ENGINE_ORIGIN,

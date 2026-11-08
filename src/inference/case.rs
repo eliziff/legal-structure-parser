@@ -528,12 +528,7 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
         if evidence.clip_inference(EvidenceKind::Footnote, body_range) != Some(body_range) { continue; }
         let mut block = Block::labelled(NodeKind::Footnote, format!("fn{number}"), body_start, body_end);
         block.marker_range = Some(label_range);
-        block.note = Some(Note {
-            id: String::new(), node_id: None, kind: NoteKindV2::Footnote,
-            label_range, body_range, label_ranges: vec![label_range], body_ranges: vec![body_range],
-            references: vec![NoteReference { range: reference, anchor: None, page_indexes: Vec::new(), line_ids: Vec::new() }],
-            primary_reference: Some(reference),
-        });
+        block.calls = vec![reference];
         if separate_block {
             block.diagnostic = Some("source-note-block-fragment");
         } else if physical.end < text.len() && (body_end == physical.end

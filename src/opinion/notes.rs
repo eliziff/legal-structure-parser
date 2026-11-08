@@ -8,10 +8,8 @@ pub(super) fn plain_label(label: &str) -> &str {
 }
 
 /// A note's printed label, and how much of its body merely repeats it.
-pub(super) fn note_label_of(structure: &DocumentStructure, coordinates: &ScalarText, note: &crate::Note) -> (String, usize) {
-    let node = note.node_id.as_ref().and_then(|id| structure.nodes.iter().find(|node| &node.id == id));
-    let label = node.and_then(|node| node.label.as_deref()).unwrap_or("").trim_start_matches("fn").to_owned();
-    note_opening(coordinates.slice_utf16(note.body_range.start..note.body_range.end).unwrap_or(""), label)
+pub(super) fn note_label_of(coordinates: &ScalarText, note: &StructureNode) -> (String, usize) {
+    note_opening(coordinates.slice_utf16(note.range.start..note.range.end).unwrap_or(""), note.printed_label().to_owned())
 }
 
 /// Notes another text of the case prints and this reading lacks: another rendition's, or the head matter's, where a
@@ -23,7 +21,7 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, other: &DocumentSt
     #[allow(clippy::redundant_closure_call)]
     let result = (|| -> () {
     const SHINGLE: usize = 4;
-    if other.notes.is_empty() {
+    if !other.nodes.iter().any(|node| node.kind == NodeKind::Footnote) {
         return;
     }
     let words_of = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<HashSet<_>>();
@@ -49,18 +47,18 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, other: &DocumentSt
         Some(ScalarRange { start: unit, end: unit })
     };
     let mut added = HashSet::new();
-    for note in &other.notes {
-        let (label, echo) = note_label_of(other, &coordinates, note);
-        let body = coordinates.slice_utf16((note.body_range.start + echo).min(note.body_range.end)..note.body_range.end).map(trim_js).unwrap_or("");
+    for note in other.nodes.iter().filter(|node| node.kind == NodeKind::Footnote) {
+        let (label, echo) = note_label_of(&coordinates, note);
+        let body = coordinates.slice_utf16((note.range.start + echo).min(note.range.end)..note.range.end).map(trim_js).unwrap_or("");
         let words = words_of(body);
         if words.is_empty() || notes_title(body) || !added.insert(body.to_owned()) {
             continue;
         }
-        let calls = note.calls.iter().filter_map(|call| placed(call.range)).collect::<Vec<_>>();
+        let calls = note.calls.iter().filter_map(|call| placed(*call)).collect::<Vec<_>>();
         if let Some(same) = held.iter().position(|ours| words.iter().filter(|word| ours.contains(*word)).count() * 2 > words.len()) {
             structure.opinion.as_mut().unwrap().note_witness[usize::from(notes[same].calls.is_empty())] += 1;
             if notes[same].calls.is_empty() {
-                notes[same].properties.contains_key("called_outside") = calls.is_empty() && !note.calls.is_empty();
+                if calls.is_empty() && !note.calls.is_empty() {
                 notes[same].calls = calls;
             }
             continue;

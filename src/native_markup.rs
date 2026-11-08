@@ -4,7 +4,7 @@ use crate::text::{
 use crate::{
     utf16_len, CitedAuthority, DetectionProfile,
     DocumentInput, DocumentStructure, EngineError, EvidenceKind, Exclusion, MarkupAncestor,
-    MarkupElement, NativeClaim, NodeKind, NoteReference, ScalarRange, ScalarText,
+    MarkupElement, NativeClaim, NodeKind, ScalarRange, ScalarText,
     Scope, ScopeKind,
 };
 use regex::Regex;
@@ -2197,7 +2197,7 @@ fn native_markup_evidence(
         String,
         Vec<MarkupAncestor>,
         HashSet<usize>,
-        Vec<(RawBlock, Vec<NoteReference>)>,
+        Vec<(RawBlock, Vec<ScalarRange>)>,
     ),
     EngineError,
 > {

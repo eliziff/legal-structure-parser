@@ -826,7 +826,9 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
                 label_run(label).map_or_else(|| series.clone(), |run| format!("{series}/{run}"))
             }, range.start, range.end, node.marker_range, page_source(node))
     }).collect::<Vec<_>>();
-    let note_ranges = structure.notes.iter().flat_map(|note| note.body_ranges.iter().copied()).collect::<Vec<_>>();
+    let footnotes = structure.nodes.iter().filter(|node| node.kind == NodeKind::Footnote).collect::<Vec<_>>();
+    let body = |note: &StructureNode| if note.ranges.is_empty() { vec![note.range] } else { note.ranges.clone() };
+    let note_ranges = footnotes.iter().flat_map(|note| body(note)).collect::<Vec<_>>();
     element_pages(structure, &coordinates, &note_ranges, &mut pages);
     pages.sort_by_key(|page| page.range.start);
     for page in &mut pages {
@@ -983,13 +985,13 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
     paragraphs.sort_by_key(|paragraph| paragraph.range.start);
     let blocks = block_marks(name, structure, &coordinates).into_iter().map(|(label, start)| OpinionBlock { label, start, source: "marked".to_owned(), pins: Vec::new() }).collect::<Vec<_>>();
 
-    let notes = structure.notes.iter().map(|note| {
-        let (label, echo) = note_label_of(structure, &coordinates, note);
-        let mut ranges = note.body_ranges.clone();
+    let notes = footnotes.iter().map(|note| {
+        let (label, echo) = note_label_of(&coordinates, note);
+        let mut ranges = body(note);
         if let Some(first) = ranges.first_mut() {
             first.start = (first.start + echo).min(first.end);
         }
-        read_note(label, (note.body_range.start + echo).min(note.body_range.end), note.body_range.end, ranges, note.calls.iter().map(|reference| reference.range).collect())
+        read_note(label, (note.range.start + echo).min(note.range.end), note.range.end, ranges, note.calls.clone())
     }).collect::<Vec<_>>();
     let mut notes = join_citation_fragments(notes, &coordinates);
 
@@ -1139,7 +1141,7 @@ fn note_paragraphs_elsewhere(structure: &mut DocumentStructure, pending: &mut Pe
         places: places(other.query_text()),
         pages: other.nodes.iter().filter(|node| node.kind == NodeKind::Page && node.grammar.is_none()).filter_map(|node| Some(node.label.as_deref()?.trim_start_matches("page").to_owned())).collect(),
         numbers: if counts_its_blocks(other) { Vec::new() } else { paragraphs().filter_map(|node| Some(node.label.as_deref()?.strip_prefix("par")?.to_owned())).collect() },
-        notes: other.notes.iter().filter_map(|note| coordinates.slice_utf16(note.body_range.start..note.body_range.end)).filter_map(opening_words).collect(),
+        notes: other.nodes.iter().filter(|node| node.kind == NodeKind::Footnote).filter_map(|note| coordinates.slice_utf16(note.range.start..note.range.end)).filter_map(opening_words).collect(),
         headnotes: other.nodes.iter().filter(|node| node.role == Some(PrimaryRole::Headnote)).filter_map(printed).filter_map(opening_words).collect(),
     });
 }

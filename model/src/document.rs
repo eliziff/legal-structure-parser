@@ -61,15 +61,6 @@ pub enum Derivation {
     Heuristic,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NoteKindV2 {
-    Footnote,
-    Endnote,
-    Sidenote,
-    TableNote,
-    AuthorNote,
-}
 
 /// Functional roles are independent of locators and structural object kinds.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -324,34 +315,7 @@ pub fn public_structure_label(value: &str) -> Cow<'_, str> {
     Cow::Owned(result)
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct NoteReference {
-    pub range: ScalarRange,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub anchor: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub page_indexes: Vec<usize>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub line_ids: Vec<String>,
-}
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Note {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node_id: Option<String>,
-    pub kind: NoteKindV2,
-    pub label_range: ScalarRange,
-    pub body_range: ScalarRange,
-    /// Exact source membership; the singular ranges are positioning envelopes.
-    #[serde(default)]
-    pub label_ranges: Vec<ScalarRange>,
-    #[serde(default)]
-    pub body_ranges: Vec<ScalarRange>,
-    pub references: Vec<NoteReference>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub primary_reference: Option<ScalarRange>,
-}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CitedAuthority {
@@ -473,8 +437,6 @@ pub struct DocumentStructure {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub markup_sha256: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub notes: Vec<Note>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub cited_authorities: Vec<CitedAuthority>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub definitions: Vec<DefinedTerm>,
@@ -496,7 +458,6 @@ impl DocumentStructure {
     pub fn project_scalar_parts(
         coordinates: &ScalarText<'_>,
         nodes: &mut [StructureNode],
-        notes: &mut [Note],
         diagnostics: &mut [StructureDiagnostic],
     ) {
         if coordinates.len() == coordinates.utf16_len() {
@@ -523,18 +484,8 @@ impl DocumentStructure {
             if let Some(range) = &mut node.marker_range {
                 utf16_range(range);
             }
-        }
-        for note in notes {
-            utf16_range(&mut note.label_range);
-            utf16_range(&mut note.body_range);
-            for range in note.label_ranges.iter_mut().chain(&mut note.body_ranges) {
-                utf16_range(range);
-            }
-            for reference in &mut note.references {
-                utf16_range(&mut reference.range);
-            }
-            if let Some(reference) = &mut note.primary_reference {
-                utf16_range(reference);
+            for call in &mut node.calls {
+                utf16_range(call);
             }
         }
         for diagnostic in diagnostics {
@@ -553,11 +504,10 @@ impl DocumentStructure {
         scope: Scope,
         origins: Vec<Origin>,
         mut nodes: Vec<StructureNode>,
-        mut notes: Vec<Note>,
         mut diagnostics: Vec<StructureDiagnostic>,
     ) -> Self {
         let coordinates = ScalarText::new(&text);
-        Self::project_scalar_parts(&coordinates, &mut nodes, &mut notes, &mut diagnostics);
+        Self::project_scalar_parts(&coordinates, &mut nodes, &mut diagnostics);
         Self::from_projected_parts(
             document_id,
             provider,
@@ -570,7 +520,6 @@ impl DocumentStructure {
             scope,
             origins,
             nodes,
-            notes,
             diagnostics,
         )
     }
@@ -587,7 +536,6 @@ impl DocumentStructure {
         scope: Scope,
         origins: Vec<Origin>,
         nodes: Vec<StructureNode>,
-        notes: Vec<Note>,
         diagnostics: Vec<StructureDiagnostic>,
     ) -> Self {
         let mut structure = Self {
@@ -613,7 +561,6 @@ impl DocumentStructure {
             markup_elements: Vec::new(),
             markup_ancestors: Vec::new(),
             markup_sha256: None,
-            notes,
             cited_authorities: Vec::new(),
             definitions: Vec::new(),
             docx: None,
