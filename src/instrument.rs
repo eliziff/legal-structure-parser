@@ -455,22 +455,13 @@ pub fn analyze_instrument(
         .enumerate()
         .filter(|(_, node)| node.kind == NodeKind::Section)
         .collect::<Vec<_>>();
+    // Each line's section: the deepest open where it opens (the last of those, among equals).
     let lines = text.lines();
-    let raw = derive_definitions_bytes(&text, lines.len(), |index| {
-        (lines[index][0], lines[index][1])
-    });
-    let mut paragraphs = raw
-        .iter()
-        .flat_map(|term| term.definitions.iter().chain(&term.uses))
-        .map(|hit| hit.paragraph)
-        .collect::<Vec<_>>();
-    paragraphs.sort_unstable();
-    paragraphs.dedup();
     let mut next_section = 0;
     let mut active_sections = Vec::new();
-    let mut owners = Vec::with_capacity(paragraphs.len());
-    for &paragraph in &paragraphs {
-        let start = text.utf16_at_byte(lines[paragraph][0]).unwrap();
+    let mut owners = Vec::with_capacity(lines.len());
+    for line in lines {
+        let start = text.utf16_at_byte(line[0]).unwrap();
         while next_section < sections.len() && sections[next_section].1.range.start <= start {
             active_sections.push(sections[next_section]);
             next_section += 1;
@@ -483,23 +474,15 @@ pub fn analyze_instrument(
                 .map(|(_, node)| node.id.as_str()),
         );
     }
-    let occurrence = |hit: DefinitionHit| DefinitionOccurrence {
+    let definitions = defined_terms(&text, |paragraph, start, end| DefinitionOccurrence {
         range: ScalarRange {
-            start: text.utf16_at_byte(hit.start).unwrap(),
-            end: text.utf16_at_byte(hit.end).unwrap(),
+            start: text.utf16_at_byte(start).unwrap(),
+            end: text.utf16_at_byte(end).unwrap(),
         },
-        node_id: owners[paragraphs.binary_search(&hit.paragraph).unwrap()].map(str::to_owned),
-        source_paragraph_id: hit.paragraph.to_string(),
+        node_id: owners[paragraph].map(str::to_owned),
+        source_paragraph_id: paragraph.to_string(),
         source_artifact_id: Some(structure.document_id.clone()),
-    };
-    let definitions = raw
-        .into_iter()
-        .map(|term| DefinedTerm {
-            term: term.term,
-            definitions: term.definitions.into_iter().map(&occurrence).collect(),
-            uses: term.uses.into_iter().map(&occurrence).collect(),
-        })
-        .collect();
+    });
     structure.definitions = definitions;
     if !tables.is_empty() {
         let depths = depths
@@ -520,8 +503,6 @@ pub fn analyze_instrument(
     Ok(structure)
 }
 
-/// Defined terms: a quoted capitalized term in brackets ("the "Agreement"") or opening a list
-/// entry (""Agreement" means"), each with where it is defined and used, in byte offsets.
 #[cfg(feature = "structure-inference")]
 static PAREN: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"\(([^()]*)\)").unwrap());
 #[cfg(feature = "structure-inference")]
@@ -540,21 +521,6 @@ static LIST: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
 });
 
 #[cfg(feature = "structure-inference")]
-#[derive(Clone, Copy)]
-pub(crate) struct DefinitionHit {
-    pub paragraph: usize,
-    pub start: usize,
-    pub end: usize,
-}
-
-#[cfg(feature = "structure-inference")]
-pub(crate) struct ByteDefinedTerm {
-    pub term: String,
-    pub definitions: Vec<DefinitionHit>,
-    pub uses: Vec<DefinitionHit>,
-}
-
-#[cfg(feature = "structure-inference")]
 fn bounded(text: &str, start: usize, end: usize) -> bool {
     let bytes = text.as_bytes();
     let left = bytes.get(start.wrapping_sub(1)).copied().unwrap_or(b' ');
@@ -562,16 +528,21 @@ fn bounded(text: &str, start: usize, end: usize) -> bool {
     !left.is_ascii_alphanumeric() && !right.is_ascii_lowercase() && !right.is_ascii_digit()
 }
 
+/// Defined terms: a quoted capitalized term in brackets ("the "Agreement"") or opening a list entry (""Agreement"
+/// means"), each with where it is defined and used, read a line to a paragraph; `occurrence` makes each of a paragraph's
+/// byte span.
 #[cfg(feature = "structure-inference")]
-pub(crate) fn derive_definitions_bytes(
+fn defined_terms(
     document: &ScalarText<'_>,
-    paragraph_count: usize,
-    span: impl Fn(usize) -> (usize, usize),
-) -> Vec<ByteDefinedTerm> {
+    occurrence: impl Fn(usize, usize, usize) -> DefinitionOccurrence,
+) -> Vec<DefinedTerm> {
     let text = document.value;
-    let mut terms = Vec::<(String, Vec<DefinitionHit>)>::new();
+    let lines = document.lines();
+    let span = |paragraph: usize| (lines[paragraph][0], lines[paragraph][1]);
+    // Each term, the paragraphs defining it, and its definitions.
+    let mut terms = Vec::<(String, Vec<usize>, Vec<DefinitionOccurrence>)>::new();
     let mut term_indices = HashMap::<&str, usize>::new();
-    for paragraph in 0..paragraph_count {
+    for paragraph in 0..lines.len() {
         let (base, end) = span(paragraph);
         let text = &text[base..end];
         if !text.contains('"') {
@@ -597,23 +568,18 @@ pub(crate) fn derive_definitions_bytes(
         }
         let mut seen = HashSet::new();
         for (term, start, end) in found.into_iter().filter(|(term, _, _)| seen.insert(*term)) {
-            let hit = DefinitionHit {
-                paragraph,
-                start: base + start,
-                end: base + end,
-            };
-            if let Some(&term_index) = term_indices.get(term) {
-                terms[term_index].1.push(hit);
-            } else {
-                term_indices.insert(term, terms.len());
-                terms.push((term.to_owned(), vec![hit]));
-            }
+            let index = *term_indices.entry(term).or_insert_with(|| {
+                terms.push((term.to_owned(), Vec::new(), Vec::new()));
+                terms.len() - 1
+            });
+            terms[index].1.push(paragraph);
+            terms[index].2.push(occurrence(paragraph, base + start, base + end));
         }
     }
 
-    let mut uses = vec![Vec::<DefinitionHit>::new(); terms.len()];
+    let mut uses = vec![Vec::<(usize, usize, usize)>::new(); terms.len()];
     if !terms.is_empty() {
-        let matcher = aho_corasick::AhoCorasick::new(terms.iter().flat_map(|(term, _)| {
+        let matcher = aho_corasick::AhoCorasick::new(terms.iter().flat_map(|(term, _, _)| {
             [
                 std::borrow::Cow::Borrowed(term.as_bytes()),
                 std::borrow::Cow::Owned(
@@ -625,7 +591,7 @@ pub(crate) fn derive_definitions_bytes(
         }))
         .unwrap();
         let mut pattern_ends = vec![0; terms.len() * 2];
-        for paragraph in 0..paragraph_count {
+        for paragraph in 0..lines.len() {
             let (base, end) = span(paragraph);
             let text = &text[base..end];
             pattern_ends.fill(0);
@@ -639,16 +605,8 @@ pub(crate) fn derive_definitions_bytes(
                     continue;
                 }
                 let term_index = pattern_index / 2;
-                if terms[term_index]
-                    .1
-                    .binary_search_by_key(&paragraph, |defined| defined.paragraph)
-                    .is_err()
-                {
-                    uses[term_index].push(DefinitionHit {
-                        paragraph,
-                        start: base + hit.start(),
-                        end: base + hit.end(),
-                    });
+                if terms[term_index].1.binary_search(&paragraph).is_err() {
+                    uses[term_index].push((paragraph, base + hit.start(), base + hit.end()));
                 }
             }
         }
@@ -657,12 +615,12 @@ pub(crate) fn derive_definitions_bytes(
     terms
         .into_iter()
         .zip(uses)
-        .map(|((term, definitions), mut uses)| {
-            uses.sort_unstable_by_key(|hit| (hit.paragraph, hit.start, hit.end));
-            ByteDefinedTerm {
+        .map(|((term, _, definitions), mut uses)| {
+            uses.sort_unstable();
+            DefinedTerm {
                 term,
                 definitions,
-                uses,
+                uses: uses.into_iter().map(|(paragraph, start, end)| occurrence(paragraph, start, end)).collect(),
             }
         })
         .collect()
