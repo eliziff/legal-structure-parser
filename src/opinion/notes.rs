@@ -369,8 +369,7 @@ pub(super) fn flat_notes(structure: &mut DocumentStructure) {
 /// as one block. Numbers climbing by ones from the note's own, after a finished sentence, are each a note if the text calls them.
 pub(super) fn split_note_lists(structure: &mut DocumentStructure) {
     let mut notes = take(structure, Of::Notes);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+
     const LEAST_RUN: usize = 2;
     static NUMBER: OnceLock<Regex> = OnceLock::new();
     let number = NUMBER.get_or_init(|| Regex::new(r"(?-u:\b)(\d{1,3})\. +\p{Lu}").unwrap());
@@ -406,9 +405,7 @@ pub(super) fn split_note_lists(structure: &mut DocumentStructure) {
         notes.append(&mut added);
         notes.sort_by_key(|note| note.range.start);
     }
-})();
     put(structure, notes);
-    result
 }
 
 /// Notes of one label more than once (each opinion's own series) share their calls in order; a note with none takes a

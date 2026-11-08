@@ -62,8 +62,7 @@ pub(super) fn classed_front(structure: &DocumentStructure, coordinates: &ScalarT
 pub(super) fn head_lines(structure: &mut DocumentStructure) {
     let mut paragraphs = take(structure, Of::Paragraphs);
     let mut headings = take(structure, Of::Headings);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+
     const SENTENCE_WORDS: usize = 14;
     // How far down a byline can stand and still close a head.
     const HEAD_BLOCKS: usize = 14;
@@ -121,10 +120,8 @@ pub(super) fn head_lines(structure: &mut DocumentStructure) {
             role: front_role(&heading.display_value.as_deref().unwrap_or("")).unwrap_or("cover").to_owned(), range: Some(ScalarRange { start: heading.range.start, end: heading.range.end }), text: heading.display_value.as_deref().unwrap_or(""),
         }));
     }
-})();
     put(structure, paragraphs);
     put(structure, headings);
-    result
 }
 
 /// What the reporter added among the paragraphs: "NOTE.—", "Held:", a bracketed statement of the case over the opinion;
@@ -133,8 +130,7 @@ pub(super) fn reporter_matter(structure: &mut DocumentStructure) {
     let mut paragraphs = take(structure, Of::Paragraphs);
     let mut notes = take(structure, Of::Notes);
     let mut headings = take(structure, Of::Headings);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+
     static NOTE: OnceLock<Regex> = OnceLock::new();
     static HELD: OnceLock<Regex> = OnceLock::new();
     static SIGNED: OnceLock<Regex> = OnceLock::new();
@@ -241,11 +237,9 @@ pub(super) fn reporter_matter(structure: &mut DocumentStructure) {
         let range = Some(ScalarRange { start: heading.range.start, end: heading.range.end });
         headnote_of("topics", heading.display_value.as_deref().unwrap_or(""), range)
     }));
-})();
     put(structure, paragraphs);
     put(structure, notes);
     put(structure, headings);
-    result
 }
 
 /// A text's sentences, as ranges of bytes. A stop ends one before a capital or the end, unless it closes an abbreviation
@@ -406,8 +400,7 @@ pub(super) fn embedded_topics(markup: &str) -> Vec<OpinionHeadnote> {
 pub(super) fn divisions_of_headnotes(structure: &mut DocumentStructure) {
     let mut paragraphs = take(structure, Of::Paragraphs);
     let mut headings = take(structure, Of::Headings);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+
     static NAME: OnceLock<Regex> = OnceLock::new();
     let name = NAME.get_or_init(|| Regex::new(r"(?i)^(?:syllabus(?: by the court)?|headnotes?|digest|note|synopsis)\.?$").unwrap());
     let coordinates = ScalarText::new(&structure.text);
@@ -435,10 +428,8 @@ pub(super) fn divisions_of_headnotes(structure: &mut DocumentStructure) {
             headnote_of(kind, printed, Some(ScalarRange { start: paragraph.range.start, end: paragraph.range.end }))
         }));
     }
-})();
     put(structure, paragraphs);
     put(structure, headings);
-    result
 }
 
 /// Whether a rendition sets such a title alone, on a line or in a tag of its own: most do not, and reading one is dear.
@@ -478,8 +469,7 @@ pub(super) fn titled_digest(text: &str) -> Option<(&'static str, String)> {
 /// Bracketed headnote numbers opening a paragraph, which no count of paragraphs took: Lawbox's "[1, 2]".
 pub(super) fn printed_headnote_marks(structure: &mut DocumentStructure) {
     let mut paragraphs = take(structure, Of::Paragraphs);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+
     static MARK: OnceLock<Regex> = OnceLock::new();
     let mark = MARK.get_or_init(|| Regex::new(r"^\[(\d{1,3}(?:\s*[-–,]\s*\d{1,3})*)\]").unwrap());
     let coordinates = ScalarText::new(&structure.text);
@@ -493,9 +483,7 @@ pub(super) fn printed_headnote_marks(structure: &mut DocumentStructure) {
     if marks.len() >= 2 {
         structure.opinion.as_mut().unwrap().headnote_marks.extend(marks);
     }
-})();
     put(structure, paragraphs);
-    result
 }
 
 /// What the record's own words show is not here: another judge's writing, the facts it stands on, an image, a later ruling.

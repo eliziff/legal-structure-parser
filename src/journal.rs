@@ -1,6 +1,6 @@
 use crate::locator::literal_page_marker;
 use crate::{
-    CoverageState, DetectionProfile, DocumentInput, DocumentStructure, EngineError, EvidenceKind,
+    DetectionProfile, DocumentInput, DocumentStructure, EngineError, EvidenceKind,
     NativeClaim, ScalarRange, ScalarText,
 };
 use serde::Deserialize;
@@ -158,11 +158,9 @@ fn structure(
         claim.id = format!("native-{:06}", index + 1);
     }
     let end = text.chars().count();
-    let coverage = crate::whole_document_coverage(end, |_| CoverageState::Complete);
-    crate::derive_native_structure_evidence(DocumentInput {
+    Ok(crate::derive::derive(DocumentInput {
         url,
         native_claims: claims,
-        coverage,
         ..DocumentInput::new(
             article_id.to_string(),
             "journal",
@@ -170,7 +168,7 @@ fn structure(
             text,
             ORIGIN,
         )
-    })
+    }, Some(Vec::new())))
 }
 
 pub fn journal_text_document_structure(

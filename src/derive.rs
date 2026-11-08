@@ -15,15 +15,13 @@ fn native_kind(kind: EvidenceKind) -> NodeKind {
         EvidenceKind::Cell => NodeKind::Cell,
     }
 }
-fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> DocumentStructure {
+/// The structure from a reader's evidence: its native claims as nodes, with what inference finds (or the blocks it
+/// was given in place of inference), parents resolved by label, ranges in UTF-16.
+pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> DocumentStructure {
     let coordinates = ScalarText::new(&evidence.text);
     #[cfg(feature = "structure-inference")]
     let inferred = precomputed.unwrap_or_else(|| {
-        if evidence.needs_inference() {
-            inference::inferred_blocks(&evidence, &coordinates)
-        } else {
-            Vec::new()
-        }
+        inference::inferred_blocks(&evidence, &coordinates)
     });
     #[cfg(not(feature = "structure-inference"))]
     let inferred = precomputed.unwrap_or_default();
@@ -212,24 +210,4 @@ fn infer_graph(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> 
         diagnostics,
     );
     structure
-}
-
-#[cfg(feature = "journal")]
-pub(crate) fn derive_native_structure_evidence(
-    evidence: DocumentInput,
-) -> Result<DocumentStructure, EngineError> {
-    Ok(infer_graph(evidence, Some(Vec::new())))
-}
-
-#[cfg(feature = "structure-inference")]
-pub(crate) fn derive_trusted(input: DocumentInput) -> Result<DocumentStructure, EngineError> {
-    Ok(infer_graph(input, None))
-}
-
-#[cfg(feature = "structure-inference")]
-pub(crate) fn derive_trusted_inferred(
-    input: DocumentInput,
-    inferred: Vec<Block>,
-) -> Result<DocumentStructure, EngineError> {
-    Ok(infer_graph(input, Some(inferred)))
 }

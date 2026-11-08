@@ -227,8 +227,7 @@ pub(super) fn enumerated_titles(structure: &mut DocumentStructure) {
 pub(super) fn list_items(structure: &mut DocumentStructure) {
     let mut paragraphs = take(structure, Of::Paragraphs);
     let mut headings = take(structure, Of::Headings);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+
     // An outline numbers with a stop, "I." over "A."; a list with a bracket, "(a)", "d)", "6)".
     static ITEM: OnceLock<Regex> = OnceLock::new();
     let item = ITEM.get_or_init(|| Regex::new(r"^(\(?)([a-z]{1,4}|\d{1,2})\)").unwrap());
@@ -256,10 +255,8 @@ pub(super) fn list_items(structure: &mut DocumentStructure) {
         paragraphs.append(&mut items);
         paragraphs.sort_by_key(|paragraph| paragraph.range.start);
     }
-})();
     put(structure, paragraphs);
     put(structure, headings);
-    result
 }
 
 /// The title of a list of notes.

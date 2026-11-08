@@ -111,35 +111,6 @@ const ENGINE_ORIGIN: &str = "legalpdf.structure-engine";
 #[cfg(feature = "structure-inference")]
 use legal_citations::cues::canadian_report_start;
 
-fn whole_document_coverage(
-    end: usize,
-    state: impl Fn(EvidenceKind) -> CoverageState,
-) -> Vec<Coverage> {
-    [
-        EvidenceKind::Paragraph,
-        EvidenceKind::Prose,
-        EvidenceKind::Page,
-        EvidenceKind::Section,
-        EvidenceKind::Heading,
-        EvidenceKind::Footnote,
-        EvidenceKind::Endnote,
-    ]
-    .into_iter()
-    .map(|kind| Coverage {
-        kind,
-        range: ScalarRange { start: 0, end },
-        state: state(kind),
-    })
-    .collect()
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum CoverageState {
-    Absent,
-    Augment,
-    Complete,
-}
-
 struct NativeClaim {
     id: String,
     kind: EvidenceKind,
@@ -149,12 +120,6 @@ struct NativeClaim {
     origin_id: &'static str,
     parent_label: Option<String>,
     anchor: Option<String>,
-}
-
-struct Coverage {
-    kind: EvidenceKind,
-    range: ScalarRange,
-    state: CoverageState,
 }
 
 struct Exclusion {
@@ -177,7 +142,6 @@ pub(crate) struct DocumentInput {
     scope: Scope,
     origins: Vec<Origin>,
     native_claims: Vec<NativeClaim>,
-    coverage: Vec<Coverage>,
     exclusions: Vec<Exclusion>,
 }
 
@@ -219,25 +183,12 @@ impl DocumentInput {
                 id: origin_id.to_owned(),
             }],
             native_claims: Vec::new(),
-            coverage: Vec::new(),
             exclusions: Vec::new(),
         }
     }
 
     fn clip_inference(&self, kind: EvidenceKind, range: ScalarRange) -> Option<ScalarRange> {
         let mut end = range.end;
-        for value in self
-            .coverage
-            .iter()
-            .filter(|value| value.kind == kind && value.state == CoverageState::Complete)
-        {
-            if value.range.start <= range.start && range.start < value.range.end {
-                return None;
-            }
-            if value.range.start > range.start {
-                end = end.min(value.range.start);
-            }
-        }
         for value in self
             .exclusions
             .iter()
@@ -256,11 +207,6 @@ impl DocumentInput {
         })
     }
 
-    fn needs_inference(&self) -> bool {
-        self.coverage
-            .iter()
-            .any(|value| value.state != CoverageState::Complete)
-    }
 }
 
 #[cfg(feature = "structure-inference")]
@@ -325,4 +271,4 @@ pub use judgment::{date_line, figure_caption};
 #[cfg(feature = "structure-inference")]
 pub use candidates::detect_structure_candidate_runs;
 #[cfg(feature = "journal")]
-pub(crate) use derive::derive_native_structure_evidence;
+

@@ -2,7 +2,7 @@ use crate::text::{
     javascript_whitespace, normalize_javascript_whitespace, trim_javascript_whitespace as trim_js,
 };
 use crate::{
-    derive::derive_trusted, utf16_len, CitedAuthority, CoverageState, DetectionProfile,
+    utf16_len, CitedAuthority, DetectionProfile,
     DocumentInput, DocumentStructure, EngineError, EvidenceKind, Exclusion, MarkupAncestor,
     MarkupElement, NativeClaim, NodeKind, NoteReference, ScalarRange, ScalarText,
     Scope, ScopeKind,
@@ -2384,13 +2384,6 @@ fn native_markup_evidence(
         });
     }
     let scalar_end = coordinates.len();
-    let coverage = crate::whole_document_coverage(scalar_end, |kind| {
-        if native_kinds.contains(&kind) {
-            CoverageState::Augment
-        } else {
-            CoverageState::Absent
-        }
-    });
     let mut exclusions = rendered_exclusions
         .iter()
         .map(|range| {
@@ -2443,7 +2436,6 @@ fn native_markup_evidence(
             excerpt_of: scope.excerpt_of,
         },
         native_claims: claims,
-        coverage,
         exclusions,
         ..DocumentInput::new(
             id,
@@ -2549,7 +2541,7 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
     // in the final UTF-16 coordinates used by the retained markup graph.
     #[cfg(feature = "courtlistener")]
     let exclusions = (evidence.provider == "courtlistener").then(|| courtlistener::inference_exclusions(&evidence));
-    let mut structure = derive_trusted(evidence)?;
+    let mut structure = crate::derive::derive(evidence, None);
     structure.cited_authorities = cited_authorities;
     if structure.provider == "courtlistener" {
         structure.markup_elements = elements;

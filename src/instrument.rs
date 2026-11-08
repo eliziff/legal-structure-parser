@@ -6,7 +6,7 @@ use crate::{
         resolve_instrument_references, FindProvisionReferencesOptions,
     },
     javascript_whitespace, node_depths, AuthoritativeTableCell, AuthoritativeTables, Block,
-    CoverageState, DetectionProfile, DocumentInput,
+    DetectionProfile, DocumentInput,
     DocumentStructure, EngineError, NodeKind, ScalarRange, ScalarText,
 };
 #[cfg(feature = "structure-inference")]
@@ -417,8 +417,7 @@ fn derive_instrument_structure(
         if selected_original { original_sha256.to_owned() } else { String::new() },
         "provider-adapter",
     );
-    input.coverage = crate::whole_document_coverage(scalar_end, |_| CoverageState::Absent);
-    let mut structure = crate::derive::derive_trusted_inferred(input, selected_blocks)?;
+    let mut structure = crate::derive::derive(input, Some(selected_blocks));
     structure.selected_hypothesis = Some(selected);
     let original = original_text.as_deref().unwrap_or(&structure.text);
     let text = ScalarText::new(original);

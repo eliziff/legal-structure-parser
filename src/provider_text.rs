@@ -1,5 +1,5 @@
 use crate::{
-    locator::normalize_section_locator, text::equal_fold, utf16_len, Block, CoverageState,
+    locator::normalize_section_locator, text::equal_fold, utf16_len, Block,
     Derivation, DetectionProfile, DocumentInput, DocumentStructure, EngineError, EvidenceKind,
     NativeClaim, NodeKind, ScalarRange, ScalarText, Scope, ScopeKind,
 };
@@ -516,20 +516,13 @@ pub fn provider_text_document_structure(
         evidence.native_claims = provider_claims(&coordinates, map);
     }
     evidence.native_claims.extend(printed_page_claims(&input.printed_pages, coordinates.len()));
-    evidence.coverage = crate::whole_document_coverage(coordinates.len(), |kind| {
-        if kind == EvidenceKind::Section && !evidence.native_claims.is_empty() {
-            CoverageState::Augment
-        } else {
-            CoverageState::Absent
-        }
-    });
     let mut inferred = crate::inference::inferred_blocks(&evidence, &coordinates);
     if let (ProviderTextSourceKind::Laws, true, Some(map)) =
         (input.source_kind, has_text, input.section_map.as_ref())
     {
         apply_provider_section_evidence(&coordinates, &mut inferred, &evidence.native_claims, map);
     }
-    let mut structure = crate::derive::derive_trusted_inferred(evidence, inferred)?;
+    let mut structure = crate::derive::derive(evidence, Some(inferred));
     if input.source_kind == ProviderTextSourceKind::Cases {
         crate::case_outline::add_case_nodes(&mut structure);
         structure.refresh_revision().expect("Typed document structure is serializable");
