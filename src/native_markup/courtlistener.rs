@@ -59,14 +59,14 @@ pub(super) fn courtlistener_sibling_note_markers(
         .collect()
 }
 
-pub(super) fn courtlistener_footnote_number(raw: &str) -> Option<PendingBlock> {
+pub(super) fn courtlistener_footnote_number(raw: &str) -> Option<StructureNode> {
     let marker = trim_js(raw);
     let number = marker.strip_prefix("[fn")?.strip_suffix(']')?;
     if number.is_empty() || number.len() > 5 || !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
     let mut identity = footnote_identity(number, "", None)?;
-    identity.aliases = vec![marker.to_owned(), format!("footnote {marker}")];
+    identity.aliases = Some(vec![marker.to_owned(), format!("footnote {marker}")]);
     Some(identity)
 }
 
@@ -74,7 +74,7 @@ pub(super) fn courtlistener_numbered_note_markers(
     elements: &[MarkupElement],
     matched_role_starts: &HashSet<usize>,
     text: &str,
-) -> HashMap<usize, (String, Vec<String>, ScalarRange)> {
+) -> HashMap<usize, (Option<String>, Option<Vec<String>>, ScalarRange)> {
     if !elements
         .iter()
         .any(|element| element.tag == "footnote_number")
@@ -82,7 +82,7 @@ pub(super) fn courtlistener_numbered_note_markers(
         return HashMap::new();
     }
     let coordinates = ScalarText::new(text);
-    let mut markers = HashMap::<usize, Option<(String, Vec<String>, ScalarRange)>>::new();
+    let mut markers = HashMap::<usize, Option<(Option<String>, Option<Vec<String>>, ScalarRange)>>::new();
     for element in elements
         .iter()
         .filter(|element| element.tag == "footnote_number")
@@ -1010,7 +1010,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                         .and_then(Option::as_ref)
                         .map_or_else(
                             || node.label.as_deref(),
-                            |(identity, _, _)| Some(identity.label.as_str()),
+                            |(identity, _, _)| identity.label.as_deref(),
                         )?,
                 ))
             }) {
@@ -1035,7 +1035,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                 }) else {
                     continue;
                 };
-                let label = identity.label.as_str();
+                let label = identity.label.as_deref().unwrap_or_default();
                 if note_label(note).start != note_label(note).end && note.marker_range != Some(*marker) {
                     continue;
                 }
@@ -1073,7 +1073,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                                 }
                             }
                             if let Some((_, range, _)) = numeric_marker(index)
-                                .filter(|(reference, _, _)| reference.label == label)
+                                .filter(|(reference, _, _)| reference.label.as_deref() == Some(label))
                             {
                                 references.push(range);
                             }
@@ -1538,7 +1538,7 @@ pub(super) fn courtlistener_declared_note_marker(
     index: usize,
     text: &ScalarText,
     owners: &HashMap<usize, (NodeKind, usize, usize)>,
-) -> Option<(PendingBlock, ScalarRange)> {
+) -> Option<(StructureNode, ScalarRange)> {
     let note = &elements[index];
     let superscript = elements[index + 1..]
         .iter()
@@ -1623,18 +1623,18 @@ pub(super) fn courtlistener_declared_note_marker(
     }
     let mut identity = footnote_identity(marker.strip_suffix('.').unwrap_or(marker), "", None)?;
     if marker.ends_with('.') {
-        identity.aliases = vec![marker.to_owned(), format!("footnote {marker}")];
+        identity.aliases = Some(vec![marker.to_owned(), format!("footnote {marker}")]);
     }
     Some((identity, marker_range))
 }
 
 pub(super) fn courtlistener_declared_blocks(
     elements: &[MarkupElement],
-    existing: &[RawBlock],
-    recovered_bodies: &[RawBlock],
+    existing: &[StructureNode],
+    recovered_bodies: &[StructureNode],
     matched_role_starts: &HashSet<usize>,
     text: &str,
-) -> Vec<RawBlock> {
+) -> Vec<StructureNode> {
     let declared_role = |element: &MarkupElement| {
         let class = |name: &str| {
             element
@@ -1693,7 +1693,7 @@ pub(super) fn courtlistener_declared_blocks(
     let mut owners = existing
         .iter()
         .chain(recovered_bodies)
-        .filter_map(|block| Some((block.metadata.start?, (block.kind, block.start, block.end))))
+        .filter_map(|block| Some((block.markup_start?, (block.kind, block.range.start, block.range.end))))
         .collect::<HashMap<_, _>>();
     let mut recovered = Vec::new();
     for (index, element) in elements.iter().enumerate() {
@@ -1718,7 +1718,7 @@ pub(super) fn courtlistener_declared_blocks(
             continue;
         }
         let mut parent = element.parent;
-        let mut parent_label = None;
+        let mut parent_id = None;
         while let Some(index) = parent {
             let ancestor = &elements[index];
             if owners
@@ -1727,7 +1727,7 @@ pub(super) fn courtlistener_declared_blocks(
                     kind != NodeKind::Page && start <= element.range.start && end >= element.range.end
                 })
             {
-                parent_label = Some(format!("native-markup-{}", ancestor.markup_start));
+                parent_id = Some(format!("native-markup-{}", ancestor.markup_start));
                 break;
             }
             parent = ancestor.parent;
@@ -1743,35 +1743,20 @@ pub(super) fn courtlistener_declared_blocks(
                 courtlistener_declared_note_marker(elements, index, note_text.as_ref()?, &owners)
             })
             .flatten();
-        let note_marker = note.as_ref().map(|(_, range)| *range);
-        let (label, aliases) = note.map_or_else(
-            || {
-                (
-                    if kind == NodeKind::Footnote {
-                        String::new()
-                    } else {
-                        anchor.clone().unwrap_or_default()
-                    },
-                    Vec::new(),
-                )
-            },
-            |(identity, _)| (identity.label, identity.aliases),
-        );
-        recovered.push(RawBlock {
-            metadata: MarkupMetadata {
-                start: Some(element.markup_start),
-                attributes,
-                note_marker,
-            },
-            kind,
-            label,
-            start: note_marker.map_or(element.range.start, |marker| marker.end),
-            end: element.range.end,
-            anchor,
-            markup_tag: Some(element.tag.to_ascii_lowercase()),
-            aliases,
-            parent_label,
-        });
+        let mut block = element_node(kind, String::new(), element);
+        match note {
+            Some((identity, marker)) => {
+                (block.label, block.aliases, block.marker_range) = (identity.label, identity.aliases, Some(marker));
+                block.range.start = marker.end;
+            }
+            None if kind != NodeKind::Footnote => block.label = anchor.clone(),
+            None => {}
+        }
+        block.anchor = anchor;
+        block.markup_attributes = attributes;
+        block.markup_tag = Some(element.tag.to_ascii_lowercase());
+        block.parent_id = parent_id;
+        recovered.push(block);
         owners.insert(
             element.markup_start,
             (kind, element.range.start, element.range.end),
@@ -1784,8 +1769,8 @@ pub(super) fn courtlistener_printed_note_blocks(
     markup: &str,
     elements: &[MarkupElement],
     text: &ScalarText<'_>,
-    existing: &[RawBlock],
-) -> Vec<(RawBlock, Vec<ScalarRange>)> {
+    existing: &[StructureNode],
+) -> Vec<(StructureNode, Vec<ScalarRange>)> {
     if !elements.iter().any(|element| {
         element.tag == "h2"
             && text
@@ -1798,10 +1783,7 @@ pub(super) fn courtlistener_printed_note_blocks(
     let existing_notes = existing
         .iter()
         .filter(|block| block.kind == NodeKind::Footnote)
-        .map(|block| ScalarRange {
-            start: block.start,
-            end: block.end,
-        })
+        .map(|block| block.range)
         .collect::<Vec<_>>();
     let matched = |element: &MarkupElement| {
         markup
@@ -1971,22 +1953,12 @@ pub(super) fn courtlistener_printed_note_blocks(
             let Some(identity) = footnote_identity(marker, "", None) else {
                 continue;
             };
+            let mut note = element_node(NodeKind::Footnote, String::new(), element);
+            (note.label, note.aliases, note.anchor) = (identity.label, identity.aliases, None);
+            note.marker_range = Some(marker_range);
+            note.range = ScalarRange { start: marker_range.end, end };
             result.push((
-                RawBlock {
-                    metadata: MarkupMetadata {
-                        start: Some(element.markup_start),
-                        attributes: element.attributes.clone(),
-                        note_marker: Some(marker_range),
-                    },
-                    kind: NodeKind::Footnote,
-                    label: identity.label,
-                    start: marker_range.end,
-                    end,
-                    anchor: None,
-                    markup_tag: Some(element.tag.clone()),
-                    aliases: identity.aliases,
-                    parent_label: None,
-                },
+                note,
                 if counts.get(marker) == Some(&1) {
                     supported.clone()
                 } else {
@@ -2000,10 +1972,10 @@ pub(super) fn courtlistener_printed_note_blocks(
 
 pub(super) fn supplement_courtlistener_printed_notes(
     structure: &mut DocumentStructure,
-    notes: Vec<(RawBlock, Vec<ScalarRange>)>,
+    notes: Vec<(StructureNode, Vec<ScalarRange>)>,
 ) {
-    for (raw, references) in notes {
-        let Some(marker) = raw.metadata.note_marker else {
+    for (mut node, references) in notes {
+        let Some(marker) = node.marker_range else {
             continue;
         };
         if structure.nodes.iter().filter(|node| node.kind == NodeKind::Footnote).any(|note| {
@@ -2014,23 +1986,9 @@ pub(super) fn supplement_courtlistener_printed_notes(
         }
         // NOTES, a printed label and SUP corroborate a recovered role; the
         // ordinary source P remains Native and is not an explicit footnote tag.
-        let mut node = crate::StructureNode::new(
-            format!("heuristic-footnote-markup-{}", raw.metadata.start.unwrap()),
-            NodeKind::Footnote,
-            ScalarRange {
-                start: raw.start,
-                end: raw.end,
-            },
-            crate::ENGINE_ORIGIN,
-            Derivation::Heuristic,
-            None,
-        );
-        node.label = Some(raw.label);
-        node.aliases = Some(raw.aliases);
-        node.markup_tag = raw.markup_tag;
-        node.markup_start = raw.metadata.start;
-        node.markup_attributes = raw.metadata.attributes;
-        node.marker_range = Some(marker);
+        node.id = format!("heuristic-footnote-markup-{}", node.markup_start.unwrap());
+        node.origin_id = crate::ENGINE_ORIGIN.into();
+        node.source = Derivation::Heuristic;
         node.grammar = Some("courtlistener-notes-sup".to_owned());
         node.calls = references;
         structure.nodes.push(node);
@@ -2068,8 +2026,8 @@ pub(super) fn courtlistener_uncontained_note_blocks(
     markup: &str,
     elements: &[MarkupElement],
     text: &str,
-    existing: &[RawBlock],
-) -> Vec<RawBlock> {
+    existing: &[StructureNode],
+) -> Vec<StructureNode> {
     let candidates = elements
         .iter()
         .enumerate()
@@ -2180,10 +2138,10 @@ pub(super) fn courtlistener_uncontained_note_blocks(
                 element.tag.eq_ignore_ascii_case("p") && descendant(index, paragraph_index)
             })
             || existing.iter().any(|block| {
-                block.metadata.start == Some(note.markup_start)
+                block.markup_start == Some(note.markup_start)
                     || block.kind == NodeKind::Footnote
-                        && block.start < paragraph.range.end
-                        && paragraph.range.start < block.end
+                        && block.range.start < paragraph.range.end
+                        && paragraph.range.start < block.range.end
             })
         {
             continue;
@@ -2369,21 +2327,11 @@ pub(super) fn courtlistener_uncontained_note_blocks(
                 else {
                     continue;
                 };
-                result.push(RawBlock {
-                    metadata: MarkupMetadata {
-                        start: Some(note.markup_start),
-                        attributes: note.attributes.clone(),
-                        note_marker: Some(marker),
-                    },
-                    kind: NodeKind::Footnote,
-                    label: identity.label,
-                    start: marker.end,
-                    end: paragraph.range.end,
-                    anchor: identity.anchor,
-                    markup_tag: Some(note.tag.clone()),
-                    aliases: identity.aliases,
-                    parent_label: None,
-                });
+                let mut block = element_node(NodeKind::Footnote, String::new(), note);
+                (block.label, block.aliases, block.anchor) = (identity.label, identity.aliases, identity.anchor);
+                block.marker_range = Some(marker);
+                block.range = ScalarRange { start: marker.end, end: paragraph.range.end };
+                result.push(block);
             }
         }
     }
@@ -2400,10 +2348,10 @@ pub(super) fn courtlistener_uncontained_note_blocks(
         };
         if anchors.get(name.as_str()).copied().flatten() != Some(note_index)
             || existing.iter().any(|block| {
-                block.metadata.start == Some(note.markup_start)
+                block.markup_start == Some(note.markup_start)
                     || block.kind == NodeKind::Footnote
-                        && block.start <= note.range.start
-                        && note.range.end <= block.end
+                        && block.range.start <= note.range.start
+                        && note.range.end <= block.range.end
             })
         {
             continue;
@@ -2551,25 +2499,12 @@ pub(super) fn courtlistener_uncontained_note_blocks(
         let Some(mut identity) = footnote_identity(&capture[1], "", Some(name.clone())) else {
             continue;
         };
-        identity.aliases.push(label.to_owned());
-        result.push(RawBlock {
-            metadata: MarkupMetadata {
-                start: Some(note.markup_start),
-                attributes: note.attributes.clone(),
-                note_marker: Some(ScalarRange {
-                    start: marker_start,
-                    end: marker_start + utf16_len(label),
-                }),
-            },
-            kind: NodeKind::Footnote,
-            label: identity.label,
-            start,
-            end: start + utf16_len(body),
-            anchor: identity.anchor,
-            markup_tag: Some(note.tag.clone()),
-            aliases: identity.aliases,
-            parent_label: None,
-        });
+        identity.aliases.get_or_insert_with(Vec::new).push(label.to_owned());
+        let mut block = element_node(NodeKind::Footnote, String::new(), note);
+        (block.label, block.aliases, block.anchor) = (identity.label, identity.aliases, identity.anchor);
+        block.marker_range = Some(ScalarRange { start: marker_start, end: marker_start + utf16_len(label) });
+        block.range = ScalarRange { start, end: start + utf16_len(body) };
+        result.push(block);
     }
     result
 }
@@ -3319,7 +3254,7 @@ pub(super) fn finish(
     structure: &mut DocumentStructure,
     note_references: Vec<(String, Option<String>, ScalarRange)>,
     matched_role_starts: &HashSet<usize>,
-    printed_notes: Vec<(RawBlock, Vec<ScalarRange>)>,
+    printed_notes: Vec<(StructureNode, Vec<ScalarRange>)>,
     heading_exclusions: &[ScalarRange],
     body_exclusions: &[ScalarRange],
 ) {
@@ -3372,11 +3307,11 @@ pub(super) fn evidence(
     scope: &NativeMarkupScope,
     elements: &[MarkupElement],
     text: &str,
-    rendered_blocks: &mut Vec<RawBlock>,
+    rendered_blocks: &mut Vec<StructureNode>,
     rendered_exclusions: &mut Vec<ScalarRange>,
-    mut recovered_body_blocks: Vec<RawBlock>,
+    mut recovered_body_blocks: Vec<StructureNode>,
     matched_role_starts: &HashSet<usize>,
-) -> Vec<(RawBlock, Vec<ScalarRange>)> {
+) -> Vec<(StructureNode, Vec<ScalarRange>)> {
     if scope.kind == "complete"
         && matches!(
             scope.markup_serialization,
@@ -3387,10 +3322,10 @@ pub(super) fn evidence(
             let notes =
                 courtlistener_uncontained_note_blocks(markup, elements, text, rendered_blocks);
             for note in &notes {
-                if let Some(marker) = note.metadata.note_marker {
+                if let Some(marker) = note.marker_range {
                     rendered_exclusions.push(ScalarRange {
                         start: marker.start,
-                        end: note.end,
+                        end: note.range.end,
                     });
                 }
             }
@@ -3402,7 +3337,7 @@ pub(super) fn evidence(
         // them while rendering would add breaks to previously retained text.
         for block in rendered_blocks.iter_mut() {
             if block.kind == NodeKind::Prose
-                && block.metadata.start.is_some_and(|start| {
+                && block.markup_start.is_some_and(|start| {
                     matched_role_starts.contains(&start)
                         && elements
                             .binary_search_by_key(&start, |element| element.markup_start)
@@ -3429,7 +3364,7 @@ pub(super) fn evidence(
             text,
         );
         rendered_blocks.extend(declared);
-        recovered_body_blocks.sort_by_key(|block| block.metadata.start);
+        recovered_body_blocks.sort_by_key(|block| block.markup_start);
         rendered_blocks.extend(recovered_body_blocks);
     }
     let numbered_note_markers = courtlistener_numbered_note_markers(elements, matched_role_starts, text);
@@ -3437,23 +3372,21 @@ pub(super) fn evidence(
     for block in rendered_blocks.iter_mut() {
         if block.kind == NodeKind::Footnote {
             if let Some((label, aliases, marker)) = block
-                .metadata
-                .start
+                .markup_start
                 .and_then(|start| numbered_note_markers.get(&start))
             {
-                if block.label.is_empty() || block.label == *label {
+                if block.label.is_none() || block.label == *label {
                     block.label = label.clone();
                     block.aliases = aliases.clone();
-                    block.metadata.note_marker = Some(*marker);
-                    block.start = marker.end;
+                    block.marker_range = Some(*marker);
+                    block.range.start = marker.end;
                 }
             }
             if let Some((label, _)) = block
-                .metadata
-                .start
+                .markup_start
                 .and_then(|start| sibling_note_markers.get(&start))
             {
-                block.label = label.clone();
+                block.label = Some(label.clone());
             }
         }
     }
@@ -3469,16 +3402,15 @@ pub(super) fn evidence(
 
 /// The labels a note's sibling number gives it (Westlaw's co_footnoteNumber), for a rendition of
 /// another provider read with CourtListener's reader present.
-pub(super) fn sibling_note_labels(elements: &[MarkupElement], text: &str, rendered_blocks: &mut [RawBlock]) {
+pub(super) fn sibling_note_labels(elements: &[MarkupElement], text: &str, rendered_blocks: &mut [StructureNode]) {
     let sibling_note_markers = courtlistener_sibling_note_markers(elements, text);
     for block in rendered_blocks.iter_mut() {
         if block.kind == NodeKind::Footnote {
             if let Some((label, _)) = block
-                .metadata
-                .start
+                .markup_start
                 .and_then(|start| sibling_note_markers.get(&start))
             {
-                block.label = label.clone();
+                block.label = Some(label.clone());
             }
         }
     }

@@ -144,38 +144,23 @@ pub struct NativeMarkupInput {
     scope: NativeMarkupScope,
 }
 
-#[derive(Clone, Default)]
-struct MarkupMetadata {
-    start: Option<usize>,
-    attributes: BTreeMap<String, String>,
-    note_marker: Option<ScalarRange>,
+/// A node of a block the markup declares, as the reader opens it: its kind, label (none where empty) and anchor, its
+/// range in the rendered text's UTF-16 until the reader puts it in scalars; the reader sets its markup on it.
+fn markup_node(kind: NodeKind, label: String, anchor: Option<String>) -> StructureNode {
+    let mut node = StructureNode::new(String::new(), kind, ScalarRange { start: 0, end: 0 }, ORIGIN, Derivation::Native, None);
+    node.label = (!label.is_empty()).then_some(label);
+    node.anchor = anchor;
+    node
 }
 
-struct PendingBlock {
-    metadata: MarkupMetadata,
-    tag: String,
-    kind: NodeKind,
-    label: String,
-    start: usize,
-    anchor: Option<String>,
-    aliases: Vec<String>,
-    parent_label: Option<String>,
-    inline: bool,
-    page_label: Option<String>,
-    citation_index: Option<usize>,
-    page_scheme: Option<String>,
-}
-
-struct RawBlock {
-    metadata: MarkupMetadata,
-    kind: NodeKind,
-    label: String,
-    start: usize,
-    end: usize,
-    anchor: Option<String>,
-    markup_tag: Option<String>,
-    aliases: Vec<String>,
-    parent_label: Option<String>,
+/// A node of the block an element declares: the element's anchor, start, attributes, tag and range on it.
+fn element_node(kind: NodeKind, label: String, element: &MarkupElement) -> StructureNode {
+    let mut node = markup_node(kind, label, element.attributes.get("id").filter(|id| !id.is_empty()).cloned());
+    node.markup_start = Some(element.markup_start);
+    node.markup_attributes = element.attributes.clone();
+    node.markup_tag = Some(element.tag.clone());
+    node.range = element.range;
+    node
 }
 
 #[derive(Clone)]
@@ -185,28 +170,17 @@ struct OpenRange {
     start: usize,
 }
 
+/// A star page whose label its text, still to come, prints.
 struct TextPage {
-    metadata: MarkupMetadata,
-    start: usize,
-    anchor: Option<String>,
+    page: StructureNode,
     citation_index: Option<usize>,
     page_scheme: Option<String>,
 }
 
-struct PageStart {
-    metadata: MarkupMetadata,
-    label: String,
-    start: usize,
-    anchor: Option<String>,
-    markup_tag: Option<String>,
-    aliases: Vec<String>,
-    scope: Option<(usize, String)>,
-}
-
 struct RenderedMarkup {
     text: String,
-    blocks: Vec<RawBlock>,
-    recovered_body_blocks: Vec<RawBlock>,
+    blocks: Vec<StructureNode>,
+    recovered_body_blocks: Vec<StructureNode>,
     elements: Vec<MarkupElement>,
     matched_role_starts: HashSet<usize>,
     exclusions: Vec<ScalarRange>,
@@ -430,8 +404,8 @@ fn page_identity(
     raw: &str,
     attributes: &Attributes<'_>,
     anchor: Option<String>,
-    inline: bool,
-) -> Option<PendingBlock> {
+    page_citations: &[String],
+) -> Option<StructureNode> {
     let page_label = page_value(raw);
     if !page_label.bytes().any(|byte| byte.is_ascii_digit()) {
         return None;
@@ -449,20 +423,9 @@ fn page_identity(
         )
     };
     let (citation_index, page_scheme) = page_citation_identity(attributes);
-    Some(PendingBlock {
-        metadata: MarkupMetadata::default(),
-        tag: String::new(),
-        kind: NodeKind::Page,
-        label,
-        start: 0,
-        anchor,
-        aliases: Vec::new(),
-        parent_label: None,
-        inline,
-        page_label: Some(page_label),
-        citation_index,
-        page_scheme,
-    })
+    let mut page = markup_node(NodeKind::Page, label, anchor);
+    page.aliases = page_aliases(&page_label, citation_index, page_citations, page_scheme.as_deref());
+    Some(page)
 }
 
 fn page_citation_identity(attributes: &Attributes<'_>) -> (Option<usize>, Option<String>) {
@@ -497,7 +460,7 @@ fn numbered_id(id: &str) -> Option<String> {
         .map(|capture| capture[1].to_owned())
 }
 
-fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<PendingBlock> {
+fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<StructureNode> {
     static NUMBERED: OnceLock<Regex> = OnceLock::new();
     let marker = trim_js(raw);
     let numbered = NUMBERED
@@ -508,23 +471,10 @@ fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<Pend
         });
     if let Some(number) = numbered.or_else(|| marker.is_empty().then(|| numbered_id(id)).flatten())
     {
-        let aliases = (marker != number && !marker.is_empty())
-            .then(|| vec![marker.to_owned(), format!("footnote {marker}")])
-            .unwrap_or_default();
-        return Some(PendingBlock {
-            metadata: MarkupMetadata::default(),
-            tag: String::new(),
-            kind: NodeKind::Footnote,
-            label: format!("fn{}", number.parse::<u32>().ok()?),
-            start: 0,
-            anchor,
-            aliases,
-            parent_label: None,
-            inline: false,
-            page_label: None,
-            citation_index: None,
-            page_scheme: None,
-        });
+        let mut note = markup_node(NodeKind::Footnote, format!("fn{}", number.parse::<u32>().ok()?), anchor);
+        note.aliases = (marker != number && !marker.is_empty())
+            .then(|| vec![marker.to_owned(), format!("footnote {marker}")]);
+        return Some(note);
     }
     let compact = id
         .chars()
@@ -543,30 +493,14 @@ fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<Pend
     } else {
         return None;
     };
-    Some(PendingBlock {
-        metadata: MarkupMetadata::default(),
-        tag: String::new(),
-        kind: NodeKind::Footnote,
-        label: if symbol
-            .as_bytes()
-            .get(..2)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"fn"))
-        {
-            symbol.to_owned()
-        } else {
-            format!("fn{symbol}")
-        },
-        start: 0,
-        anchor,
-        aliases: (!marker.is_empty())
-            .then(|| vec![marker.to_owned(), format!("footnote {marker}")])
-            .unwrap_or_default(),
-        parent_label: None,
-        inline: false,
-        page_label: None,
-        citation_index: None,
-        page_scheme: None,
-    })
+    let label = if symbol.as_bytes().get(..2).is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"fn")) {
+        symbol.to_owned()
+    } else {
+        format!("fn{symbol}")
+    };
+    let mut note = markup_node(NodeKind::Footnote, label, anchor);
+    note.aliases = (!marker.is_empty()).then(|| vec![marker.to_owned(), format!("footnote {marker}")]);
+    Some(note)
 }
 
 fn native_identity(
@@ -574,7 +508,8 @@ fn native_identity(
     tag: &str,
     attributes: &Attributes<'_>,
     courtlistener_footnote: bool,
-) -> Option<PendingBlock> {
+    page_citations: &[String],
+) -> Option<StructureNode> {
     let id = ["eid", "id", "name"]
         .into_iter()
         .map(|name| attribute(attributes, name))
@@ -594,7 +529,7 @@ fn native_identity(
             } else {
                 Cow::Borrowed(preferred)
             };
-            return page_identity(&label, attributes, anchor, true);
+            return page_identity(&label, attributes, anchor, page_citations);
         }
         return None;
     }
@@ -608,7 +543,7 @@ fn native_identity(
                 .find(|value| !value.is_empty())
                 .unwrap_or_default()
                 .to_owned();
-            return page_identity(&raw, attributes, anchor, true);
+            return page_identity(&raw, attributes, anchor, page_citations);
         }
         if courtlistener_footnote {
             let raw = ["data-label", "label", "n"]
@@ -618,20 +553,8 @@ fn native_identity(
                 .unwrap_or_default()
                 .to_owned();
             return Some(
-                footnote_identity(&raw, &id, anchor.clone()).unwrap_or_else(|| PendingBlock {
-                    metadata: MarkupMetadata::default(),
-                    tag: String::new(),
-                    kind: NodeKind::Footnote,
-                    label: String::new(),
-                    start: 0,
-                    anchor,
-                    aliases: Vec::new(),
-                    parent_label: None,
-                    inline: false,
-                    page_label: None,
-                    citation_index: None,
-                    page_scheme: None,
-                }),
+                footnote_identity(&raw, &id, anchor.clone())
+                    .unwrap_or_else(|| markup_node(NodeKind::Footnote, String::new(), anchor)),
             );
         }
     }
@@ -651,7 +574,7 @@ fn native_identity(
             },
             Cow::Borrowed,
         );
-        return page_identity(&raw, attributes, anchor, false);
+        return page_identity(&raw, attributes, anchor, page_citations);
     }
     static PARAGRAPH: OnceLock<Regex> = OnceLock::new();
     static DIV_PARAGRAPH: OnceLock<Regex> = OnceLock::new();
@@ -674,20 +597,7 @@ fn native_identity(
     if let Some(paragraph) = paragraph.filter(|_| {
         provider.is_tna() || provider.is_courtlistener()
     }) {
-        return Some(PendingBlock {
-            metadata: MarkupMetadata::default(),
-            tag: String::new(),
-            kind: NodeKind::Paragraph,
-            label: format!("par{}", paragraph.parse::<u32>().ok()?),
-            start: 0,
-            anchor,
-            aliases: Vec::new(),
-            parent_label: None,
-            inline: false,
-            page_label: None,
-            citation_index: None,
-            page_scheme: None,
-        });
+        return Some(markup_node(NodeKind::Paragraph, format!("par{}", paragraph.parse::<u32>().ok()?), anchor));
     }
     // Source positions identify unanchored structure without inventing browser IDs.
     let source_kind = match tag {
@@ -744,20 +654,7 @@ fn native_identity(
     };
     if let Some(kind) = source_kind.filter(|_| provider.is_courtlistener())
     {
-        return Some(PendingBlock {
-            metadata: MarkupMetadata::default(),
-            tag: String::new(),
-            kind,
-            label: id.to_owned(),
-            start: 0,
-            anchor,
-            aliases: Vec::new(),
-            parent_label: None,
-            inline: false,
-            page_label: None,
-            citation_index: None,
-            page_scheme: None,
-        });
+        return Some(markup_node(kind, id.to_owned(), anchor));
     }
     if matches!(
         tag,
@@ -770,20 +667,7 @@ fn native_identity(
             .get_or_init(|| Regex::new(r"^\d{1,8}(?:[.-]\d{1,8}){0,3}(?:\([^)]+\))*$").unwrap())
             .is_match(&section)
         {
-            return Some(PendingBlock {
-                metadata: MarkupMetadata::default(),
-                tag: String::new(),
-                kind: NodeKind::Section,
-                label: format!("sec{section}"),
-                start: 0,
-                anchor,
-                aliases: Vec::new(),
-                parent_label: None,
-                inline: false,
-                page_label: None,
-                citation_index: None,
-                page_scheme: None,
-            });
+            return Some(markup_node(NodeKind::Section, format!("sec{section}"), anchor));
         }
     }
     static SECTION_ID: OnceLock<Regex> = OnceLock::new();
@@ -792,20 +676,7 @@ fn native_identity(
             Regex::new(r"(?i)^sec(\d{1,8}(?:[.-]\d{1,8}){0,3}(?:\([^)]+\))*)$").unwrap()
         })
         .captures(id)
-        .map(|capture| PendingBlock {
-            metadata: MarkupMetadata::default(),
-            tag: String::new(),
-            kind: NodeKind::Section,
-            label: format!("sec{}", &capture[1]),
-            start: 0,
-            anchor,
-            aliases: Vec::new(),
-            parent_label: None,
-            inline: false,
-            page_label: None,
-            citation_index: None,
-            page_scheme: None,
-        })
+        .map(|capture| markup_node(NodeKind::Section, format!("sec{}", &capture[1]), anchor))
 }
 
 fn citation_page_alias(citation: &str, label: &str) -> String {
@@ -827,7 +698,7 @@ fn page_aliases(
     citation_index: Option<usize>,
     page_citations: &[String],
     page_scheme: Option<&str>,
-) -> Vec<String> {
+) -> Option<Vec<String>> {
     let mut aliases = Vec::new();
     if !(label.len() <= 5 && label.bytes().all(|byte| byte.is_ascii_digit())) {
         aliases.push(label.to_owned());
@@ -841,7 +712,7 @@ fn page_aliases(
     if let Some(page_scheme) = page_scheme {
         aliases.push(format!("{page_scheme}, at *{label}"));
     }
-    aliases
+    (!aliases.is_empty()).then_some(aliases)
 }
 
 fn leading_footnote_marker(value: &str) -> Option<&str> {
@@ -1069,7 +940,7 @@ fn normalized_text(text: String) -> String {
     result
 }
 
-fn observe_footnote_marker(open: &mut [PendingBlock], text: &str, seen: &mut HashSet<usize>) {
+fn observe_footnote_marker(open: &mut [StructureNode], text: &str, seen: &mut HashSet<usize>) {
     let Some(note) = open
         .iter_mut()
         .rev()
@@ -1077,10 +948,10 @@ fn observe_footnote_marker(open: &mut [PendingBlock], text: &str, seen: &mut Has
     else {
         return;
     };
-    let Some(start) = note.metadata.start else {
+    let Some(start) = note.markup_start else {
         return;
     };
-    if note.label.is_empty() && !trim_js(text).is_empty() && seen.insert(start) {
+    if note.label.is_none() && !trim_js(text).is_empty() && seen.insert(start) {
         if let Some(identity) =
             leading_footnote_marker(text).and_then(|marker| footnote_identity(marker, "", None))
         {
@@ -1100,7 +971,7 @@ fn render_markup_in_context<'a>(
     let mut text = String::new();
     let mut blocks = Vec::new();
     let mut recovered_body_blocks = Vec::new();
-    let mut open = Vec::<PendingBlock>::new();
+    let mut open = Vec::<StructureNode>::new();
     let mut observed_note_markers = HashSet::new();
     let mut tag_stack = Vec::<String>::new();
     let mut elements = Vec::<MarkupElement>::new();
@@ -1122,7 +993,8 @@ fn render_markup_in_context<'a>(
     let mut pre_text_bounds = None::<(usize, usize)>;
     let mut ignore_pre_linefeed = false;
     let mut harvard_casebody = false;
-    let mut page_starts = Vec::<PageStart>::new();
+    // Each page's node as it opens, with the end and owner of the opinion it is printed in.
+    let mut page_starts = Vec::<(StructureNode, Option<(usize, String)>)>::new();
     let mut attributes = Attributes::new();
     let mut at = 0;
     let mut recover_as_text = false;
@@ -1159,32 +1031,15 @@ fn render_markup_in_context<'a>(
             observe_footnote_marker(&mut open, &rendered, &mut observed_note_markers);
             let label = page_value(&rendered);
             if text_page.is_some() && label.bytes().any(|byte| byte.is_ascii_digit()) {
-                let pending = text_page.take().unwrap();
+                let TextPage { mut page, citation_index, page_scheme } = text_page.take().unwrap();
                 let numeric = label.len() <= 5 && label.bytes().all(|byte| byte.is_ascii_digit());
-                page_starts.push(PageStart {
-                    metadata: pending.metadata,
-                    label: if numeric {
-                        format!("page{}", label.parse::<u32>().map_err(EngineError::source)?)
-                    } else {
-                        format!(
-                            "page{}",
-                            label
-                                .chars()
-                                .filter(|value| !javascript_whitespace(*value))
-                                .collect::<String>()
-                        )
-                    },
-                    start: pending.start,
-                    anchor: pending.anchor,
-                    markup_tag: Some("span".to_owned()),
-                    aliases: page_aliases(
-                        &label,
-                        pending.citation_index,
-                        page_citations,
-                        pending.page_scheme.as_deref(),
-                    ),
-                    scope: None,
+                page.label = Some(if numeric {
+                    format!("page{}", label.parse::<u32>().map_err(EngineError::source)?)
+                } else {
+                    format!("page{}", label.chars().filter(|value| !javascript_whitespace(*value)).collect::<String>())
                 });
+                page.aliases = page_aliases(&label, citation_index, page_citations, page_scheme.as_deref());
+                page_starts.push((page, None));
             }
             if provider.is_courtlistener() {
                 if tag_stack.iter().any(|tag| tag == "pre") {
@@ -1394,26 +1249,11 @@ fn render_markup_in_context<'a>(
                         // its supplied container close. Keep that literal graph and
                         // recover the declared body from its own matching tokens.
                         matched_role_starts.insert(element.markup_start);
-                        let anchor = element
-                            .attributes
-                            .get("id")
-                            .filter(|id| !id.is_empty())
-                            .cloned();
-                        recovered_body_blocks.push(RawBlock {
-                            metadata: MarkupMetadata {
-                                start: Some(element.markup_start),
-                                attributes: element.attributes.clone(),
-                                note_marker: None,
-                            },
-                            kind: NodeKind::Section,
-                            label: anchor.clone().unwrap_or_default(),
-                            start: element.range.start,
-                            end: position,
-                            anchor,
-                            markup_tag: Some(tag.clone()),
-                            aliases: Vec::new(),
-                            parent_label: None,
-                        });
+                        let label = element.attributes.get("id").cloned().unwrap_or_default();
+                        let mut body = element_node(NodeKind::Section, label, element);
+                        body.markup_tag = Some(tag.clone());
+                        body.range.end = position;
+                        recovered_body_blocks.push(body);
                     }
                 }
             }
@@ -1424,15 +1264,10 @@ fn render_markup_in_context<'a>(
             // active descendants when the source closes an enclosing element.
             let closing = if provider.is_courtlistener() {
                 closing_source_start.and_then(|start| {
-                    open.iter().position(|entry| {
-                        entry
-                            .metadata
-                            .start
-                            .is_some_and(|position| position >= start)
-                    })
+                    open.iter().position(|entry| entry.markup_start.is_some_and(|position| position >= start))
                 })
             } else {
-                open.iter().rposition(|entry| entry.tag == tag)
+                open.iter().rposition(|entry| entry.markup_tag.as_deref() == Some(tag.as_str()))
             };
             if let Some(index) = closing {
                 let stop = if provider.is_courtlistener() {
@@ -1440,22 +1275,12 @@ fn render_markup_in_context<'a>(
                 } else {
                     index + 1
                 };
-                for pending in open.drain(index..stop).rev() {
-                    if position > pending.start
-                        || (provider.is_courtlistener()
-                            && pending.kind != NodeKind::Page)
+                for mut pending in open.drain(index..stop).rev() {
+                    if position > pending.range.start
+                        || (provider.is_courtlistener() && pending.kind != NodeKind::Page)
                     {
-                        blocks.push(RawBlock {
-                            metadata: pending.metadata,
-                            kind: pending.kind,
-                            label: pending.label,
-                            start: pending.start,
-                            end: position,
-                            anchor: pending.anchor,
-                            markup_tag: Some(pending.tag),
-                            aliases: pending.aliases,
-                            parent_label: pending.parent_label,
-                        });
+                        pending.range.end = position;
+                        blocks.push(pending);
                     }
                 }
             }
@@ -1538,17 +1363,14 @@ fn render_markup_in_context<'a>(
             ));
         }
         let footnote_body = courtlistener_footnote_body(provider, &tag, &attributes);
-        let mut identity = native_identity(provider, &tag, &attributes, footnote_body);
+        let mut identity = native_identity(provider, &tag, &attributes, footnote_body, page_citations);
         if provider.is_courtlistener() {
             if let Some(identity) = &mut identity {
-                identity.metadata = MarkupMetadata {
-                    start: Some(at),
-                    attributes: attributes
-                        .iter()
-                        .map(|(name, value)| (name.to_ascii_lowercase(), value.to_string()))
-                        .collect(),
-                    note_marker: None,
-                };
+                identity.markup_start = Some(at);
+                identity.markup_attributes = attributes
+                    .iter()
+                    .map(|(name, value)| (name.to_ascii_lowercase(), value.to_string()))
+                    .collect();
             }
         }
         if !self_closing {
@@ -1577,50 +1399,34 @@ fn render_markup_in_context<'a>(
                 .is_none_or(|value| value.kind != NodeKind::Page)
         {
             let (citation_index, page_scheme) = page_citation_identity(&attributes);
-            text_page = Some(TextPage {
-                metadata: MarkupMetadata {
-                    start: Some(at),
-                    attributes: attributes
-                        .iter()
-                        .map(|(name, value)| (name.to_ascii_lowercase(), value.to_string()))
-                        .collect(),
-                    note_marker: None,
-                },
-                start: position,
-                anchor: (!attribute(&attributes, "id").is_empty())
-                    .then(|| attribute(&attributes, "id").to_owned()),
-                citation_index,
-                page_scheme,
-            });
+            let id = attribute(&attributes, "id");
+            let mut page = markup_node(NodeKind::Page, String::new(), (!id.is_empty()).then(|| id.to_owned()));
+            page.markup_start = Some(at);
+            page.markup_attributes = attributes
+                .iter()
+                .map(|(name, value)| (name.to_ascii_lowercase(), value.to_string()))
+                .collect();
+            page.markup_tag = Some("span".to_owned());
+            page.range.start = position;
+            text_page = Some(TextPage { page, citation_index, page_scheme });
         }
         if identity
             .as_ref()
             .is_some_and(|value| value.kind == NodeKind::Page)
         {
-            let identity = identity.take().unwrap();
-            if !identity.inline {
+            let mut page = identity.take().unwrap();
+            // (A page-number element is a line of its own; CourtListener's page labels stand in the text's line.)
+            if tag == "page-number" {
                 append_break(&mut text, &mut position);
             }
-            let page_label = identity.page_label.as_deref().unwrap_or_default();
-            page_starts.push(PageStart {
-                metadata: identity.metadata,
-                label: identity.label,
-                start: position,
-                anchor: identity.anchor,
-                markup_tag: Some(tag.clone()),
-                aliases: page_aliases(
-                    page_label,
-                    identity.citation_index,
-                    page_citations,
-                    identity.page_scheme.as_deref(),
-                ),
-                scope: None,
-            });
+            page.range.start = position;
+            page.markup_tag = Some(tag.clone());
+            page_starts.push((page, None));
         } else if let Some(mut identity) = identity.filter(|value| value.kind != NodeKind::Page) {
             append_break(&mut text, &mut position);
-            identity.tag = tag.clone();
-            identity.start = position;
-            identity.parent_label = open
+            identity.markup_tag = Some(tag.clone());
+            identity.range.start = position;
+            identity.parent_id = open
                 .iter()
                 .rev()
                 .find(|entry| {
@@ -1632,27 +1438,15 @@ fn render_markup_in_context<'a>(
                         entry.kind == identity.kind
                     }
                 })
-                .map(|entry| {
-                    entry.metadata.start.map_or_else(
-                        || entry.label.clone(),
-                        |start| format!("native-markup-{start}"),
-                    )
+                .and_then(|entry| {
+                    entry.markup_start.map_or_else(|| entry.label.clone(), |start| Some(format!("native-markup-{start}")))
                 });
             if self_closing
                 && provider.is_courtlistener()
                 && identity.kind != NodeKind::Page
             {
-                blocks.push(RawBlock {
-                    metadata: identity.metadata,
-                    kind: identity.kind,
-                    label: identity.label,
-                    start: position,
-                    end: position,
-                    anchor: identity.anchor,
-                    markup_tag: Some(identity.tag),
-                    aliases: identity.aliases,
-                    parent_label: identity.parent_label,
-                });
+                identity.range.end = position;
+                blocks.push(identity);
             } else {
                 open.push(identity);
             }
@@ -1783,9 +1577,7 @@ fn render_markup_in_context<'a>(
                         .slice_utf16(element.range.start..element.range.end)
                         .map(trim_js)
                         != Some(format!("*{label}").as_str())
-                    || page_starts
-                        .iter()
-                        .any(|page| page.metadata.start == Some(parent.markup_start))
+                    || page_starts.iter().any(|(page, _)| page.markup_start == Some(parent.markup_start))
                 {
                     continue;
                 }
@@ -1796,36 +1588,16 @@ fn render_markup_in_context<'a>(
             } else {
                 None
             };
-            page_starts.push(PageStart {
-                metadata: MarkupMetadata {
-                    start: Some(parent.markup_start),
-                    attributes: parent.attributes.clone(),
-                    note_marker: None,
-                },
-                label: format!("page{}", label.parse::<u32>().map_err(EngineError::source)?),
-                start: parent.range.start,
-                anchor: parent
-                    .attributes
-                    .get("id")
-                    .filter(|id| !id.is_empty())
-                    .cloned(),
-                markup_tag: Some(parent.tag.clone()),
-                aliases: if accessible_span {
-                    vec![format!("*{label}")]
-                } else {
-                    Vec::new()
-                },
-                scope,
-            });
+            let mut page = element_node(NodeKind::Page, format!("page{}", label.parse::<u32>().map_err(EngineError::source)?), parent);
+            page.aliases = accessible_span.then(|| vec![format!("*{label}")]);
+            page_starts.push((page, scope));
         }
         for (index, element) in elements.iter().enumerate() {
             if element.tag != "span"
                 || elements
                     .get(index + 1)
                     .is_some_and(|next| next.parent == Some(index))
-                || page_starts
-                    .iter()
-                    .any(|page| page.metadata.start == Some(element.markup_start))
+                || page_starts.iter().any(|(page, _)| page.markup_start == Some(element.markup_start))
                 || !element.attributes.get("class").is_some_and(|classes| {
                     classes
                         .split_ascii_whitespace()
@@ -1853,32 +1625,16 @@ fn render_markup_in_context<'a>(
             };
             // This literal marker has no accessibility-label child. Its page
             // ends within the actual opinion, before separate notes or a footer.
-            page_starts.push(PageStart {
-                metadata: MarkupMetadata {
-                    start: Some(element.markup_start),
-                    attributes: element.attributes.clone(),
-                    note_marker: None,
-                },
-                label: format!("page{}", label.parse::<u32>().map_err(EngineError::source)?),
-                start: element.range.start,
-                anchor: element
-                    .attributes
-                    .get("id")
-                    .filter(|id| !id.is_empty())
-                    .cloned(),
-                markup_tag: Some(element.tag.clone()),
-                aliases: vec![printed.to_owned()],
-                scope: Some(scope),
-            });
+            let mut page = element_node(NodeKind::Page, format!("page{}", label.parse::<u32>().map_err(EngineError::source)?), element);
+            page.aliases = Some(vec![printed.to_owned()]);
+            page_starts.push((page, Some(scope)));
         }
         for element in elements
             .iter()
             .filter(|element| element.tag == "page_number")
         {
             if !matched_role_starts.contains(&element.markup_start)
-                || page_starts
-                    .iter()
-                    .any(|page| page.metadata.start == Some(element.markup_start))
+                || page_starts.iter().any(|(page, _)| page.markup_start == Some(element.markup_start))
             {
                 continue;
             }
@@ -1896,26 +1652,11 @@ fn render_markup_in_context<'a>(
             {
                 continue;
             }
-            page_starts.push(PageStart {
-                metadata: MarkupMetadata {
-                    start: Some(element.markup_start),
-                    attributes: element.attributes.clone(),
-                    note_marker: None,
-                },
-                label: format!("page{}", label.parse::<u32>().map_err(EngineError::source)?),
-                start: element.range.start,
-                anchor: element
-                    .attributes
-                    .get("id")
-                    .filter(|id| !id.is_empty())
-                    .cloned(),
-                markup_tag: Some(element.tag.clone()),
-                aliases: Vec::new(),
-                scope: courtlistener_opinion_page_scope(&elements, element),
-            });
+            let page = element_node(NodeKind::Page, format!("page{}", label.parse::<u32>().map_err(EngineError::source)?), element);
+            page_starts.push((page, courtlistener_opinion_page_scope(&elements, element)));
         }
         if page_starts.len() != original_page_starts {
-            page_starts.sort_by_key(|page| page.start);
+            page_starts.sort_by_key(|(page, _)| page.range.start);
         }
     }
     let leading = (normalized.len() - normalized.trim_start_matches(javascript_whitespace).len())
@@ -1959,41 +1700,31 @@ fn render_markup_in_context<'a>(
             });
         }
     }
-    for pending in open {
-        if raw_end > pending.start
+    for mut pending in open {
+        if raw_end > pending.range.start
             || (provider.is_courtlistener() && pending.kind != NodeKind::Page)
         {
-            blocks.push(RawBlock {
-                metadata: pending.metadata,
-                kind: pending.kind,
-                label: pending.label,
-                start: pending.start,
-                end: raw_end.max(pending.start),
-                anchor: pending.anchor,
-                markup_tag: Some(pending.tag),
-                aliases: pending.aliases,
-                parent_label: pending.parent_label,
-            });
+            pending.range.end = raw_end.max(pending.range.start);
+            blocks.push(pending);
         }
     }
     let note_ends = blocks
         .iter()
         .filter(|block| block.kind == NodeKind::Footnote)
-        .filter_map(|block| Some((block.metadata.start?, block.end)))
+        .filter_map(|block| Some((block.markup_start?, block.range.end)))
         .collect::<HashMap<_, _>>();
     let page_ends = {
         let mut next_by_track = HashMap::new();
         let mut ends = vec![raw_end; page_starts.len()];
-        for (index, page) in page_starts.iter().enumerate().rev() {
+        for (index, (page, _)) in page_starts.iter().enumerate().rev() {
             let scheme = page
-                .metadata
-                .attributes
+                .markup_attributes
                 .get("pagescheme")
                 .filter(|scheme| !scheme.is_empty())
                 .map(String::as_str);
             let citation_index = ["citation-index", "data-citation-index"]
                 .into_iter()
-                .find_map(|name| page.metadata.attributes.get(name)?.parse::<usize>().ok())
+                .find_map(|name| page.markup_attributes.get(name)?.parse::<usize>().ok())
                 .filter(|value| *value != 0);
             // Parallel reporters paginate the same opinion independently.
             // An unqualified marker still has only source-order evidence.
@@ -2008,28 +1739,27 @@ fn render_markup_in_context<'a>(
                                 None
                             },
                         ),
-                        page.start,
+                        page.range.start,
                     )
                     .unwrap_or(raw_end)
             } else {
                 page_starts
                     .get(index + 1)
-                    .map_or(raw_end, |next| next.start)
+                    .map_or(raw_end, |(next, _)| next.range.start)
             };
         }
         ends
     };
-    for (page, end) in page_starts.into_iter().zip(page_ends) {
-        let (end, scope_parent) = page.scope.map_or((end, None), |(scope_end, id)| {
+    for ((mut page, scope), end) in page_starts.into_iter().zip(page_ends) {
+        let (end, scope_parent) = scope.map_or((end, None), |(scope_end, id)| {
             (end.min(scope_end), Some(id))
         });
-        if end > page.start {
+        if end > page.range.start {
             // Literal elements retain source-byte order. A note-contained page
             // belongs to its nearest declared Footnote, including repeated
             // reporter labels; its body cannot continue into a sibling note.
             let mut parent = page
-                .metadata
-                .start
+                .markup_start
                 .and_then(|start| {
                     elements
                         .binary_search_by_key(&start, |element| element.markup_start)
@@ -2046,20 +1776,12 @@ fn render_markup_in_context<'a>(
                 }
                 parent = element.parent;
             }
-            let (end, parent_label) = note_owner.map_or((end, scope_parent), |(note_end, id)| {
+            let (end, parent_id) = note_owner.map_or((end, scope_parent), |(note_end, id)| {
                 (end.min(note_end), Some(id))
             });
-            blocks.push(RawBlock {
-                metadata: page.metadata,
-                kind: NodeKind::Page,
-                label: page.label,
-                start: page.start,
-                end,
-                anchor: page.anchor,
-                markup_tag: page.markup_tag,
-                aliases: page.aliases,
-                parent_label,
-            });
+            page.range.end = end;
+            page.parent_id = parent_id;
+            blocks.push(page);
         }
     }
     // Pre-trim normalized-provider UTF-16 becomes rendered-document UTF-16;
@@ -2069,13 +1791,14 @@ fn render_markup_in_context<'a>(
     for block in blocks.iter_mut().chain(&mut recovered_body_blocks) {
         // Empty source structure remains a point in the trimmed document.
         if provider.is_courtlistener() && block.kind != NodeKind::Page {
-            block.start = block.start.clamp(leading_trim, raw_end);
-            block.end = block.end.clamp(block.start, raw_end);
+            block.range.start = block.range.start.clamp(leading_trim, raw_end);
+            block.range.end = block.range.end.clamp(block.range.start, raw_end);
         }
-        let start = block.start.checked_sub(leading_trim).ok_or_else(|| {
+        let start = block.range.start.checked_sub(leading_trim).ok_or_else(|| {
             EngineError::source("native block starts before trimmed provider text")
         })?;
         let end = block
+            .range
             .end
             .checked_sub(leading_trim)
             .ok_or_else(|| EngineError::source("native block ends before trimmed provider text"))?;
@@ -2085,7 +1808,7 @@ fn render_markup_in_context<'a>(
             ));
         }
         if end > text_utf16 {
-            if block.end <= raw_end || block.end > normalized_utf16 {
+            if block.range.end <= raw_end || block.range.end > normalized_utf16 {
                 return Err(EngineError::source(
                     "native block has an invalid trim overhang",
                 ));
@@ -2094,7 +1817,7 @@ fn render_markup_in_context<'a>(
                 .byte_at_utf16(raw_end)
                 .ok_or_else(|| EngineError::source("UTF-16 range splits a Unicode scalar"))?;
             let until = normalized_coordinates
-                .byte_at_utf16(block.end)
+                .byte_at_utf16(block.range.end)
                 .ok_or_else(|| EngineError::source("UTF-16 range splits a Unicode scalar"))?;
             if normalized[from..until]
                 .chars()
@@ -2105,8 +1828,7 @@ fn render_markup_in_context<'a>(
                 ));
             }
         }
-        block.start = start;
-        block.end = end;
+        block.range = ScalarRange { start, end };
     }
     let mut projected_exclusions = Vec::with_capacity(exclusions.len());
     for range in exclusions {
@@ -2196,7 +1918,7 @@ fn native_markup_evidence(
         String,
         Vec<MarkupAncestor>,
         HashSet<usize>,
-        Vec<(RawBlock, Vec<ScalarRange>)>,
+        Vec<(StructureNode, Vec<ScalarRange>)>,
     ),
     EngineError,
 > {
@@ -2330,38 +2052,31 @@ fn native_markup_evidence(
     };
     #[cfg(not(feature = "courtlistener"))]
     let sibling_note_markers = HashMap::<usize, (String, ScalarRange)>::new();
-    // Each block the markup declares is a node, its element's tag and attributes on it.
-    let mut claims = Vec::with_capacity(rendered_blocks.len());
-    for (index, raw) in rendered_blocks.into_iter().enumerate() {
-        let id = raw.metadata.start.map_or_else(
+    // Each block the markup declares is a node, its element's tag and attributes on it, its ranges now in scalars.
+    let mut claims = rendered_blocks;
+    for (index, node) in claims.iter_mut().enumerate() {
+        node.id = node.markup_start.map_or_else(
             || format!("native-{:06}", index + 1),
             |start| format!("native-markup-{start}"),
         );
-        let range = ScalarRange { start: scalar(raw.start)?, end: scalar(raw.end.min(text_utf16))? };
-        let mut node = StructureNode::new(id, raw.kind, range, ORIGIN, Derivation::Native, raw.parent_label);
-        node.label = (!raw.label.is_empty()).then_some(raw.label);
-        node.aliases = (!raw.aliases.is_empty()).then_some(raw.aliases);
-        node.anchor = raw.anchor;
-        if let Some(tag) = raw.markup_tag {
-            // (An "li" is a list item, whatever it declares: `analyze_native_markup` makes it one after derivation.)
-            if node.kind == NodeKind::Footnote && tag != "li" {
-                node.marker_range = raw.metadata.note_marker
-                    .or_else(|| raw.metadata.start.and_then(|start| sibling_note_markers.get(&start).map(|(_, range)| *range)))
-                    .and_then(|marker| Some(ScalarRange {
-                        start: coordinates.scalar_at_utf16(marker.start)?,
-                        end: coordinates.scalar_at_utf16(marker.end)?,
-                    }));
-            }
-            if node.kind == NodeKind::Cell && tag != "li" {
-                let span = |name: &str| raw.metadata.attributes.get(name).and_then(|value| value.parse().ok());
-                node.row_span = span("rowspan");
-                node.column_span = span("colspan");
-            }
-            node.markup_tag = Some(tag);
-            node.markup_start = raw.metadata.start;
-            node.markup_attributes = raw.metadata.attributes;
+        node.range = ScalarRange { start: scalar(node.range.start)?, end: scalar(node.range.end.min(text_utf16))? };
+        // (An "li" is a list item, whatever it declares: `analyze_native_markup` makes it one after derivation.)
+        let listed = node.markup_tag.as_deref() == Some("li");
+        node.marker_range = if node.kind == NodeKind::Footnote && !listed {
+            node.marker_range
+                .or_else(|| node.markup_start.and_then(|start| sibling_note_markers.get(&start).map(|(_, range)| *range)))
+                .and_then(|marker| Some(ScalarRange {
+                    start: coordinates.scalar_at_utf16(marker.start)?,
+                    end: coordinates.scalar_at_utf16(marker.end)?,
+                }))
+        } else {
+            None
+        };
+        if node.kind == NodeKind::Cell && !listed {
+            let span = |name: &str| node.markup_attributes.get(name).and_then(|value| value.parse().ok());
+            node.row_span = span("rowspan");
+            node.column_span = span("colspan");
         }
-        claims.push(node);
     }
     let scalar_end = coordinates.len();
     let mut exclusions = rendered_exclusions
