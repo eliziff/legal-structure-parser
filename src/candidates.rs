@@ -37,7 +37,7 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
                 && counted.contains(&points[*index].range.start)
         })
         .collect::<HashSet<_>>();
-    let mut grouped = BTreeMap::<usize, (Vec<StructureMarkerCandidate>, bool)>::new();
+    let mut grouped = BTreeMap::<usize, (Vec<StructureMarkerCandidate>, usize, usize)>::new();
     for (index, point) in points.into_iter().enumerate() {
         let grammar_value = point.label.unwrap_or_default();
         let mut root = index;
@@ -50,15 +50,22 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
             continue;
         }
         let content_start = point.content_start.expect("a grammar point opens its words");
-        let entry = grouped.entry(root).or_insert_with(|| (Vec::new(), true));
-        entry.1 &= !matches!(
-            point.properties.get("diagnostic").map(String::as_str),
-            Some(
-                "instrument_ladder_forward_jump"
-                    | "instrument_ladder_midcounter_open"
-                    | "instrument_ladder_violation"
-            )
-        );
+        let entry = grouped.entry(root).or_insert_with(|| (Vec::new(), 0, 0));
+        // A ladder is consecutive where its markers past the root break its count at most a third of the time.
+        if index != root {
+            if matches!(
+                point.properties.get("diagnostic").map(String::as_str),
+                Some(
+                    "instrument_ladder_forward_jump"
+                        | "instrument_ladder_midcounter_open"
+                        | "instrument_ladder_violation"
+                )
+            ) {
+                entry.2 += 1;
+            } else {
+                entry.1 += 1;
+            }
+        }
         let printed = text
             .slice_utf16(point.range.start..content_start)
             .expect("grammar point range is bounded");
@@ -81,8 +88,8 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
     }
     let mut hierarchy = grouped
         .into_values()
-        .filter(|(markers, _)| !markers.is_empty())
-        .map(|(markers, consecutive)| StructureCandidateRun {
+        .filter(|(markers, _, _)| !markers.is_empty())
+        .map(|(markers, good, bad)| StructureCandidateRun {
             id: String::new(),
             grammar: CandidateGrammar::Hierarchy,
             range: ScalarRange {
@@ -90,7 +97,7 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
                 end: markers.iter().map(|marker| marker.range.end).max().unwrap(),
             },
             rooted: markers[0].parent_candidate_id.is_none(),
-            consecutive,
+            consecutive: bad == 0 || good >= bad * 2,
             markers,
         })
         .collect::<Vec<_>>();
@@ -523,11 +530,34 @@ fn counted_markers(runs: &[StructureCandidateRun]) -> HashSet<usize> {
     let mut last: HashMap<String, (u32, usize)> = HashMap::new();
     let mut counted = HashSet::new();
     for (&start, labels) in &positions {
-        for (family, value) in labels.iter().flat_map(|label| marker_readings(label)) {
+        for (family, value, inserted) in labels.iter().flat_map(|label| marker_readings(label)) {
             if let Some(&(prior, at)) = last.get(&family) {
-                if family.ends_with("bullet") || prior + 1 == value {
+                if family.ends_with("bullet") || prior + 1 == value || inserted && prior == value {
                     counted.insert(at);
                     counted.insert(start);
+                }
+            } else if value == 1 {
+                if let Some((head, prefix)) = family.split_once('@') {
+                    if let Some(parent_head) = head.strip_suffix(".1") {
+                        let (parent_prefix, parent_val) =
+                            prefix.rsplit_once('.').map_or(("", prefix), |(p, v)| (p, v));
+                        if let Ok(target) = parent_val.parse::<u32>() {
+                            let parent_key = if parent_prefix.is_empty() {
+                                parent_head.to_owned()
+                            } else {
+                                format!("{parent_head}@{parent_prefix}")
+                            };
+                            let alt_key = (parent_key == ":1").then_some(".:1");
+                            if let Some(&(_, at)) = last
+                                .get(&parent_key)
+                                .or_else(|| alt_key.and_then(|k| last.get(k)))
+                                .filter(|&&(prior, _)| prior == target)
+                            {
+                                counted.insert(at);
+                                counted.insert(start);
+                            }
+                        }
+                    }
                 }
             }
             last.insert(family, (value, start));
@@ -536,14 +566,19 @@ fn counted_markers(runs: &[StructureCandidateRun]) -> HashSet<usize> {
     counted
 }
 
-/// A marker's readings as counts, (family, value): "(a)", "12.", "[12]", "iv)", "3.05" (its count
-/// is 3's), "1st." (an ordinal), "ARTICLE 4" (a division's), "•". A letter that is also a roman
-/// numeral ("i", "v") reads both ways.
-fn marker_readings(label: &str) -> Vec<(String, u32)> {
+/// A marker's readings as counts, (family, value, inserted): "(a)", "12.", "[12]", "iv)", "3.05"
+/// (its count is 3's), "1st." (an ordinal), "ARTICLE 4" (a division's), "•". A letter that is also
+/// a roman numeral ("i", "v") reads both ways.
+fn marker_readings(label: &str) -> Vec<(String, u32, bool)> {
     let label = label.trim();
     if let Some((word, rest)) = label.split_once(char::is_whitespace) {
         if word.chars().all(char::is_alphabetic) {
-            return marker_readings(rest).into_iter().map(|(family, value)| (format!("{}:{family}", word.to_lowercase()), value)).collect();
+            return marker_readings(rest)
+                .into_iter()
+                .map(|(family, value, inserted)| {
+                    (format!("{}:{family}", word.to_lowercase()), value, inserted)
+                })
+                .collect();
         }
     }
     let core = label.trim_start_matches(['(', '[']).trim_end_matches([')', ']', '.']);
@@ -551,9 +586,13 @@ fn marker_readings(label: &str) -> Vec<(String, u32)> {
     if !digits.is_empty() && digits.len() < core.len() && digits.bytes().all(|b| b.is_ascii_digit())
         && matches!(&core[digits.len()..], "st" | "nd" | "rd" | "th" | "d")
     {
-        return digits.parse().map(|value| vec![("ordinal".to_owned(), value)]).unwrap_or_default();
+        return digits
+            .parse()
+            .map(|value| vec![("ordinal".to_owned(), value, false)])
+            .unwrap_or_default();
     }
-    let mut found: Vec<(String, u32)> = Vec::new();
+    let inserted = inference::inserted_letter_token(core.trim()).is_some();
+    let mut found: Vec<(String, u32, bool)> = Vec::new();
     for letter in [true, false] {
         let Some((family, value)) = marker_family(label, |_: Family, _: u32, _: bool| letter) else { continue };
         let mut key = format!("{}:{}", family.wrap, family.count);
@@ -561,8 +600,8 @@ fn marker_readings(label: &str) -> Vec<(String, u32)> {
             let parts: Vec<&str> = core.trim_start_matches('*').split('.').collect();
             key = format!("{key}@{}", parts[..parts.len().saturating_sub(1)].join("."));
         }
-        if !found.iter().any(|(f, v)| *f == key && *v == value) {
-            found.push((key, value));
+        if !found.iter().any(|(f, v, _)| *f == key && *v == value) {
+            found.push((key, value, inserted));
         }
     }
     found
