@@ -19,7 +19,7 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Struct
                     node.label
                         .iter()
                         .chain(node.aliases.iter().flatten())
-                        .map(|label| (node.kind.evidence(), label.to_ascii_lowercase()))
+                        .map(|label| (node.kind, label.to_ascii_lowercase()))
                 })
                 .collect::<HashSet<_>>()
         })
@@ -27,7 +27,7 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Struct
     let mut counters = HashMap::<NodeKind, usize>::new();
     let mut diagnostics = Vec::new();
     for mut block in inferred {
-        let Some(range) = evidence.clip_inference(block.kind.evidence(), block.range) else {
+        let Some(range) = evidence.clip_inference(block.kind, block.range) else {
             continue;
         };
         block.range = range;
@@ -35,7 +35,7 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Struct
             block.kind != NodeKind::Section || at < block.range.start || at > block.range.end
         }) || (!native_labels.is_empty()
             && block.label.as_ref().is_some_and(|label| {
-                native_labels.contains(&(block.kind.evidence(), label.to_ascii_lowercase()))
+                native_labels.contains(&(block.kind, label.to_ascii_lowercase()))
             }))
         {
             continue;

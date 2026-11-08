@@ -79,39 +79,6 @@ impl Display for EngineError {
 impl std::error::Error for EngineError {}
 
 
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum EvidenceKind {
-    Paragraph,
-    Prose,
-    Page,
-    Section,
-    Heading,
-    Footnote,
-    Endnote,
-    List,
-    Table,
-    Row,
-    Cell,
-}
-
-impl EvidenceKind {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Paragraph => "paragraph",
-            Self::Prose => "prose",
-            Self::Page => "page",
-            Self::Section => "section",
-            Self::Heading => "heading",
-            Self::Footnote => "footnote",
-            Self::Endnote => "endnote",
-            Self::List => "list",
-            Self::Table => "table",
-            Self::Row => "row",
-            Self::Cell => "cell",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeKind {

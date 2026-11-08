@@ -118,7 +118,7 @@ pub(super) fn case_decimal_subheadings(
         let Some(token) = value.split_whitespace().next() else { continue; };
         let lead = line.text.len() - line.text.trim_start().len();
         let mut range = ScalarRange { start: text.scalar(line.byte_start + lead), end: text.scalar(line.byte_start + lead + value.len()) };
-        if evidence.clip_inference(EvidenceKind::Heading, range) != Some(range) { continue; }
+        if evidence.clip_inference(NodeKind::Heading, range) != Some(range) { continue; }
         if heading_enumerator(token) && heading_levels(value).is_some()
             && heading_title_case(&value.split_whitespace().skip(1).collect::<Vec<_>>()) {
             let inner = token.trim_start_matches('(').trim_end_matches(['.', ')']);
@@ -142,7 +142,7 @@ pub(super) fn case_decimal_subheadings(
             let lead = continuation.text.len() - continuation.text.trim_start().len();
             let extended = ScalarRange { start: range.start,
                 end: text.scalar(continuation.byte_start + lead + value.len()) };
-            if evidence.clip_inference(EvidenceKind::Heading, extended) != Some(extended) { break; }
+            if evidence.clip_inference(NodeKind::Heading, extended) != Some(extended) { break; }
             // A hanging title line retains its literal source span; soft body wraps
             // do not acquire heading status from title grammar alone.
             joined = next;
@@ -525,7 +525,7 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
                 .find(|line| !line.text.trim().is_empty())
                 .is_some_and(|line| line.text.chars().any(char::is_alphabetic)) { continue; }
         let body_range = ScalarRange { start: body_start, end: body_end };
-        if evidence.clip_inference(EvidenceKind::Footnote, body_range) != Some(body_range) { continue; }
+        if evidence.clip_inference(NodeKind::Footnote, body_range) != Some(body_range) { continue; }
         let mut block = crate::labelled_node(NodeKind::Footnote, format!("fn{number}"), body_start, body_end);
         block.marker_range = Some(label_range);
         block.calls = vec![reference];
@@ -598,7 +598,7 @@ pub(super) fn detect_case_headings(evidence: &DocumentInput, text: &ScalarText<'
     for (position, (line_index, line)) in nonempty.iter().enumerate() {
         let value = line.text.trim();
         let range = line_range(*line);
-        if evidence.clip_inference(EvidenceKind::Heading, range) != Some(range)
+        if evidence.clip_inference(NodeKind::Heading, range) != Some(range)
             || notes.iter().any(|note| overlaps(range, note))
             || layout.running_heads.contains(&line.scalar_start)
             // This is a judicial byline; native source heading declarations stay intact.
@@ -747,7 +747,7 @@ pub(super) fn detect_case_prose(
         ScalarRange { start: text.scalar(line.byte_start + lead), end: text.scalar(line.byte_end) }
     };
     let mut excluded = evidence.exclusions.iter().filter(|item|
-        item.applies_to.iter().any(|kind| matches!(kind, crate::EvidenceKind::Paragraph | crate::EvidenceKind::Prose)))
+        item.applies_to.iter().any(|kind| matches!(kind, NodeKind::Paragraph | NodeKind::Prose)))
         .map(|item| item.range)
         .chain(layout.exclusions.iter().copied())
         .chain(layout.note_ranges.iter().copied())
@@ -860,7 +860,7 @@ pub(super) fn detect_case_prose(
         // Prose a page break or a note cuts before its sentence ends is still prose.
         if words >= 12 && lowercase >= 4
             && (value.split_whitespace().any(sentence_end) || words >= 20 && lowercase >= 8)
-            && evidence.clip_inference(EvidenceKind::Prose, range) == Some(range)
+            && evidence.clip_inference(NodeKind::Prose, range) == Some(range)
         {
             result.push(prose_block(range));
         }

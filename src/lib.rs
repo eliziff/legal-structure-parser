@@ -98,7 +98,6 @@ pub use text::{
     trim_javascript_whitespace, utf16_len, utf16_prefix_ceil, ScalarText, JS_WHITESPACE_CLASS,
 };
 
-pub(crate) use legal_structure_model::EvidenceKind;
 pub use legal_structure_model::{
     CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, CandidateRoleV2, DetectionProfile, EngineError,
     NotePairSupportV2, Origin, ResolutionProofV2, ResolutionRuleV2, ScalarRange, Scope,
@@ -113,7 +112,7 @@ use legal_citations::cues::canadian_report_start;
 
 struct Exclusion {
     range: ScalarRange,
-    applies_to: Vec<EvidenceKind>,
+    applies_to: Vec<NodeKind>,
 }
 
 pub(crate) struct DocumentInput {
@@ -178,7 +177,7 @@ impl DocumentInput {
         }
     }
 
-    fn clip_inference(&self, kind: EvidenceKind, range: ScalarRange) -> Option<ScalarRange> {
+    fn clip_inference(&self, kind: NodeKind, range: ScalarRange) -> Option<ScalarRange> {
         let mut end = range.end;
         for value in self
             .exclusions

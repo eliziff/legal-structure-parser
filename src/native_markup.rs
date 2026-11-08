@@ -3,7 +3,7 @@ use crate::text::{
 };
 use crate::{
     utf16_len, CitedAuthority, Derivation, DetectionProfile,
-    DocumentInput, DocumentStructure, EngineError, EvidenceKind, Exclusion, MarkupAncestor,
+    DocumentInput, DocumentStructure, EngineError, Exclusion, MarkupAncestor,
     MarkupElement, NodeKind, ScalarRange, ScalarText,
     Scope, ScopeKind, StructureNode,
 };
@@ -154,7 +154,7 @@ struct MarkupMetadata {
 struct PendingBlock {
     metadata: MarkupMetadata,
     tag: String,
-    kind: EvidenceKind,
+    kind: NodeKind,
     label: String,
     start: usize,
     anchor: Option<String>,
@@ -168,7 +168,7 @@ struct PendingBlock {
 
 struct RawBlock {
     metadata: MarkupMetadata,
-    kind: EvidenceKind,
+    kind: NodeKind,
     label: String,
     start: usize,
     end: usize,
@@ -452,7 +452,7 @@ fn page_identity(
     Some(PendingBlock {
         metadata: MarkupMetadata::default(),
         tag: String::new(),
-        kind: EvidenceKind::Page,
+        kind: NodeKind::Page,
         label,
         start: 0,
         anchor,
@@ -514,7 +514,7 @@ fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<Pend
         return Some(PendingBlock {
             metadata: MarkupMetadata::default(),
             tag: String::new(),
-            kind: EvidenceKind::Footnote,
+            kind: NodeKind::Footnote,
             label: format!("fn{}", number.parse::<u32>().ok()?),
             start: 0,
             anchor,
@@ -546,7 +546,7 @@ fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<Pend
     Some(PendingBlock {
         metadata: MarkupMetadata::default(),
         tag: String::new(),
-        kind: EvidenceKind::Footnote,
+        kind: NodeKind::Footnote,
         label: if symbol
             .as_bytes()
             .get(..2)
@@ -621,7 +621,7 @@ fn native_identity(
                 footnote_identity(&raw, &id, anchor.clone()).unwrap_or_else(|| PendingBlock {
                     metadata: MarkupMetadata::default(),
                     tag: String::new(),
-                    kind: EvidenceKind::Footnote,
+                    kind: NodeKind::Footnote,
                     label: String::new(),
                     start: 0,
                     anchor,
@@ -677,7 +677,7 @@ fn native_identity(
         return Some(PendingBlock {
             metadata: MarkupMetadata::default(),
             tag: String::new(),
-            kind: EvidenceKind::Paragraph,
+            kind: NodeKind::Paragraph,
             label: format!("par{}", paragraph.parse::<u32>().ok()?),
             start: 0,
             anchor,
@@ -691,42 +691,42 @@ fn native_identity(
     }
     // Source positions identify unanchored structure without inventing browser IDs.
     let source_kind = match tag {
-        "p" | "blockquote" | "author" | "judges" | "attorneys" => Some(EvidenceKind::Prose),
+        "p" | "blockquote" | "author" | "judges" | "attorneys" => Some(NodeKind::Prose),
         // CAP's own front-matter blocks, each with its source id, and any block its data-type names as one.
         "syllabus" | "summary" | "parties" | "docketnumber" | "decisiondate" | "otherdate" | "court" | "history"
         | "disposition" | "seealso" | "correction" | "arguments"
             if !id.is_empty() =>
         {
-            Some(EvidenceKind::Prose)
+            Some(NodeKind::Prose)
         }
         #[cfg(feature = "courtlistener")]
         _ if !matches!(tag, "opinion" | "headnotes" | "casebody") && cap_front_matter(attribute(attributes, "data-type")).is_some_and(|field| field != "headnotes") => {
-            Some(EvidenceKind::Prose)
+            Some(NodeKind::Prose)
         }
-        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "heading" | "h" => Some(EvidenceKind::Heading),
-        "opinion" | "headnotes" | "casebody" => Some(EvidenceKind::Section),
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "heading" | "h" => Some(NodeKind::Heading),
+        "opinion" | "headnotes" | "casebody" => Some(NodeKind::Section),
         "div"
             if attribute(attributes, "class")
                 .split_ascii_whitespace()
                 .any(|class| class == "co_headtext") =>
         {
-            Some(EvidenceKind::Heading)
+            Some(NodeKind::Heading)
         }
         "div"
             if attribute(attributes, "class")
                 .split_ascii_whitespace()
                 .any(|class| class == "co_paragraph") =>
         {
-            Some(EvidenceKind::Prose)
+            Some(NodeKind::Prose)
         }
         "div"
             if attribute(attributes, "class")
                 .split_ascii_whitespace()
                 .any(|class| matches!(class, "co_opinionBlock" | "co_section")) =>
         {
-            Some(EvidenceKind::Section)
+            Some(NodeKind::Section)
         }
-        "div" if id == "headmatter" => Some(EvidenceKind::Section),
+        "div" if id == "headmatter" => Some(NodeKind::Section),
         "article" | "section" | "div"
             if ["opinion", "casebody", "head-matter"].iter().any(|class| {
                 attribute(attributes, "class")
@@ -734,12 +734,12 @@ fn native_identity(
                     .any(|value| value == *class)
             }) =>
         {
-            Some(EvidenceKind::Section)
+            Some(NodeKind::Section)
         }
-        "ul" | "ol" | "li" => Some(EvidenceKind::List),
-        "table" => Some(EvidenceKind::Table),
-        "tr" => Some(EvidenceKind::Row),
-        "td" | "th" => Some(EvidenceKind::Cell),
+        "ul" | "ol" | "li" => Some(NodeKind::List),
+        "table" => Some(NodeKind::Table),
+        "tr" => Some(NodeKind::Row),
+        "td" | "th" => Some(NodeKind::Cell),
         _ => None,
     };
     if let Some(kind) = source_kind.filter(|_| provider.is_courtlistener())
@@ -773,7 +773,7 @@ fn native_identity(
             return Some(PendingBlock {
                 metadata: MarkupMetadata::default(),
                 tag: String::new(),
-                kind: EvidenceKind::Section,
+                kind: NodeKind::Section,
                 label: format!("sec{section}"),
                 start: 0,
                 anchor,
@@ -795,7 +795,7 @@ fn native_identity(
         .map(|capture| PendingBlock {
             metadata: MarkupMetadata::default(),
             tag: String::new(),
-            kind: EvidenceKind::Section,
+            kind: NodeKind::Section,
             label: format!("sec{}", &capture[1]),
             start: 0,
             anchor,
@@ -1073,7 +1073,7 @@ fn observe_footnote_marker(open: &mut [PendingBlock], text: &str, seen: &mut Has
     let Some(note) = open
         .iter_mut()
         .rev()
-        .find(|entry| entry.kind == EvidenceKind::Footnote)
+        .find(|entry| entry.kind == NodeKind::Footnote)
     else {
         return;
     };
@@ -1405,7 +1405,7 @@ fn render_markup_in_context<'a>(
                                 attributes: element.attributes.clone(),
                                 note_marker: None,
                             },
-                            kind: EvidenceKind::Section,
+                            kind: NodeKind::Section,
                             label: anchor.clone().unwrap_or_default(),
                             start: element.range.start,
                             end: position,
@@ -1443,7 +1443,7 @@ fn render_markup_in_context<'a>(
                 for pending in open.drain(index..stop).rev() {
                     if position > pending.start
                         || (provider.is_courtlistener()
-                            && pending.kind != EvidenceKind::Page)
+                            && pending.kind != NodeKind::Page)
                     {
                         blocks.push(RawBlock {
                             metadata: pending.metadata,
@@ -1574,7 +1574,7 @@ fn render_markup_in_context<'a>(
             && contains_ascii_word(attribute(&attributes, "class"), "star-pagination", false)
             && identity
                 .as_ref()
-                .is_none_or(|value| value.kind != EvidenceKind::Page)
+                .is_none_or(|value| value.kind != NodeKind::Page)
         {
             let (citation_index, page_scheme) = page_citation_identity(&attributes);
             text_page = Some(TextPage {
@@ -1595,7 +1595,7 @@ fn render_markup_in_context<'a>(
         }
         if identity
             .as_ref()
-            .is_some_and(|value| value.kind == EvidenceKind::Page)
+            .is_some_and(|value| value.kind == NodeKind::Page)
         {
             let identity = identity.take().unwrap();
             if !identity.inline {
@@ -1616,7 +1616,7 @@ fn render_markup_in_context<'a>(
                 ),
                 scope: None,
             });
-        } else if let Some(mut identity) = identity.filter(|value| value.kind != EvidenceKind::Page) {
+        } else if let Some(mut identity) = identity.filter(|value| value.kind != NodeKind::Page) {
             append_break(&mut text, &mut position);
             identity.tag = tag.clone();
             identity.start = position;
@@ -1625,9 +1625,9 @@ fn render_markup_in_context<'a>(
                 .rev()
                 .find(|entry| {
                     if provider.is_courtlistener() {
-                        entry.kind != EvidenceKind::Page
-                    } else if matches!(identity.kind, EvidenceKind::Prose | EvidenceKind::Heading) {
-                        matches!(entry.kind, EvidenceKind::Prose | EvidenceKind::Footnote | EvidenceKind::Section)
+                        entry.kind != NodeKind::Page
+                    } else if matches!(identity.kind, NodeKind::Prose | NodeKind::Heading) {
+                        matches!(entry.kind, NodeKind::Prose | NodeKind::Footnote | NodeKind::Section)
                     } else {
                         entry.kind == identity.kind
                     }
@@ -1640,7 +1640,7 @@ fn render_markup_in_context<'a>(
                 });
             if self_closing
                 && provider.is_courtlistener()
-                && identity.kind != EvidenceKind::Page
+                && identity.kind != NodeKind::Page
             {
                 blocks.push(RawBlock {
                     metadata: identity.metadata,
@@ -1961,7 +1961,7 @@ fn render_markup_in_context<'a>(
     }
     for pending in open {
         if raw_end > pending.start
-            || (provider.is_courtlistener() && pending.kind != EvidenceKind::Page)
+            || (provider.is_courtlistener() && pending.kind != NodeKind::Page)
         {
             blocks.push(RawBlock {
                 metadata: pending.metadata,
@@ -1978,7 +1978,7 @@ fn render_markup_in_context<'a>(
     }
     let note_ends = blocks
         .iter()
-        .filter(|block| block.kind == EvidenceKind::Footnote)
+        .filter(|block| block.kind == NodeKind::Footnote)
         .filter_map(|block| Some((block.metadata.start?, block.end)))
         .collect::<HashMap<_, _>>();
     let page_ends = {
@@ -2051,7 +2051,7 @@ fn render_markup_in_context<'a>(
             });
             blocks.push(RawBlock {
                 metadata: page.metadata,
-                kind: EvidenceKind::Page,
+                kind: NodeKind::Page,
                 label: page.label,
                 start: page.start,
                 end,
@@ -2068,7 +2068,7 @@ fn render_markup_in_context<'a>(
     let normalized_utf16 = normalized_coordinates.utf16_len();
     for block in blocks.iter_mut().chain(&mut recovered_body_blocks) {
         // Empty source structure remains a point in the trimmed document.
-        if provider.is_courtlistener() && block.kind != EvidenceKind::Page {
+        if provider.is_courtlistener() && block.kind != NodeKind::Page {
             block.start = block.start.clamp(leading_trim, raw_end);
             block.end = block.end.clamp(block.start, raw_end);
         }
@@ -2146,23 +2146,6 @@ fn render_markup_in_context<'a>(
         source_hash: format!("{:x}", Sha256::digest(markup.as_bytes())),
         harvard_casebody,
     })
-}
-
-/// The node kind a block's declared kind is.
-fn native_kind(kind: EvidenceKind) -> NodeKind {
-    match kind {
-        EvidenceKind::Paragraph => NodeKind::Paragraph,
-        EvidenceKind::Prose => NodeKind::Prose,
-        EvidenceKind::Page => NodeKind::Page,
-        EvidenceKind::Section => NodeKind::Section,
-        EvidenceKind::Heading => NodeKind::Heading,
-        EvidenceKind::Footnote => NodeKind::Footnote,
-        EvidenceKind::Endnote => NodeKind::Endnote,
-        EvidenceKind::List => NodeKind::List,
-        EvidenceKind::Table => NodeKind::Table,
-        EvidenceKind::Row => NodeKind::Row,
-        EvidenceKind::Cell => NodeKind::Cell,
-    }
 }
 
 fn report_start(citation: Option<&str>) -> Option<u32> {
@@ -2355,7 +2338,7 @@ fn native_markup_evidence(
             |start| format!("native-markup-{start}"),
         );
         let range = ScalarRange { start: scalar(raw.start)?, end: scalar(raw.end.min(text_utf16))? };
-        let mut node = StructureNode::new(id, native_kind(raw.kind), range, ORIGIN, Derivation::Native, raw.parent_label);
+        let mut node = StructureNode::new(id, raw.kind, range, ORIGIN, Derivation::Native, raw.parent_label);
         node.label = (!raw.label.is_empty()).then_some(raw.label);
         node.aliases = (!raw.aliases.is_empty()).then_some(raw.aliases);
         node.anchor = raw.anchor;
@@ -2389,7 +2372,7 @@ fn native_markup_evidence(
                     start: scalar(range.start)?,
                     end: scalar(range.end)?,
                 },
-                applies_to: vec![EvidenceKind::Paragraph, EvidenceKind::Heading],
+                applies_to: vec![NodeKind::Paragraph, NodeKind::Heading],
             })
         })
         .collect::<Result<Vec<_>, EngineError>>()?;
@@ -2401,7 +2384,7 @@ fn native_markup_evidence(
                         start: scalar(element.range.start)?,
                         end: scalar(element.range.end)?,
                     },
-                    applies_to: vec![EvidenceKind::Heading],
+                    applies_to: vec![NodeKind::Heading],
                 });
             }
         }
@@ -2414,7 +2397,7 @@ fn native_markup_evidence(
                     start: 0,
                     end: scalar_end,
                 },
-                applies_to: vec![EvidenceKind::Heading],
+                applies_to: vec![NodeKind::Heading],
             });
         }
     }

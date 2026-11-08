@@ -1,5 +1,5 @@
 use crate::{
-    DefinedTerm, DetectionProfile, DocxStructureFacts, EvidenceKind, InstrumentContentsReading,
+    DefinedTerm, DetectionProfile, DocxStructureFacts, InstrumentContentsReading,
     InstrumentCrossReferenceGraph, Origin, ResolutionProofV2, ScalarRange, ScalarText, Scope,
     DOCUMENT_STRUCTURE_SCHEMA,
 };
@@ -29,27 +29,21 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
-    pub fn evidence(self) -> EvidenceKind {
-        match self {
-            Self::Paragraph => EvidenceKind::Paragraph,
-            Self::Prose | Self::Quote => EvidenceKind::Prose,
-            Self::Page => EvidenceKind::Page,
-            Self::Section => EvidenceKind::Section,
-            Self::Heading => EvidenceKind::Heading,
-            Self::Footnote => EvidenceKind::Footnote,
-            Self::Endnote => EvidenceKind::Endnote,
-            Self::List | Self::ListItem => EvidenceKind::List,
-            Self::Table => EvidenceKind::Table,
-            Self::Row => EvidenceKind::Row,
-            Self::Cell => EvidenceKind::Cell,
-        }
-    }
-
     pub fn name(self) -> &'static str {
         match self {
+            Self::Paragraph => "paragraph",
+            Self::Page => "page",
+            Self::Section => "section",
+            Self::Heading => "heading",
+            Self::Footnote => "footnote",
+            Self::Endnote => "endnote",
+            Self::Prose => "prose",
+            Self::List => "list",
             Self::ListItem => "list_item",
             Self::Quote => "quote",
-            _ => self.evidence().name(),
+            Self::Table => "table",
+            Self::Row => "row",
+            Self::Cell => "cell",
         }
     }
 }
