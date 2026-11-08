@@ -8,7 +8,7 @@ pub(super) fn plain_label(label: &str) -> &str {
 }
 
 /// A note's printed label, and how much of its body merely repeats it.
-pub(super) fn note_label_of(structure: &DocumentStructure, coordinates: &ScalarText, note: &legal_structure::Note) -> (String, usize) {
+pub(super) fn note_label_of(structure: &DocumentStructure, coordinates: &ScalarText, note: &crate::Note) -> (String, usize) {
     let node = note.node_id.as_ref().and_then(|id| structure.nodes.iter().find(|node| &node.id == id));
     let label = node.and_then(|node| node.label.as_deref()).unwrap_or("").trim_start_matches("fn").to_owned();
     note_opening(coordinates.slice_utf16(note.body_range.start..note.body_range.end).unwrap_or(""), label)

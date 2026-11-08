@@ -9,7 +9,7 @@ readme = "README.md"
 exclude = ["experiments/**"]
 
 [workspace]
-members = ["features", "layout", "locator", "model", "opinion", "python", "query"]
+members = ["features", "layout", "locator", "model", "python", "query"]
 default-members = ["."]
 resolver = "2"
 
@@ -39,6 +39,8 @@ structure-inference = ["dep:legal-citations"]
 document-query = ["dep:legal-document-query"]
 citator = ["dep:legal-citations"]
 native-markup = ["structure-inference"]
+# A CourtListener record read whole (`opinion`).
+opinion = ["courtlistener", "native-markup"]
 journal = []
 
 [dependencies]

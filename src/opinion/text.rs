@@ -6,7 +6,7 @@
 //! the page ends that open with the next note's number; note pairing pairs their labels with the calls.
 
 use super::*;
-use legal_structure::note_pairing::pair_footnotes;
+use crate::note_pairing::pair_footnotes;
 use legal_citations::cues;
 use legal_structure_model::layout::{Line as LaidLine, Page as LaidPage, PdfSourceSpan};
 use std::collections::BTreeMap;

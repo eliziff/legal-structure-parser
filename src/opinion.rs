@@ -29,7 +29,7 @@ use pages::*;
 use paragraphs::*;
 use readings::*;
 
-use legal_structure::{
+use crate::{
     analyze_native_markup, hierarchy, javascript_whitespace, trim_javascript_whitespace as trim_js, utf16_len, Derivation, DocumentStructure,
     MarkupElement, NativeMarkupInput, NodeKind, PrimaryRole, ScalarRange, ScalarText, StructureNode,
 };

@@ -1,7 +1,7 @@
 //! What surrounds the opinion's text: the front lines, the reporter's matter, the record's gaps and kind.
 
 use super::*;
-use legal_structure::judgment::{JUDGMENT, ORDERED};
+use crate::judgment::{JUDGMENT, ORDERED};
 
 /// A long line of the head, not the opinion's first sentence: it opens as a court's or a filing's line does, or closes
 /// on a party's role. A sentence may open with one ("Plaintiff Troy H. brings this action ...").
@@ -160,7 +160,7 @@ pub(super) fn reporter_matter(layer: &mut OpinionLayer) {
         let printed = coordinates.slice_utf16(paragraph.start..paragraph.end).map(squeezed).unwrap_or_default();
         let range = Some(ScalarRange { start: paragraph.start, end: paragraph.end });
         if index + 8 >= count && printed.len() <= 120 {
-            let role = if signed.is_match(&printed) || legal_structure::judgment::signature_line(&printed) {
+            let role = if signed.is_match(&printed) || crate::judgment::signature_line(&printed) {
                 Some("closing")
             } else if joined.is_match(&printed) {
                 Some("joinder")
@@ -265,7 +265,7 @@ pub(super) fn dispositions(text: &str, paragraphs: &[OpinionParagraph], parts: &
         let Some(raw) = coordinates.slice_utf16(range.start..range.end) else { return Vec::new() };
         sentences(raw).into_iter().filter_map(|(from, to)| {
             let words = trim_js(&raw[from..to]);
-            let acts = legal_structure::judgment::court_order(words)?;
+            let acts = crate::judgment::court_order(words)?;
             let start = range.start + utf16_len(&raw[..from + raw[from..to].find(words).unwrap_or(0)]);
             Some((FrontLine { role: "disposition".to_owned(), text: squeezed(words), range: Some(ScalarRange { start, end: start + utf16_len(words) }) }, acts))
         }).collect::<Vec<_>>()
@@ -398,7 +398,7 @@ pub(super) fn divisions_of_headnotes(layer: &mut OpinionLayer) {
         // ... and a reader of the opinion below it must not lose the opinion.
         let until = layer.paragraphs.iter().filter(|paragraph| paragraph.start > start && paragraph.start < until).find(|paragraph| {
             let printed = coordinates.slice_utf16(paragraph.start..paragraph.end).map(trim_js).unwrap_or("");
-            opens.is_match(printed) || author.is_match(printed) || legal_structure::judgment::author_line(printed)
+            opens.is_match(printed) || author.is_match(printed) || crate::judgment::author_line(printed)
         }).map_or(until, |paragraph| paragraph.start);
         let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut layer.paragraphs).into_iter().partition(|paragraph| paragraph.start >= start && paragraph.start < until);
         layer.paragraphs = rest;
