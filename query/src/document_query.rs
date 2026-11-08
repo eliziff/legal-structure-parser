@@ -46,10 +46,12 @@ fn context(value: usize) -> usize {
 const READ_OUTPUT_UTF16_BUDGET: usize = 63_000;
 const READ_LINE_UTF16_LIMIT: usize = READ_OUTPUT_UTF16_BUDGET - 1_000;
 
-/// A node the query found, and its text as the query reads it (its membership in the document's query text).
+/// A node the query found, read (its ranges, span and fragment), and its text as the query reads it: its membership in
+/// the document's query text.
 #[derive(Clone, Serialize)]
 pub struct Passage<'a> {
-    pub node: &'a StructureNode,
+    #[serde(flatten)]
+    pub reading: legal_structure_model::NodeReading<'a>,
     pub text: String,
 }
 
@@ -777,8 +779,8 @@ impl DocumentQuery {
         position: &BlockPosition,
         text: &ScalarText<'_>,
     ) -> Passage<'a> {
-        let node = &document.nodes[position.node];
-        Passage { text: crate::text::membership_text_utf16(text, &document.query_ranges(node)), node }
+        let reading = document.reading(&document.nodes[position.node]);
+        Passage { text: crate::text::membership_text_utf16(text, &reading.ranges), reading }
     }
 
     /// The nodes the query serves, in its order (`kind`: those served as it).
@@ -1120,7 +1122,7 @@ impl DocumentQuery {
         self.contained_leaf_blocks(document, blocks)
             .into_iter()
             .map(|position| self.materialize(document, position, text))
-            .filter(|unit| !unit.text.is_empty() || unit.node.anchor.is_some())
+            .filter(|unit| !unit.text.is_empty() || unit.reading.node.anchor.is_some())
             .collect()
     }
 
@@ -1356,7 +1358,7 @@ impl DocumentQuery {
                     let units = include_units
                         .then(|| self.materialize_leaf_blocks(document, &[position], &text));
                     let units = units.filter(|units| {
-                        units.len() != 1 || document.query_range(units[0].node) != document.query_range(materialized.node)
+                        units.len() != 1 || units[0].reading.span != materialized.reading.span
                     });
                     GraphScopeNode {
                         block: materialized,
@@ -1400,7 +1402,7 @@ impl DocumentQuery {
                     }
                     _ => return DocumentAddressResolution::NotFound,
                 };
-                let mut spans = document.query_ranges(block.node).into_owned();
+                let mut spans = block.reading.ranges.clone().into_owned();
                 if follow != FollowDirection::None {
                     let Some(graph) = document
                         .cross_references
@@ -1410,7 +1412,7 @@ impl DocumentQuery {
                         return DocumentAddressResolution::NotAddressable;
                     };
                     let Some(seed) = self.positions(document).iter().find(|position|
-                        std::ptr::eq(block.node, &document.nodes[position.node]))
+                        std::ptr::eq(block.reading.node, &document.nodes[position.node]))
                     else { return DocumentAddressResolution::NotAddressable; };
                     let Some(scope) = self.graph_scope_position(
                         document,
@@ -1423,7 +1425,7 @@ impl DocumentQuery {
                     ) else {
                         return DocumentAddressResolution::NotAddressable;
                     };
-                    spans.extend(scope.nodes.into_iter().flat_map(|node| document.query_ranges(node.block.node).into_owned()));
+                    spans.extend(scope.nodes.into_iter().flat_map(|node| node.block.reading.ranges.into_owned()));
                 }
                 DocumentAddressResolution::Found { spans }
             }

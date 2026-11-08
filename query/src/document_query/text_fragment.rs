@@ -82,7 +82,7 @@ impl DocumentQuery {
         let source = FragmentText::Document(self, document, &text, page_glues_labels);
         let mut ranges = selected.selected.into_iter()
             .take(if first_block_only { 1 } else { usize::MAX })
-            .flat_map(|passage| document.query_ranges(passage.node).into_owned())
+            .flat_map(|passage| passage.reading.ranges.into_owned())
             .map(|mut range| {
                 if kind == NodeKind::Paragraph {
                     range.start = (range.start + source.paragraph_marker_length(range.start)).min(range.end);
