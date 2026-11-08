@@ -241,40 +241,19 @@ const fn one() -> f64 {
     1.0
 }
 
+/// A fault a reading found that leaves the document's reading short of ready, by its code, and the page it is on: a
+/// page no text could be read from (OCR_REQUIRED), a column order still uncertain, a note band read from weak geometry,
+/// a note's label or reference left unpaired.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub code: String,
-    pub severity: String,
-    pub message: String,
     #[serde(default)]
     pub page_index: Option<usize>,
-    #[serde(default)]
-    pub line_ids: Vec<String>,
-    #[serde(default)]
-    pub details: Map<String, Value>,
 }
 
 impl Diagnostic {
-    pub fn warning(code: &str, message: impl Into<String>, page_index: Option<usize>) -> Self {
-        Self {
-            code: code.to_owned(),
-            severity: "warning".to_owned(),
-            message: message.into(),
-            page_index,
-            line_ids: Vec::new(),
-            details: Map::new(),
-        }
-    }
-
-    pub fn info(code: &str, message: impl Into<String>, page_index: Option<usize>) -> Self {
-        Self {
-            code: code.to_owned(),
-            severity: "info".to_owned(),
-            message: message.into(),
-            page_index,
-            line_ids: Vec::new(),
-            details: Map::new(),
-        }
+    pub fn new(code: &str, page_index: Option<usize>) -> Self {
+        Self { code: code.to_owned(), page_index }
     }
 }
 

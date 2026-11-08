@@ -166,15 +166,7 @@ pub(super) fn materialize(
             .filter(|range| range.start < range.end)
             .collect();
         if pair.refs.is_empty() {
-            let mut diagnostic = Diagnostic::warning(
-                "FOOTNOTE_UNMATCHED_LABEL",
-                format!("Footnote label '{display}' has no paired reference."),
-                Some(label_line.page_index),
-            );
-            diagnostic.line_ids.push(label_line.id.clone());
-            diagnostic.details.insert("pair_id".to_owned(), json!(pair.pair_id));
-            diagnostic.details.insert("label".to_owned(), json!(display));
-            diagnostics.push(diagnostic);
+            diagnostics.push(Diagnostic::new("FOOTNOTE_UNMATCHED_LABEL", Some(label_line.page_index)));
         }
         let kind = if pair.endnote { NodeKind::Endnote } else { NodeKind::Footnote };
         let range = ranges.first().zip(ranges.last()).map_or(ScalarRange { start: label_range.end, end: label_range.end },
