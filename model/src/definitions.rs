@@ -1,4 +1,4 @@
-use crate::{text::ScalarText, ScalarRange};
+use crate::ScalarRange;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -16,15 +16,4 @@ pub struct DefinedTerm {
     pub term: String,
     pub definitions: Vec<DefinitionOccurrence>,
     pub uses: Vec<DefinitionOccurrence>,
-}
-
-impl DefinitionOccurrence {
-    pub fn at(&self, document: &ScalarText<'_>, start: usize, end: usize) -> Self {
-        let mut hit = self.clone();
-        (hit.range.start, hit.range.end) = (
-            document.utf16_at_byte(start).unwrap(),
-            document.utf16_at_byte(end).unwrap(),
-        );
-        hit
-    }
 }
