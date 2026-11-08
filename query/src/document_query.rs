@@ -1040,7 +1040,11 @@ impl DocumentQuery {
         document: &DocumentStructure,
         blocks: &[&'a BlockPosition],
     ) -> Vec<&'a BlockPosition> {
-        let Some(kind) = blocks.first().map(|position| document.nodes[position.node].kind) else {
+        // (Prose is read among paragraphs, as paragraphs are asked for.)
+        let Some(kind) = blocks.first().map(|position| match document.nodes[position.node].kind {
+            NodeKind::Prose => NodeKind::Paragraph,
+            kind => kind,
+        }) else {
             return Vec::new();
         };
         // Parallel reporter pages may overlap without owning one another.

@@ -1,7 +1,7 @@
 //! Derive a structure's levels and extents from its recorded parents and membership.
 use crate::document::public_structure_label;
 use crate::{DocumentStructure, NodeKind, PrimaryRole, ScalarRange, StructureNode};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 fn envelope(ranges: &[ScalarRange]) -> Option<ScalarRange> {
     Some(ScalarRange {
@@ -20,33 +20,13 @@ fn addressed(node: &StructureNode) -> bool {
         | NodeKind::Row | NodeKind::Cell)
 }
 
-/// A statute's outline as its readers address it, written once: each addressed node's label as printed, the
-/// occurrence that told a repeated label apart left off (`public_structure_label`), and its parent the outermost one
-/// its label's chain reaches, a repeated label read as its last printing (in the text's order, an enclosing provision
-/// before what it holds).
+/// A statute's labels as its readers address them, written once: each addressed node's label as printed, the occurrence
+/// that told a repeated label apart left off (`public_structure_label`). Its parents stay the provisions that hold it:
+/// a link's passage is read off them (`contained_leaf_blocks`).
 pub fn legislation_outline(nodes: &mut [StructureNode]) {
-    let index = nodes.iter().enumerate().map(|(i, node)| (node.id.clone(), i)).collect::<HashMap<_, _>>();
-    let parent_of = |nodes: &[StructureNode], i: usize| nodes[i].parent_id.as_deref().and_then(|id| index.get(id)).copied();
-    let public = nodes.iter().map(|node| node.label.as_deref().map(|label| public_structure_label(label).into_owned())).collect::<Vec<_>>();
-    let mut order = (0..nodes.len()).filter(|&i| addressed(&nodes[i])).collect::<Vec<_>>();
-    order.sort_by(|&a, &b| nodes[a].range.start.cmp(&nodes[b].range.start).then(nodes[b].range.end.cmp(&nodes[a].range.end)).then(public[a].cmp(&public[b])));
-    let owners = order.iter().filter_map(|&i| Some((public[i].clone()?, i))).collect::<HashMap<_, _>>();
-    let parents = order.iter().map(|&i| {
-        let owner = public[i].as_ref().and_then(|label| owners.get(label)).copied().unwrap_or(i);
-        let mut seen = HashSet::new();
-        let parent = std::iter::successors(parent_of(nodes, owner), |&parent| {
-            let label = public[parent].clone()?;
-            seen.insert(label.clone()).then(|| owners.get(&label).and_then(|&owner| parent_of(nodes, owner))).flatten()
-        })
-        .last();
-        (i, parent.map(|parent| nodes[parent].id.clone()))
-    }).collect::<Vec<_>>();
-    for (i, parent) in parents {
-        nodes[i].parent_id = parent;
-    }
-    for (node, label) in nodes.iter_mut().zip(public) {
-        if addressed(node) {
-            node.label = label;
+    for node in nodes.iter_mut().filter(|node| addressed(node)) {
+        if let Some(label) = &node.label {
+            node.label = Some(public_structure_label(label).into_owned());
         }
     }
 }
