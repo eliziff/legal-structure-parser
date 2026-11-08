@@ -100,7 +100,6 @@ pub fn document_fingerprint(document: &DocumentStructure) -> DocumentFingerprint
                     &node.page_indexes,
                     &node.line_ids,
                     &node.grammar,
-                    &node.proof,
                 ),
             )
         })

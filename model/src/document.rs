@@ -1,6 +1,6 @@
 use crate::{
     DefinedTerm, DetectionProfile, DocxStructureFacts, InstrumentContentsReading,
-    InstrumentCrossReferenceGraph, Origin, ResolutionProofV2, ScalarRange, ScalarText, Scope,
+    InstrumentCrossReferenceGraph, Origin, ScalarRange, ScalarText, Scope,
     DOCUMENT_STRUCTURE_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
@@ -161,8 +161,6 @@ pub struct StructureNode {
     pub line_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grammar: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub proof: Option<ResolutionProofV2>,
     /// A page's numbering, where a document prints more than one: a reporter's (`reporter-1`), a vendor's page scheme,
     /// the slip opinion's (`slip`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -219,7 +217,6 @@ impl StructureNode {
             page_indexes: Vec::new(),
             line_ids: Vec::new(),
             grammar: None,
-            proof: None,
             series: String::new(),
             calls: Vec::new(),
             properties: BTreeMap::new(),

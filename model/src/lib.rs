@@ -198,12 +198,6 @@ pub enum ResolutionRuleV2 {
     OffCount,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct ResolutionProofV2 {
-    pub rule: ResolutionRuleV2,
-    pub observations: Vec<CandidateObservationV2>,
-}
-
 /// The unit a numbering marker opens: one of the text's numbered paragraphs, a section or clause,
 /// or a list's item.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]

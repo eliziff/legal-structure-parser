@@ -99,7 +99,7 @@ pub use text::{
 
 pub use legal_structure_model::{
     CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, CandidateRoleV2, DetectionProfile, EngineError,
-    Origin, ResolutionProofV2, ResolutionRuleV2, ScalarRange, Scope,
+    Origin, ResolutionRuleV2, ScalarRange, Scope,
     LayoutAnalysis, ScopeKind, StructureAnalysis, StructureCandidateRun, StructureMarkerCandidate,
     UnitRole, DOCUMENT_STRUCTURE_SCHEMA,
 };
