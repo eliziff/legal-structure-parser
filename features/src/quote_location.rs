@@ -826,8 +826,43 @@ impl Reader {
 #[serde(rename_all = "camelCase")]
 pub enum QuoteBlockKind {
     Paragraph,
+    /// A page by the number it prints.
     Page,
+    /// A page by its place in a PDF that prints no page numbers.
+    PdfPage,
     Section,
+}
+
+impl QuoteBlockKind {
+    fn is_page(self) -> bool {
+        matches!(self, Self::Page | Self::PdfPage)
+    }
+}
+
+/// Where a quotation was found: a block's kind and the label it prints ("12" of a paragraph or a page, "3–5" of a run
+/// of them; a provision's place, "sec5(2)").
+#[derive(Clone, PartialEq, Serialize)]
+pub struct QuoteBlockLabel {
+    pub kind: QuoteBlockKind,
+    pub label: String,
+    /// As a pinpoint is written for a reader: "par12", "page 5", "pages 5–6", "PDF page 3", "sec5(2)".
+    pub shown: String,
+}
+
+impl QuoteBlockLabel {
+    fn new(kind: QuoteBlockKind, label: String) -> Self {
+        Self { shown: Self::show(kind, &label), kind, label }
+    }
+
+    fn show(kind: QuoteBlockKind, label: &str) -> String {
+        match kind {
+            QuoteBlockKind::Paragraph => format!("par{label}"),
+            QuoteBlockKind::Page if label.contains('\u{2013}') => format!("pages {label}"),
+            QuoteBlockKind::Page => format!("page {label}"),
+            QuoteBlockKind::PdfPage => format!("PDF page {label}"),
+            QuoteBlockKind::Section => label.to_owned(),
+        }
+    }
 }
 
 /// A source's paragraph, page or provision, by its offsets (UTF-16) in the source's text.
@@ -891,7 +926,7 @@ pub fn document_quote_blocks(
             // A paragraph's number is a locator only where the PDF prints it.
             if node.kind != NodeKind::Paragraph || !printed_number(node) { return None; }
             let number = parse_ordinal("paragraph", node.label.as_deref()?)?;
-            Some(input(node, QuoteBlockKind::Paragraph, format!("par{number}")))
+            Some(input(node, QuoteBlockKind::Paragraph, number.to_string()))
         }).collect::<Vec<_>>();
         printed.sort_by_key(|block| (block.start, block.end));
     }
@@ -903,6 +938,7 @@ pub fn document_quote_blocks(
     printed.extend(blocks.into_iter().filter_map(|node| {
         let kind = match node.kind {
             NodeKind::Paragraph | NodeKind::Prose if !pdf => QuoteBlockKind::Paragraph,
+            NodeKind::Page if pdf && !numbered_pages => QuoteBlockKind::PdfPage,
             NodeKind::Page => QuoteBlockKind::Page,
             NodeKind::Section => QuoteBlockKind::Section,
             _ => return None,
@@ -911,10 +947,9 @@ pub fn document_quote_blocks(
         let value = if kind == QuoteBlockKind::Page && numbered_pages { printed_page(node)?.as_str() } else { js_trim(node.label.as_deref()?) };
         let value = value.strip_prefix('[').and_then(|value| value.strip_suffix(']')).unwrap_or(value);
         let label = match kind {
-            QuoteBlockKind::Paragraph => format!("par{value}"),
-            QuoteBlockKind::Page if pdf && !numbered_pages => format!("PDF page {value}"),
-            QuoteBlockKind::Page => format!("page {value}"),
-            QuoteBlockKind::Section => value.to_owned(),
+            QuoteBlockKind::Paragraph | QuoteBlockKind::Page | QuoteBlockKind::PdfPage => value.to_owned(),
+            // A provision is its place, as a link names it ("sec5(2)", "part2").
+            QuoteBlockKind::Section => node.fragment()?,
         };
         Some(input(node, kind, label))
     }));
@@ -1020,7 +1055,7 @@ pub struct QuoteCorrection {
 #[serde(rename_all = "camelCase")]
 pub struct CitedPartialMatch {
     pub score: f64,
-    pub labels: Vec<String>,
+    pub labels: Vec<QuoteBlockLabel>,
     pub pinpoint: String,
     #[serde(flatten)]
     pub correction: QuoteCorrection,
@@ -1033,7 +1068,7 @@ pub struct CitedPartialMatch {
 pub struct QuoteLocation {
     pub location: String,
     pub score: f64,
-    pub labels: Vec<String>,
+    pub labels: Vec<QuoteBlockLabel>,
     pub pinpoint: String,
     pub text: String,
     #[serde(flatten)]
@@ -1060,10 +1095,7 @@ fn js_number(text: &str) -> f64 {
         .unwrap_or(f64::NAN)
 }
 fn block_number(block: &Block) -> f64 {
-    match block.kind {
-        QuoteBlockKind::Paragraph => js_number(block.label.get(3..).unwrap_or("")),
-        _ => js_number(block.label.split(' ').next_back().unwrap_or("")),
-    }
+    js_number(&block.label)
 }
 fn in_ranges(value: f64, ranges: &[(f64, f64)]) -> bool {
     ranges.iter().any(|&(a, b)| a <= value && value <= b)
@@ -1215,9 +1247,9 @@ fn prepared_exact(quoted: &Quoted, source: &Prepared) -> bool {
 struct Resolution {
     location: &'static str,
     score: f64,
-    labels: Vec<String>,
+    labels: Vec<QuoteBlockLabel>,
     text: String,
-    cited: Option<(f64, Vec<String>, String)>,
+    cited: Option<(f64, Vec<QuoteBlockLabel>, String)>,
 }
 
 impl Located<'_> {
@@ -1238,7 +1270,7 @@ impl Located<'_> {
         };
         for (index, block) in self.blocks.iter().enumerate() {
             if block.kind == QuoteBlockKind::Paragraph && in_ranges(block_number(block), &scopes.paragraphs) { set(index, true, &mut selected); }
-            if block.kind == QuoteBlockKind::Page && in_ranges(block_number(block), &scopes.pages) { set(index, true, &mut selected); }
+            if block.kind.is_page() && in_ranges(block_number(block), &scopes.pages) { set(index, true, &mut selected); }
         }
         let mut sections = HashMap::new();
         for (index, block) in self.blocks.iter().enumerate() {
@@ -1261,17 +1293,14 @@ impl Located<'_> {
         for (kind, ranges) in [(QuoteBlockKind::Paragraph, &scopes.paragraphs), (QuoteBlockKind::Page, &scopes.pages)] {
             for &(start, end) in ranges.iter() {
                 if end <= start { continue; }
-                let mut members = self.blocks.iter().filter(|block| block.kind == kind && start <= block_number(block)
+                let mut members = self.blocks.iter().filter(|block| (block.kind == kind || kind.is_page() && block.kind.is_page()) && start <= block_number(block)
                     && block_number(block) <= end).collect::<Vec<_>>();
                 members.sort_by(|a, b| block_number(a).partial_cmp(&block_number(b)).unwrap_or(std::cmp::Ordering::Equal));
                 let wanted = (end - start + 1.0) as usize;
                 if members.len() != wanted || members.iter().enumerate().any(|(i, block)| block_number(block) != start + i as f64) {
                     continue;
                 }
-                let label = match kind {
-                    QuoteBlockKind::Paragraph => format!("par{}\u{2013}{}", js_display(start), js_display(end)),
-                    _ => format!("pages {}\u{2013}{}", js_display(start), js_display(end)),
-                };
+                let label = format!("{}\u{2013}{}", js_display(start), js_display(end));
                 let mut ranges = members.iter().flat_map(|block| block.ranges.iter().copied()).collect();
                 ScalarRange::normalize_union(&mut ranges);
                 combined.push(Block { node_id: None, ancestor_ids: Vec::new(), kind, label,
@@ -1308,15 +1337,15 @@ impl Located<'_> {
         out
     }
 
-    fn specific_labels(&self, matches: &[(f64, Candidate)], ranges: &[Block]) -> Vec<String> {
-        let mut labels: Vec<String> = Vec::new();
+    fn specific_labels(&self, matches: &[(f64, Candidate)], ranges: &[Block]) -> Vec<QuoteBlockLabel> {
+        let mut labels: Vec<QuoteBlockLabel> = Vec::new();
         for &(score, candidate) in matches {
             let block = self.block(ranges, candidate);
-            if labels.contains(&block.label) { continue; }
+            if labels.iter().any(|known| known.kind == block.kind && known.label == block.label) { continue; }
             if block.kind == QuoteBlockKind::Section && matches.iter().any(|&(other, other_candidate)| {
                 other >= score && within(block, self.block(ranges, other_candidate))
             }) { continue; }
-            labels.push(block.label.clone());
+            labels.push(QuoteBlockLabel::new(block.kind, block.label.clone()));
         }
         labels
     }
@@ -1443,10 +1472,10 @@ impl Located<'_> {
 
     /// Page labels where the quotation's words run, over a page break too.
     fn page_pinpoint(&mut self, quote: &str) -> String {
-        let pages = self.blocks.iter().filter(|block| block.kind == QuoteBlockKind::Page).cloned().collect::<Vec<_>>();
+        let pages = self.blocks.iter().filter(|block| block.kind.is_page()).cloned().collect::<Vec<_>>();
         let mut hits = Vec::new();
         for block in &pages {
-            if self.reader.quote_match_score(quote, &block.text, 0.0) >= STRONG_MATCH { hits.push(block.label.clone()); }
+            if self.reader.quote_match_score(quote, &block.text, 0.0) >= STRONG_MATCH { hits.push(QuoteBlockLabel::show(block.kind, &block.label)); }
         }
         if !hits.is_empty() { return pinpoint_summary(&hits, 2); }
         for pair in pages.windows(2) {
@@ -1455,8 +1484,7 @@ impl Located<'_> {
             let text = legal_structure_model::text::membership_text_utf16(&self.source_text, &ranges);
             if !quote_words(quote).is_empty()
                 && self.reader.quote_match_score(quote, &text, 0.0) >= STRONG_MATCH {
-                let tail = |label: &str| label.split(' ').next_back().unwrap_or("").to_owned();
-                return format!("pages {}\u{2013}{}", tail(&pair[0].label), tail(&pair[1].label));
+                return format!("pages {}\u{2013}{}", pair[0].label, pair[1].label);
             }
         }
         String::new()
@@ -1495,8 +1523,8 @@ impl Located<'_> {
         let labeled = !resolution.labels.is_empty() && !resolution.location.starts_with("scope_unavailable");
         let limited = resolution.location.starts_with("scope_unavailable") || resolution.location == "cited_parent";
         let cited = resolution.cited.take().map(|(score, labels, text)| CitedPartialMatch { score,
-            pinpoint: pinpoint_summary(&labels, 2), labels, correction: self.correction(quote, &text) });
-        let pinpoint = if labeled { pinpoint_summary(&resolution.labels, 2) } else { self.page_pinpoint(quote) };
+            pinpoint: pinpoint_summary(&labels.iter().map(|label| label.shown.clone()).collect::<Vec<_>>(), 2), labels, correction: self.correction(quote, &text) });
+        let pinpoint = if labeled { pinpoint_summary(&resolution.labels.iter().map(|label| label.shown.clone()).collect::<Vec<_>>(), 2) } else { self.page_pinpoint(quote) };
         let perfect = resolution.score >= STRONG_MATCH && quote_exact_key(&correction.corrected) == quote_exact_key(quote)
             && !limited;
         QuoteLocation { location: resolution.location.into(), score: resolution.score,
