@@ -7,22 +7,23 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
     let mut runs = inference::raw_numeric_runs(&text);
     let mut raw_enumerators = inference::raw_enumerator_runs(&text);
     raw_enumerators.extend(inference::raw_bullet_runs(&text));
-    let points = inference::detect_instrument_grammar(&text, refinements);
+    let (points, direct) = inference::detect_instrument_grammar(&text, refinements);
     let parent_indexes = points
         .iter()
         .enumerate()
         .map(|(index, point)| {
-            point.parent_label.as_ref().and_then(|parent| {
+            point.parent_id.as_ref().and_then(|parent| {
                 points[..index].iter().rposition(|candidate| {
-                    candidate.label == *parent
+                    candidate.label.as_ref() == Some(parent)
                         && candidate.range.start <= point.range.start
                         && point.range.start < candidate.range.end
                 })
             })
         })
         .collect::<Vec<_>>();
-    // A section read from nothing but its number, on the line of a number the text counts from
-    // 1, is a numbered paragraph; its sub-items are then read as lists of their own.
+    // A section read from nothing but its number (no statute's run of sections, and no article, part or division), on
+    // the line of a number the text counts from 1, is a numbered paragraph; its sub-items are then read as lists of
+    // their own.
     let counted = runs
         .iter()
         .filter(|run| run.rooted && run.consecutive)
@@ -31,13 +32,14 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
     let paragraphs = (0..points.len())
         .filter(|index| {
             parent_indexes[*index].is_none()
-                && points[*index].direct
+                && direct
+                && !points[*index].label.as_deref().is_some_and(|label| ["art", "part", "div"].iter().any(|word| label.starts_with(word)))
                 && counted.contains(&points[*index].range.start)
         })
         .collect::<HashSet<_>>();
     let mut grouped = BTreeMap::<usize, (Vec<StructureMarkerCandidate>, bool)>::new();
     for (index, point) in points.into_iter().enumerate() {
-        let grammar_value = point.label;
+        let grammar_value = point.label.unwrap_or_default();
         let mut root = index;
         let mut level = 0;
         while let Some(parent) = parent_indexes[root] {
@@ -47,10 +49,10 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
         if paragraphs.contains(&root) {
             continue;
         }
-        let content_start = point.content_start;
+        let content_start = point.content_start.expect("a grammar point opens its words");
         let entry = grouped.entry(root).or_insert_with(|| (Vec::new(), true));
         entry.1 &= !matches!(
-            point.diagnostic,
+            point.properties.get("diagnostic").map(String::as_str),
             Some(
                 "instrument_ladder_forward_jump"
                     | "instrument_ladder_midcounter_open"

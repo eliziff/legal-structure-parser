@@ -14,31 +14,21 @@ pub(super) struct ChildMark<'a> {
     content_start: usize,
 }
 
-pub(crate) struct GrammarPoint {
-    pub(crate) range: ScalarRange,
-    pub(crate) label: String,
-    pub(crate) parent_label: Option<String>,
-    pub(crate) content_start: usize,
-    pub(crate) diagnostic: Option<&'static str>,
-    /// A section read from its number alone, in a text with no statute's run of sections.
-    pub(crate) direct: bool,
-}
-
-impl GrammarPoint {
-    fn into_section(self) -> StructureNode {
-        let mut node = StructureNode::new(String::new(), NodeKind::Section, self.range, ENGINE_ORIGIN, Derivation::Heuristic, self.parent_label);
-        node.label = Some(self.label);
-        node.content_start = Some(self.content_start);
-        if let Some(code) = self.diagnostic {
-            node.properties.insert("diagnostic".to_owned(), code.to_owned());
-        }
-        node
+/// A provision the grammar reads, open to the text's end until the next at its depth or above closes it: its label,
+/// where its words open, its parent named by label, and the diagnostic its reading raises, if any.
+fn grammar_section(start: usize, label: String, parent: Option<String>, content_start: usize, diagnostic: Option<&str>) -> StructureNode {
+    let mut node = StructureNode::new(String::new(), NodeKind::Section, ScalarRange { start, end: usize::MAX }, ENGINE_ORIGIN, Derivation::Heuristic, parent);
+    node.label = Some(label);
+    node.content_start = Some(content_start);
+    if let Some(code) = diagnostic {
+        node.properties.insert("diagnostic".to_owned(), code.to_owned());
     }
+    node
 }
 
 #[derive(Default)]
 pub(super) struct StructureState {
-    nodes: Vec<(GrammarPoint, usize)>,
+    nodes: Vec<(StructureNode, usize)>,
     container: Option<String>,
     section: Option<(String, usize)>,
     stack: Vec<EnumFrame>,
@@ -424,20 +414,7 @@ impl StructureState {
                 label
             }
         };
-        self.nodes.push((
-            GrammarPoint {
-                range: ScalarRange {
-                    start,
-                    end: usize::MAX,
-                },
-                label: label.clone(),
-                parent_label: Some(parent),
-                content_start,
-                diagnostic: Some(code),
-                direct: false,
-            },
-            depth,
-        ));
+        self.nodes.push((grammar_section(start, label.clone(), Some(parent), content_start, Some(code)), depth));
         label
     }
 
@@ -747,13 +724,9 @@ pub(super) fn enumerated_children(
         node.range.end = markers
             .get(next_marker)
             .map_or(range.end, |marker| marker.start);
-        node.parent_label = Some(root.to_owned());
+        node.parent_id = Some(root.to_owned());
     }
-    state
-        .nodes
-        .into_iter()
-        .map(|(point, _)| point.into_section())
-        .collect()
+    state.nodes.into_iter().map(|(node, _)| node).collect()
 }
 
 pub(super) fn direct_section(value: &str) -> Option<(String, usize)> {
@@ -834,10 +807,12 @@ pub(super) fn instrument_top(value: &str, direct: bool) -> Option<(String, usize
         .map(|(label, at)| (format!("sec{label}"), at, false))
 }
 
+/// The provisions an instrument's grammar reads, and whether the text has no statute's run of sections, its sections
+/// read from their numbers alone.
 pub(crate) fn detect_instrument_grammar(
     text: &ScalarText<'_>,
     provider_refinements: bool,
-) -> Vec<GrammarPoint> {
+) -> (Vec<StructureNode>, bool) {
     let mut lines = lines(text).collect::<Vec<_>>();
     let mut spine = statute_spine_from_lines(text, false, &lines, provider_refinements)
         .into_iter()
@@ -866,20 +841,8 @@ pub(crate) fn detect_instrument_grammar(
             });
         if let Some((label, content_start, container)) = selected {
             let depth = usize::from(!container && state.container.is_some());
-            state.nodes.push((
-                GrammarPoint {
-                    range: ScalarRange {
-                        start,
-                        end: usize::MAX,
-                    },
-                    label: label.clone(),
-                    parent_label: (!container).then(|| state.container.clone()).flatten(),
-                    content_start,
-                    diagnostic: None,
-                    direct: direct && !container,
-                },
-                depth,
-            ));
+            let parent = (!container).then(|| state.container.clone()).flatten();
+            state.nodes.push((grammar_section(start, label.clone(), parent, content_start, None), depth));
             state.stack.clear();
             numbered = false;
             if container {
@@ -937,12 +900,9 @@ pub(crate) fn detect_instrument_grammar(
     for index in open {
         state.nodes[index].0.range.end = text.len();
     }
-    state.nodes.into_iter().map(|(point, _)| point).collect()
+    (state.nodes.into_iter().map(|(node, _)| node).collect(), direct)
 }
 
 pub(crate) fn detect_instrument(text: &ScalarText<'_>) -> Vec<StructureNode> {
-    detect_instrument_grammar(text, true)
-        .into_iter()
-        .map(GrammarPoint::into_section)
-        .collect()
+    detect_instrument_grammar(text, true).0
 }
