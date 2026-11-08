@@ -1202,12 +1202,12 @@ pub(super) fn schedule_start(text: &ScalarText<'_>, from: usize, end: usize) -> 
 pub(super) fn detect_legislation(
     text: &ScalarText<'_>,
     allow_hyphenated_sections: bool,
-    native_claims: &[NativeClaim],
+    native_claims: &[StructureNode],
 ) -> Vec<Block> {
     let sections = selected_sections(text, allow_hyphenated_sections);
     let merge_native = native_claims
         .iter()
-        .any(|claim| claim.kind == EvidenceKind::Section && claim.parent_label.is_none());
+        .any(|claim| claim.kind == NodeKind::Section && claim.parent_id.is_none());
     let mut result = Vec::new();
     let mut parent_blocks = HashMap::<String, Vec<usize>>::new();
     for (index, section) in sections.iter().enumerate() {
@@ -1246,7 +1246,7 @@ pub(super) fn detect_legislation(
     let mut retained = vec![true; result.len()];
     for claim in native_claims
         .iter()
-        .filter(|claim| claim.kind == EvidenceKind::Section && claim.parent_label.is_none())
+        .filter(|claim| claim.kind == NodeKind::Section && claim.parent_id.is_none())
     {
         let Some(label) = claim
             .label

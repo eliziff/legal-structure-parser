@@ -111,17 +111,6 @@ const ENGINE_ORIGIN: &str = "legalpdf.structure-engine";
 #[cfg(feature = "structure-inference")]
 use legal_citations::cues::canadian_report_start;
 
-struct NativeClaim {
-    id: String,
-    kind: EvidenceKind,
-    label: Option<String>,
-    aliases: Vec<String>,
-    range: ScalarRange,
-    origin_id: &'static str,
-    parent_label: Option<String>,
-    anchor: Option<String>,
-}
-
 struct Exclusion {
     range: ScalarRange,
     applies_to: Vec<EvidenceKind>,
@@ -141,7 +130,9 @@ pub(crate) struct DocumentInput {
     source_sha256: Option<String>,
     scope: Scope,
     origins: Vec<Origin>,
-    native_claims: Vec<NativeClaim>,
+    /// The reader's own nodes, in scalars, each naming its parent (`parent_id`) by its id or label until `derive`
+    /// resolves it.
+    nodes: Vec<StructureNode>,
     exclusions: Vec<Exclusion>,
 }
 
@@ -182,7 +173,7 @@ impl DocumentInput {
             origins: vec![Origin {
                 id: origin_id.to_owned(),
             }],
-            native_claims: Vec::new(),
+            nodes: Vec::new(),
             exclusions: Vec::new(),
         }
     }

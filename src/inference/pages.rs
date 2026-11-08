@@ -127,7 +127,7 @@ pub(super) fn form_feed_pages(evidence: &DocumentInput, text: &ScalarText<'_>, b
     }
     let pages = blocks.iter().filter(|block| block.kind == NodeKind::Page)
         .map(|block| (block.range, block.label.as_deref(), block.marker_range))
-        .chain(evidence.native_claims.iter().filter(|claim| claim.kind == EvidenceKind::Page)
+        .chain(evidence.nodes.iter().filter(|claim| claim.kind == NodeKind::Page)
             .map(|claim| (claim.range, claim.label.as_deref(), None)))
         .collect::<Vec<_>>();
     let mut offsets = HashMap::<i64, usize>::new();

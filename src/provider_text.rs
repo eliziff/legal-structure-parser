@@ -1,7 +1,7 @@
 use crate::{
     locator::normalize_section_locator, text::equal_fold, utf16_len, Block,
-    Derivation, DetectionProfile, DocumentInput, DocumentStructure, EngineError, EvidenceKind,
-    NativeClaim, NodeKind, ScalarRange, ScalarText, Scope, ScopeKind,
+    Derivation, DetectionProfile, DocumentInput, DocumentStructure, EngineError,
+    NodeKind, ScalarRange, ScalarText, Scope, ScopeKind, StructureNode,
 };
 use aho_corasick::{AhoCorasick, AhoCorasickKind};
 use regex::Regex;
@@ -136,7 +136,14 @@ fn ordered_sections(map: &ProviderSectionMap) -> Result<Vec<(&str, &str)>, Engin
         .collect())
 }
 
-fn provider_source(mut text: String, entries: &[(&str, &str)]) -> (String, Vec<NativeClaim>) {
+/// A node the provider's own data gives the text.
+fn provided(id: String, kind: NodeKind, label: String, range: ScalarRange) -> StructureNode {
+    let mut node = StructureNode::new(id, kind, range, ORIGIN, Derivation::Native, None);
+    node.label = Some(label);
+    node
+}
+
+fn provider_source(mut text: String, entries: &[(&str, &str)]) -> (String, Vec<StructureNode>) {
     if !text.trim().is_empty() || entries.is_empty() {
         return (text, Vec::new());
     }
@@ -154,35 +161,27 @@ fn provider_source(mut text: String, entries: &[(&str, &str)]) -> (String, Vec<N
         let start = scalar;
         text.push_str(value);
         scalar += value.chars().count();
-        claims.push(NativeClaim {
-            id: format!("native-{:06}", claims.len() + 1),
-            kind: EvidenceKind::Section,
-            label: Some(format!("sec{}", label.trim())),
-            aliases: Vec::new(),
-            range: ScalarRange { start, end: scalar },
-            origin_id: ORIGIN,
-            parent_label: None,
-            anchor: None,
-        });
+        claims.push(provided(
+            format!("native-{:06}", claims.len() + 1),
+            NodeKind::Section,
+            format!("sec{}", label.trim()),
+            ScalarRange { start, end: scalar },
+        ));
     }
     (text, claims)
 }
 
 /// The pages a printed report gives the text, claimed as a journal's pages are.
-fn printed_page_claims(pages: &[ProviderPage], length: usize) -> Vec<NativeClaim> {
-    pages.iter().filter(|page| page.start < page.end && page.end <= length).enumerate().map(|(index, page)| NativeClaim {
-        id: format!("page-{:06}", index + 1),
-        kind: EvidenceKind::Page,
-        label: Some(format!("page{}", page.label)),
-        aliases: vec![page.label.clone()],
-        range: ScalarRange { start: page.start, end: page.end },
-        origin_id: ORIGIN,
-        parent_label: None,
-        anchor: None,
+fn printed_page_claims(pages: &[ProviderPage], length: usize) -> Vec<StructureNode> {
+    pages.iter().filter(|page| page.start < page.end && page.end <= length).enumerate().map(|(index, page)| {
+        let range = ScalarRange { start: page.start, end: page.end };
+        let mut node = provided(format!("page-{:06}", index + 1), NodeKind::Page, format!("page{}", page.label), range);
+        node.aliases = Some(vec![page.label.clone()]);
+        node
     }).collect()
 }
 
-fn provider_claims(coordinates: &ScalarText<'_>, map: &ProviderSectionMap) -> Vec<NativeClaim> {
+fn provider_claims(coordinates: &ScalarText<'_>, map: &ProviderSectionMap) -> Vec<StructureNode> {
     static PRINTED: OnceLock<Regex> = OnceLock::new();
     let text = coordinates.value;
     let candidates = map
@@ -238,19 +237,15 @@ fn provider_claims(coordinates: &ScalarText<'_>, map: &ProviderSectionMap) -> Ve
         {
             continue;
         }
-        claims.push(NativeClaim {
-            id: format!("native-{:06}", claims.len() + 1),
-            kind: EvidenceKind::Section,
-            label: Some(format!("sec{label}")),
-            aliases: Vec::new(),
-            range: ScalarRange {
+        claims.push(provided(
+            format!("native-{:06}", claims.len() + 1),
+            NodeKind::Section,
+            format!("sec{label}"),
+            ScalarRange {
                 start: coordinates.scalar(start),
                 end: coordinates.scalar(start + value.len()),
             },
-            origin_id: ORIGIN,
-            parent_label: None,
-            anchor: None,
-        });
+        ));
     }
     claims
 }
@@ -258,7 +253,7 @@ fn provider_claims(coordinates: &ScalarText<'_>, map: &ProviderSectionMap) -> Ve
 fn evidence(
     input: &ProviderTextInput,
     text: String,
-    claims: Vec<NativeClaim>,
+    claims: Vec<StructureNode>,
 ) -> Result<DocumentInput, EngineError> {
     let profile = if input.source_kind == ProviderTextSourceKind::Cases {
         DetectionProfile::CaseRootedComplete
@@ -294,7 +289,7 @@ fn evidence(
             },
             excerpt_of: input.excerpt_of.clone(),
         },
-        native_claims: claims,
+        nodes: claims,
         ..DocumentInput::new(
             input.id.clone().unwrap_or_else(|| input.citation.clone()),
             input.provider.as_deref().unwrap_or("provider-text"),
@@ -338,7 +333,7 @@ fn words(text: &str) -> Vec<(Cow<'_, str>, usize, usize, usize, usize)> {
 fn apply_provider_section_evidence(
     coordinates: &ScalarText<'_>,
     blocks: &mut Vec<Block>,
-    native_claims: &[NativeClaim],
+    native_claims: &[StructureNode],
     map: &ProviderSectionMap,
 ) {
     let text = coordinates.value;
@@ -348,8 +343,8 @@ fn apply_provider_section_evidence(
     }
     let native_top_sections = native_claims
         .iter()
-        .filter(|claim| claim.kind == EvidenceKind::Section && claim.parent_label.is_none())
-        .flat_map(|claim| claim.label.iter().chain(&claim.aliases))
+        .filter(|claim| claim.kind == NodeKind::Section && claim.parent_id.is_none())
+        .flat_map(|claim| claim.label.iter().chain(claim.aliases.iter().flatten()))
         .map(|label| label.to_lowercase())
         .collect::<HashSet<_>>();
     let selected_sections = map
@@ -513,14 +508,14 @@ pub fn provider_text_document_structure(
     let mut evidence = evidence(&input, text, claims)?;
     let coordinates = ScalarText::new(&evidence.text);
     if let (true, Some(map)) = (has_text, &input.section_map) {
-        evidence.native_claims = provider_claims(&coordinates, map);
+        evidence.nodes = provider_claims(&coordinates, map);
     }
-    evidence.native_claims.extend(printed_page_claims(&input.printed_pages, coordinates.len()));
+    evidence.nodes.extend(printed_page_claims(&input.printed_pages, coordinates.len()));
     let mut inferred = crate::inference::inferred_blocks(&evidence, &coordinates);
     if let (ProviderTextSourceKind::Laws, true, Some(map)) =
         (input.source_kind, has_text, input.section_map.as_ref())
     {
-        apply_provider_section_evidence(&coordinates, &mut inferred, &evidence.native_claims, map);
+        apply_provider_section_evidence(&coordinates, &mut inferred, &evidence.nodes, map);
     }
     let mut structure = crate::derive::derive(evidence, Some(inferred));
     if input.source_kind == ProviderTextSourceKind::Cases {

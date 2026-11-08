@@ -34,7 +34,7 @@ impl GrammarPoint {
             parent_label: self.parent_label,
             content_start: Some(self.content_start),
             marker_range: None,
-            note: None,
+            calls: Vec::new(),
             diagnostic: self.diagnostic,
             source: Derivation::Heuristic,
             origin_id: ENGINE_ORIGIN,

@@ -2,10 +2,10 @@ use crate::text::{
     javascript_whitespace, normalize_javascript_whitespace, trim_javascript_whitespace as trim_js,
 };
 use crate::{
-    utf16_len, CitedAuthority, DetectionProfile,
+    utf16_len, CitedAuthority, Derivation, DetectionProfile,
     DocumentInput, DocumentStructure, EngineError, EvidenceKind, Exclusion, MarkupAncestor,
-    MarkupElement, NativeClaim, NodeKind, ScalarRange, ScalarText,
-    Scope, ScopeKind,
+    MarkupElement, NodeKind, ScalarRange, ScalarText,
+    Scope, ScopeKind, StructureNode,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -2148,6 +2148,23 @@ fn render_markup_in_context<'a>(
     })
 }
 
+/// The node kind a block's declared kind is.
+fn native_kind(kind: EvidenceKind) -> NodeKind {
+    match kind {
+        EvidenceKind::Paragraph => NodeKind::Paragraph,
+        EvidenceKind::Prose => NodeKind::Prose,
+        EvidenceKind::Page => NodeKind::Page,
+        EvidenceKind::Section => NodeKind::Section,
+        EvidenceKind::Heading => NodeKind::Heading,
+        EvidenceKind::Footnote => NodeKind::Footnote,
+        EvidenceKind::Endnote => NodeKind::Endnote,
+        EvidenceKind::List => NodeKind::List,
+        EvidenceKind::Table => NodeKind::Table,
+        EvidenceKind::Row => NodeKind::Row,
+        EvidenceKind::Cell => NodeKind::Cell,
+    }
+}
+
 fn report_start(citation: Option<&str>) -> Option<u32> {
     citation.and_then(crate::canadian_report_start)
 }
@@ -2192,7 +2209,6 @@ fn native_markup_evidence(
         DocumentInput,
         Vec<CitedAuthority>,
         Vec<(String, Option<String>, ScalarRange)>,
-        HashMap<String, (String, MarkupMetadata)>,
         Vec<MarkupElement>,
         String,
         Vec<MarkupAncestor>,
@@ -2323,34 +2339,46 @@ fn native_markup_evidence(
             .ok_or_else(|| EngineError::source("provider UTF-16 range splits a Unicode scalar"))
     };
     let text_utf16 = coordinates.utf16_len();
-    let native_kinds = rendered_blocks
-        .iter()
-        .map(|block| block.kind)
-        .collect::<HashSet<_>>();
+    #[cfg(feature = "courtlistener")]
+    let sibling_note_markers = if provider.is_courtlistener() {
+        courtlistener_sibling_note_markers(&elements, &text)
+    } else {
+        HashMap::new()
+    };
+    #[cfg(not(feature = "courtlistener"))]
+    let sibling_note_markers = HashMap::<usize, (String, ScalarRange)>::new();
+    // Each block the markup declares is a node, its element's tag and attributes on it.
     let mut claims = Vec::with_capacity(rendered_blocks.len());
-    let mut markup_tags = HashMap::with_capacity(rendered_blocks.len());
     for (index, raw) in rendered_blocks.into_iter().enumerate() {
         let id = raw.metadata.start.map_or_else(
             || format!("native-{:06}", index + 1),
             |start| format!("native-markup-{start}"),
         );
+        let range = ScalarRange { start: scalar(raw.start)?, end: scalar(raw.end.min(text_utf16))? };
+        let mut node = StructureNode::new(id, native_kind(raw.kind), range, ORIGIN, Derivation::Native, raw.parent_label);
+        node.label = (!raw.label.is_empty()).then_some(raw.label);
+        node.aliases = (!raw.aliases.is_empty()).then_some(raw.aliases);
+        node.anchor = raw.anchor;
         if let Some(tag) = raw.markup_tag {
-            markup_tags.insert(id.clone(), (tag, raw.metadata));
+            // (An "li" is a list item, whatever it declares: `analyze_native_markup` makes it one after derivation.)
+            if node.kind == NodeKind::Footnote && tag != "li" {
+                node.marker_range = raw.metadata.note_marker
+                    .or_else(|| raw.metadata.start.and_then(|start| sibling_note_markers.get(&start).map(|(_, range)| *range)))
+                    .and_then(|marker| Some(ScalarRange {
+                        start: coordinates.scalar_at_utf16(marker.start)?,
+                        end: coordinates.scalar_at_utf16(marker.end)?,
+                    }));
+            }
+            if node.kind == NodeKind::Cell && tag != "li" {
+                let span = |name: &str| raw.metadata.attributes.get(name).and_then(|value| value.parse().ok());
+                node.row_span = span("rowspan");
+                node.column_span = span("colspan");
+            }
+            node.markup_tag = Some(tag);
+            node.markup_start = raw.metadata.start;
+            node.markup_attributes = raw.metadata.attributes;
         }
-        let claim_end = raw.end.min(text_utf16);
-        claims.push(NativeClaim {
-            id,
-            kind: raw.kind,
-            label: (!raw.label.is_empty()).then_some(raw.label),
-            aliases: raw.aliases,
-            range: ScalarRange {
-                start: scalar(raw.start)?,
-                end: scalar(claim_end)?,
-            },
-            origin_id: ORIGIN,
-            parent_label: raw.parent_label,
-            anchor: raw.anchor,
-        });
+        claims.push(node);
     }
     let scalar_end = coordinates.len();
     let mut exclusions = rendered_exclusions
@@ -2404,7 +2432,7 @@ fn native_markup_evidence(
             kind: scope_kind,
             excerpt_of: scope.excerpt_of,
         },
-        native_claims: claims,
+        nodes: claims,
         exclusions,
         ..DocumentInput::new(
             id,
@@ -2421,7 +2449,6 @@ fn native_markup_evidence(
         evidence,
         cited_authorities,
         note_references,
-        markup_tags,
         elements,
         representation_revision,
         markup_ancestors,
@@ -2499,7 +2526,6 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         evidence,
         cited_authorities,
         note_references,
-        mut markup_tags,
         elements,
         markup_sha256,
         markup_ancestors,
@@ -2517,35 +2543,11 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         structure.markup_ancestors = markup_ancestors;
         structure.markup_sha256 = Some(markup_sha256);
     }
-    #[cfg(feature = "courtlistener")]
-    let sibling_note_markers =
-        courtlistener_sibling_note_markers(&structure.markup_elements, structure.query_text());
-    #[cfg(not(feature = "courtlistener"))]
-    let sibling_note_markers = HashMap::<usize, (String, ScalarRange)>::new();
+    // A list's item is one, read as the kind its block declares until here.
     for node in &mut structure.nodes {
-        if let Some((tag, metadata)) = markup_tags.remove(&node.id) {
-            if tag == "li" || (node.kind == NodeKind::List && matches!(tag.as_str(), "dt" | "dd")) {
-                node.kind = NodeKind::ListItem;
-            }
-            node.markup_tag = Some(tag);
-            node.markup_start = metadata.start;
-            node.markup_attributes = metadata.attributes;
-            if node.kind == NodeKind::Footnote {
-                node.marker_range = metadata.note_marker.or_else(|| {
-                    node.markup_start
-                        .and_then(|start| sibling_note_markers.get(&start).map(|(_, range)| *range))
-                });
-            }
-            if node.kind == NodeKind::Cell {
-                node.row_span = node
-                    .markup_attributes
-                    .get("rowspan")
-                    .and_then(|value| value.parse().ok());
-                node.column_span = node
-                    .markup_attributes
-                    .get("colspan")
-                    .and_then(|value| value.parse().ok());
-            }
+        let tag = node.markup_tag.as_deref();
+        if tag == Some("li") || node.kind == NodeKind::List && matches!(tag, Some("dt" | "dd")) {
+            node.kind = NodeKind::ListItem;
         }
     }
     #[cfg(not(feature = "courtlistener"))]

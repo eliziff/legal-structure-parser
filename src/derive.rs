@@ -1,22 +1,7 @@
 use super::*;
 
-fn native_kind(kind: EvidenceKind) -> NodeKind {
-    match kind {
-        EvidenceKind::Paragraph => NodeKind::Paragraph,
-        EvidenceKind::Prose => NodeKind::Prose,
-        EvidenceKind::Page => NodeKind::Page,
-        EvidenceKind::Section => NodeKind::Section,
-        EvidenceKind::Heading => NodeKind::Heading,
-        EvidenceKind::Footnote => NodeKind::Footnote,
-        EvidenceKind::Endnote => NodeKind::Endnote,
-        EvidenceKind::List => NodeKind::List,
-        EvidenceKind::Table => NodeKind::Table,
-        EvidenceKind::Row => NodeKind::Row,
-        EvidenceKind::Cell => NodeKind::Cell,
-    }
-}
-/// The structure from a reader's evidence: its native claims as nodes, with what inference finds (or the blocks it
-/// was given in place of inference), parents resolved by label, ranges in UTF-16.
+/// The structure from a reader's evidence: its own nodes, with what inference finds (or the blocks it was given in
+/// place of inference), each node's parent resolved from the label (or id) it names, ranges in UTF-16.
 pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> DocumentStructure {
     let coordinates = ScalarText::new(&evidence.text);
     #[cfg(feature = "structure-inference")]
@@ -25,42 +10,21 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>
     });
     #[cfg(not(feature = "structure-inference"))]
     let inferred = precomputed.unwrap_or_default();
-    let native_claims = std::mem::take(&mut evidence.native_claims);
+    let mut nodes = std::mem::take(&mut evidence.nodes);
     let native_labels = (!inferred.is_empty())
         .then(|| {
-            native_claims
+            nodes
                 .iter()
-                .flat_map(|claim| {
-                    claim
-                        .label
+                .flat_map(|node| {
+                    node.label
                         .iter()
-                        .chain(&claim.aliases)
-                        .map(|label| (claim.kind, label.to_ascii_lowercase()))
+                        .chain(node.aliases.iter().flatten())
+                        .map(|label| (node.kind.evidence(), label.to_ascii_lowercase()))
                 })
                 .collect::<HashSet<_>>()
         })
         .unwrap_or_default();
-    let mut native_parents = Vec::with_capacity(native_claims.len());
-    let mut nodes = native_claims
-        .into_iter()
-        .map(|claim| {
-            native_parents.push(claim.parent_label);
-            let mut node = StructureNode::new(
-                claim.id,
-                native_kind(claim.kind),
-                claim.range,
-                claim.origin_id,
-                Derivation::Native,
-                None,
-            );
-            node.label = claim.label;
-            node.aliases = (!claim.aliases.is_empty()).then_some(claim.aliases);
-            node.anchor = claim.anchor;
-            node
-        })
-        .collect::<Vec<_>>();
     let mut counters = HashMap::<NodeKind, usize>::new();
-    let mut generated_parents = Vec::new();
     let mut diagnostics = Vec::new();
     for mut block in inferred {
         let Some(range) = evidence.clip_inference(block.kind.evidence(), block.range) else {
@@ -95,14 +59,13 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>
                 node_ids: vec![id.clone()],
             });
         }
-        generated_parents.push(block.parent_label);
         let mut node = StructureNode::new(
             id,
             block.kind,
             block.range,
             block.origin_id,
             block.source,
-            None,
+            block.parent_label,
         );
         node.label = block.label;
         node.aliases = (!block.aliases.is_empty()).then_some(block.aliases);
@@ -111,11 +74,7 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>
         node.calls = block.calls;
         nodes.push(node);
     }
-    if native_parents
-        .iter()
-        .chain(&generated_parents)
-        .any(Option::is_some)
-    {
+    if nodes.iter().any(|node| node.parent_id.is_some()) {
         let identities = nodes
             .iter()
             .enumerate()
@@ -130,19 +89,15 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>
                 }
             }
         }
-        for (position, parent) in native_parents
-            .iter()
-            .map(Option::as_ref)
-            .chain(generated_parents.iter().map(Option::as_ref))
-            .enumerate()
-        {
+        for position in 0..nodes.len() {
+            let parent = nodes[position].parent_id.take();
             nodes[position].parent_id = parent
                 .and_then(|label| {
                     if let Some(&candidate) = identities.get(label.as_str()) {
                         return (candidate != position).then_some(candidate);
                     }
                     let candidates = labels
-                        .get(label)
+                        .get(&label)
                         .or_else(|| labels.get(&label.to_ascii_lowercase()))?;
                     if candidates.len() == 1 {
                         return candidates
@@ -176,29 +131,18 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>
     }
     DocumentStructure::project_scalar_parts(&coordinates, &mut nodes, &mut diagnostics);
     drop(coordinates);
-    let document_id = std::mem::take(&mut evidence.document_id);
-    let provider = std::mem::take(&mut evidence.provider);
-    let profile = evidence.profile;
-    let text_sha256 = std::mem::take(&mut evidence.text_sha256);
-    let url = evidence.url.take();
-    let doc_type = evidence.doc_type.map(str::to_owned);
-    let text = std::mem::take(&mut evidence.text);
-    let source_sha256 = evidence.source_sha256.take();
-    let scope = evidence.scope;
-    let origins = evidence.origins;
-    let structure = DocumentStructure::from_projected_parts(
-        document_id,
-        provider,
-        url,
-        doc_type,
-        Some(profile),
-        text,
-        text_sha256,
-        source_sha256,
-        scope,
-        origins,
+    DocumentStructure::from_projected_parts(
+        evidence.document_id,
+        evidence.provider,
+        evidence.url,
+        evidence.doc_type.map(str::to_owned),
+        Some(evidence.profile),
+        evidence.text,
+        evidence.text_sha256,
+        evidence.source_sha256,
+        evidence.scope,
+        evidence.origins,
         nodes,
         diagnostics,
-    );
-    structure
+    )
 }

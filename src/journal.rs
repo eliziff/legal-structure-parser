@@ -1,7 +1,7 @@
 use crate::locator::literal_page_marker;
 use crate::{
-    DetectionProfile, DocumentInput, DocumentStructure, EngineError, EvidenceKind,
-    NativeClaim, ScalarRange, ScalarText,
+    Derivation, DetectionProfile, DocumentInput, DocumentStructure, EngineError, NodeKind,
+    ScalarRange, ScalarText, StructureNode,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -135,32 +135,26 @@ fn positive_usize(value: Option<&Value>) -> Option<usize> {
         .and_then(|value| value.try_into().ok())
 }
 
-fn claim(kind: EvidenceKind, label: String, range: ScalarRange) -> NativeClaim {
-    NativeClaim {
-        id: String::new(),
-        kind,
-        label: Some(label),
-        aliases: Vec::new(),
-        range,
-        origin_id: ORIGIN,
-        parent_label: None,
-        anchor: None,
-    }
+/// A node the export gives the text, under its `aliases`; `structure` numbers it.
+fn claim(kind: NodeKind, label: String, range: ScalarRange, aliases: Vec<String>) -> StructureNode {
+    let mut node = StructureNode::new(String::new(), kind, range, ORIGIN, Derivation::Native, None);
+    node.label = Some(label);
+    node.aliases = (!aliases.is_empty()).then_some(aliases);
+    node
 }
 
 fn structure(
     article_id: usize,
     url: Option<String>,
     text: String,
-    mut claims: Vec<NativeClaim>,
+    mut claims: Vec<StructureNode>,
 ) -> Result<DocumentStructure, EngineError> {
     for (index, claim) in claims.iter_mut().enumerate() {
         claim.id = format!("native-{:06}", index + 1);
     }
-    let end = text.chars().count();
     Ok(crate::derive::derive(DocumentInput {
         url,
-        native_claims: claims,
+        nodes: claims,
         ..DocumentInput::new(
             article_id.to_string(),
             "journal",
@@ -205,15 +199,15 @@ pub fn journal_text_document_structure(
     let mut claims = Vec::with_capacity(starts.len());
     for (index, (label, pdf_page, start)) in starts.iter().enumerate() {
         let mut item = claim(
-            EvidenceKind::Page,
+            NodeKind::Page,
             public_label("page", label),
             ScalarRange {
                 start: *start,
                 end: starts.get(index + 1).map_or(clean_scalars, |value| value.2),
             },
+            vec![label.clone()],
         );
         item.anchor = pdf_page.map(|pdf_page| format!("page={pdf_page}"));
-        item.aliases.push(label.clone());
         claims.push(item);
     }
     structure(article_id, url, clean, claims)
@@ -269,15 +263,15 @@ pub fn journal_document_structure(
                 .map(str::to_owned)
                 .unwrap_or_else(|| pdf_page.to_string());
             let mut item = claim(
-                EvidenceKind::Page,
+                NodeKind::Page,
                 public_label("page", &label),
                 ScalarRange {
                     start: page_start,
                     end: offset,
                 },
+                vec![label],
             );
             item.anchor = Some(format!("page={pdf_page}"));
-            item.aliases.push(label);
             claims.push(item);
         }
 
@@ -321,12 +315,13 @@ pub fn journal_document_structure(
             if region.kind.as_deref() == Some("text") {
                 paragraphs += 1;
                 claims.push(claim(
-                    EvidenceKind::Paragraph,
+                    NodeKind::Paragraph,
                     format!("par{paragraphs}"),
                     ScalarRange {
                         start: placed.start,
                         end: placed.end,
                     },
+                    Vec::new(),
                 ));
             }
             if region.kind.as_deref() == Some("paragraph_title") {
@@ -379,8 +374,8 @@ pub fn journal_document_structure(
     }
 
     for (index, title) in titles.iter().enumerate() {
-        let mut item = claim(
-            EvidenceKind::Section,
+        claims.push(claim(
+            NodeKind::Section,
             title.label.as_ref().map_or_else(
                 || format!("secTitle{}", index + 1),
                 |label| format!("sec{label}"),
@@ -389,9 +384,8 @@ pub fn journal_document_structure(
                 start: title.start,
                 end: titles.get(index + 1).map_or(offset, |value| value.start),
             },
-        );
-        item.aliases.clone_from(&title.aliases);
-        claims.push(item);
+            title.aliases.clone(),
+        ));
     }
     let mut used_pairs = HashSet::new();
     for (pair, note, region) in notes {
@@ -400,14 +394,14 @@ pub fn journal_document_structure(
         }
         let Some(region) = region else { continue };
         let mut item = claim(
-            EvidenceKind::Footnote,
+            NodeKind::Footnote,
             public_label("fn", &note),
             ScalarRange {
                 start: region.start,
                 end: region.end,
             },
+            vec![note],
         );
-        item.aliases.push(note);
         item.anchor = region.pdf_page.map(|page| format!("page={page}"));
         claims.push(item);
     }

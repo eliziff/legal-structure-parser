@@ -76,7 +76,7 @@ fn prose_block(range: ScalarRange) -> Block {
         parent_label: None,
         content_start: None,
         marker_range: None,
-        note: None,
+        calls: Vec::new(),
         diagnostic: None,
         source: Derivation::Heuristic,
         origin_id: ENGINE_ORIGIN,
@@ -154,7 +154,7 @@ pub(super) fn inferred_blocks(evidence: &DocumentInput, text: &ScalarText<'_>) -
             let mut blocks = detect_legislation(
                 text,
                 evidence.allow_hyphenated_sections,
-                &evidence.native_claims,
+                &evidence.nodes,
             );
             // A marginal note or heading printed before the next provision belongs to that
             // provision, not to the end of the one before it.

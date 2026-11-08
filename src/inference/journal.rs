@@ -116,7 +116,7 @@ pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<Block> {
                     parent_label: None,
                     content_start: None,
                     marker_range: None,
-                    note: None,
+                    calls: Vec::new(),
                     diagnostic: None,
                     source: Derivation::Heuristic,
                     origin_id: ENGINE_ORIGIN,
