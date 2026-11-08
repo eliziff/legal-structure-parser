@@ -590,18 +590,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "legal-opinion-layer"
-version = "0.1.0"
-dependencies = [
- "legal-citations",
- "legal-structure",
- "legal-structure-model",
- "regex",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "legal-structure"
 version = "0.1.0"
 dependencies = [
