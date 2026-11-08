@@ -610,7 +610,8 @@ pub(super) fn repeated_subsection(rest: &str) -> bool {
                     && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '.')
             })
             .map(|(_, text)| text)
-            .filter(|text| text.starts_with([' ', '\t']))
+            // (A marginal note may run into the number: "50.4(9)Extension of time".)
+            .filter(|text| text.starts_with([' ', '\t']) || text.starts_with(char::is_uppercase))
     }
     subsection(rest).is_some_and(|text| {
         text.trim_start()
