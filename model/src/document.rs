@@ -169,6 +169,14 @@ pub struct StructureNode {
     pub grammar: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proof: Option<ResolutionProofV2>,
+    /// A page's numbering, where a document prints more than one: a reporter's (`reporter-1`), a vendor's page scheme,
+    /// the slip opinion's (`slip`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub series: String,
+    /// What a reader knows of the node past its kind and place, each under the reader's own name: a paragraph's list
+    /// item or speaker.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub properties: BTreeMap<String, String>,
 }
 
 impl StructureNode {
@@ -215,6 +223,8 @@ impl StructureNode {
             line_ids: Vec::new(),
             grammar: None,
             proof: None,
+            series: String::new(),
+            properties: BTreeMap::new(),
         }
     }
 }
@@ -457,6 +467,9 @@ pub struct DocumentStructure {
     pub contents: Option<InstrumentContentsReading>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cross_references: Option<InstrumentCrossReferenceGraph>,
+    /// A court opinion's readings that are no node of it (`opinion`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub opinion: Option<Box<crate::opinion::OpinionReading>>,
     pub diagnostics: Vec<StructureDiagnostic>,
 }
 
@@ -588,6 +601,7 @@ impl DocumentStructure {
             selected_hypothesis: None,
             contents: None,
             cross_references: None,
+            opinion: None,
             diagnostics,
         };
         structure.refresh_revision().expect("Typed document structure is serializable");

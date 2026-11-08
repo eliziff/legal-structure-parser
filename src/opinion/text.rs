@@ -277,7 +277,7 @@ fn heads_pages(chain: &Chain) -> bool {
 
 #[derive(Default)]
 pub(super) struct Reading {
-    pub pages: Vec<OpinionPage>,
+    pub pages: Vec<StructureNode>,
     pub paragraphs: Vec<OpinionParagraph>,
     pub notes: Vec<OpinionNote>,
     pub headings: Vec<OpinionHeading>,
@@ -286,7 +286,7 @@ pub(super) struct Reading {
     pub tables: Vec<OpinionTable>,
 }
 
-fn pages_of(lines: &[Line<'_>], text_end: usize, chains: &mut [Chain], margins: bool) -> Vec<OpinionPage> {
+fn pages_of(lines: &[Line<'_>], text_end: usize, chains: &mut [Chain], margins: bool) -> Vec<StructureNode> {
     let mut pages = Vec::new();
     let breaks = lines.iter().enumerate().filter(|(_, line)| line.fed).map(|(index, _)| index).collect::<Vec<_>>();
     for chain in chains.iter_mut() {
@@ -332,10 +332,7 @@ fn pages_of(lines: &[Line<'_>], text_end: usize, chains: &mut [Chain], margins: 
             let end = starts.get(index + 1).map_or(text_end, |next| lines[next.0].start);
             if chain.shape == RUNNING_HEADS && number <= before { opinion += 1; }
             before = number;
-            pages.push(OpinionPage {
-                label: number.to_string(), series: if opinion == 1 { chain.series.to_owned() } else { format!("{}-{opinion}", chain.series) }, start: lines[line].start, end,
-                marker: marker.map(|at| lines[at].range()), source: if marker.is_some() { "furniture" } else { "counted" }, in_note: false,
-            });
+            pages.push(read_page(number.to_string(), if opinion == 1 { chain.series.to_owned() } else { format!("{}-{opinion}", chain.series) }, lines[line].start, end, marker.map(|at| lines[at].range()), if marker.is_some() { "furniture" } else { "counted" }));
         }
     }
     if chains.is_empty() {
@@ -353,10 +350,7 @@ fn pages_of(lines: &[Line<'_>], text_end: usize, chains: &mut [Chain], margins: 
             starts.insert(0, 0);
             for (index, &line) in starts.iter().enumerate() {
                 let end = starts.get(index + 1).map_or(text_end, |next| lines[*next].start);
-                pages.push(OpinionPage {
-                    label: (index + 1).to_string(), series: "sheet".to_owned(), start: lines[line].start, end,
-                    marker: None, source: "break", in_note: false,
-                });
+                pages.push(read_page((index + 1).to_string(), "sheet".to_owned(), lines[line].start, end, None, "break"));
             }
         }
     }
@@ -912,7 +906,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
             let framed = !form.chars().any(char::is_alphabetic) && page_shape(&form).is_some();
             if framed && numbers.len() == 1 && line.indent * 3 >= width && (2..=stray).contains(&numbers[0].0) {
                 let range = line.range();
-                pages.push(OpinionPage { label: numbers[0].0.to_string(), series: "slip".to_owned(), start: range.start, end: range.end, marker: Some(range), source: "stray", in_note: false });
+                pages.push(read_page(numbers[0].0.to_string(), "slip".to_owned(), range.start, range.end, Some(range), "stray"));
                 masked[at] = true;
                 furniture.push(range);
             }
@@ -929,7 +923,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
     // Pages as lines, in the numbering with the most of them.
     let series = chains.first().map_or("sheet", |chain| chain.series);
     let mut bounds = pages.iter().filter(|page| page.series == series)
-        .map(|page| lines.partition_point(|line| line.start < page.start)).collect::<Vec<_>>();
+        .map(|page| lines.partition_point(|line| line.start < page.range.start)).collect::<Vec<_>>();
     if bounds.first() != Some(&0) { bounds.insert(0, 0); }
     let spans = bounds.iter().enumerate()
         .map(|(index, &from)| (from, bounds.get(index + 1).copied().unwrap_or(lines.len())))

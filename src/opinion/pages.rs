@@ -67,13 +67,13 @@ pub(super) fn page_source(node: &StructureNode) -> &'static str {
 /// Pages no mark prints. Harvard's `pgmap` gives the volume's leaves a block stands on, "316", or for a block that turns a
 /// page each leaf and how many words of the block fall on it, "316(74) 317(17)": `leaves_to_pages` makes them pages. Colorado's page breaks are a `div.pagebreak` and
 /// its number, or an empty `span.ldml-pagenumber`, which says only that a page turns.
-pub(super) fn element_pages(structure: &DocumentStructure, coordinates: &ScalarText, notes: &[ScalarRange], pages: &mut Vec<OpinionPage>) {
-    let mut known = pages.iter().filter(|page| page.series.starts_with("reporter")).map(|page| page.label.clone()).collect::<HashSet<_>>();
+pub(super) fn element_pages(structure: &DocumentStructure, coordinates: &ScalarText, notes: &[ScalarRange], pages: &mut Vec<StructureNode>) {
+    let mut known = pages.iter().filter(|page| page.series.starts_with("reporter")).map(|page| page.label().to_owned()).collect::<HashSet<_>>();
     let page_at = |label: String, series: &str, start: usize, marker: Option<ScalarRange>, source: &'static str| {
-        OpinionPage { label, series: series.to_owned(), start, end: 0, marker, source, in_note: false }
+        read_page(label, series.to_owned(), start, 0, marker, source)
     };
     let (mut broken, mut blank) = (Vec::new(), Vec::new());
-    let mut marked = pages.iter().map(|page| page.start).collect::<Vec<_>>();
+    let mut marked = pages.iter().map(|page| page.range.start).collect::<Vec<_>>();
     marked.sort_unstable();
     for element in &structure.markup_elements {
         let class = element.attributes.get("class").map_or("", String::as_str);
@@ -130,7 +130,7 @@ const PAGE_TEXT: usize = 400;
 /// matter the opinion's first leaf stands for it, the pages reckoned and said to be. With no printed citation they stay leaves.
 pub(super) fn leaves_to_pages(layer: &mut OpinionLayer, record: &OpinionRecord) {
     static BLOCK: OnceLock<Regex> = OnceLock::new();
-    let leaves = layer.pages.iter().enumerate().filter(|(_, page)| page.source == "pgmap").filter_map(|(at, page)| Some((at, page_number(&page.label)?))).collect::<Vec<_>>();
+    let leaves = layer.pages.iter().enumerate().filter(|(_, page)| page.source() == "pgmap").filter_map(|(at, page)| Some((at, page_number(&page.label())?))).collect::<Vec<_>>();
     let Some(first) = leaves.iter().map(|leaf| leaf.1).min() else { return };
     let head = record.cluster.iter().find(|(field, _)| field == "headmatter").and_then(|(_, matter)| {
         BLOCK.get_or_init(|| Regex::new(r#"\bid="b(\d+)-"#).unwrap()).captures(matter)?[1].parse::<u32>().ok()
@@ -151,9 +151,9 @@ pub(super) fn leaves_to_pages(layer: &mut OpinionLayer, record: &OpinionRecord) 
         return;
     };
     for (at, leaf) in leaves {
-        layer.pages[at].label = (leaf - (anchor - opening)).to_string();
+        layer.pages[at].label = Some(format!("page{}", (leaf - (anchor - opening)).to_string()));
         if head.is_none() {
-            layer.pages[at].source = "reckoned";
+            layer.pages[at].grammar = Some(("reckoned").to_owned());
         }
     }
 }
@@ -167,7 +167,7 @@ pub(super) fn printed_page_marks(layer: &mut OpinionLayer, citations: &[OpinionC
     let held = layer.pages.iter().filter_map(|page| page.series.strip_prefix("reporter-")?.parse::<usize>().ok()).collect::<HashSet<_>>();
     let numbered = |stars: usize| held.contains(&stars);
     let mark = MARK.get_or_init(|| Regex::new(r"\{\*+\d+\s[^{}\n]{1,30}\sat\s(\d{1,5})\}|\[ ?(\*+) ?(\d{1,5}) ?[\]J]|\[(?:(?i:original) )?(?i:page|pg\.?) (\d{1,5})\]|(\*{1,3}) ?(?:Page )?(\d{1,5})(?-u:\b)|\((\d{2,5})\)|\[(\d{2,5})\]").unwrap());
-    let mut existing = layer.pages.iter().filter_map(|page| page.marker).collect::<Vec<_>>();
+    let mut existing = layer.pages.iter().filter_map(|page| page.marker_range).collect::<Vec<_>>();
     existing.sort_by_key(|mark| mark.start);
     let cited = citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7" | "8") && !citation.reporter.contains("LEXIS")).filter_map(|citation| citation.page.parse::<u32>().ok()).collect::<Vec<_>>();
     let within_citation = |number: u32| cited.iter().any(|first| (*first..=first + PAGE_REACH).contains(&number));
@@ -227,10 +227,7 @@ pub(super) fn printed_page_marks(layer: &mut OpinionLayer, citations: &[OpinionC
             stars => format!("reporter-{}", stars - 20),
         };
         for (index, &(start, end, number)) in longest.iter().enumerate() {
-            pages.push(OpinionPage {
-                label: number.to_string(), series: series.clone(), start, end: longest.get(index + 1).map_or(utf16_len(&layer.text), |next| next.0),
-                marker: Some(ScalarRange { start, end }), source: "printed", in_note: false,
-            });
+            pages.push(read_page(number.to_string(), series.clone(), start, longest.get(index + 1).map_or(utf16_len(&layer.text), |next| next.0), Some(ScalarRange { start, end }), "printed"));
         }
     }
     layer.pages.extend(pages);
@@ -244,15 +241,15 @@ const MOVED_BLOCKS: [&str; 12] = ["attorneys", "otherdate", "decisiondate", "doc
 /// before it is the source's error ("*1308 controversy ... *1307" inside the block quotation that follows): the heaviest run that
 /// never falls keeps its marks and the rest are strays. A mark in a block the source moved ahead of the opinion ("*462" on counsel
 /// printed after it) is that block's page and takes no part in the run; it numbers no text after its block.
-pub(super) fn never_down(structure: &DocumentStructure, pages: &mut [OpinionPage]) {
+pub(super) fn never_down(structure: &DocumentStructure, pages: &mut [StructureNode]) {
     let moved = structure.markup_elements.iter().filter(|element| MOVED_BLOCKS.contains(&element.tag.as_str())).map(|element| element.range).collect::<Vec<_>>();
     let in_moved = |start: usize| moved.iter().any(|block| block.start <= start && start < block.end);
-    let mut series = pages.iter().filter(|page| page.series.starts_with("reporter") && !page.in_note && page.source != "stray").map(|page| page.series.clone()).collect::<Vec<_>>();
+    let mut series = pages.iter().filter(|page| page.series.starts_with("reporter") && !page.in_note() && page.source() != "stray").map(|page| page.series.clone()).collect::<Vec<_>>();
     series.sort();
     series.dedup();
     for name in series {
-        let mut marks = pages.iter().enumerate().filter(|(_, page)| page.series == name && !page.in_note && page.source != "stray" && !in_moved(page.start))
-            .filter_map(|(at, page)| Some((page.start, at, page_number(&page.label)?))).collect::<Vec<_>>();
+        let mut marks = pages.iter().enumerate().filter(|(_, page)| page.series == name && !page.in_note() && page.source() != "stray" && !in_moved(page.range.start))
+            .filter_map(|(at, page)| Some((page.range.start, at, page_number(&page.label())?))).collect::<Vec<_>>();
         marks.sort_unstable();
         // The longest run that never falls, by patience: each mark extends the longest run ending at or below its number.
         let (mut best, mut back) = (vec![1usize; marks.len()], vec![usize::MAX; marks.len()]);
@@ -273,14 +270,14 @@ pub(super) fn never_down(structure: &DocumentStructure, pages: &mut [OpinionPage
         }
         for (_, index, _) in &marks {
             if !kept.contains(index) {
-                pages[*index].source = "stray";
+                pages[*index].grammar = Some(("stray").to_owned());
             }
         }
         // A moved block's mark: its page holds the block and ends with it.
-        for page in pages.iter_mut().filter(|page| page.series == name && !page.in_note && in_moved(page.start)) {
-            if let Some(block) = moved.iter().find(|block| block.start <= page.start && page.start < block.end) {
-                page.end = block.end;
-                page.source = "moved";
+        for page in pages.iter_mut().filter(|page| page.series == name && !page.in_note() && in_moved(page.range.start)) {
+            if let Some(block) = moved.iter().find(|block| block.start <= page.range.start && page.range.start < block.end) {
+                page.range.end = block.end;
+                page.grammar = Some(("moved").to_owned());
             }
         }
     }
@@ -297,8 +294,8 @@ fn separate_printings(layer: &mut OpinionLayer) {
     const STEP: u32 = 3;
     let names = layer.pages.iter().map(|page| page.series.clone()).filter(|series| !own_count(series) && !series.ends_with("-b")).collect::<HashSet<_>>();
     for series in names {
-        let mut members = layer.pages.iter().enumerate().filter(|(_, page)| page.series == series && !page.in_note && page.source != "stray")
-            .filter_map(|(at, page)| Some((page.start, at, page_number(&page.label)?))).collect::<Vec<_>>();
+        let mut members = layer.pages.iter().enumerate().filter(|(_, page)| page.series == series && !page.in_note() && page.source() != "stray")
+            .filter_map(|(at, page)| Some((page.range.start, at, page_number(&page.label())?))).collect::<Vec<_>>();
         members.sort_by_key(|member| (member.0, member.2));
         let mut runs = Vec::<Vec<(usize, u32)>>::new();
         for &(_, at, number) in &members {
@@ -331,7 +328,7 @@ fn separate_printings(layer: &mut OpinionLayer) {
             layer.pages[at].series = format!("{series}-b");
         }
         for at in strays {
-            layer.pages[at].source = "stray";
+            layer.pages[at].grammar = Some(("stray").to_owned());
         }
     }
 }
@@ -364,9 +361,9 @@ pub(super) fn page_series(layer: &mut OpinionLayer, record: &OpinionRecord) {
     // The first mark in the text's order: one stray low label is no numbering's start. Nor is a first mark the next one falls
     // below: a block the source moved ahead of the opinion, "*394" on counsel printed at the case's end, before "*391".
     let mut by_series = HashMap::<String, Vec<(usize, u32)>>::new();
-    for page in layer.pages.iter().filter(|page| !page.in_note && page.source != "stray" && !own_count(&page.series)) {
-        if let Some(number) = page_number(&page.label) {
-            by_series.entry(page.series.clone()).or_default().push((page.start, number));
+    for page in layer.pages.iter().filter(|page| !page.in_note() && page.source() != "stray" && !own_count(&page.series)) {
+        if let Some(number) = page_number(&page.label()) {
+            by_series.entry(page.series.clone()).or_default().push((page.range.start, number));
         }
     }
     let firsts = by_series.into_iter().map(|(series, mut marks)| {
@@ -376,8 +373,8 @@ pub(super) fn page_series(layer: &mut OpinionLayer, record: &OpinionRecord) {
     }).collect::<HashMap<_, _>>();
     let marked = !firsts.is_empty();
     let mut lowest_of = HashMap::<String, u32>::new();
-    for page in layer.pages.iter().filter(|page| !page.in_note && page.source != "stray" && page.source != "reckoned") {
-        if let Some(number) = page_number(&page.label) {
+    for page in layer.pages.iter().filter(|page| !page.in_note() && page.source() != "stray" && page.source() != "reckoned") {
+        if let Some(number) = page_number(&page.label()) {
             let entry = lowest_of.entry(page.series.clone()).or_insert(number);
             *entry = number.min(*entry);
         }
@@ -449,12 +446,12 @@ pub(super) fn page_series(layer: &mut OpinionLayer, record: &OpinionRecord) {
         distances.insert(series.clone(), distance);
         if by_name.is_none() {
             if let Some(page) = page_number(&citation.page).filter(|_| !matches!(citation.kind.as_str(), "6" | "7" | "8")) {
-                if page < first && first_at > 0 && !layer.pages.iter().any(|known| known.series == series && known.start == 0) {
+                if page < first && first_at > 0 && !layer.pages.iter().any(|known| known.series == series && known.range.start == 0) {
                     if first - page <= 3 {
-                        opening.push(OpinionPage { label: citation.page.clone(), series: series.clone(), start: 0, end: 0, marker: None, source: "citation", in_note: false });
+                        opening.push(read_page(citation.page.clone(), series.clone(), 0, 0, None, "citation"));
                     } else if first_at <= ONE_PAGE {
                         // An opinion that opens a few pages into its case: the words before the first mark are on the page before it.
-                        opening.push(OpinionPage { label: (first - 1).to_string(), series: series.clone(), start: 0, end: 0, marker: None, source: "reckoned", in_note: false });
+                        opening.push(read_page((first - 1).to_string(), series.clone(), 0, 0, None, "reckoned"));
                     }
                 }
             }
@@ -472,7 +469,7 @@ pub(super) fn page_series(layer: &mut OpinionLayer, record: &OpinionRecord) {
         let held = named.iter().map(|known| known.citation.clone()).collect::<HashSet<_>>();
         let renamed = named.iter().filter(|known| !by_book.contains(&known.series) && books.contains(&known.citation)).map(|known| known.series.clone()).collect::<HashSet<_>>();
         // Pages set before a renamed numbering's first mark were set from the book's citation.
-        opening.retain(|page: &OpinionPage| !renamed.contains(&page.series));
+        opening.retain(|page: &StructureNode| !renamed.contains(&page.series));
         for known in named.iter_mut().filter(|known| renamed.contains(&known.series)) {
             let next = fallbacks.get(&known.series).and_then(|ranked| ranked.iter().find(|(citation, _)| !held.contains(&citation.printed())));
             match next {
@@ -498,12 +495,12 @@ pub(super) fn page_series(layer: &mut OpinionLayer, record: &OpinionRecord) {
     }
     // One citation names one printing: a numbering a page or so off the nearest is that printing marked another way.
     named.retain(|known: &PageSeries| nearest_to.get(&known.citation).zip(distances.get(&known.series)).is_none_or(|(nearest, own)| *own <= nearest + 3));
-    opening.retain(|page: &OpinionPage| page.source != "citation" || named.iter().any(|known| known.series == page.series));
+    opening.retain(|page: &StructureNode| page.source() != "citation" || named.iter().any(|known| known.series == page.series));
     // A short opinion prints no page mark: it still opens on each page its citations give.
     if !marked {
         for (index, citation) in layer.citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7" | "8") && page_number(&citation.page).is_some()).enumerate() {
             let series = format!("citation-{}", index + 1);
-            opening.push(OpinionPage { label: citation.page.clone(), series: series.clone(), start: 0, end: 0, marker: None, source: "citation", in_note: false });
+            opening.push(read_page(citation.page.clone(), series.clone(), 0, 0, None, "citation"));
             named.push(PageSeries { series, citation: citation.printed(), reporter: format!("{} {}", citation.volume, citation.reporter), also: Vec::new() });
         }
     }
@@ -589,23 +586,23 @@ pub fn citers_page(numbering: &[(usize, u32, u32)], place: usize) -> Option<(u32
 pub(super) fn pin_table(layer: &OpinionLayer) -> Vec<(String, Option<String>, Vec<(usize, String)>)> {
     let mut table = HashMap::<&str, Vec<(usize, String)>>::new();
     // An estimated mark stands for no label: the words past it fall between the marks either side, on no page that can be named.
-    let mut ordered = layer.pages.iter().filter(|page| !page.in_note && page.source != "stray").collect::<Vec<_>>();
-    ordered.sort_by_key(|page| page.start);
+    let mut ordered = layer.pages.iter().filter(|page| !page.in_note() && page.source() != "stray").collect::<Vec<_>>();
+    ordered.sort_by_key(|page| page.range.start);
     for (index, page) in ordered.iter().enumerate() {
         let rows = table.entry(&page.series).or_default();
-        if page.source == "moved" {
+        if page.source() == "moved" {
             // The block's page, then the opinion's page again where the block ends.
-            rows.push((page.start, page.label.clone()));
+            rows.push((page.range.start, page.label().to_owned()));
             let resumed = rows.len().checked_sub(2).map(|before| rows[before].1.clone()).unwrap_or_default();
-            rows.push((page.end, resumed));
+            rows.push((page.range.end, resumed));
             continue;
         }
-        let number = page_number(&page.label);
+        let number = page_number(&page.label());
         // A numbering that skips a page in the opinion's own text lost that page's mark (a block the source moved took it, or
         // the source dropped it): where the turn falls is not known, so the words after the last mark before it have no page.
-        let skips = ordered[index + 1..].iter().find(|next| next.series == page.series && next.source != "moved")
-            .and_then(|next| page_number(&next.label)).zip(number).is_some_and(|(next, here)| next > here + 1);
-        rows.push((page.start, if page.source == "reckoned" || skips { String::new() } else { page.label.clone() }));
+        let skips = ordered[index + 1..].iter().find(|next| next.series == page.series && next.source() != "moved")
+            .and_then(|next| page_number(next.label())).zip(number).is_some_and(|(next, here)| next > here + 1);
+        rows.push((page.range.start, if page.source() == "reckoned" || skips { String::new() } else { page.label().to_owned() }));
     }
     for rows in table.values_mut() {
         rows.sort_by_key(|row| row.0);

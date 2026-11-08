@@ -14,7 +14,7 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
         *counts.entry(word).or_default() += 1;
     }
     let mut cuts = Vec::new();
-    for mark in layer.pages.iter().filter(|page| page.source != "furniture").filter_map(|page| page.marker) {
+    for mark in layer.pages.iter().filter(|page| page.source() != "furniture").filter_map(|page| page.marker_range) {
         let before = (0..4).find_map(|short| coordinates.slice_utf16(mark.start.saturating_sub(40 - short)..mark.start)).unwrap_or("");
         let after = (0..4).find_map(|short| coordinates.slice_utf16(mark.end..(mark.end + 40 - short).min(end))).unwrap_or("");
         let left = before.trim_end_matches(javascript_whitespace);
@@ -127,8 +127,8 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
     };
     let span = |range: &mut ScalarRange| { range.start = moved(range.start); range.end = moved(range.end); };
     for page in &mut layer.pages {
-        (page.start, page.end) = (moved(page.start), moved(page.end));
-        page.marker = None;
+        (page.range.start, page.range.end) = (moved(page.range.start), moved(page.range.end));
+        page.marker_range = None;
     }
     for block in &mut layer.blocks {
         block.start = moved(block.start);

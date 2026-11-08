@@ -46,7 +46,7 @@ use legal_locator as locator;
 #[cfg(feature = "native-markup")]
 mod native_markup;
 /// A CourtListener opinion record read whole: its pages by reporter, paragraphs, notes, headnotes and front matter over
-/// the engine's reading of each rendition (`opinion_layer`).
+/// the engine's reading of each rendition, as the structure the product serves (`opinion_structure`).
 #[cfg(feature = "opinion")]
 pub mod opinion;
 pub mod judgment;

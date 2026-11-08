@@ -17,10 +17,12 @@ mod notes;
 mod pages;
 mod paragraphs;
 mod readings;
+mod structure;
 mod text;
 
 pub use checks::{layer_failures, layer_screens, quote_miss, receipt_miss};
 pub use pages::{citers_numbering, citers_page};
+pub use structure::opinion_structure;
 use clean::*;
 use headings::*;
 use matter::*;
@@ -30,17 +32,24 @@ use paragraphs::*;
 use readings::*;
 
 use crate::{
-    analyze_native_markup, hierarchy, javascript_whitespace, trim_javascript_whitespace as trim_js, utf16_len, Derivation, DocumentStructure,
+    analyze_native_markup, hierarchy, CitedAuthority, javascript_whitespace, trim_javascript_whitespace as trim_js, utf16_len, Derivation, DocumentStructure,
     MarkupElement, NativeMarkupInput, NodeKind, PrimaryRole, ScalarRange, ScalarText, StructureNode,
 };
+pub use legal_structure_model::opinion::{
+    DefinedTerm, FrontLine, FurnitureLine, HeadnoteMark, OpinionBlock, OpinionCitation, OpinionHeadnote, OpinionInstrument,
+    OpinionQuote, OpinionReading, OpinionTable, PageSeries, Pin, QuoteMark, RecordGap, UnmatchedCall,
+};
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
 /// Every rendition that is markup, in CourtListener's order of preference.
 const MARKUP: [&str; 6] = ["html_with_citations.html", "xml_harvard.xml", "html_columbia.html", "html_lawbox.html", "html_anon_2020.html", "html.html"];
 
+/// What the engine is asked to read: the record as CourtListener stores it, every rendition with the case's own fields.
+#[derive(Default, Deserialize)]
+#[serde(default)]
 pub struct OpinionRecord {
     pub id: String,
     /// `fields.json`'s values CourtListener keeps apart from the text: its type and author, where they are known.
@@ -58,21 +67,52 @@ pub struct OpinionRecord {
     pub witness: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct OpinionPage {
-    pub label: String,
-    /// Which numbering: `reporter-1` (CAP's first citation), a Lexis page scheme, `slip`, `ecf`, `sheet`, or a
-    /// rendition's name where its numbers are not this rendition's.
-    pub series: String,
-    pub start: usize,
-    pub end: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub marker: Option<ScalarRange>,
-    pub source: &'static str,
-    /// A page a note's own text turns: it says nothing of the opinion's pages.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub in_note: bool,
+/// A page the opinion prints, a Page node: its label as printed after `page`, its numbering in `series` (`reporter-1`, CAP's
+/// first citation; a Lexis page scheme; `slip`, `ecf`, `sheet`; or a rendition's name where its numbers are not this
+/// rendition's), how its mark was found in `grammar`, and whether a note's own text turns it (it says nothing of the
+/// opinion's pages).
+pub trait Page {
+    fn label(&self) -> &str;
+    fn start(&self) -> usize;
+    fn end(&self) -> usize;
+    fn source(&self) -> &str;
+    fn in_note(&self) -> bool;
+    fn set_in_note(&mut self, in_note: bool);
 }
+
+impl Page for StructureNode {
+    fn label(&self) -> &str {
+        self.label.as_deref().and_then(|label| label.strip_prefix("page")).unwrap_or("")
+    }
+    fn start(&self) -> usize {
+        self.range.start
+    }
+    fn end(&self) -> usize {
+        self.range.end
+    }
+    fn source(&self) -> &str {
+        self.grammar.as_deref().unwrap_or("")
+    }
+    fn in_note(&self) -> bool {
+        self.properties.contains_key("in_note")
+    }
+    fn set_in_note(&mut self, in_note: bool) {
+        if in_note { self.properties.insert("in_note".to_owned(), String::new()); } else { self.properties.remove("in_note"); }
+    }
+}
+
+/// A page as read: its printed label, numbering, place, mark and how the mark was found.
+pub(crate) fn read_page(label: impl std::fmt::Display, series: impl Into<String>, start: usize, end: usize, marker: Option<ScalarRange>, source: &str) -> StructureNode {
+    let derivation = if matches!(source, "markup" | "printed") { Derivation::Native } else { Derivation::Heuristic };
+    let mut node = StructureNode::new(String::new(), NodeKind::Page, ScalarRange { start, end }, PAGE_ORIGIN, derivation, None);
+    node.label = Some(format!("page{label}"));
+    node.series = series.into();
+    node.marker_range = marker;
+    node.grammar = Some(source.to_owned());
+    node
+}
+
+const PAGE_ORIGIN: &str = "courtlistener-opinion";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct OpinionParagraph {
@@ -136,45 +176,6 @@ pub struct OpinionHeading {
     line: usize,
 }
 
-/// One headnote, syllabus point or summary paragraph. Its place is in `text` where the opinion carries it; the
-/// cluster's have only their words.
-#[derive(Clone, Debug, Serialize)]
-pub struct OpinionHeadnote {
-    /// `headnotes`, `syllabus`, `summary`, `arguments`, `history`, `posture`, `procedural_history`, `cross_reference`,
-    /// `correction`, `seealso`, `note` (a reporter's or editor's), `held`, `catchword`, `topics`, `topic_index`, `papers`.
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub number: Option<String>,
-    /// The point's subject, where it leads with one: "APPEAL — Time for Perfecting. ..."
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub topic: Option<String>,
-    pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub range: Option<ScalarRange>,
-}
-
-/// A headnote's number printed in the opinion, "[3]" or "[5, 6]", at the passage it keys.
-#[derive(Clone, Debug, Serialize)]
-pub struct HeadnoteMark {
-    pub numbers: Vec<u32>,
-    pub start: usize,
-    pub end: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
-}
-
-/// A block counter a source sets, `<div class="num"><span class="num">14</span>`: no number the court printed, but the only one
-/// some texts carry, and it may stand on a paragraph, a title or a note. `source`: `marked` in this text, `other-rendition`
-/// placed by the words after it, `reckoned` between its neighbours where those words are not in this text.
-#[derive(Clone, Debug, Serialize)]
-pub struct OpinionBlock {
-    pub label: String,
-    pub start: usize,
-    pub source: &'static str,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub pins: Vec<Pin>,
-}
-
 #[derive(Clone, Debug, Serialize)]
 pub struct OpinionPart {
     pub kind: String,
@@ -184,139 +185,12 @@ pub struct OpinionPart {
     pub end: usize,
 }
 
-/// A line of the case's front matter: `court`, `docket`, `date`, `judges`, `counsel`, `caption`, `author`, `title`,
-/// `citation` (the case's own), `disposition`, `case_name`, `case_name_full`, `date_filed`, `other_dates`, `nature_of_suit`, `lower_court`,
-/// `publication`, `subject`, `addressee`, `contents`, `closing`, `joinder`.
-#[derive(Clone, Debug, Serialize)]
-pub struct FrontLine {
-    pub role: String,
-    pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub range: Option<ScalarRange>,
-}
-
-/// A note's call with no note anywhere in the record: the mark stands, its note was never reported.
-#[derive(Clone, Debug, Serialize)]
-pub struct UnmatchedCall {
-    pub label: String,
-    pub start: usize,
-    pub end: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
-}
-
-/// A short name the opinion gives something: `("Debtor")`, `Administrative Procedure Act (APA)`, `"Lease" means`.
-#[derive(Clone, Debug, Serialize)]
-pub struct DefinedTerm {
-    pub term: String,
-    /// `parenthetical`, `acronym` or `means`.
-    pub form: String,
-    pub start: usize,
-    pub end: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
-}
-
-/// An editor's mark in a quotation.
-#[derive(Clone, Debug, Serialize)]
-pub struct QuoteMark {
-    /// `insertion`, `sic`, `omission`, `omitted-note`, or `emphasis` for the words that say so after it.
-    pub kind: String,
-    pub start: usize,
-    pub end: usize,
-}
-
-/// A quotation, set inline or as a block, with the marks an editor made in it.
-#[derive(Clone, Debug, Serialize)]
-pub struct OpinionQuote {
-    pub block: bool,
-    pub start: usize,
-    pub end: usize,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub marks: Vec<QuoteMark>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
-}
-
-/// A document the opinion reproduces: the quoted passages a lead-in names, "the will provides as follows:".
-#[derive(Clone, Debug, Serialize)]
-pub struct OpinionInstrument {
-    /// `will`, `contract`, `jury-charge`, `verdict`, `testimony`, `letter`, `order`, `statute`, `passage` and the like.
-    pub kind: String,
-    pub lead_in: String,
-    pub start: usize,
-    pub end: usize,
-}
-
-/// Something the record itself shows is not all here.
-#[derive(Clone, Debug, Serialize)]
-pub struct RecordGap {
-    /// `separate-opinion-not-here`, `opens-midway`, `facts-not-here`, `image-not-here`, `later-ruling-to-come`, `attachment-named`.
-    pub kind: String,
-    pub evidence: String,
-}
-
-/// One reporter's printing of the case.
-#[derive(Clone, Debug, Serialize)]
-pub struct OpinionCitation {
-    pub volume: String,
-    pub reporter: String,
-    pub page: String,
-    /// CourtListener's type: 1 federal, 2 state, 3 regional, 4 specialty, 5 early Supreme Court, 6 Lexis, 7 Westlaw, 8 neutral, 9 journal.
-    pub kind: String,
-}
-
-impl OpinionCitation {
-    fn printed(&self) -> String {
-        format!("{} {} {}", self.volume, self.reporter, self.page)
-    }
-}
-
-/// A numbering of pages and the printing it belongs to: which reporter's pages these are.
-#[derive(Clone, Debug, Serialize)]
-pub struct PageSeries {
-    pub series: String,
-    pub citation: String,
-    /// Volume and reporter, as a pin is cited: "226 La.".
-    pub reporter: String,
-    /// Other citations that open on the same page, where the record cannot say which of them it is.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub also: Vec<String>,
-}
-
-/// Where a passage falls in one numbering: "226 La." at 123, running to 124.
-#[derive(Clone, Debug, Serialize)]
-pub struct Pin {
-    pub series: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reporter: Option<String>,
-    pub page: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub through: Option<String>,
-}
-
-/// A data table in the opinion, its rows out of the paragraphs.
-#[derive(Clone, Debug, Serialize)]
-pub struct OpinionTable {
-    pub start: usize,
-    pub end: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub page: Option<String>,
-}
-
-/// A line the reading text leaves out of its flow: a page's running title, number or stamp, and where it stood.
-#[derive(Clone, Debug, Serialize)]
-pub struct FurnitureLine {
-    pub text: String,
-    pub at: usize,
-}
-
 #[derive(Debug, Serialize)]
 pub struct OpinionLayer {
     pub id: String,
     pub rendition: String,
     pub text: String,
-    pub pages: Vec<OpinionPage>,
+    pub pages: Vec<StructureNode>,
     pub paragraphs: Vec<OpinionParagraph>,
     pub blocks: Vec<OpinionBlock>,
     pub notes: Vec<OpinionNote>,
@@ -340,7 +214,7 @@ pub struct OpinionLayer {
     pub document_kind: String,
     /// Other renditions' page marks against this layer's pages, by how the page was found: at its place, a page off, further.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub page_witness: BTreeMap<&'static str, [usize; 3]>,
+    pub page_witness: BTreeMap<String, [usize; 3]>,
     /// Notes another text of the case prints, against this reading's before they were supplied: held and called, held with no call,
     /// not held.
     pub note_witness: [usize; 3],
@@ -353,7 +227,7 @@ pub struct OpinionLayer {
     pub paragraphs_run_on: Vec<String>,
     pub paragraphs_split: Vec<String>,
     /// What other renditions offer against the finished layer, by structure: offered, not held. Only with `witness`.
-    pub union_test: BTreeMap<&'static str, [usize; 2]>,
+    pub union_test: BTreeMap<String, [usize; 2]>,
     /// A few of those not held, to read: "page 412", "text the words it opens on".
     pub union_samples: Vec<String>,
     /// The titles not held, each as its words.
@@ -375,6 +249,9 @@ pub struct OpinionLayer {
     cuts: Vec<ScalarRange>,
     /// Renditions of this record that hold another opinion's text, and were not read.
     pub other_opinion: Vec<String>,
+    /// The authorities the read rendition links.
+    #[serde(skip)]
+    cited: Vec<CitedAuthority>,
 }
 
 fn structure_of(id: &str, plain: &str, markup: &str) -> Option<DocumentStructure> {
@@ -482,10 +359,10 @@ impl OpinionLayer {
         let middle = start + (end.saturating_sub(start)) / 2;
         if let Some(note) = self.notes.iter().find(|note| note.ranges.iter().any(|range| range.start <= middle && middle < range.end)) {
             // A note that runs on to the next page carries that page's mark: words past it are on that page, not the call's.
-            let run_on = self.pages.iter().filter(|page| page.in_note && page.series == series && page.source != "stray" && page.start <= middle
-                && note.ranges.iter().any(|range| range.start <= page.start && page.start < range.end)).max_by_key(|page| page.start);
+            let run_on = self.pages.iter().filter(|page| page.in_note() && page.series == series && page.source() != "stray" && page.range.start <= middle
+                && note.ranges.iter().any(|range| range.start <= page.range.start && page.range.start < range.end)).max_by_key(|page| page.range.start);
             if let Some(pin) = note.pins.iter().find(|pin| pin.series == series) {
-                return Some(run_on.map_or_else(|| pin.clone(), |page| Pin { page: page.label.clone(), through: None, ..pin.clone() }));
+                return Some(run_on.map_or_else(|| pin.clone(), |page| Pin { page: page.label().to_owned(), through: None, ..pin.clone() }));
             }
             // A note whose call names no page in this numbering: where its words happen to stand in the text says nothing.
             if note.references.first().is_some() && note.pins.is_empty() {
@@ -552,6 +429,7 @@ pub fn opinion_layer(record: &OpinionRecord) -> OpinionLayer {
     let mut layer = match chosen.and_then(|name| Some((name, structure_of(&record.id, plain, rendition(name)?)?))) {
         Some((name, structure)) => {
             let mut layer = from_structure(record, name, &structure);
+            layer.cited = structure.cited_authorities.clone();
             leaves_to_pages(&mut layer, record);
             for other in MARKUP.iter().copied().filter(|other| *other != name) {
                 if let Some(markup) = rendition(other).filter(|markup| !set_as_text(markup)) {
@@ -593,9 +471,9 @@ pub fn opinion_layer(record: &OpinionRecord) -> OpinionLayer {
 /// of its numberings, within `tolerance`, it agrees; otherwise the nearest numbering answers, by how many pages it is off.
 fn witness_pages(layer: &mut OpinionLayer, marks: &[(u32, usize)], tolerance: usize) {
     let mut numberings = HashMap::<&str, Vec<(usize, u32, &'static str)>>::new();
-    for page in layer.pages.iter().filter(|page| !page.in_note && page.source != "stray") {
-        if let Some(number) = page_number(&page.label) {
-            numberings.entry(page.series.as_str()).or_default().push((page.start, number, page.source));
+    for page in layer.pages.iter().filter(|page| !page.in_note() && page.source() != "stray") {
+        if let Some(number) = page_number(&page.label()) {
+            numberings.entry(page.series.as_str()).or_default().push((page.range.start, number, page.source()));
         }
     }
     for run in numberings.values_mut() {
@@ -612,7 +490,7 @@ fn witness_pages(layer: &mut OpinionLayer, marks: &[(u32, usize)], tolerance: us
         verdicts.extend(verdict);
     }
     for (source, verdict) in verdicts {
-        layer.page_witness.entry(source).or_default()[verdict] += 1;
+        layer.page_witness.entry(source.to_owned()).or_default()[verdict] += 1;
     }
 }
 
@@ -680,7 +558,9 @@ fn witness_headings(layer: &mut OpinionLayer) {
     let mut ours = keys.iter().map(|title| unnumbered(bare_title(title))).collect::<HashSet<_>>();
     ours.extend(keys.windows(2).map(|pair| unnumbered(bare_title(&format!("{} {}", pair[0], pair[1])))));
     let wanted = layer.marked_titles.iter().filter(|title| section_title(title)).map(|title| unnumbered(bare_title(title))).collect::<HashSet<_>>();
-    let unheld = wanted.iter().filter(|title| !ours.contains(*title)).collect::<Vec<_>>();
+    let mut unheld = wanted.iter().filter(|title| !ours.contains(*title)).collect::<Vec<_>>();
+    // In the order of their words, so that one record reads alike on every run.
+    unheld.sort_unstable();
     let text = if unheld.is_empty() { String::new() } else { format!(" {} ", key(&layer.text)) };
     layer.titles_not_held = unheld.iter().filter(|title| text.contains(&format!(" {title} "))).map(|title| (*title).clone()).collect();
     layer.heading_witness = [wanted.len() - unheld.len(), layer.titles_not_held.len(), unheld.len() - layer.titles_not_held.len()];
@@ -697,7 +577,7 @@ fn in_their_order(places: Vec<Option<usize>>) -> Vec<Option<usize>> {
 /// do, else reckoned by number between the pages either side. A mark that joins no run of the numbering, like the "*Page 1"
 /// some renditions close on, is held as a stray: printed, and no page of the run.
 fn place_by_number(layer: &mut OpinionLayer, series: &str, labels: Vec<String>) {
-    let held = |layer: &OpinionLayer| layer.pages.iter().filter(|page| page.series == series).filter_map(|page| Some((page_number(&page.label)?, page.start))).collect::<Vec<_>>();
+    let held = |layer: &OpinionLayer| layer.pages.iter().filter(|page| page.series == series).filter_map(|page| Some((page_number(&page.label())?, page.range.start))).collect::<Vec<_>>();
     let mut known = held(layer).into_iter().map(|page| page.0).collect::<HashSet<_>>();
     let open = known.is_empty();
     let mut numbered = labels.into_iter().filter_map(|label| Some((page_number(&label)?, label))).collect::<Vec<_>>();
@@ -716,7 +596,7 @@ fn place_by_number(layer: &mut OpinionLayer, series: &str, labels: Vec<String>) 
     for (number, label) in numbered {
         let past_the_last = !pages.is_empty() && pages.iter().all(|page| page.0 < number);
         if !joined.contains(&number) || past_the_last {
-            layer.pages.push(OpinionPage { label, series: series.to_owned(), start: text_end, end: text_end, marker: None, source: "stray", in_note: false });
+            layer.pages.push(read_page(label, series.to_owned(), text_end, text_end, None, "stray"));
             continue;
         }
         let lowest = joined.iter().copied().min().unwrap_or(number);
@@ -728,7 +608,7 @@ fn place_by_number(layer: &mut OpinionLayer, series: &str, labels: Vec<String>) 
             let reckoned = low.1 + high_start.saturating_sub(low.1) * (number - low.0) as usize / (high_number - low.0) as usize;
             word_places.get(word_places.partition_point(|place| *place < reckoned)).copied().unwrap_or(reckoned)
         });
-        layer.pages.push(OpinionPage { label, series: series.to_owned(), start, end: 0, marker: None, source: "reckoned", in_note: false });
+        layer.pages.push(read_page(label, series.to_owned(), start, 0, None, "reckoned"));
     }
 }
 
@@ -748,15 +628,15 @@ fn supply_plain_pages(layer: &mut OpinionLayer, plain: &str, page_count: Option<
     }
     let coordinates = ScalarText::new(plain);
     let places = in_their_order(pages.iter().map(|page| {
-        let opening = (0..4).find_map(|short| coordinates.slice_utf16(page.start..(page.start + 400 - short).min(page.end))).unwrap_or("");
+        let opening = (0..4).find_map(|short| coordinates.slice_utf16(page.range.start..(page.range.start + 400 - short).min(page.range.end))).unwrap_or("");
         let theirs = word_starts(opening);
         theirs.windows(SHINGLE).enumerate().take(12).find_map(|(ahead, window)| index.get(&shingle(window)).copied().flatten()?.checked_sub(ahead))
     }).collect());
     let mut unplaced = HashMap::<String, Vec<String>>::new();
     for (page, place) in pages.into_iter().zip(places) {
         match place {
-            Some(place) => layer.pages.push(OpinionPage { label: page.label, series: page.series, start: words[place].1, end: 0, marker: None, source: "other-rendition", in_note: false }),
-            None => unplaced.entry(page.series).or_default().push(page.label),
+            Some(place) => layer.pages.push(read_page(page.label(), page.series.clone(), words[place].1, 0, None, "other-rendition")),
+            None => unplaced.entry(page.series.clone()).or_default().push(page.label().to_owned()),
         }
     }
     for (series, labels) in unplaced {
@@ -937,7 +817,7 @@ fn from_text(record: &OpinionRecord, name: &str, text: String) -> OpinionLayer {
     OpinionLayer {
         id: record.id.clone(), rendition: name.to_owned(), text, pages: reading.pages, paragraphs: reading.paragraphs, notes: reading.notes,
         headings: reading.headings, headnotes: Vec::new(), headnote_marks: Vec::new(), parts: Vec::new(), front: reading.front,
-        furniture: Vec::new(), unmatched_calls: Vec::new(), tables: reading.tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks: Vec::new(), page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), quoted_elsewhere: HashSet::new(), printed_elsewhere: Vec::new(), other_opinion: Vec::new(), cuts: reading.furniture,
+        furniture: Vec::new(), unmatched_calls: Vec::new(), tables: reading.tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks: Vec::new(), page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), quoted_elsewhere: HashSet::new(), printed_elsewhere: Vec::new(), other_opinion: Vec::new(), cuts: reading.furniture, cited: Vec::new(),
     }
 }
 
@@ -979,25 +859,21 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
     let span = |range: ScalarRange| coordinates.slice_utf16(range.start..range.end).map(trim_js).unwrap_or("");
     let mut pages = structure.nodes.iter().filter(|node| node.kind == NodeKind::Page).map(|node| {
         let range = structure.query_range(node);
-        OpinionPage {
-            label: node.label.as_deref().unwrap_or("").trim_start_matches("page").to_owned(),
-            series: {
+        read_page(node.label.as_deref().unwrap_or("").trim_start_matches("page").to_owned(), {
                 let label = node.label.as_deref().unwrap_or("").trim_start_matches("page");
                 let series = if page_source(node) == "printed" && series_of(node) == "reporter" { "slip".to_owned() } else { series_of(node) };
                 label_run(label).map_or_else(|| series.clone(), |run| format!("{series}/{run}"))
-            },
-            start: range.start, end: range.end, marker: node.marker_range, source: page_source(node), in_note: false,
-        }
+            }, range.start, range.end, node.marker_range, page_source(node))
     }).collect::<Vec<_>>();
     let note_ranges = structure.notes.iter().flat_map(|note| note.body_ranges.iter().copied()).collect::<Vec<_>>();
     element_pages(structure, &coordinates, &note_ranges, &mut pages);
-    pages.sort_by_key(|page| page.start);
+    pages.sort_by_key(|page| page.range.start);
     for page in &mut pages {
-        page.in_note = note_ranges.iter().any(|note| note.start <= page.start && page.start < note.end);
-        page.marker = page.marker.or_else(|| printed_mark(&coordinates, page.start, page.end, &page.label));
+        page.set_in_note(note_ranges.iter().any(|note| note.start <= page.range.start && page.range.start < note.end));
+        page.marker_range = page.marker_range.or_else(|| printed_mark(&coordinates, page.range.start, page.range.end, &page.label()));
     }
     pages::never_down(structure, &mut pages);
-    let page_marks = pages.iter().filter_map(|page| page.marker).collect::<Vec<_>>();
+    let page_marks = pages.iter().filter_map(|page| page.marker_range).collect::<Vec<_>>();
     // A range's words without the page marks in it: "*223III." is "III.".
     let bare = |range: ScalarRange| {
         let mut words = String::new();
@@ -1150,7 +1026,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
         }
     }
     paragraphs.sort_by_key(|paragraph| paragraph.start);
-    let blocks = block_marks(name, structure, &coordinates).into_iter().map(|(label, start)| OpinionBlock { label, start, source: "marked", pins: Vec::new() }).collect::<Vec<_>>();
+    let blocks = block_marks(name, structure, &coordinates).into_iter().map(|(label, start)| OpinionBlock { label, start, source: "marked".to_owned(), pins: Vec::new() }).collect::<Vec<_>>();
 
     let notes = structure.notes.iter().map(|note| {
         let (label, echo) = note_label_of(structure, &coordinates, note);
@@ -1204,7 +1080,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
     }).collect();
     OpinionLayer {
         id: record.id.clone(), rendition: name.to_owned(), text: text.to_owned(), pages, paragraphs, notes, headings, headnotes,
-        headnote_marks: marks, parts, front, furniture: Vec::new(), unmatched_calls, tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks, page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), quoted_elsewhere: HashSet::new(), printed_elsewhere: Vec::new(), other_opinion: Vec::new(), cuts,
+        headnote_marks: marks, parts, front, furniture: Vec::new(), unmatched_calls, tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks, page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), quoted_elsewhere: HashSet::new(), printed_elsewhere: Vec::new(), other_opinion: Vec::new(), cuts, cited: Vec::new(),
     }
 }
 
@@ -1323,7 +1199,7 @@ fn note_paragraphs_elsewhere(layer: &mut OpinionLayer, name: &str, other: &Docum
 /// of which stand in ours: a scanner's slips break a run long before that.
 fn witness_union(layer: &mut OpinionLayer, text: &HashSet<String>) {
     const TEXT_RUN: usize = 40;
-    let held_pages = layer.pages.iter().filter(|page| page.source != "stray").map(|page| page.label.as_str()).collect::<HashSet<_>>();
+    let held_pages = layer.pages.iter().filter(|page| page.source() != "stray").map(|page| page.label()).collect::<HashSet<_>>();
     let held_numbers = layer.paragraphs.iter().filter_map(|paragraph| paragraph.number.as_deref()).collect::<HashSet<_>>();
     let summaries = layer.headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
     let mut tally = BTreeMap::<&'static str, [usize; 2]>::new();
@@ -1357,7 +1233,7 @@ fn witness_union(layer: &mut OpinionLayer, text: &HashSet<String>) {
         words[0] += other.places.len();
         words[1] += lost;
     }
-    layer.union_test = tally;
+    layer.union_test = tally.into_iter().map(|(name, counts)| (name.to_owned(), counts)).collect();
     layer.union_samples = samples;
 }
 
@@ -1397,7 +1273,7 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
     const SHINGLE: usize = 5;
     // How far apart, in UTF-16 units, two renditions may set one page's mark.
     const SAME_PLACE: usize = 300;
-    let have = layer.pages.iter().map(|page| (page.label.clone(), page.start)).collect::<HashMap<_, _>>();
+    let have = layer.pages.iter().map(|page| (page.label().to_owned(), page.range.start)).collect::<HashMap<_, _>>();
     // One rendition may carry several numberings, a reporter's and a vendor's, each by its page scheme. The one most like ours is
     // compared with ours; each other stands as its own, a parallel printing.
     let mut schemes = BTreeMap::<String, Vec<(String, usize)>>::new();
@@ -1440,7 +1316,7 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
         let mut unplaced = Vec::new();
         for ((label, _), place) in missing.into_iter().zip(places) {
             match place {
-                Some(place) => layer.pages.push(OpinionPage { label, series: series.clone(), start: words[place].1, end: 0, marker: None, source: "other-rendition", in_note: false }),
+                Some(place) => layer.pages.push(read_page(label, series.clone(), words[place].1, 0, None, "other-rendition")),
                 None => unplaced.push(label),
             }
         }
@@ -1449,7 +1325,7 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
             let mut unplaced = Vec::new();
             for ((label, _), place) in group.iter().cloned().zip(in_their_order(group.iter().map(|mark| place_of(mark.1)).collect())) {
                 match place {
-                    Some(place) => layer.pages.push(OpinionPage { label, series: scheme.clone(), start: words[place].1, end: 0, marker: None, source: "other-rendition", in_note: false }),
+                    Some(place) => layer.pages.push(read_page(label, scheme.clone(), words[place].1, 0, None, "other-rendition")),
                     None => unplaced.push(label),
                 }
             }
@@ -1484,7 +1360,7 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
                     (before.1 + (after.1.saturating_sub(before.1)) * (index - before.0) / (after.0 - before.0).max(1), "reckoned")
                 }
             };
-            layer.blocks.push(OpinionBlock { label: label.clone(), start, source, pins: Vec::new() });
+            layer.blocks.push(OpinionBlock { label: label.clone(), start, source: source.to_owned(), pins: Vec::new() });
         }
         let printed = numbers.iter().filter_map(|(number, start)| Some((*number, words[place_near(*start)?].1))).collect::<Vec<_>>();
         if !printed.is_empty() {
@@ -1565,14 +1441,14 @@ fn notes_out_of_the_body(layer: &mut OpinionLayer) {
 /// Another rendition's marks set ahead of the opinion's first words, "*508" in a heading our text does not hold, were estimated at
 /// its start and named no page. The one just below the first mark placed is the page the opinion opens on; any before it, strays.
 fn opening_from_other_renditions(layer: &mut OpinionLayer) {
-    let from_elsewhere = layer.pages.iter().filter(|page| page.source == "other-rendition").map(|page| page.series.clone()).collect::<HashSet<_>>();
+    let from_elsewhere = layer.pages.iter().filter(|page| page.source() == "other-rendition").map(|page| page.series.clone()).collect::<HashSet<_>>();
     for series in from_elsewhere {
-        let first_placed = layer.pages.iter().filter(|page| page.series == series && page.source == "other-rendition").min_by_key(|page| page.start).and_then(|page| page_number(&page.label));
+        let first_placed = layer.pages.iter().filter(|page| page.series == series && page.source() == "other-rendition").min_by_key(|page| page.range.start).and_then(|page| page_number(&page.label()));
         let Some(first_placed) = first_placed else { continue };
-        let ahead = layer.pages.iter().enumerate().filter(|(_, page)| page.series == series && page.source == "reckoned" && page.start == 0).filter_map(|(at, page)| Some((at, page_number(&page.label)?))).collect::<Vec<_>>();
+        let ahead = layer.pages.iter().enumerate().filter(|(_, page)| page.series == series && page.source() == "reckoned" && page.range.start == 0).filter_map(|(at, page)| Some((at, page_number(&page.label())?))).collect::<Vec<_>>();
         let opening = ahead.iter().filter(|mark| mark.1 + 1 == first_placed).map(|mark| mark.0).next();
         for (at, _) in &ahead {
-            layer.pages[*at].source = if Some(*at) == opening { "opening" } else { "stray" };
+            layer.pages[*at].grammar = Some((if Some(*at) == opening { "opening" } else { "stray" }).to_owned());
         }
     }
 }
@@ -1606,7 +1482,7 @@ fn flag_pages_in_notes(layer: &mut OpinionLayer) {
     let mut ranges = layer.notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
     ranges.sort_by_key(|note| note.start);
     for page in &mut layer.pages {
-        page.in_note |= ranges[..ranges.partition_point(|note| note.start <= page.start)].last().is_some_and(|note| page.start < note.end);
+        { let in_note = page.in_note() || ranges[..ranges.partition_point(|note| note.start <= page.range.start)].last().is_some_and(|note| page.range.start < note.end); page.set_in_note(in_note); }
     }
 }
 
@@ -1614,8 +1490,8 @@ fn flag_pages_in_notes(layer: &mut OpinionLayer) {
 /// head: 739, 740, 738, 741. Lower than all before it and the run going straight on after it, it heads the text.
 fn opening_page_first(layer: &mut OpinionLayer) {
     let mut lowered = false;
-    let series = layer.pages.iter().enumerate().filter(|(_, page)| !page.in_note && page.series.starts_with("reporter")).fold(BTreeMap::<&str, Vec<(usize, u32)>>::new(), |mut all, (index, page)| {
-        if let Some(number) = page_number(&page.label) { all.entry(&page.series).or_default().push((index, number)); }
+    let series = layer.pages.iter().enumerate().filter(|(_, page)| !page.in_note() && page.series.starts_with("reporter")).fold(BTreeMap::<&str, Vec<(usize, u32)>>::new(), |mut all, (index, page)| {
+        if let Some(number) = page_number(&page.label()) { all.entry(&page.series).or_default().push((index, number)); }
         all
     }).into_values().collect::<Vec<_>>();
     let mut opening = Vec::new();
@@ -1628,23 +1504,23 @@ fn opening_page_first(layer: &mut OpinionLayer) {
         }
     }
     for index in opening {
-        layer.pages[index].start = 0;
+        layer.pages[index].range.start = 0;
         lowered = true;
     }
     if lowered {
-        layer.pages.sort_by(|left, right| (&left.series, left.start, page_number(&left.label)).cmp(&(&right.series, right.start, page_number(&right.label))));
+        layer.pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.label())).cmp(&(&right.series, right.range.start, page_number(right.label()))));
     }
 }
 
 /// Each numbering's pages in the text's order, each running to the next.
 fn close_pages(layer: &mut OpinionLayer) {
     let text_end = utf16_len(&layer.text);
-    layer.pages.sort_by(|left, right| (&left.series, left.start, page_number(&left.label)).cmp(&(&right.series, right.start, page_number(&right.label))));
+    layer.pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.label())).cmp(&(&right.series, right.range.start, page_number(right.label()))));
     // A plain text can print a page's number twice, at its head and its foot: one page.
     if layer.rendition == "plain_text.txt" {
         layer.pages.dedup_by(|later, kept| {
             let same = later.series == kept.series && later.label == kept.label;
-            if same { kept.end = kept.end.max(later.end); }
+            if same { kept.range.end = kept.range.end.max(later.range.end); }
             same
         });
     }
@@ -1652,18 +1528,18 @@ fn close_pages(layer: &mut OpinionLayer) {
     // A page opened twice is one page; a moved block's page is its block's alone and leaves the opinion's page as it was.
     let mut opened = HashSet::new();
     let pages = std::mem::take(&mut layer.pages);
-    layer.pages = pages.into_iter().filter(|page| page.in_note || !page.series.starts_with("reporter") || page.source == "stray" || page.source == "moved" || opened.insert((page.series.clone(), page.label.clone()))).collect();
+    layer.pages = pages.into_iter().filter(|page| page.in_note() || !page.series.starts_with("reporter") || page.source() == "stray" || page.source() == "moved" || opened.insert((page.series.clone(), page.label().to_owned()))).collect();
     let count = layer.pages.len();
     for index in 0..count {
-        if layer.pages[index].end == 0 || matches!(layer.pages[index].source, "other-rendition" | "reckoned") {
-            let next = layer.pages[index + 1..].iter().find(|page| page.series == layer.pages[index].series).map_or(text_end, |page| page.start);
-            layer.pages[index].end = next;
+        if layer.pages[index].range.end == 0 || matches!(layer.pages[index].source(), "other-rendition" | "reckoned") {
+            let next = layer.pages[index + 1..].iter().find(|page| page.series == layer.pages[index].series).map_or(text_end, |page| page.range.start);
+            layer.pages[index].range.end = next;
         }
     }
     // What other renditions added cuts the page before it.
     for index in 1..count {
-        if layer.pages[index].series == layer.pages[index - 1].series && layer.pages[index - 1].end > layer.pages[index].start {
-            layer.pages[index - 1].end = layer.pages[index].start;
+        if layer.pages[index].series == layer.pages[index - 1].series && layer.pages[index - 1].range.end > layer.pages[index].range.start {
+            layer.pages[index - 1].range.end = layer.pages[index].range.start;
         }
     }
 }
@@ -1771,14 +1647,20 @@ const CALL_AT_FOOT: usize = 120;
 
 /// The lead numbering's page of everything found, its pins in every numbering, and each paragraph's part.
 fn place_on_pages(layer: &mut OpinionLayer) {
-    let of_the_opinion = |page: &&OpinionPage| !page.in_note && page.source != "stray";
+    let of_the_opinion = |page: &&StructureNode| !page.in_note() && page.source() != "stray";
     let mut counts = HashMap::<&str, usize>::new();
     for page in layer.pages.iter().filter(of_the_opinion) {
         *counts.entry(page.series.as_str()).or_default() += 1;
     }
     let lead = counts.iter().max_by_key(|(series, count)| (series.starts_with("reporter"), **count, std::cmp::Reverse(**series))).map(|(series, _)| *series);
-    let lead_pages = layer.pages.iter().filter(of_the_opinion).filter(|page| Some(page.series.as_str()) == lead).map(|page| (page.start, page.label.clone())).collect::<Vec<_>>();
+    let lead_pages = layer.pages.iter().filter(of_the_opinion).filter(|page| Some(page.series.as_str()) == lead).map(|page| (page.range.start, page.label().to_owned())).collect::<Vec<_>>();
     let page_at = |offset: usize| lead_pages.partition_point(|page| page.0 <= offset).checked_sub(1).map(|at| lead_pages[at].1.clone());
+    // Each page under the names a pin cites it by: "*702", and "226 La. 702" where its numbering is a printing's.
+    for page in &mut layer.pages {
+        let mut aliases = vec![format!("*{}", page.label())];
+        aliases.extend(layer.page_series.iter().filter(|series| series.series == page.series).map(|series| format!("{} {}", series.reporter, page.label())));
+        page.aliases = Some(aliases);
+    }
     let table = pin_table(layer);
     for block in &mut layer.blocks {
         block.pins = pins_of(&table, block.start, block.start + 1);
@@ -1795,7 +1677,7 @@ fn place_on_pages(layer: &mut OpinionLayer) {
     // A note's page is its call's: the notes of a text set at its end are still on the page that calls them. But a call on a
     // page's last line can have its note set on the next page, or run on to it; a source that marks where notes run on (Harvard)
     // says so, and one that marks no page inside any note cannot: there a call that close to the next page names no page.
-    let marks_run_ons = layer.pages.iter().any(|page| page.in_note && page.source != "stray");
+    let marks_run_ons = layer.pages.iter().any(|page| page.in_note() && page.source() != "stray");
     let next_turn = |offset: usize| lead_pages.get(lead_pages.partition_point(|page| page.0 <= offset)).map(|page| page.0);
     for note in &mut layer.notes {
         let call = note.references.first().map_or(note.start, |call| call.start);

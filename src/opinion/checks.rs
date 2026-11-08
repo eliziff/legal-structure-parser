@@ -5,7 +5,7 @@ use super::*;
 /// Each failure the layer shows: its class, and the detail to read it by.
 pub fn layer_failures(layer: &OpinionLayer) -> Vec<(&'static str, String)> {
     let mut failures = Vec::new();
-    let opinion_pages = || layer.pages.iter().filter(|page| !page.in_note && page.source != "stray");
+    let opinion_pages = || layer.pages.iter().filter(|page| !page.in_note() && page.source() != "stray");
     if opinion_pages().next().is_none() {
         failures.push(("no pages", String::new()));
     }
@@ -17,7 +17,7 @@ pub fn layer_failures(layer: &OpinionLayer) -> Vec<(&'static str, String)> {
     }
     let mut series = HashMap::<&str, Vec<&str>>::new();
     for page in opinion_pages() {
-        series.entry(&page.series).or_default().push(&page.label);
+        series.entry(&page.series).or_default().push(&page.label());
     }
     for (name, labels) in &series {
         let printed = name.starts_with("reporter") || name.starts_with("html");
@@ -139,12 +139,12 @@ pub fn layer_screens(layer: &OpinionLayer, record: &OpinionRecord) -> Vec<(&'sta
     if left_marks.len() >= 3 {
         found.push(("screen: page marks left in text", left_marks.join(" | ")));
     }
-    let longest_run = layer.pages.iter().filter(|page| !page.in_note).fold(HashMap::<&str, usize>::new(), |mut runs, page| { *runs.entry(&page.series).or_default() += 1; runs }).into_values().max().unwrap_or(0);
+    let longest_run = layer.pages.iter().filter(|page| !page.in_note()).fold(HashMap::<&str, usize>::new(), |mut runs, page| { *runs.entry(&page.series).or_default() += 1; runs }).into_values().max().unwrap_or(0);
     if let Some(count) = record.page_count.filter(|count| *count >= 5 && longest_run * 2 < *count as usize) {
         found.push(("screen: far fewer pages than the record counts", format!("{longest_run} of {count}")));
     }
     let printed_report = record.citations.iter().any(|citation| matches!(citation.kind.as_str(), "1" | "2" | "3" | "4" | "5"));
-    if printed_report && size > 12_000 && !layer.pages.iter().any(|page| !page.in_note && page.source != "citation") {
+    if printed_report && size > 12_000 && !layer.pages.iter().any(|page| !page.in_note() && page.source() != "citation") {
         found.push(("screen: reported opinion, no page marks", format!("{size} long")));
     }
 
@@ -224,7 +224,7 @@ pub fn layer_screens(layer: &OpinionLayer, record: &OpinionRecord) -> Vec<(&'sta
         }
     }
     // Paragraphs with no pin where the text has pages.
-    let paged = layer.pages.iter().filter(|page| !page.in_note && page.source != "stray").count();
+    let paged = layer.pages.iter().filter(|page| !page.in_note() && page.source() != "stray").count();
     let unpinned = layer.paragraphs.iter().filter(|paragraph| paragraph.pins.is_empty()).count();
     if paged >= 2 && unpinned * 5 > layer.paragraphs.len() {
         found.push(("screen: paragraphs without a pin", format!("{unpinned} of {}", layer.paragraphs.len())));
@@ -308,7 +308,7 @@ pub fn quote_miss(layer: &OpinionLayer, target: &'static str, quote: &str) -> Op
     let found = match target {
         // A page mark's number, in any numbering.
         "page" => {
-            let labels = layer.pages.iter().filter_map(|page| page_number(&page.label).map(|number| number.to_string())).collect::<HashSet<_>>();
+            let labels = layer.pages.iter().filter_map(|page| page_number(&page.label()).map(|number| number.to_string())).collect::<HashSet<_>>();
             let mut numbers = wanted.split(' ').filter(|word| word.bytes().all(|byte| byte.is_ascii_digit())).peekable();
             numbers.peek().is_none() || numbers.any(|number| labels.contains(number))
         }
