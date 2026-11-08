@@ -159,16 +159,6 @@ impl Evidence {
 
 }
 
-#[cfg(feature = "structure-inference")]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ResolvedCandidate<'a> {
-    pub(crate) candidate: &'a StructureMarkerCandidate,
-    pub(crate) role: Option<UnitRole>,
-    pub(crate) proof: ResolutionProofV2,
-    pub(crate) page_indexes: &'a [usize],
-    pub(crate) line_ids: &'a [String],
-}
-
 /// A node inference reads, by its kind, label and span in scalars; `derive` numbers it, and a diagnostic it raises
 /// stands in its `properties` under "diagnostic" until `derive` makes it the structure's.
 fn labelled_node(kind: NodeKind, label: String, start: usize, end: usize) -> StructureNode {

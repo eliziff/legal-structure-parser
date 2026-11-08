@@ -163,8 +163,7 @@ fn opens_count(label: &str) -> bool {
 /// its parent's paragraph, so is a list.
 fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>], resolved: &mut [ResolvedCandidate<'_>]) {
     let own = |item: &ResolvedCandidate<'_>| {
-        !item.proof.observations.contains(&CandidateObservationV2::Quotation)
-            && matches!(item.role, Some(UnitRole::Paragraph | UnitRole::Item))
+        !item.quotation && matches!(item.role.role, Some(UnitRole::Paragraph | UnitRole::Item))
     };
     let kinds: Vec<Option<UnitRole>> = runs
         .iter()
@@ -173,9 +172,7 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
     // A list's marker its own evidence left unread ("- I was not", an item a scan set apart) is an
     // item all the same where others of its run are: the run, not the line, says it is a list.
     let unread = |item: &ResolvedCandidate<'_>| {
-        item.role.is_none()
-            && item.proof.rule == ResolutionRuleV2::InsufficientEvidence
-            && !item.proof.observations.contains(&CandidateObservationV2::Quotation)
+        item.role.role.is_none() && item.role.rule == ResolutionRuleV2::InsufficientEvidence && !item.quotation
     };
     let items: Vec<Vec<usize>> = spans
         .iter()
@@ -200,9 +197,9 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
             } else {
                 UnitRole::Item
             };
-            if resolved[i].role != Some(kind) {
-                resolved[i].role = Some(kind);
-                resolved[i].proof.rule = if kind == UnitRole::Paragraph {
+            if resolved[i].role.role != Some(kind) {
+                resolved[i].role.role = Some(kind);
+                resolved[i].role.rule = if kind == UnitRole::Paragraph {
                     ResolutionRuleV2::RootedNumericProse
                 } else {
                     ResolutionRuleV2::ListItemLayout
@@ -238,9 +235,9 @@ fn family_kinds(runs: &[StructureCandidateRun], spans: &[std::ops::Range<usize>]
         let Some(kind) = *kind else { continue };
         for &i in &items[k] {
             let rule = if kind == UnitRole::Paragraph { ResolutionRuleV2::RootedNumericProse } else { ResolutionRuleV2::ListItemLayout };
-            if resolved[i].role != Some(kind) {
-                resolved[i].role = Some(kind);
-                resolved[i].proof.rule = rule;
+            if resolved[i].role.role != Some(kind) {
+                resolved[i].role.role = Some(kind);
+                resolved[i].role.rule = rule;
             }
         }
     }
@@ -305,6 +302,13 @@ fn distinct_observations(item: Option<&CandidateEvidenceV2>) -> Vec<CandidateObs
     })
 }
 
+/// A candidate as it is resolved: its role, and whether it stands in a passage the document quotes.
+struct ResolvedCandidate<'a> {
+    candidate: &'a StructureMarkerCandidate,
+    quotation: bool,
+    role: CandidateRoleV2,
+}
+
 /// Each candidate of `runs` resolved, in text order, to the unit it opens, if any, and whether its
 /// number counts (`counted_markers`).
 pub(crate) fn resolve_candidates(
@@ -312,22 +316,6 @@ pub(crate) fn resolve_candidates(
     evidence: &[CandidateEvidenceV2],
 ) -> Result<Vec<CandidateRoleV2>, EngineError> {
     let counted = counted_markers(runs);
-    Ok(resolve_structure_candidates(runs, evidence, &counted)?
-        .into_iter()
-        .map(|resolved| CandidateRoleV2 {
-            candidate_id: resolved.candidate.id.clone(),
-            role: resolved.role,
-            rule: resolved.proof.rule,
-            counted: counted.contains(&resolved.candidate.marker_range.start),
-        })
-        .collect())
-}
-
-pub(crate) fn resolve_structure_candidates<'a>(
-    runs: &'a [StructureCandidateRun],
-    evidence: &'a [CandidateEvidenceV2],
-    counted: &HashSet<usize>,
-) -> Result<Vec<ResolvedCandidate<'a>>, EngineError> {
     let mut provision_starts = runs
         .iter()
         .filter(|run| run.grammar == CandidateGrammar::Hierarchy && run.rooted && run.consecutive)
@@ -503,17 +491,20 @@ pub(crate) fn resolve_structure_candidates<'a>(
             };
             resolved.push(ResolvedCandidate {
                 candidate,
-                role,
-                proof: ResolutionProofV2 { rule, observations },
-                page_indexes: item.map_or(&[], |item| item.page_indexes.as_slice()),
-                line_ids: item.map_or(&[], |item| item.line_ids.as_slice()),
+                quotation,
+                role: CandidateRoleV2 {
+                    candidate_id: candidate.id.clone(),
+                    role,
+                    rule,
+                    counted: counted.contains(&candidate.marker_range.start),
+                },
             });
         }
         spans.push(run_start..resolved.len());
     }
     family_kinds(runs, &spans, &mut resolved);
     resolved.sort_by_key(|value| (value.candidate.range.start, value.candidate.range.end));
-    Ok(resolved)
+    Ok(resolved.into_iter().map(|resolved| resolved.role).collect())
 }
 
 /// The marker positions whose number counts in the document: read in order, each one the next of
