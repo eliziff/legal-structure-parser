@@ -133,7 +133,7 @@ pub(super) fn form_feed_pages(evidence: &Evidence, text: &ScalarText<'_>, blocks
     let mut offsets = HashMap::<i64, usize>::new();
     for (_, label, marker) in &pages {
         let (Some(label), Some(marker)) = (label, marker) else { continue; };
-        let Ok(number) = label.trim_start_matches("page").parse::<i64>() else { continue; };
+        let Ok(number) = label.parse::<i64>() else { continue; };
         let ordinal = form_feeds.partition_point(|boundary| *boundary < marker.start) as i64 + 1;
         *offsets.entry(number - ordinal).or_default() += 1;
     }

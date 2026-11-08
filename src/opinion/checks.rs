@@ -107,7 +107,7 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
         .chain(notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end))))
         .chain(super::reading(structure).front.iter().filter_map(|line| line.range).map(|range| (range.start, range.end)))
         .chain(super::reading(structure).headnotes.iter().filter_map(|headnote| headnote.range).map(|range| (range.start, range.end)))
-        .chain(super::reading(structure).tables.iter().map(|table| (table.start, table.end)))
+        .chain(nodes(structure, NodeKind::Table).map(|table| (table.range.start, table.range.end)))
         .collect::<Vec<_>>();
     held.sort_unstable();
     let (mut reached, mut loose, mut widest) = (0, 0, (0, 0));

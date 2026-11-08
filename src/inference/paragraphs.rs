@@ -1422,7 +1422,6 @@ pub(super) fn gapped_paragraphs(blocks: &[StructureNode]) -> bool {
             value
                 .label
                 .as_deref()?
-                .strip_prefix("par")?
                 .parse::<u32>()
                 .ok()
         })

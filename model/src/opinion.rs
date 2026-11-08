@@ -30,8 +30,6 @@ pub struct OpinionReading {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unmatched_calls: Vec<UnmatchedCall>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tables: Vec<OpinionTable>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub defined_terms: Vec<DefinedTerm>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quotes: Vec<OpinionQuote>,
@@ -216,13 +214,6 @@ pub struct Pin {
     pub page: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub through: Option<String>,
-}
-
-/// A data table in the opinion, its rows out of the paragraphs.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct OpinionTable {
-    pub start: usize,
-    pub end: usize,
 }
 
 /// A line the reading text leaves out of its flow: a page's running title, number or stamp, and where it stood.

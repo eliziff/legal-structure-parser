@@ -58,10 +58,7 @@ fn numbered<'py>(py: Python<'py>, label: Option<String>) -> PyResult<Bound<'py, 
     let Some(label) = label else {
         return Ok(py.None().into_bound(py));
     };
-    let value = label
-        .strip_prefix("par")
-        .or_else(|| label.strip_prefix("page"))
-        .unwrap_or(&label);
+    let value = label.as_str();
     if let Ok(number) = value.parse::<u64>() {
         number.into_bound_py_any(py)
     } else if let Ok(number) = value.parse::<f64>() {

@@ -151,9 +151,6 @@ pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furni
     for call in &mut opinion.unmatched_calls {
         (call.start, call.end) = (moved(call.start), moved(call.end));
     }
-    for table in &mut opinion.tables {
-        (table.start, table.end) = (moved(table.start), moved(table.end));
-    }
     opinion.furniture = printed.into_iter().map(|(at, text)| FurnitureLine { text, at: moved(at) }).collect();
     let mut text = String::with_capacity(structure.text.len());
     let (mut unit, mut index) = (0, 0);
