@@ -48,15 +48,6 @@ pub(crate) fn text_note_blocks(
             reading_order: order,
             block_index: order,
             text: value.to_owned(),
-            bbox: [0.0; 4],
-            spans: Vec::new(),
-            words: Vec::new(),
-            detached_references: Vec::new(),
-            ocr: None,
-            exclude_from_body: false,
-            ink: 0.0,
-            weight: 0.0,
-            cap_height: 0.0,
             suppress_footnote_label: line[2] < note_start,
             paragraph_label_candidate: paragraph_labels.contains(&line[2]),
             note_region_mode: if line[2] >= note_start {
@@ -64,7 +55,6 @@ pub(crate) fn text_note_blocks(
             } else {
                 String::new()
             },
-            region_id: String::new(),
             region_type: if line[2] >= note_start {
                 "endnote"
             } else {
@@ -72,21 +62,17 @@ pub(crate) fn text_note_blocks(
             }
             .to_owned(),
             source: "provider_text".to_owned(),
+            ..Default::default()
         });
     }
     let page = Page {
         id: "page-1".to_owned(),
         index: 0,
         number: 1,
-        width: 0.0,
-        height: 0.0,
         lines,
-        regions: Vec::new(),
         source: "provider_text".to_owned(),
         text_quality: 1.0,
-        printed_label: None,
-        printed_label_source: None,
-        printed_label_line_id: None,
+        ..Default::default()
     };
     let pairing = pair_footnotes(std::slice::from_ref(&page), &protected, false);
     let at = |id: &str, offset: usize| starts.get(id).map(|(start, _)| start + offset);
@@ -329,21 +315,11 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
                 reading_order: order,
                 block_index: order,
                 text: (*line).to_owned(),
-                bbox: [0.0; 4],
-                spans: Vec::new(),
-                words: Vec::new(),
-                detached_references: Vec::new(),
-                ocr: None,
-                exclude_from_body: false,
-                ink: 0.0,
-                weight: 0.0,
-                cap_height: 0.0,
                 suppress_footnote_label: !note,
-                paragraph_label_candidate: false,
                 note_region_mode: if note { "footnote".to_owned() } else { String::new() },
-                region_id: String::new(),
                 region_type: if note { "footnote" } else { "paragraph" }.to_owned(),
                 source: "text".to_owned(),
+                ..Default::default()
             });
             order += 1;
         }
@@ -351,15 +327,10 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
             id: format!("page-{}", page_index + 1),
             index: page_index,
             number: page_index as u32 + 1,
-            width: 0.0,
-            height: 0.0,
             lines: page_lines,
-            regions: Vec::new(),
             source: "text".to_owned(),
             text_quality: 1.0,
-            printed_label: None,
-            printed_label_source: None,
-            printed_label_line_id: None,
+            ..Default::default()
         });
     }
     let pairing = pair_footnotes(&built, &protected, true);

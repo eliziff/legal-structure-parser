@@ -636,19 +636,28 @@ fn notes_of(lines: &[Line<'_>], zones: &[Vec<Zone>], pages: &[(usize, usize)]) -
             }
             let note = in_zone.contains(&at);
             LaidLine {
-                id, page_index, page_number: page_index as u32 + 1, source_index: at, reading_order: at, block_index: at,
-                text: body.to_owned(), bbox: [0.0; 4], spans: Vec::new(), words: Vec::new(), detached_references: Vec::new(),
-                ocr: None, exclude_from_body: false, ink: 0.0, weight: 0.0, cap_height: 0.0,
-                suppress_footnote_label: !note, paragraph_label_candidate: false,
+                id,
+                page_index,
+                page_number: page_index as u32 + 1,
+                source_index: at,
+                reading_order: at,
+                block_index: at,
+                text: body.to_owned(),
+                suppress_footnote_label: !note,
                 note_region_mode: if note { "footnote".to_owned() } else { String::new() },
-                region_id: String::new(), region_type: if note { "footnote" } else { "paragraph" }.to_owned(),
+                region_type: if note { "footnote" } else { "paragraph" }.to_owned(),
                 source: "text".to_owned(),
+                ..Default::default()
             }
         }).collect();
         LaidPage {
-            id: format!("page-{}", page_index + 1), index: page_index, number: page_index as u32 + 1, width: 0.0, height: 0.0,
-            lines: page_lines, regions: Vec::new(), source: "text".to_owned(), text_quality: 1.0,
-            printed_label: None, printed_label_source: None, printed_label_line_id: None,
+            id: format!("page-{}", page_index + 1),
+            index: page_index,
+            number: page_index as u32 + 1,
+            lines: page_lines,
+            source: "text".to_owned(),
+            text_quality: 1.0,
+            ..Default::default()
         }
     }).collect::<Vec<_>>();
     let pairing = pair_footnotes(&laid, &protected, false);

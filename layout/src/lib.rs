@@ -177,7 +177,7 @@ pub struct OcrEvidence {
     pub marker: Option<OcrMarkerEvidence>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Line {
     pub id: String,
     pub page_index: usize,
@@ -257,7 +257,7 @@ pub struct Region {
     pub reading_order: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Page {
     pub id: String,
     pub index: usize,
