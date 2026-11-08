@@ -286,9 +286,8 @@ pub struct DocumentViewerSlice<'a> {
     pub start: usize,
     pub end: usize,
     pub text: &'a str,
-    pub anchors: Vec<&'a StructureNode>,
-    pub primary: Option<&'a StructureNode>,
-    pub depth: usize,
+    pub anchors: Vec<legal_structure_model::NodeReading<'a>>,
+    pub primary: Option<legal_structure_model::NodeReading<'a>>,
     /// The slice is a heading the structure reads, not a block of text.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub heading: bool,
@@ -709,18 +708,13 @@ impl DocumentQuery {
             let slice_end = starts[index + 1];
             let slice_text = js_trim(scalar.slice_utf16(start..slice_end).unwrap_or_default());
             if !slice_text.is_empty() || primary.is_some() || !anchors.is_empty() {
-                let depth = primary
-                    .as_ref()
-                    .filter(|anchor| anchor.kind == NodeKind::Section)
-                    .map_or(0, |anchor| anchor.level.unwrap_or(1).saturating_sub(1));
                 slices.push(DocumentViewerSlice {
                     start,
                     end: slice_end,
                     text: slice_text,
-                    anchors,
-                    depth,
+                    anchors: anchors.into_iter().map(|anchor| document.reading(anchor)).collect(),
                     heading: primary.is_none() && headings.contains(&start),
-                    primary,
+                    primary: primary.map(|anchor| document.reading(anchor)),
                 });
             }
         }
