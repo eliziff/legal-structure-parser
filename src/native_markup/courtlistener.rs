@@ -3218,27 +3218,6 @@ pub(super) fn courtlistener_source_parents(structure: &mut DocumentStructure) {
     }
 }
 
-/// The inference exclusions a CourtListener rendition's evidence carries, in the final UTF-16
-/// coordinates of the retained markup graph: (headings, paragraphs).
-pub(super) fn inference_exclusions(evidence: &Evidence) -> (Vec<ScalarRange>, Vec<ScalarRange>) {
-    let coordinates = ScalarText::new(&evidence.structure.text);
-    let mut headings = Vec::new();
-    let mut body = Vec::new();
-    for exclusion in &evidence.exclusions {
-        let range = ScalarRange {
-            start: coordinates.utf16(exclusion.range.start),
-            end: coordinates.utf16(exclusion.range.end),
-        };
-        if exclusion.applies_to.contains(&NodeKind::Heading) {
-            headings.push(range);
-        }
-        if exclusion.applies_to.contains(&NodeKind::Paragraph) {
-            body.push(range);
-        }
-    }
-    (headings, body)
-}
-
 /// A CourtListener rendition's reading after derivation: source headings and notes preferred, notes
 /// paired with their references, and every pass over what the rendition supplies.
 pub(super) fn finish(

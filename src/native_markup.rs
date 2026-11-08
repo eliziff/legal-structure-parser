@@ -1907,21 +1907,7 @@ struct AdapterRevision<'a> {
     profile: &'a str,
 }
 
-fn native_markup_evidence(
-    input: NativeMarkupInput,
-) -> Result<
-    (
-        Evidence,
-        Vec<CitedAuthority>,
-        Vec<(String, Option<String>, ScalarRange)>,
-        Vec<MarkupElement>,
-        String,
-        Vec<MarkupAncestor>,
-        HashSet<usize>,
-        Vec<(StructureNode, Vec<ScalarRange>)>,
-    ),
-    EngineError,
-> {
+pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructure, EngineError> {
     let NativeMarkupInput {
         provider: provider_name,
         id,
@@ -2078,44 +2064,36 @@ fn native_markup_evidence(
             node.column_span = span("colspan");
         }
     }
-    let scalar_end = coordinates.len();
-    let mut exclusions = rendered_exclusions
-        .iter()
-        .map(|range| {
-            Ok(Exclusion {
-                range: ScalarRange {
-                    start: scalar(range.start)?,
-                    end: scalar(range.end)?,
-                },
-                applies_to: vec![NodeKind::Paragraph, NodeKind::Heading],
-            })
-        })
-        .collect::<Result<Vec<_>, EngineError>>()?;
+    // Where inference reads nothing, in UTF-16 as the CourtListener passes after derivation read it: in the markup's
+    // notes no paragraph or heading, and in matter no heading opens in (head matter, a quotation, the parties, or all
+    // of a text whose enclosing markup is such matter).
+    let body_exclusions = rendered_exclusions;
+    let mut heading_exclusions = body_exclusions.clone();
     if provider.is_courtlistener() {
-        for element in &elements {
-            if source_heading_exclusion(&element.tag, &element.attributes) {
-                exclusions.push(Exclusion {
-                    range: ScalarRange {
-                        start: scalar(element.range.start)?,
-                        end: scalar(element.range.end)?,
-                    },
-                    applies_to: vec![NodeKind::Heading],
-                });
-            }
-        }
+        heading_exclusions.extend(
+            elements
+                .iter()
+                .filter(|element| source_heading_exclusion(&element.tag, &element.attributes))
+                .map(|element| element.range),
+        );
         if markup_ancestors
             .iter()
             .any(|ancestor| source_heading_exclusion(&ancestor.tag, &ancestor.attributes))
         {
-            exclusions.push(Exclusion {
-                range: ScalarRange {
-                    start: 0,
-                    end: scalar_end,
-                },
-                applies_to: vec![NodeKind::Heading],
-            });
+            heading_exclusions.push(ScalarRange { start: 0, end: text_utf16 });
         }
     }
+    let exclusion = |range: &ScalarRange, applies_to: &[NodeKind]| -> Result<Exclusion, EngineError> {
+        Ok(Exclusion {
+            range: ScalarRange { start: scalar(range.start)?, end: scalar(range.end)? },
+            applies_to: applies_to.to_vec(),
+        })
+    };
+    let exclusions = body_exclusions
+        .iter()
+        .map(|range| exclusion(range, &[NodeKind::Paragraph, NodeKind::Heading]))
+        .chain(heading_exclusions[body_exclusions.len()..].iter().map(|range| exclusion(range, &[NodeKind::Heading])))
+        .collect::<Result<Vec<_>, EngineError>>()?;
     let scope_kind = match scope.kind.as_str() {
         "complete" => ScopeKind::Complete,
         "excerpt" => ScopeKind::Excerpt,
@@ -2131,21 +2109,33 @@ fn native_markup_evidence(
         "case_contiguous_complete" => DetectionProfile::CaseContiguousComplete,
         _ => DetectionProfile::CaseLossy,
     };
+    structure.cited_authorities = cited_authorities;
+    if provider.is_courtlistener() {
+        structure.markup_elements = elements;
+        structure.markup_ancestors = markup_ancestors;
+        structure.markup_sha256 = Some(representation_revision);
+    }
     let evidence = Evidence {
         report_start_page: report_start(citation.as_deref()),
         exclusions,
         ..Evidence::new(structure, profile)
     };
-    Ok((
-        evidence,
-        cited_authorities,
-        note_references,
-        elements,
-        representation_revision,
-        markup_ancestors,
-        matched_role_starts,
-        printed_notes,
-    ))
+    let mut structure = crate::derive::derive(evidence, None);
+    // A list's item is one, read as the kind its block declares until here.
+    for node in &mut structure.nodes {
+        let tag = node.markup_tag.as_deref();
+        if tag == Some("li") || node.kind == NodeKind::List && matches!(tag, Some("dt" | "dd")) {
+            node.kind = NodeKind::ListItem;
+        }
+    }
+    #[cfg(not(feature = "courtlistener"))]
+    let _ = (note_references, matched_role_starts, printed_notes, heading_exclusions, body_exclusions);
+    #[cfg(feature = "courtlistener")]
+    if provider.is_courtlistener() {
+        courtlistener::finish(&mut structure, note_references, &matched_role_starts, printed_notes, &heading_exclusions, &body_exclusions);
+    }
+    structure.refresh_revision().expect("Typed document structure is serializable");
+    Ok(structure)
 }
 
 fn courtlistener_opinion_page_scope(
@@ -2212,42 +2202,3 @@ fn courtlistener_ldml_note(element: &MarkupElement) -> bool {
         })
 }
 
-pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructure, EngineError> {
-    let (
-        evidence,
-        cited_authorities,
-        note_references,
-        elements,
-        markup_sha256,
-        markup_ancestors,
-        matched_role_starts,
-        printed_notes,
-    ) = native_markup_evidence(input)?;
-    // Retain the existing inference exclusions for the source-aware supplement,
-    // in the final UTF-16 coordinates used by the retained markup graph.
-    #[cfg(feature = "courtlistener")]
-    let exclusions = (evidence.structure.provider == "courtlistener").then(|| courtlistener::inference_exclusions(&evidence));
-    let mut structure = crate::derive::derive(evidence, None);
-    structure.cited_authorities = cited_authorities;
-    if structure.provider == "courtlistener" {
-        structure.markup_elements = elements;
-        structure.markup_ancestors = markup_ancestors;
-        structure.markup_sha256 = Some(markup_sha256);
-    }
-    // A list's item is one, read as the kind its block declares until here.
-    for node in &mut structure.nodes {
-        let tag = node.markup_tag.as_deref();
-        if tag == Some("li") || node.kind == NodeKind::List && matches!(tag, Some("dt" | "dd")) {
-            node.kind = NodeKind::ListItem;
-        }
-    }
-    #[cfg(not(feature = "courtlistener"))]
-    let _ = (note_references, matched_role_starts, printed_notes);
-    #[cfg(feature = "courtlistener")]
-    if structure.provider == "courtlistener" {
-        let (heading_exclusions, body_exclusions) = exclusions.unwrap_or_default();
-        courtlistener::finish(&mut structure, note_references, &matched_role_starts, printed_notes, &heading_exclusions, &body_exclusions);
-    }
-    structure.refresh_revision().expect("Typed document structure is serializable");
-    Ok(structure)
-}
