@@ -475,7 +475,7 @@ pub(super) fn supplement_courtlistener_declared_note_references(
                 };
                 if let Some(note) = ldml_targets.get(&(decision, label)).copied().flatten() {
                     // This is an inferred printed-marker pair, not an explicit source link.
-                    updates.push((note, element.range, None));
+                    updates.push((note, element.range));
                 }
                 continue;
             }
@@ -508,20 +508,12 @@ pub(super) fn supplement_courtlistener_declared_note_references(
                 };
                 let leading = raw.len() - raw.trim_start_matches(javascript_whitespace).len();
                 let start = element.range.start + utf16_len(&raw[..leading]);
-                let anchor = element
-                    .attributes
-                    .get("id")
-                    .filter(|id| identities.get(id.as_str()).copied().flatten() == Some(index))
-                    .cloned();
-                // IDREF and unique printed-marker relationships retain only
-                // this reference's own actual unique ID as a fragment anchor.
                 updates.push((
                     note,
                     ScalarRange {
                         start,
                         end: start + utf16_len(label),
                     },
-                    anchor,
                 ));
                 continue;
             }
@@ -570,12 +562,11 @@ pub(super) fn supplement_courtlistener_declared_note_references(
                     start,
                     end: start + utf16_len(label),
                 },
-                None,
             ));
         }
         updates
     };
-    for (index, range, anchor) in updates {
+    for (index, range) in updates {
         let note = &mut structure.nodes[index];
         if !note
             .calls
@@ -1143,7 +1134,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                         && identities.get(id.as_str()).copied().flatten() == Some(index)
                         && note_owner(index).is_none()
                         && reference.markup_end <= node.markup_start?)
-                        .then_some((range, Some(id.clone())))
+                        .then_some(range)
                 });
                 let reference = references.next();
                 if references.next().is_none() {
@@ -1261,7 +1252,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                     {
                         return None;
                     }
-                    Some((range, Some(reference_id.to_owned())))
+                    Some(range)
                 });
                 let pair = pairs.next();
                 if pairs.next().is_none() {
@@ -1356,7 +1347,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                             && elements[index].markup_end <= owner.markup_start
                         {
                             // The semantic pair has no source fragment.
-                            updates.last_mut().unwrap().2 = Some((range, None));
+                            updates.last_mut().unwrap().2 = Some(range);
                         }
                     }
                     continue;
@@ -1488,7 +1479,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
             }
             // Reciprocal bookmarks support the semantic pair without claiming
             // that the preserved absolute href is the current source URI.
-            updates.last_mut().unwrap().2 = Some((matches[0].1, Some(reference_name)));
+            updates.last_mut().unwrap().2 = Some(matches[0].1);
         }
         (updates, printed_updates)
     };
@@ -1502,7 +1493,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
                 range.start < range.end
             });
         }
-        if let Some((reference_range, reference_name)) = reference {
+        if let Some(reference_range) = reference {
             note.calls.push(reference_range);
         }
     }

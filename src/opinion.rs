@@ -1131,7 +1131,7 @@ fn opening_words(text: &str) -> Option<String> {
 #[derive(Clone, Debug, Default)]
 struct Elsewhere { name: String, openings: HashSet<String>, places: Vec<String>, pages: Vec<String>, numbers: Vec<String>, notes: Vec<String>, headnotes: Vec<String> }
 
-fn note_paragraphs_elsewhere(structure: &mut DocumentStructure, pending: &mut Pending, name: &str, other: &DocumentStructure) {
+fn note_paragraphs_elsewhere(pending: &mut Pending, name: &str, other: &DocumentStructure) {
     let coordinates = ScalarText::new(other.query_text());
     let printed = |node: &StructureNode| { let range = other.query_range(node); coordinates.slice_utf16(range.start..range.end) };
     let paragraphs = || other.nodes.iter().filter(|node| node.kind == NodeKind::Paragraph);
@@ -1232,7 +1232,7 @@ fn supply_from(structure: &mut DocumentStructure, pending: &mut Pending, name: &
             .filter_map(|node| { let range = other.query_range(node); coordinates.slice_utf16(range.start..range.end) }).filter_map(opening_words));
     }
     if witness {
-        put(structure, std::mem::take(&mut pages)); put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut headings)); note_paragraphs_elsewhere(structure, pending, name, other); pages = take(structure, Of::Pages); paragraphs = take(structure, Of::Paragraphs); headings = take(structure, Of::Headings);
+        note_paragraphs_elsewhere(pending, name, other);
     }
     const SHINGLE: usize = 5;
     // How far apart, in UTF-16 units, two renditions may set one page's mark.
