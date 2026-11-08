@@ -412,7 +412,9 @@ pub fn opinion_structure(record: &OpinionRecord, url: Option<String>) -> Documen
         *count += 1;
         node.id = format!("opinion-{}-{count}", node.kind.name());
     }
-    structure.nodes.sort_by_key(|node| (node.range.start, std::cmp::Reverse(node.range.end)));
+    // At one start, what stands at that point before what runs on from it (a page reckoned ahead of the text, then the page
+    // its first mark opens), then the longer before the shorter.
+    structure.nodes.sort_by_key(|node| (node.range.start, node.range.end != node.range.start, std::cmp::Reverse(node.range.end)));
     structure.url = url;
     structure.text_sha256 = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(structure.text.as_bytes()));
     structure.refresh_revision().expect("Typed document structure is serializable");
