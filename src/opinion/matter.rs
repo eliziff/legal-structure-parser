@@ -399,7 +399,7 @@ pub(super) fn embedded_topics(markup: &str) -> Vec<OpinionHeadnote> {
 /// A syllabus or headnotes the source does not mark: the paragraphs under a heading of that name.
 pub(super) fn divisions_of_headnotes(structure: &mut DocumentStructure) {
     let mut paragraphs = take(structure, Of::Paragraphs);
-    let mut headings = take(structure, Of::Headings);
+    let headings = take(structure, Of::Headings);
 
     static NAME: OnceLock<Regex> = OnceLock::new();
     let name = NAME.get_or_init(|| Regex::new(r"(?i)^(?:syllabus(?: by the court)?|headnotes?|digest|note|synopsis)\.?$").unwrap());
@@ -468,7 +468,7 @@ pub(super) fn titled_digest(text: &str) -> Option<(&'static str, String)> {
 
 /// Bracketed headnote numbers opening a paragraph, which no count of paragraphs took: Lawbox's "[1, 2]".
 pub(super) fn printed_headnote_marks(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
+    let paragraphs = take(structure, Of::Paragraphs);
 
     static MARK: OnceLock<Regex> = OnceLock::new();
     let mark = MARK.get_or_init(|| Regex::new(r"^\[(\d{1,3}(?:\s*[-–,]\s*\d{1,3})*)\]").unwrap());

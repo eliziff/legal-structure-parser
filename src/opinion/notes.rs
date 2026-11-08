@@ -223,7 +223,7 @@ pub(super) fn unmatched_calls(structure: &DocumentStructure, coordinates: &Scala
 /// Calls the source left unlinked find their notes by label, in order; and where no note answers, the numbered paragraphs
 /// past the last call that run through their labels are the notes, set as text.
 pub(super) fn answer_calls(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
+    let paragraphs = take(structure, Of::Paragraphs);
     let mut notes = take(structure, Of::Notes);
     #[allow(clippy::redundant_closure_call)]
     let result = (|| -> () {
@@ -411,7 +411,7 @@ pub(super) fn split_note_lists(structure: &mut DocumentStructure) {
 /// Notes of one label more than once (each opinion's own series) share their calls in order; a note with none takes a
 /// bracketed number in the text, where the source left it as words.
 pub(super) fn share_note_calls(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
+    let paragraphs = take(structure, Of::Paragraphs);
     let mut notes = take(structure, Of::Notes);
     #[allow(clippy::redundant_closure_call)]
     let result = (|| -> () {

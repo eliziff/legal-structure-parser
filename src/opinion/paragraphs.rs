@@ -583,8 +583,8 @@ pub(super) fn lettered_paragraphs(openings: &[(usize, &str)], numbered: &HashMap
 /// sentence then rejoins over them, as it does over a page's turn.
 pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure) {
     let mut paragraphs = take(structure, Of::Paragraphs);
-    let mut notes = take(structure, Of::Notes);
-    let mut headings = take(structure, Of::Headings);
+    let notes = take(structure, Of::Notes);
+    let headings = take(structure, Of::Headings);
 
     let coordinates = ScalarText::new(&structure.text);
     let printed = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
@@ -666,8 +666,8 @@ pub(super) fn speakers(structure: &mut DocumentStructure) {
 
 /// A concurrence or dissent that opens inside a flat body, on a line of its own: "SMITH, J., dissenting.".
 pub(super) fn separate_parts(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
-    let mut headings = take(structure, Of::Headings);
+    let paragraphs = take(structure, Of::Paragraphs);
+    let headings = take(structure, Of::Headings);
     let mut parts = take(structure, Of::Parts);
     #[allow(clippy::redundant_closure_call)]
     let result = (|| -> () {

@@ -30,7 +30,7 @@ use paragraphs::*;
 use readings::*;
 
 use crate::{
-    analyze_native_markup, hierarchy, CitedAuthority, javascript_whitespace, trim_javascript_whitespace as trim_js, utf16_len, Derivation, DocumentStructure,
+    analyze_native_markup, hierarchy, javascript_whitespace, trim_javascript_whitespace as trim_js, utf16_len, Derivation, DocumentStructure,
     MarkupElement, NativeMarkupInput, NodeKind, PrimaryRole, ScalarRange, ScalarText, StructureNode,
 };
 pub use legal_structure_model::opinion::{
@@ -38,7 +38,7 @@ pub use legal_structure_model::opinion::{
     OpinionQuote, OpinionReading, OpinionTable, PageSeries, Pin, QuoteMark, RecordGap, UnmatchedCall,
 };
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -508,7 +508,7 @@ fn take_marked_titles(structure: &mut DocumentStructure, pending: &mut Pending) 
 /// title. A title compares by its words alone, without a page mark at its head or a note's call at its tail, and may stand in two
 /// headings here, "IV." over "Conclusion". Of those not held, the words that stand in this text are titles missed.
 fn witness_headings(structure: &mut DocumentStructure, pending: &mut Pending) {
-    let mut headings = take(structure, Of::Headings);
+    let headings = take(structure, Of::Headings);
 
     let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
     // A title's paragraph or outline number stays off it here: a rendition may print the mark inside what it marks.
@@ -1149,8 +1149,8 @@ fn note_paragraphs_elsewhere(structure: &mut DocumentStructure, pending: &mut Pe
 /// Item by item, what another rendition offers against the finished structure. Text counts as not held only in a run of words none
 /// of which stand in ours: a scanner's slips break a run long before that.
 fn witness_union(structure: &mut DocumentStructure, pending: &mut Pending, text: &HashSet<String>) {
-    let mut pages = take(structure, Of::Pages);
-    let mut paragraphs = take(structure, Of::Paragraphs);
+    let pages = take(structure, Of::Pages);
+    let paragraphs = take(structure, Of::Paragraphs);
 
     const TEXT_RUN: usize = 40;
     let held_pages = pages.iter().filter(|page| page.grammar.as_deref() != Some("stray")).map(|page| page.printed_label()).collect::<HashSet<_>>();
@@ -1403,7 +1403,7 @@ fn quotes_from_elsewhere(structure: &mut DocumentStructure, pending: &mut Pendin
 /// A note found late, by answering its call, can still stand among the paragraphs: its words belong to the note.
 fn notes_out_of_the_body(structure: &mut DocumentStructure) {
     let mut paragraphs = take(structure, Of::Paragraphs);
-    let mut notes = take(structure, Of::Notes);
+    let notes = take(structure, Of::Notes);
 
     /// How much of a paragraph must lie in notes for it to be theirs, in fifths.
     const MOSTLY: usize = 4;
@@ -1463,7 +1463,7 @@ fn finish(structure: &mut DocumentStructure, pending: &mut Pending, record: &Opi
 /// Marks placed from other renditions fall in notes too, and a note's page says nothing of the opinion's.
 fn flag_pages_in_notes(structure: &mut DocumentStructure) {
     let mut pages = take(structure, Of::Pages);
-    let mut notes = take(structure, Of::Notes);
+    let notes = take(structure, Of::Notes);
 
     let mut ranges = notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
     ranges.sort_by_key(|note| note.start);
@@ -1576,7 +1576,7 @@ fn label_notes(structure: &mut DocumentStructure) {
 
 /// Each heading's words and level: a family of enumerators keeps its level, a new one goes under the last.
 fn title_headings(structure: &mut DocumentStructure) {
-    let mut notes = take(structure, Of::Notes);
+    let notes = take(structure, Of::Notes);
     let mut headings = take(structure, Of::Headings);
 
     let mut calls = notes.iter().flat_map(|note| note.calls.iter().copied()).collect::<Vec<_>>();

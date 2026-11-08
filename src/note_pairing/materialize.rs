@@ -156,8 +156,6 @@ pub(super) fn materialize(
             body_lines = bounded;
         }
         let mut parts = Vec::new();
-        let mut source_spans = Vec::new();
-        let mut output_position = 0;
         for line in &body_lines {
             let mut text = line.text.as_str();
             if line.id == label_line.id {
@@ -170,35 +168,12 @@ pub(super) fn materialize(
                     |character: char| character.is_whitespace() || ".)],:;-".contains(character),
                 );
             }
-            if text.is_empty() {
-                continue;
+            if !text.is_empty() {
+                parts.push(text);
             }
-            if !parts.is_empty() {
-                output_position += 1;
-            }
-            let source_start =
-                legal_structure_model::utf16_len(&line.text[..line.text.len() - text.len()]);
-            let length = legal_structure_model::utf16_len(text);
-            source_spans.push(legal_structure_model::layout::SourceTextSpan {
-                start: output_position,
-                end: output_position + length,
-                line_id: line.id.clone(),
-                source_start,
-                source_end: source_start + length,
-            });
-            output_position += length;
-            parts.push(text);
         }
         let display = pair.label.note_id();
-        let joined = parts.join(" ");
-        let leading =
-            legal_structure_model::utf16_len(&joined[..joined.len() - joined.trim_start().len()]);
-        let body = joined.trim().to_owned();
-        let stop = leading + legal_structure_model::utf16_len(&body);
-        source_spans = source_spans
-            .iter()
-            .filter_map(|span| span.retain(leading, stop, 0))
-            .collect();
+        let body = parts.join(" ").trim().to_owned();
         let body = if body.is_empty() {
             display.clone()
         } else {
@@ -234,7 +209,6 @@ pub(super) fn materialize(
             diagnostics.push(diagnostic);
         }
         footnotes.push(Footnote {
-            source_spans,
             pair_id: pair.pair_id.clone(),
             label: display,
             occurrence: *occurrence,

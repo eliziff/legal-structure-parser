@@ -282,31 +282,6 @@ const fn one() -> f64 {
     1.0
 }
 
-/// An unchanged UTF-16 run in produced text, anchored to an original physical line.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SourceTextSpan {
-    pub start: usize,
-    pub end: usize,
-    pub line_id: String,
-    pub source_start: usize,
-    pub source_end: usize,
-}
-
-impl SourceTextSpan {
-    /// Retain an exact input slice at a new output position. Insertions have no run.
-    pub fn retain(&self, start: usize, end: usize, output_start: usize) -> Option<Self> {
-        let left = self.start.max(start);
-        let right = self.end.min(end);
-        (left < right).then(|| Self {
-            start: output_start + left - start,
-            end: output_start + right - start,
-            line_id: self.line_id.clone(),
-            source_start: self.source_start + left - self.start,
-            source_end: self.source_start + right - self.start,
-        })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FootnoteCrossref {
     pub source_pair_id: String,
@@ -322,8 +297,6 @@ pub struct FootnoteCrossref {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Footnote {
-    #[serde(default)]
-    pub source_spans: Vec<SourceTextSpan>,
     pub pair_id: String,
     pub label: String,
     pub occurrence: usize,
