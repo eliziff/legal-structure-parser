@@ -83,10 +83,10 @@ impl StructureAnalysis for EngineAnalysis {
         &self,
         pages: &[Page],
         protected_citation_spans: &BTreeMap<String, Vec<ScalarRange>>,
-        include_audit: bool,
+        part: &dyn Fn(&legal_structure_model::layout::Line) -> usize,
         place: &dyn Fn(&str, usize, usize) -> Option<legal_structure_model::ScalarRange>,
     ) -> legal_structure_model::NotePairing {
-        crate::note_pairing::pair_footnotes(pages, protected_citation_spans, include_audit, place)
+        crate::note_pairing::pair_footnotes(pages, protected_citation_spans, part, place)
     }
 
     fn signature_line(&self, line: &str) -> bool {

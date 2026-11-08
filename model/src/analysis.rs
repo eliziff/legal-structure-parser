@@ -2,26 +2,15 @@ use crate::{
     AuthoritativeTableCell, CandidateEvidenceV2, CandidateRoleV2, DocumentStructure, EngineError,
     StructureCandidateRun, };
 use legal_layout::LayoutAnalysis;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-/// The pairer's audit of a document's markers, where asked for: each marker's reading and the pairing's summary.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PdfPairingAudit {
-    pub markers: Vec<Value>,
-    pub pairing_summary: Value,
-}
 
 /// The origin of the notes the pairer writes.
 pub const NOTE_PAIRING_ORIGIN: &str = "legal-structure.note-pairing";
 
 /// A laid-out document's notes as the pairer writes them: each a Footnote (or Endnote) node placed in the reader's text,
-/// its body its ranges, its label its marker range, its calls; the diagnostics of what it could not pair or place; and,
-/// where asked for, its audit of the markers.
+/// its body its ranges, its label its marker range, its calls; and the diagnostics of what it could not pair or place.
 pub struct NotePairing {
     pub notes: Vec<crate::StructureNode>,
     pub diagnostics: Vec<legal_layout::Diagnostic>,
-    pub audit: Option<PdfPairingAudit>,
 }
 
 /// The structure engine's document reading, as parsers that build documents on the model call it,
@@ -29,13 +18,13 @@ pub struct NotePairing {
 /// editing the engine recompiles the engine and the program that supplies it, not every parser.
 pub trait StructureAnalysis: LayoutAnalysis {
     /// A laid-out document's notes paired with their references, its lines' citations (by line id, in scalar offsets)
-    /// protected from being read as either, each note placed in the reader's text by `place` (a line's id and a range
-    /// of its characters).
+    /// protected from being read as either, the lines of each `part` (a constituent document or language) paired on
+    /// their own, each note placed in the reader's text by `place` (a line's id and a range of its characters).
     fn pair_footnotes(
         &self,
         pages: &[legal_layout::Page],
         protected_citation_spans: &std::collections::BTreeMap<String, Vec<legal_layout::ScalarRange>>,
-        include_audit: bool,
+        part: &dyn Fn(&legal_layout::Line) -> usize,
         place: &dyn Fn(&str, usize, usize) -> Option<crate::ScalarRange>,
     ) -> NotePairing;
     /// The numbering runs in `text`: its counts of numbers, letters and bullets, and the provision

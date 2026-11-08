@@ -31,7 +31,6 @@ fn pair_numbered_footnotes<'py>(
     }
     let output = PyDict::new(py);
     output.set_item("notes", notes)?;
-    output.set_item("labels_candidates", result.labels_candidates)?;
     output.set_item("pages", result.pages)?;
     Ok(output)
 }

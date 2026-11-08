@@ -666,7 +666,7 @@ fn notes_of(lines: &[Line<'_>], zones: &[Vec<Zone>], pages: &[(usize, usize)]) -
         let unit = |scalars: usize| line.body.chars().take(scalars).map(char::len_utf16).sum::<usize>();
         Some(ScalarRange { start: origin + unit(start), end: origin + unit(end) })
     };
-    let pairing = pair_footnotes(&laid, &protected, false, &place);
+    let pairing = pair_footnotes(&laid, &protected, &|_| 0, &place);
     // Each note's calls, by its label's line.
     let references = pairing.notes.iter().filter_map(|note| {
         let line = note.line_ids.first()?.strip_prefix('l')?.parse::<usize>().ok()?;

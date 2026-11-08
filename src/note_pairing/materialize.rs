@@ -2,19 +2,21 @@
 
 use super::*;
 
+/// One part's pairs made notes, added to `pairing`'s: each note's id counts on from the notes before it, and its
+/// numbering's restart from `restarts`, the restarts of the parts before; the count of restarts after this part's.
 pub(super) fn materialize(
     pairs: Vec<Pair>,
     lines: &[PairLine<'_>],
-    pairing_summary: Option<Value>,
     place: &dyn Fn(&str, usize, usize) -> Option<ScalarRange>,
-) -> NotePairing {
+    restarts: usize,
+    pairing: &mut NotePairing,
+) -> usize {
     let continuation_pages: HashSet<u32> = lines
         .iter()
         .filter(|line| line.note_region_mode == "footnote_continuation")
         .map(|line| line.page)
         .collect();
-    let mut notes = Vec::new();
-    let mut diagnostics = Vec::new();
+    let mut last_restart = restarts;
     let observed_pair =
         |pair: &Pair| !pair.label.repaired && pair.refs.iter().any(|reference| !reference.repaired);
     // Count after detached-reference recovery, once per distinct numeric label.
@@ -58,14 +60,6 @@ pub(super) fn materialize(
             (observed && (typographic || note_region || corroborated) || label_only).then_some((pair, label_only))
         })
         .collect::<Vec<_>>();
-    let pairing_audit = pairing_summary.map(|mut summary| {
-        let markers = pair_markers(&pairs, lines);
-        refresh_summary(&mut summary, &markers);
-        PdfPairingAudit {
-            markers,
-            pairing_summary: summary,
-        }
-    });
     for (index, &(ref pair, label_only)) in pairs.iter().enumerate() {
         let label_line = &lines[pair.label.line];
         let next = pairs.get(index + 1).map(|(pair, _)| pair);
@@ -166,23 +160,25 @@ pub(super) fn materialize(
             .filter(|range| range.start < range.end)
             .collect();
         if pair.refs.is_empty() {
-            diagnostics.push(Diagnostic::new("FOOTNOTE_UNMATCHED_LABEL", Some(label_line.page_index)));
+            pairing.diagnostics.push(Diagnostic::new("FOOTNOTE_UNMATCHED_LABEL", Some(label_line.page_index)));
         }
         let kind = if pair.endnote { NodeKind::Endnote } else { NodeKind::Footnote };
         let range = ranges.first().zip(ranges.last()).map_or(ScalarRange { start: label_range.end, end: label_range.end },
             |(first, last)| ScalarRange { start: first.start, end: last.end });
-        let mut node = StructureNode::new(pair.pair_id.clone(), kind, range, NOTE_PAIRING_ORIGIN, Derivation::Heuristic, None);
+        let id = format!("fnv2-pair-LEGALPDF-document-{:06}", pairing.notes.len() + 1);
+        let mut node = StructureNode::new(id, kind, range, NOTE_PAIRING_ORIGIN, Derivation::Heuristic, None);
         node.ranges = ranges;
         node.line_ids = body_lines.iter().map(|line| line.id.clone()).collect();
         node.page_indexes = body_lines.iter().map(|line| line.page_index).collect::<BTreeSet<_>>().into_iter().collect();
         node.marker_range = Some(label_range);
         node.calls = calls;
         node.label = Some(format!("fn{display}"));
-        node.series = pair.restart_sequence.to_string();
+        last_restart = last_restart.max(restarts + pair.restart_sequence);
+        node.series = (restarts + pair.restart_sequence).to_string();
         if !pair.provenance.is_empty() {
             node.properties.insert("provenance".to_owned(), pair.provenance.clone());
         }
-        notes.push(node);
+        pairing.notes.push(node);
     }
-    NotePairing { notes, diagnostics, audit: pairing_audit }
+    last_restart
 }

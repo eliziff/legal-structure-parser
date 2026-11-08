@@ -426,7 +426,6 @@ pub(super) fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate], first_p
             symbol: token.symbol,
             form: token.form,
             score,
-            reason: "line_start_label",
             repaired: !junk_prefix.is_empty(),
             repair_kind: if junk_prefix.is_empty() {
                 ""
@@ -464,7 +463,6 @@ pub(super) fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate], first_p
                 split.observed = head.to_owned();
                 split.value = Some(head_value);
                 split.score -= 1.1;
-                split.reason = "glued_volume_split";
                 split.flags.volume_split = true;
                 candidates.push(split);
                 break;

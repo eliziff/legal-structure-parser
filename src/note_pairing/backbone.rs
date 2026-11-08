@@ -5,8 +5,7 @@ use super::*;
 pub(super) fn select_backbone(
     candidates: &[Candidate],
     lines: &[PairLine<'_>],
-    include_audit: bool,
-) -> (Vec<Candidate>, Option<Value>) {
+) -> Vec<Candidate> {
     let numeric = candidates
         .iter()
         .enumerate()
@@ -21,29 +20,14 @@ pub(super) fn select_backbone(
             })
         })
         .collect::<Vec<_>>();
-    let candidate_count = numeric.len();
-    if candidate_count == 0 {
-        return (
-            Vec::new(),
-            include_audit.then(|| json!({"candidate_count": 0})),
-        );
+    if numeric.is_empty() {
+        return Vec::new();
     }
-    let selected = select_numeric_sequence(numeric, NumericSequencePolicy::FootnoteBackbone);
-    let chain = selected
+    select_numeric_sequence(numeric, NumericSequencePolicy::FootnoteBackbone)
         .indices
         .into_iter()
         .map(|index| candidates[index].clone())
-        .collect::<Vec<_>>();
-    let diagnostic = include_audit.then(|| {
-        json!({
-            "candidate_count": candidate_count,
-            "selected_count": chain.len(),
-            "chain_score": (selected.score * 1_000.0).round_ties_even() / 1_000.0,
-            "first_value": chain.first().and_then(|candidate| candidate.value),
-            "last_value": chain.last().and_then(|candidate| candidate.value),
-        })
-    });
-    (chain, diagnostic)
+        .collect()
 }
 
 pub(super) fn trim_unsupported_tail(mut segment: Vec<Candidate>) -> Vec<Candidate> {
@@ -66,17 +50,15 @@ pub(super) fn trim_unsupported_tail(mut segment: Vec<Candidate>) -> Vec<Candidat
 pub(super) fn select_segments(
     candidates: &[Candidate],
     lines: &[PairLine<'_>],
-    include_audit: bool,
-) -> (Vec<Vec<Candidate>>, Option<Value>) {
+) -> Vec<Vec<Candidate>> {
     let mut remaining: Vec<Candidate> = candidates
         .iter()
         .filter(|candidate| candidate.value.is_some())
         .cloned()
         .collect();
     let mut segments: Vec<Vec<Candidate>> = Vec::new();
-    let mut diagnostics = include_audit.then(Vec::new);
     for _ in 0..6 {
-        let (chain, diagnostic) = select_backbone(&remaining, lines, include_audit);
+        let chain = select_backbone(&remaining, lines);
         if chain.is_empty() {
             break;
         }
@@ -106,17 +88,10 @@ pub(super) fn select_segments(
         }
         let used: HashSet<usize> = chain.iter().map(|candidate| candidate.line).collect();
         remaining.retain(|candidate| !used.contains(&candidate.line));
-        if let (Some(diagnostics), Some(diagnostic)) = (&mut diagnostics, diagnostic) {
-            diagnostics.push(diagnostic);
-        }
         segments.push(chain);
     }
     segments.sort_by_key(|segment| lines[segment[0].line].idx);
-    let count = segments.len();
-    (
-        segments,
-        diagnostics.map(|diagnostics| json!({"segments": diagnostics, "segment_count": count})),
-    )
+    segments
 }
 
 pub(super) fn endnote_mode(chain: &[Candidate], lines: &[PairLine<'_>]) -> bool {

@@ -5,15 +5,19 @@ use super::*;
 pub(super) fn build_pairs<'a>(
     pages: &'a [Page],
     protected_citation_spans: &'a BTreeMap<String, Vec<ScalarRange>>,
-    include_audit: bool,
-) -> (Vec<Pair>, Vec<PairLine<'a>>, Option<Value>) {
-    let lines = build_lines(pages, protected_citation_spans);
+    keep: &dyn Fn(&Line) -> bool,
+) -> (Vec<Pair>, Vec<PairLine<'a>>) {
+    let lines = build_lines(pages, protected_citation_spans, keep);
     // Source page numbers remain physical; introductory symbols belong to this document's start.
-    let first_page = pages.iter().map(|page| page.number).min().unwrap_or(1);
+    let first_page = pages
+        .iter()
+        .filter(|page| page.lines.iter().any(|line| keep(line)))
+        .map(|page| page.number)
+        .min()
+        .unwrap_or(1);
     let (refs, expected) = extract_refs(&lines);
     let labels = extract_labels(&lines, &refs, first_page);
-    let (segments, backbone_summary) = select_segments(&labels, &lines, include_audit);
-    let mut segments: Vec<Vec<Candidate>> = segments
+    let mut segments: Vec<Vec<Candidate>> = select_segments(&labels, &lines)
         .into_iter()
         .map(trim_unsupported_tail)
         .filter(|segment| !segment.is_empty())
@@ -23,13 +27,8 @@ pub(super) fn build_pairs<'a>(
         .flatten()
         .map(|candidate| candidate.line)
         .collect();
-    let mut sequence_holes = include_audit.then(Vec::<Value>::new);
     for segment in &mut segments {
-        let (repaired, holes) =
-            repair_gaps(std::mem::take(segment), &lines, &mut used, include_audit);
-        if let (Some(sequence_holes), Some(holes)) = (&mut sequence_holes, holes) {
-            sequence_holes.extend(holes);
-        }
+        let repaired = repair_gaps(std::mem::take(segment), &lines, &mut used);
         *segment = recover_out_of_order_labels(repaired, &labels, &mut used, &lines);
     }
     segments.retain(|segment| !segment.is_empty());
@@ -93,15 +92,8 @@ pub(super) fn build_pairs<'a>(
     let mut chosen_by_segment = Vec::<HashMap<u32, Candidate>>::new();
     let mut repeated_by_segment = Vec::<HashMap<u32, Vec<Candidate>>>::new();
     let mut suppressed = HashSet::<usize>::new();
-    let mut suppressed_reasons = HashMap::<usize, &'static str>::new();
-    let mut numbered_diagnostics = include_audit.then(Vec::<Value>::new);
-    let mut ref_drop_reasons = BTreeMap::<String, usize>::new();
-    let mut ref_repair_counts = BTreeMap::<String, usize>::new();
     for (segment_index, ((segment, pool), expected)) in segments.iter().zip(&pools).zip(&expected_pools).enumerate() {
-        let (mut chosen, drops) = select_refs(segment, pool, &lines, endnote);
-        for (reason, count) in drops {
-            *ref_drop_reasons.entry(reason).or_default() += count;
-        }
+        let mut chosen = select_refs(segment, pool, &lines, endnote);
         // The labels' references read as themselves in a third of the run at least: notes, not
         // numbered paragraphs, rows or fields that happen to find a number or two.
         let clean = chosen
@@ -109,25 +101,11 @@ pub(super) fn build_pairs<'a>(
             .filter(|candidate| !candidate.repaired)
             .count();
         let apparatus = clean >= 3 && 3 * clean >= segment.len();
-        for (kind, count) in repair_missing_refs(&mut chosen, segment, pool, expected, &lines, endnote) {
-                *ref_repair_counts.entry(kind).or_default() += count;
-            }
-        for (kind, count) in rekey_same_value_ref_runs(&mut chosen, segment, pool, &lines, endnote) {
-                *ref_repair_counts.entry(kind).or_default() += count;
-            }
-        let glyphs = repair_glyph_refs(&mut chosen, segment, &lines, endnote);
-        if glyphs > 0 {
-            *ref_repair_counts
-                .entry("glyph_sequence_repair".to_owned())
-                .or_default() += glyphs;
-        }
+        repair_missing_refs(&mut chosen, segment, pool, expected, &lines, endnote);
+        rekey_same_value_ref_runs(&mut chosen, segment, pool, &lines, endnote);
+        repair_glyph_refs(&mut chosen, segment, &lines, endnote);
         if apparatus {
-            let glyphs = repair_page_glyph_refs(&mut chosen, segment, pool, &lines, endnote);
-            if glyphs > 0 {
-                *ref_repair_counts
-                    .entry("page_glyph_repair".to_owned())
-                    .or_default() += glyphs;
-            }
+            repair_page_glyph_refs(&mut chosen, segment, pool, &lines, endnote);
         }
 
         let paren_count = segment
@@ -152,7 +130,6 @@ pub(super) fn build_pairs<'a>(
             });
             if !same_page {
                 suppressed.insert(segment_index);
-                suppressed_reasons.insert(segment_index, "paren_list_segment");
             }
         }
 
@@ -177,21 +154,8 @@ pub(super) fn build_pairs<'a>(
                 && noteish * 5 < segment.len()
                 && small * 5 < segment.len()
                 && segment_pages.len() * 10 >= article_pages.len() * 6;
-            if let Some(diagnostics) = &mut numbered_diagnostics {
-                diagnostics.push(json!({
-                    "segment_index": segment_index,
-                    "labels": segment.len(),
-                    "chosen_refs": chosen.len(),
-                    "noteish_labels": noteish,
-                    "small_font_labels": small,
-                    "segment_pages": segment_pages.len(),
-                    "article_pages": article_pages.len(),
-                    "suppressed": fired,
-                }));
-            }
             if fired {
                 suppressed.insert(segment_index);
-                suppressed_reasons.insert(segment_index, "numbered_paragraph_segment");
             }
         }
         repeated_by_segment.push(repeated_refs(&chosen, pool, &lines));
@@ -207,7 +171,6 @@ pub(super) fn build_pairs<'a>(
             ref_bearing_values.extend(segment.iter().filter_map(|candidate| candidate.value));
         }
     }
-    let mut duplicate_diagnostics = include_audit.then(Vec::<Value>::new);
     for (segment_index, (segment, chosen)) in segments.iter().zip(&chosen_by_segment).enumerate() {
         if suppressed.contains(&segment_index) || segment.len() < 10 || !chosen.is_empty() || banded(segment) {
             continue;
@@ -228,24 +191,11 @@ pub(super) fn build_pairs<'a>(
             && segment_pages.len() <= 2
             && values.is_subset(&ref_bearing_values)
             && segment.len() * 5 >= page_lines * 2;
-        if let Some(diagnostics) = &mut duplicate_diagnostics {
-            diagnostics.push(json!({
-                "segment_index": segment_index,
-                "labels": segment.len(),
-                "segment_pages": segment_pages.len(),
-                "page_lines": page_lines,
-                "values_covered": values.intersection(&ref_bearing_values).count(),
-                "values_total": values.len(),
-                "suppressed": fired,
-            }));
-        }
         if fired {
             suppressed.insert(segment_index);
-            suppressed_reasons.insert(segment_index, "duplicate_valueset_zero_ref_segment");
         }
     }
 
-    let mut body_restart_diagnostics = include_audit.then(Vec::<Value>::new);
     for (segment_index, (segment, chosen)) in segments.iter().zip(&chosen_by_segment).enumerate() {
         if segment_index == 0 || suppressed.contains(&segment_index) || segment.len() < 6 {
             continue;
@@ -264,27 +214,12 @@ pub(super) fn build_pairs<'a>(
             && values.is_subset(&ref_bearing_values)
             && chosen.len() * 3 <= segment.len()
             && (segment.len() - noteish) * 5 >= segment.len() * 3;
-        if let Some(diagnostics) = &mut body_restart_diagnostics {
-            diagnostics.push(json!({
-                "segment_index": segment_index,
-                "labels": segment.len(),
-                "chosen_refs": chosen.len(),
-                "noteish_labels": noteish,
-                "values_covered": values.intersection(&ref_bearing_values).count(),
-                "values_total": values.len(),
-                "suppressed": fired,
-            }));
-        }
         if fired {
             suppressed.insert(segment_index);
-            suppressed_reasons.insert(segment_index, "body_zone_restart_segment");
         }
     }
 
     let mut pairs = Vec::new();
-    let mut pair_number = 0;
-    let mut paired_count = 0;
-    let mut skipped = HashMap::<&'static str, usize>::new();
     for (segment_index, ((backbone, chosen), repeated)) in segments
         .iter()
         .zip(&chosen_by_segment)
@@ -292,47 +227,29 @@ pub(super) fn build_pairs<'a>(
         .enumerate()
     {
         if suppressed.contains(&segment_index) {
-            *skipped
-                .entry(
-                    suppressed_reasons
-                        .get(&segment_index)
-                        .copied()
-                        .unwrap_or("paren_list_segment"),
-                )
-                .or_default() += backbone.len();
             continue;
         }
         for (position, label) in backbone.iter().enumerate() {
             let value = label.value.expect("numeric backbone");
             let primary = chosen.get(&value).cloned();
             if primary.is_none() && !label_only_supported(backbone, position, &lines) {
-                *skipped.entry("unsupported_label_only").or_default() += 1;
                 continue;
             }
-            pair_number += 1;
             let primary_ref = primary
                 .as_ref()
                 .map(|reference| (reference.line, reference.start, reference.end));
             let mut refs = primary.into_iter().collect::<Vec<_>>();
             if !refs.is_empty() {
-                paired_count += 1;
                 refs.extend(repeated.get(&value).into_iter().flatten().cloned());
             }
             pairs.push(Pair {
                 label: label.clone(),
                 refs,
                 primary_ref,
-                previous_value: position
-                    .checked_sub(1)
-                    .and_then(|index| backbone[index].value),
-                next_value: backbone
-                    .get(position + 1)
-                    .and_then(|candidate| candidate.value),
                 restart_sequence: segment_index + 1,
                 // Count the whole run, including labels later omitted as unsupported.
                 sequence_labels: backbone.len(),
                 endnote,
-                pair_id: format!("fnv2-pair-LEGALPDF-document-{pair_number:06}"),
                 provenance: if label.repaired && label.repair_kind == "confusable_value_repair" {
                     "article_sequence_gap_glyph_repair"
                 } else {
@@ -375,12 +292,10 @@ pub(super) fn build_pairs<'a>(
         {
             continue;
         }
-        pair_number += 1;
         let primary_ref = reference
             .as_ref()
             .map(|candidate| (candidate.line, candidate.start, candidate.end));
         if let Some(reference) = &reference {
-            paired_count += 1;
             used_symbols.insert(reference.pos(&lines));
         }
         pairs.push(Pair {
@@ -388,64 +303,12 @@ pub(super) fn build_pairs<'a>(
             sequence_labels: 1,
             refs: reference.into_iter().collect(),
             primary_ref,
-            previous_value: None,
-            next_value: None,
             restart_sequence: 1,
             endnote: false,
-            pair_id: format!("fnv2-pair-LEGALPDF-document-{pair_number:06}"),
             provenance: "article_start_custom_symbol_label".to_owned(),
         });
     }
 
     pairs.sort_by_key(|pair| pair.label.pos(&lines));
-    let summary = include_audit.then(|| {
-        let marker_count = pairs.len() + pairs.iter().map(|pair| pair.refs.len()).sum::<usize>();
-        let label_only = pairs.len().saturating_sub(paired_count);
-        json!({
-        "schema_version": "oajd.footnote_pairing_v2.v1",
-        "engine": "tools.footnotes.footnote_pairing_v2",
-        "line_count": lines.len(),
-        "marker_count": marker_count,
-        "safe_marker_count": marker_count,
-        "role_counts": {
-            "fn_label": pairs.len(),
-            "fn_ref": pairs.iter().map(|pair| pair.refs.len()).sum::<usize>()
-        },
-        "pair_count": paired_count,
-        "materialized_pair_count": paired_count,
-        "materialized_label_only_count": label_only,
-        "pair_status_counts": {"paired": paired_count, "label_only": label_only},
-        "label_candidate_count": labels.len(),
-        "ref_candidate_count": refs.len(),
-        "article_footnote_pair_materialization": {
-            "materialized_marker_count": marker_count,
-            "materialized_pair_count": paired_count,
-            "materialized_label_only_count": label_only,
-            "endnote_mode": endnote,
-            "segment_count": segments.len(),
-            "skipped_marker_counts": skipped,
-            "numbered_paragraph_guard": numbered_diagnostics.expect("audit enabled"),
-            "duplicate_valueset_guard": duplicate_diagnostics.expect("audit enabled"),
-            "body_zone_restart_guard": body_restart_diagnostics.expect("audit enabled"),
-            "label_backbone": backbone_summary.expect("audit enabled"),
-            "sequence_holes": sequence_holes.expect("audit enabled"),
-            "monotone_ref_sequence": {"drop_reason_counts": ref_drop_reasons},
-            "ref_repair_counts": ref_repair_counts,
-        },
-        "workflow_stage_summary": {
-            "stages": [
-                "extract_candidates",
-                "label_backbone_dp",
-                "gap_glyph_repair",
-                "out_of_order_label_recovery",
-                "monotone_ref_assignment",
-                "ref_glyph_repair",
-                "false_positive_suppression",
-                "custom_symbol_pairs",
-                "materialize"
-            ]
-        },
-        })
-    });
-    (pairs, lines, summary)
+    (pairs, lines)
 }

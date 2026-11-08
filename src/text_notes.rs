@@ -76,7 +76,7 @@ pub(crate) fn text_note_blocks(
     };
     let at = |id: &str, offset: usize| starts.get(id).map(|(start, _)| start + offset);
     let place = |id: &str, start: usize, end: usize| Some(ScalarRange { start: at(id, start)?, end: at(id, end)? });
-    let pairing = pair_footnotes(std::slice::from_ref(&page), &protected, false, &place);
+    let pairing = pair_footnotes(std::slice::from_ref(&page), &protected, &|_| 0, &place);
     // Each paired note: its label, the start of its label's line, its number and its calls.
     let mut notes = pairing
         .notes
@@ -165,7 +165,6 @@ pub struct PairedFootnote {
 
 pub struct NumberedFootnotePairing {
     pub notes: Vec<PairedFootnote>,
-    pub labels_candidates: usize,
     pub pages: usize,
     /// Each page's printed label, by page index; none for matter before the first marker.
     pub page_labels: Vec<Option<String>>,
@@ -303,7 +302,7 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
         });
     }
     let place = |id: &str, start: usize, end: usize| placed.get(id).map(|&(at, ..)| ScalarRange { start: at + start, end: at + end });
-    let pairing = pair_footnotes(&built, &protected, true, &place);
+    let pairing = pair_footnotes(&built, &protected, &|_| 0, &place);
     let line_text: HashMap<&str, &str> = built.iter()
         .flat_map(|page| page.lines.iter().map(|line| (line.id.as_str(), line.text.as_str()))).collect();
     // The line a call stands on, and every note's calls on each line, in the line's characters.
@@ -325,8 +324,6 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
             previous_body.get(id).filter(|_| continues(id)).and_then(line),
             next_body.get(id).filter(|next| continues(next)).and_then(line))
     };
-    let summary = pairing.audit.as_ref().map(|audit| &audit.pairing_summary);
-    let count = |name: &str| summary.and_then(|summary| summary[name].as_u64()).unwrap_or(0) as usize;
     let notes = pairing
         .notes
         .iter()
@@ -344,7 +341,6 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
         })
         .collect::<Vec<_>>();
     NumberedFootnotePairing {
-        labels_candidates: count("label_candidate_count"),
         pages: built.len(),
         page_labels: labels,
         notes,

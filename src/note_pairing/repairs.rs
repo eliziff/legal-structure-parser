@@ -121,7 +121,6 @@ pub(super) fn gap_repair_claim(
             symbol: String::new(),
             form: "plain",
             score,
-            reason: "sequence_gap_glyph_repair",
             repaired: true,
             repair_kind,
             requires_visual_cue: false,
@@ -192,7 +191,6 @@ pub(super) fn sequence_position_rekey(
                 } else {
                     0.6
                 },
-                reason: "sequence_position_rekey",
                 repaired: true,
                 repair_kind: "sequence_position_rekey",
                 requires_visual_cue: false,
@@ -206,22 +204,13 @@ pub(super) fn repair_gaps(
     chain: Vec<Candidate>,
     lines: &[PairLine<'_>],
     used_lines: &mut HashSet<usize>,
-    include_audit: bool,
-) -> (Vec<Candidate>, Option<Vec<Value>>) {
+) -> Vec<Candidate> {
     if chain.is_empty() {
-        return (chain, include_audit.then(Vec::new));
+        return chain;
     }
     let mut windows = Vec::new();
-    let mut holes = include_audit.then(Vec::new);
     if chain[0].value.is_some_and(|value| (2..=9).contains(&value)) {
         windows.push((0, lines[chain[0].line].idx, 1, chain[0].value.unwrap() - 1));
-    } else if chain[0].value.is_some_and(|value| value > 9) {
-        if let Some(holes) = &mut holes {
-            holes.push(json!({
-                "values_before_first": chain[0].value.unwrap() - 1,
-                "reason": "chain_starts_above_one",
-            }));
-        }
     }
     for pair in chain.windows(2) {
         let left = pair[0].value.unwrap();
@@ -295,21 +284,8 @@ pub(super) fn repair_gaps(
                 .filter(|value| unclaimed.contains(value))
                 .collect();
             let rekeyed = sequence_position_rekey(&interval, &residual, lines, used_lines);
-            if rekeyed.is_empty() {
-                if let Some(holes) = &mut holes {
-                    for value in residual {
-                        holes.push(json!({
-                            "value": value,
-                            "reason": "no_confusable_glyph_in_window",
-                        }));
-                    }
-                }
-            } else {
-                for candidate in &rekeyed {
-                    if let Some(value) = candidate.value {
-                        unclaimed.remove(&value);
-                    }
-                }
+            for value in rekeyed.iter().filter_map(|candidate| candidate.value) {
+                unclaimed.remove(&value);
             }
             repairs.extend(rekeyed);
         }
@@ -317,7 +293,7 @@ pub(super) fn repair_gaps(
     let mut result = chain;
     result.extend(repairs);
     result.sort_by_key(|candidate| candidate.value);
-    (result, holes)
+    result
 }
 
 pub(super) fn note_zone_column_split(lines: &[PairLine<'_>], page: u32) -> Option<f64> {
@@ -514,8 +490,7 @@ pub(super) fn repair_missing_refs(
     expected: &[Candidate],
     lines: &[PairLine<'_>],
     endnote: bool,
-) -> BTreeMap<String, usize> {
-    let mut repair_counts = BTreeMap::<String, usize>::new();
+) {
     let labels: HashMap<u32, &Candidate> = backbone
         .iter()
         .filter_map(|candidate| candidate.value.map(|value| (value, candidate)))
@@ -574,7 +549,7 @@ pub(super) fn repair_missing_refs(
             let candidate = substitution_sites[0];
             (candidate.line, candidate.start, candidate.end)
         });
-        let mut best: Option<(f64, Candidate, &'static str)> = None;
+        let mut best: Option<(f64, Candidate)> = None;
         for candidate in refs {
             if !candidate.symbol.is_empty()
                 || candidate.value.is_none()
@@ -627,7 +602,7 @@ pub(super) fn repair_missing_refs(
                 repaired.repair_kind = repair_kind;
                 repaired.score -= 0.8;
             }
-            best = Some((score, repaired, repair_kind));
+            best = Some((score, repaired));
         }
         if lines[label.line].in_note_band() {
             let label_page = lines[label.line].page;
@@ -644,16 +619,14 @@ pub(super) fn repair_missing_refs(
                 if score <= 0.0 || best.as_ref().is_some_and(|prior| prior.0 >= score) {
                     continue;
                 }
-                best = Some((score, candidate.clone(), "expected_reference"));
+                best = Some((score, candidate.clone()));
             }
         }
-        if let Some((_, candidate, repair_kind)) = best {
+        if let Some((_, candidate)) = best {
             taken.insert((candidate.line, candidate.start, candidate.end));
             chosen.insert(value, candidate);
-            *repair_counts.entry(repair_kind.to_owned()).or_default() += 1;
         }
     }
-    repair_counts
 }
 
 /// The stray glyphs a line's text could have made of a small raised number: one to three marks
@@ -702,7 +675,7 @@ pub(super) fn repair_glyph_refs(
     backbone: &[Candidate],
     lines: &[PairLine<'_>],
     endnote: bool,
-) -> usize {
+) {
     let label_lines: HashSet<usize> = backbone.iter().map(|candidate| candidate.line).collect();
     let mut values: Vec<u32> = backbone
         .iter()
@@ -710,7 +683,6 @@ pub(super) fn repair_glyph_refs(
         .collect();
     values.sort_unstable();
     values.dedup();
-    let mut repaired = 0;
     let mut index = 0;
     while index < values.len() {
         if chosen.contains_key(&values[index]) {
@@ -780,17 +752,14 @@ pub(super) fn repair_glyph_refs(
                     symbol: String::new(),
                     form: "glyph",
                     score: 0.5,
-                    reason: "glyph_sequence_marker",
                     repaired: true,
                     repair_kind: "glyph_sequence_repair",
                     requires_visual_cue: false,
                     flags: CandidateFlags::default(),
                 },
             );
-            repaired += 1;
         }
     }
-    repaired
 }
 
 /// A footnote's reference stands on its label's page. On each page, the notes with no reference
@@ -804,9 +773,9 @@ pub(super) fn repair_page_glyph_refs(
     pool: &[Candidate],
     lines: &[PairLine<'_>],
     endnote: bool,
-) -> usize {
+) {
     if endnote {
-        return 0;
+        return;
     }
     let label_lines: HashSet<usize> = backbone.iter().map(|candidate| candidate.line).collect();
     let mut missing_by_page = BTreeMap::<u32, Vec<u32>>::new();
@@ -822,7 +791,6 @@ pub(super) fn repair_page_glyph_refs(
         .values()
         .map(|candidate| (candidate.line, candidate.start))
         .collect();
-    let mut repaired = 0;
     for (page, mut missing) in missing_by_page {
         missing.sort_unstable();
         missing.dedup();
@@ -912,18 +880,15 @@ pub(super) fn repair_page_glyph_refs(
                         symbol: String::new(),
                         form: "glyph",
                         score: 0.5,
-                        reason: "page_glyph_marker",
                         repaired: true,
                         repair_kind: "page_glyph_repair",
                         requires_visual_cue: false,
                         flags: CandidateFlags::default(),
                     },
                 );
-                repaired += 1;
             }
         }
     }
-    repaired
 }
 
 pub(super) fn rekey_same_value_ref_runs(
@@ -932,8 +897,7 @@ pub(super) fn rekey_same_value_ref_runs(
     refs: &[Candidate],
     lines: &[PairLine<'_>],
     endnote: bool,
-) -> BTreeMap<String, usize> {
-    let mut repair_counts = BTreeMap::<String, usize>::new();
+) {
     let labels: HashMap<u32, &Candidate> = backbone
         .iter()
         .filter_map(|candidate| candidate.value.map(|value| (value, candidate)))
@@ -1026,10 +990,6 @@ pub(super) fn rekey_same_value_ref_runs(
             candidate.value = Some(value);
             chosen.insert(value, candidate);
             taken.insert(key, value);
-            *repair_counts
-                .entry("sequence_position_rekey".to_owned())
-                .or_default() += 1;
         }
     }
-    repair_counts
 }

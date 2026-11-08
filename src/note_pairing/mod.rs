@@ -1,14 +1,12 @@
 use legal_citations::cues;
 use legal_citations::cues::is_counter_noun as counter_noun;
 use legal_structure_model::layout::{self, line_font_size, DetachedReference, Diagnostic, Line, Page, ScalarRange};
-use legal_structure_model::PdfPairingAudit;
 use legal_structure_model::{Derivation, NodeKind, NotePairing, ScalarRange, StructureNode, NOTE_PAIRING_ORIGIN};
 use crate::{select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy};
 use legal_structure_model::{
     normalize_decimal_digit, normalize_note_symbol, ScalarText,
 };
 use regex::Regex;
-use serde_json::{json, Map, Value};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Deref;
@@ -26,8 +24,6 @@ mod repairs;
 use repairs::*;
 mod build;
 use build::*;
-mod markers;
-use markers::*;
 mod materialize;
 use materialize::*;
 
@@ -124,7 +120,6 @@ struct Candidate {
     symbol: String,
     form: &'static str,
     score: f64,
-    reason: &'static str,
     repaired: bool,
     repair_kind: &'static str,
     requires_visual_cue: bool,
@@ -152,12 +147,9 @@ struct Pair {
     label: Candidate,
     refs: Vec<Candidate>,
     primary_ref: Option<(usize, usize, usize)>,
-    previous_value: Option<u32>,
-    next_value: Option<u32>,
     restart_sequence: usize,
     sequence_labels: usize,
     endnote: bool,
-    pair_id: String,
     provenance: String,
 }
 
@@ -333,10 +325,11 @@ fn median(values: Vec<f64>) -> Option<f64> {
 fn build_lines<'a>(
     pages: &'a [Page],
     protected_citation_spans: &'a BTreeMap<String, Vec<ScalarRange>>,
+    keep: &dyn Fn(&Line) -> bool,
 ) -> Vec<PairLine<'a>> {
     let mut source: Vec<(&Page, &Line)> = pages
         .iter()
-        .flat_map(|page| page.lines.iter().map(move |line| (page, line)))
+        .flat_map(|page| page.lines.iter().filter(move |line| keep(line)).map(move |line| (page, line)))
         .collect();
     source.sort_by(|(left_page, left_line), (right_page, right_line)| {
         left_page
@@ -435,13 +428,22 @@ fn build_lines<'a>(
 }
 
 /// A laid-out document's notes paired with their calls, each a node placed in the reader's text by `place` (a line's id
-/// and a range of its characters), with what the pairing found wanting.
+/// and a range of its characters), with what the pairing found wanting. The lines of each `part` (a constituent document
+/// or language) are paired on their own, the parts in their order: the notes' ids count on across them, and so do their
+/// numberings' restarts. The notes come in the order their labels stand in the reader's text.
 pub fn pair_footnotes(
     pages: &[Page],
     protected_citation_spans: &BTreeMap<String, Vec<ScalarRange>>,
-    include_audit: bool,
+    part: &dyn Fn(&Line) -> usize,
     place: &dyn Fn(&str, usize, usize) -> Option<ScalarRange>,
 ) -> NotePairing {
-    let (pairs, lines, summary) = build_pairs(pages, protected_citation_spans, include_audit);
-    materialize(pairs, &lines, summary, place)
+    let parts: BTreeSet<usize> = pages.iter().flat_map(|page| &page.lines).map(part).collect();
+    let mut pairing = NotePairing { notes: Vec::new(), diagnostics: Vec::new() };
+    let mut restarts = 0;
+    for each in parts {
+        let (pairs, lines) = build_pairs(pages, protected_citation_spans, &|line| part(line) == each);
+        restarts = materialize(pairs, &lines, place, restarts, &mut pairing);
+    }
+    pairing.notes.sort_by_key(|note| note.marker_range.map_or((usize::MAX, 0), |label| (label.start, label.end)));
+    pairing
 }

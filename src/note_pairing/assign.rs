@@ -21,8 +21,7 @@ pub(super) fn select_refs(
     refs: &[Candidate],
     lines: &[PairLine<'_>],
     endnote: bool,
-) -> (HashMap<u32, Candidate>, BTreeMap<String, usize>) {
-    let mut drop_reasons = BTreeMap::<String, usize>::new();
+) -> HashMap<u32, Candidate> {
     let labels: HashMap<u32, &Candidate> = backbone
         .iter()
         .filter_map(|candidate| candidate.value.map(|value| (value, candidate)))
@@ -37,15 +36,9 @@ pub(super) fn select_refs(
             continue;
         };
         if label_spans.contains(&(candidate.line, candidate.start)) {
-            *drop_reasons
-                .entry("is_selected_label_span".to_owned())
-                .or_default() += 1;
             continue;
         }
         let Some(label) = labels.get(&value) else {
-            *drop_reasons
-                .entry("no_selected_label".to_owned())
-                .or_default() += 1;
             continue;
         };
         let table_superscript = candidate.form == "sup"
@@ -60,9 +53,6 @@ pub(super) fn select_refs(
                 lines[label.line].text.chars().count(),
             );
             if !visual_label_cue(&label_body) {
-                *drop_reasons
-                    .entry("visual_zone_without_visual_label_cue".to_owned())
-                    .or_default() += 1;
                 continue;
             }
         }
@@ -173,16 +163,7 @@ pub(super) fn select_refs(
         result.insert(value.value, refs[value.reference].clone());
         tail = value.parent;
     }
-    for value in labels.keys() {
-        if !result.contains_key(value) {
-            if let Some(count) = candidates_by_value.get(value).map(Vec::len) {
-                *drop_reasons
-                    .entry("window_conflict".to_owned())
-                    .or_default() += count;
-            }
-        }
-    }
-    (result, drop_reasons)
+    result
 }
 
 pub(super) fn repeated_refs(
