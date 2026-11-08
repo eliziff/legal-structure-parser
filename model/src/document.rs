@@ -39,6 +39,16 @@ impl NodeKind {
         Self::ALL.into_iter().find(|kind| kind.name() == name)
     }
 
+    /// The prefix the kind gives every label of it: "page702", "par12", "fn3"; none for the rest.
+    pub fn label_prefix(self) -> &'static str {
+        match self {
+            Self::Page => "page",
+            Self::Paragraph | Self::Quote | Self::Prose => "par",
+            Self::Footnote | Self::Endnote => "fn",
+            _ => "",
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Paragraph => "paragraph",
@@ -233,13 +243,7 @@ impl StructureNode {
     /// The label as the document prints it, past the prefix its kind gives every label: "page702" is 702, "par12" 12,
     /// "fn3" 3; empty where there is none.
     pub fn printed_label(&self) -> &str {
-        let prefix = match self.kind {
-            NodeKind::Page => "page",
-            NodeKind::Paragraph | NodeKind::Quote | NodeKind::Prose => "par",
-            NodeKind::Footnote | NodeKind::Endnote => "fn",
-            _ => "",
-        };
-        self.label.as_deref().map_or("", |label| label.strip_prefix(prefix).unwrap_or(label))
+        self.label.as_deref().map_or("", |label| label.strip_prefix(self.kind.label_prefix()).unwrap_or(label))
     }
 }
 
