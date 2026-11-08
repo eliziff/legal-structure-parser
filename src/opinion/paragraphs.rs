@@ -58,10 +58,9 @@ pub(super) fn settle(paragraphs: &mut Vec<StructureNode>, headings: &[StructureN
 
 /// Paragraph numbers the text prints but the markup does not mark ("¶ 12", "{12}", "[12]", "12.").
 pub(super) fn number_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
-    let mut paragraphs = &mut kinds.paragraphs;
-
     join_block_counters(structure, kinds);
-    numbers_off_titles(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    numbers_off_titles(structure, kinds);
+    let paragraphs = &mut kinds.paragraphs;
     let coordinates = ScalarText::new(&structure.text);
     // A quotation's numbers are the quotation's.
     let openings = paragraphs.iter().enumerate().filter(|(_, paragraph)| !(paragraph.kind == NodeKind::Quote)).filter_map(|(index, paragraph)| {
@@ -100,8 +99,8 @@ pub(super) fn number_paragraphs(structure: &mut DocumentStructure, kinds: &mut K
 /// The lines past the last numbered paragraph that went out of the paragraphs as the opinion's foot, "[¶ 16.] GILBERTSON, Chief
 /// Justice, concurs.": a line that prints the number due is that paragraph, whatever else it says.
 fn closing_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut notes = &mut kinds.notes;
+    let paragraphs = &mut kinds.paragraphs;
+    let notes = &mut kinds.notes;
     const LEAST: usize = 3;
     if numbers_held(paragraphs) < LEAST {
         return;
@@ -170,7 +169,7 @@ fn numbers_held(paragraphs: &[StructureNode]) -> usize {
 /// A better reading replaces a worse one. A number of ours that stands between its new neighbours may stay: the reading can
 /// have passed over its paragraph. One out of its order was a misreading: "[110]" where the opinion prints "[¶ 10]".
 fn take_numbers(kinds: &mut Kinds, mut taken: Vec<(usize, u32)>) {
-    let mut paragraphs = &mut kinds.paragraphs;
+    let paragraphs = &mut kinds.paragraphs;
     taken.sort_unstable();
     for index in 0..paragraphs.len() {
         let at = taken.partition_point(|entry| entry.0 < index);
@@ -191,7 +190,7 @@ fn take_numbers(kinds: &mut Kinds, mut taken: Vec<(usize, u32)>) {
 /// An opinion numbered throughout under a scanner: "[11] [T2] [13] [14]" is 1, 2, 3, 4. Walked from 1, each paragraph tried for
 /// the one number due. A count that climbs by ones over most of the opinion is no accident, however its marks were read.
 fn walk_scanned_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
+    let paragraphs = &mut kinds.paragraphs;
 
     const LEAST: usize = 4;
     /// How many marks in a row the walk may find past reading.
@@ -221,8 +220,8 @@ fn walk_scanned_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 
 /// Numbers another rendition prints where ours lost them, from the rendition that prints the most, each on the paragraph its
 /// words open. A rendition whose words mostly fall in no paragraph of ours is reading something else, its notes as like as not.
-fn numbers_from_elsewhere(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
-    let mut paragraphs = &mut kinds.paragraphs;
+fn numbers_from_elsewhere(_structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
+    let paragraphs = &mut kinds.paragraphs;
 
     const LEAST: usize = 3;
     const REACH: usize = 40;
@@ -248,8 +247,8 @@ fn numbers_from_elsewhere(structure: &mut DocumentStructure, kinds: &mut Kinds, 
 
 /// Every paragraph that opens on a list's label keeps it, numbered run or not.
 fn list_labels(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut notes = &mut kinds.notes;
+    let paragraphs = &mut kinds.paragraphs;
+    let notes = &mut kinds.notes;
 
     static LABEL: OnceLock<Regex> = OnceLock::new();
     // A block's counter may stand ahead of the label: "6\n(A) verify the wages".
@@ -272,7 +271,7 @@ fn list_labels(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 
 /// A block's counter split from its words, a paragraph of "57" alone: it opens the paragraph after it.
 fn join_block_counters(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
+    let paragraphs = &mut kinds.paragraphs;
 
     let bare = {
         let coordinates = ScalarText::new(&structure.text);
@@ -290,8 +289,8 @@ fn join_block_counters(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 /// numbered sentence whose number the paragraphs either side leave open, "6. Robert Poe is the Chairman.", is no title at all;
 /// an outline's "3. The Order Was Proper." sits among paragraphs numbered in their own right.
 fn numbers_off_titles(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut headings = &mut kinds.headings;
+    let paragraphs = &mut kinds.paragraphs;
+    let headings = &mut kinds.headings;
     let coordinates = ScalarText::new(&structure.text);
     let opening = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
     let plain_numbers = paragraphs.iter().filter_map(|paragraph| text::paragraph_marker(opening(paragraph)).filter(|(_, family)| *family == 4).map(|(number, _)| number)).collect::<HashSet<_>>();
@@ -329,7 +328,7 @@ fn numbers_off_titles(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 /// without its first digit fits the one before, and the next fits it, as printed or fused alike. A printed "¶ 17" is no such
 /// thing: a separate opinion may open at it.
 fn pilcrow_read_as_one(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
+    let paragraphs = &mut kinds.paragraphs;
     let printed = {
         let coordinates = ScalarText::new(&structure.text);
         paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map_or(false, |opening| trim_js(opening).trim_start_matches(['[', '{']).starts_with('¶'))).collect::<Vec<_>>()
@@ -350,7 +349,7 @@ fn pilcrow_read_as_one(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 
 /// A number left alone by the title it stood on belongs to the text under the title, unless that has its own.
 fn carry_title_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
+    let paragraphs = &mut kinds.paragraphs;
 
     let coordinates = ScalarText::new(&structure.text);
     let bare = paragraphs.iter().enumerate().filter(|(_, paragraph)| paragraph.label.is_some()).filter(|(_, paragraph)| {
@@ -367,8 +366,8 @@ fn carry_title_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 
 /// In an opinion that numbers its paragraphs a number its neighbours contradict was misread: "1, 2, 8, 4" is 3, and "1, 3, 2, 4" two
 /// marks swapped. The neighbours say so only where they run by ones either side.
-fn misread_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
+fn misread_numbers(_structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let paragraphs = &mut kinds.paragraphs;
     let mut numbered = paragraphs.iter().enumerate().filter_map(|(index, paragraph)| Some((index, paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()?.parse::<u32>().ok()?))).collect::<Vec<_>>();
     if numbered.len() * 2 < paragraphs.len() {
         return;
@@ -390,7 +389,7 @@ fn misread_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 /// Where a number due next stands in a block's course after a finished sentence, "... complaints. ¶21 On appeal", a new
 /// paragraph opens. It is due while the numbered paragraphs that follow have not printed it.
 fn split_numbered_blocks(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
+    let paragraphs = &mut kinds.paragraphs;
     let number_of = |paragraph: &StructureNode| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref().and_then(|number| number.parse::<u32>().ok());
     if paragraphs.iter().filter(|paragraph| number_of(paragraph).is_some()).count() < 3 {
         return;
@@ -461,7 +460,7 @@ fn scanned_number(opening: &str, low: u32, high: u32) -> Option<u32> {
 
 /// A number the reader passed over inside a run: "1, 2, 4" where the paragraph between them opens "3.".
 pub(super) fn fill_skipped_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
+    let paragraphs = &mut kinds.paragraphs;
 
     let coordinates = ScalarText::new(&structure.text);
     let numbered = paragraphs.iter().enumerate().filter_map(|(index, paragraph)| Some((index, paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()?.parse::<u32>().ok()?))).collect::<Vec<_>>();
@@ -538,9 +537,9 @@ pub(super) fn lettered_paragraphs(openings: &[(usize, &str)], numbered: &HashMap
 /// Short lines set in a sentence's course are the margin's: an old report's catchwords, read into the column. The
 /// sentence then rejoins over them, as it does over a page's turn.
 pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut notes = &mut kinds.notes;
-    let mut headings = &mut kinds.headings;
+    let paragraphs = &mut kinds.paragraphs;
+    let notes = &mut kinds.notes;
+    let headings = &mut kinds.headings;
 
     let coordinates = ScalarText::new(&structure.text);
     let printed = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
@@ -578,7 +577,7 @@ pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure, kinds: &mut K
 
 /// Paragraphs that hold no words: a rule, or a page mark's whole block once it has gone.
 pub(super) fn drop_empty_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
+    let paragraphs = &mut kinds.paragraphs;
 
     let coordinates = ScalarText::new(&structure.text);
     let spoken = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).is_some_and(|text| text.chars().any(|c| c.is_alphanumeric() || c == '*'));
@@ -589,8 +588,8 @@ pub(super) fn drop_empty_paragraphs(structure: &mut DocumentStructure, kinds: &m
 /// Who speaks each paragraph of an exchange. "Q." and "A." count only where a record has several of each, since "A." is
 /// also an outline's letter.
 pub(super) fn speakers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut headings = &mut kinds.headings;
+    let paragraphs = &mut kinds.paragraphs;
+    let headings = &mut kinds.headings;
 
     static LABEL: OnceLock<Regex> = OnceLock::new();
     let label = LABEL.get_or_init(|| Regex::new(r"^(Q\.|A\.|THE COURT:|The Court:|THE WITNESS:|The Witness:|M(?:R|S|RS)\.\s+\p{Lu}[\p{Lu}'’-]+:)\s").unwrap());
@@ -616,9 +615,9 @@ pub(super) fn speakers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 
 /// A concurrence or dissent that opens inside a flat body, on a line of its own: "SMITH, J., dissenting.".
 pub(super) fn separate_parts(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut headings = &mut kinds.headings;
-    let mut parts = &mut kinds.parts;
+    let paragraphs = &mut kinds.paragraphs;
+    let headings = &mut kinds.headings;
+    let parts = &mut kinds.parts;
     /// A writing's opening line, its joiners named, runs no longer than this.
     const LINE_LONG: usize = 460;
     /// How much of a line's text the opening's tests read.

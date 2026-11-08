@@ -60,8 +60,8 @@ pub(super) fn classed_front(structure: &DocumentStructure, coordinates: &ScalarT
 /// a sentence if it is long, or its words run lower-case; a line that says what it is keeps that role, and a court or a party
 /// named in running words is the opinion speaking.
 pub(super) fn head_lines(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut headings = &mut kinds.headings;
+    let paragraphs = &mut kinds.paragraphs;
+    let headings = &mut kinds.headings;
 
     const SENTENCE_WORDS: usize = 14;
     // How far down a byline can stand and still close a head.
@@ -125,9 +125,9 @@ pub(super) fn head_lines(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 /// What the reporter added among the paragraphs: "NOTE.—", "Held:", a bracketed statement of the case over the opinion;
 /// and the opinion's last words, its disposition and signing.
 pub(super) fn reporter_matter(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut notes = &mut kinds.notes;
-    let mut headings = &mut kinds.headings;
+    let paragraphs = &mut kinds.paragraphs;
+    let notes = &mut kinds.notes;
+    let headings = &mut kinds.headings;
 
     static NOTE: OnceLock<Regex> = OnceLock::new();
     static HELD: OnceLock<Regex> = OnceLock::new();
@@ -336,7 +336,7 @@ pub(super) fn name_dates(front: &mut [FrontLine]) {
 /// A cover's summary over a text: what a board's decision prints between "Decided by Board" and the charge, and what an
 /// Office of Legal Counsel opinion prints over its memorandum.
 pub(super) fn cover_matter(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
+    let paragraphs = &mut kinds.paragraphs;
     static BOARD: OnceLock<Regex> = OnceLock::new();
     static CHARGE: OnceLock<Regex> = OnceLock::new();
     static MEMORANDUM: OnceLock<Regex> = OnceLock::new();
@@ -388,8 +388,8 @@ pub(super) fn embedded_topics(markup: &str) -> Vec<OpinionHeadnote> {
 
 /// A syllabus or headnotes the source does not mark: the paragraphs under a heading of that name.
 pub(super) fn divisions_of_headnotes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut headings = &mut kinds.headings;
+    let paragraphs = &mut kinds.paragraphs;
+    let headings = &mut kinds.headings;
 
     static NAME: OnceLock<Regex> = OnceLock::new();
     let name = NAME.get_or_init(|| Regex::new(r"(?i)^(?:syllabus(?: by the court)?|headnotes?|digest|note|synopsis)\.?$").unwrap());
@@ -456,7 +456,7 @@ pub(super) fn titled_digest(text: &str) -> Option<(&'static str, String)> {
 
 /// Bracketed headnote numbers opening a paragraph, which no count of paragraphs took: Lawbox's "[1, 2]".
 pub(super) fn printed_headnote_marks(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
+    let paragraphs = &mut kinds.paragraphs;
 
     static MARK: OnceLock<Regex> = OnceLock::new();
     let mark = MARK.get_or_init(|| Regex::new(r"^\[(\d{1,3}(?:\s*[-–,]\s*\d{1,3})*)\]").unwrap());

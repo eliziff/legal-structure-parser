@@ -129,7 +129,7 @@ const PAGE_TEXT: usize = 400;
 /// on page 580 of 78 N.M. The head matter's first block is on the case's first page, which its citation names; with no head
 /// matter the opinion's first leaf stands for it, the pages reckoned and said to be. With no printed citation they stay leaves.
 pub(super) fn leaves_to_pages(kinds: &mut Kinds, record: &OpinionRecord) {
-    let mut pages = &mut kinds.pages;
+    let pages = &mut kinds.pages;
     static BLOCK: OnceLock<Regex> = OnceLock::new();
     let leaves = pages.iter().enumerate().filter(|(_, page)| page.grammar.as_deref() == Some("pgmap")).filter_map(|(at, page)| Some((at, page_number(&page.printed_label())?))).collect::<Vec<_>>();
     let Some(first) = leaves.iter().map(|leaf| leaf.1).min() else { return };
@@ -164,7 +164,7 @@ pub(super) fn leaves_to_pages(kinds: &mut Kinds, record: &OpinionRecord) {
 /// "*Page 169". A framed form says what it is; bare stars must run, and a bare "(642)" or "[522]" run from the first pages
 /// of one of the case's printed citations.
 pub(super) fn printed_page_marks(structure: &mut DocumentStructure, kinds: &mut Kinds, citations: &[OpinionCitation]) {
-    let mut pages = &mut kinds.pages;
+    let pages = &mut kinds.pages;
 
     static MARK: OnceLock<Regex> = OnceLock::new();
     let held = pages.iter().filter_map(|page| page.series.strip_prefix("reporter-")?.parse::<usize>().ok()).collect::<HashSet<_>>();
@@ -294,7 +294,7 @@ fn own_count(series: &str) -> bool {
 /// A numbering climbs. Marks of one source's numbering that run apart from its longest run, "364 365 366 697 367", are a
 /// second printing if one of the case's citations opens there; otherwise strays, as a rendition's closing "*Page 264" is.
 fn separate_printings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut pages = &mut kinds.pages;
+    let pages = &mut kinds.pages;
 
     const STEP: u32 = 3;
     let names = pages.iter().map(|page| page.series.clone()).filter(|series| !own_count(series) && !series.ends_with("-b")).collect::<HashSet<_>>();
@@ -348,8 +348,6 @@ const BOOK_MARGIN: u32 = 30;
 /// other is the citation that opens nearest below its first page, Lexis's and Westlaw's star numbers aside, which count
 /// from 1. Pages before the first mark open on that citation's page. Without the table, the head's own citation lines.
 pub(super) fn page_series(structure: &mut DocumentStructure, kinds: &mut Kinds, record: &OpinionRecord) {
-    let mut pages = &mut kinds.pages;
-
     static OWN: OnceLock<Regex> = OnceLock::new();
     if structure.opinion.as_ref().unwrap().citations.is_empty() {
         let own = OWN.get_or_init(|| Regex::new(r"^(\d{1,4})\s+(\D.*?)\s(\d{1,5})\b").unwrap());
@@ -358,7 +356,8 @@ pub(super) fn page_series(structure: &mut DocumentStructure, kinds: &mut Kinds, 
             Some(OpinionCitation { volume: capture[1].to_owned(), reporter: capture[2].to_owned(), page: capture[3].to_owned(), kind: String::new() })
         }).collect();
     }
-    separate_printings(structure, kinds); pages = &mut kinds.pages;
+    separate_printings(structure, kinds);
+    let pages = &mut kinds.pages;
     // Harvard files a case under the book it scanned, "law.free.cap.us.476/426.12567.json", and its marks are that book's unless
     // another citation fits them far better: "nys.138/212" holds the marks of 78 Misc. 264 from 266.
     static SCANNED: OnceLock<Regex> = OnceLock::new();

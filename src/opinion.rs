@@ -457,8 +457,8 @@ fn section_title(title: &str) -> bool {
 
 /// A paragraph of ours that opens on a title another rendition marks has that title at its head, or is that title.
 fn take_marked_titles(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut headings = &mut kinds.headings;
+    let paragraphs = &mut kinds.paragraphs;
+    let headings = &mut kinds.headings;
     if pending.marked_titles.is_empty() {
         return;
     }
@@ -498,7 +498,7 @@ fn take_marked_titles(structure: &mut DocumentStructure, kinds: &mut Kinds, pend
 /// title. A title compares by its words alone, without a page mark at its head or a note's call at its tail, and may stand in two
 /// headings here, "IV." over "Conclusion". Of those not held, the words that stand in this text are titles missed.
 fn witness_headings(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
-    let mut headings = &mut kinds.headings;
+    let headings = &mut kinds.headings;
 
     let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
     // A title's paragraph or outline number stays off it here: a rendition may print the mark inside what it marks.
@@ -526,7 +526,7 @@ fn in_their_order(places: Vec<Option<usize>>) -> Vec<Option<usize>> {
 /// do, else reckoned by number between the pages either side. A mark that joins no run of the numbering, like the "*Page 1"
 /// some renditions close on, is held as a stray: printed, and no page of the run.
 fn place_by_number(structure: &mut DocumentStructure, kinds: &mut Kinds, series: &str, labels: Vec<String>) {
-    let mut pages = &mut kinds.pages;
+    let pages = &mut kinds.pages;
 
     let held = |pages: &[StructureNode]| pages.iter().filter(|page| page.series == series).filter_map(|page| Some((page_number(&page.printed_label())?, page.range.start))).collect::<Vec<_>>();
     let mut known = held(&*pages).into_iter().map(|page| page.0).collect::<HashSet<_>>();
@@ -566,7 +566,7 @@ fn place_by_number(structure: &mut DocumentStructure, kinds: &mut Kinds, series:
 /// The numbering a plain text prints on its pages, where the markup chosen has lost it: each page placed in our text by the
 /// words it opens on.
 fn supply_plain_pages(structure: &mut DocumentStructure, kinds: &mut Kinds, plain: &str, page_count: Option<u32>) {
-    let mut pages = &mut kinds.pages;
+    let pages = &mut kinds.pages;
     const SHINGLE: usize = 5;
     let plain_pages = text::read(plain, page_count).kinds.pages.into_iter().filter(|page| page.series != "sheet").collect::<Vec<_>>();
     if plain_pages.is_empty() || plain_pages.iter().any(|page| pages.iter().any(|ours| ours.series == page.series)) {
@@ -1132,8 +1132,8 @@ fn note_paragraphs_elsewhere(pending: &mut Pending, name: &str, other: &Document
 /// Item by item, what another rendition offers against the finished structure. Text counts as not held only in a run of words none
 /// of which stand in ours: a scanner's slips break a run long before that.
 fn witness_union(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending, text: &HashSet<String>) {
-    let mut pages = &mut kinds.pages;
-    let mut paragraphs = &mut kinds.paragraphs;
+    let pages = &mut kinds.pages;
+    let paragraphs = &mut kinds.paragraphs;
 
     const TEXT_RUN: usize = 40;
     let held_pages = pages.iter().filter(|page| page.grammar.as_deref() != Some("stray")).map(|page| page.printed_label()).collect::<HashSet<_>>();
@@ -1177,7 +1177,7 @@ fn witness_union(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: 
 /// Each other rendition that sets paragraphs at all against ours. One with under half our count has lost its breaks and says
 /// nothing of ours.
 fn witness_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
-    let mut paragraphs = &mut kinds.paragraphs;
+    let paragraphs = &mut kinds.paragraphs;
 
     let coordinates = ScalarText::new(&structure.text);
     let ours = paragraphs.iter().filter_map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end)).filter_map(opening_words).collect::<HashSet<_>>();
@@ -1357,7 +1357,7 @@ fn supply_head(structure: &mut DocumentStructure, other: &DocumentStructure) {
 /// What the readings leave to do, in order: each step needs the ones before it.
 /// A block one rendition sets as a quotation is one in the union, whichever text is read.
 fn quotes_from_elsewhere(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
-    let mut paragraphs = &mut kinds.paragraphs;
+    let paragraphs = &mut kinds.paragraphs;
     if pending.quoted_elsewhere.is_empty() {
         return;
     }
@@ -1370,8 +1370,8 @@ fn quotes_from_elsewhere(structure: &mut DocumentStructure, kinds: &mut Kinds, p
 
 /// A note found late, by answering its call, can still stand among the paragraphs: its words belong to the note.
 fn notes_out_of_the_body(kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut notes = &mut kinds.notes;
+    let paragraphs = &mut kinds.paragraphs;
+    let notes = &mut kinds.notes;
 
     /// How much of a paragraph must lie in notes for it to be theirs, in fifths.
     const MOSTLY: usize = 4;
@@ -1387,7 +1387,7 @@ fn notes_out_of_the_body(kinds: &mut Kinds) {
 /// Another rendition's marks set ahead of the opinion's first words, "*508" in a heading our text does not hold, were estimated at
 /// its start and named no page. The one just below the first mark placed is the page the opinion opens on; any before it, strays.
 fn opening_from_other_renditions(kinds: &mut Kinds) {
-    let mut pages = &mut kinds.pages;
+    let pages = &mut kinds.pages;
 
     let from_elsewhere = pages.iter().filter(|page| page.grammar.as_deref() == Some("other-rendition")).map(|page| page.series.clone()).collect::<HashSet<_>>();
     for series in from_elsewhere {
@@ -1427,8 +1427,8 @@ fn finish(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pe
 
 /// Marks placed from other renditions fall in notes too, and a note's page says nothing of the opinion's.
 fn flag_pages_in_notes(kinds: &mut Kinds) {
-    let mut pages = &mut kinds.pages;
-    let mut notes = &mut kinds.notes;
+    let pages = &mut kinds.pages;
+    let notes = &mut kinds.notes;
 
     let mut ranges = notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
     ranges.sort_by_key(|note| note.start);
@@ -1440,7 +1440,7 @@ fn flag_pages_in_notes(kinds: &mut Kinds) {
 /// An opinion-only rendition marks the case's first page where the opinion opens, past the marks another carried through the
 /// head: 739, 740, 738, 741. Lower than all before it and the run going straight on after it, it heads the text.
 fn opening_page_first(kinds: &mut Kinds) {
-    let mut pages = &mut kinds.pages;
+    let pages = &mut kinds.pages;
 
     let mut lowered = false;
     let series = pages.iter().enumerate().filter(|(_, page)| !page.properties.contains_key("in_note") && page.series.starts_with("reporter")).fold(BTreeMap::<&str, Vec<(usize, u32)>>::new(), |mut all, (index, page)| {
@@ -1499,9 +1499,9 @@ fn close_pages(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 }
 
 fn tidy_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut notes = &mut kinds.notes;
-    let mut headings = &mut kinds.headings;
+    let paragraphs = &mut kinds.paragraphs;
+    let notes = &mut kinds.notes;
+    let headings = &mut kinds.headings;
 
     let note_ranges = notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
     settle(&mut *paragraphs, &*headings, &note_ranges);
@@ -1515,9 +1515,8 @@ fn tidy_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending
 }
 
 fn label_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut notes = &mut kinds.notes;
-
-    share_note_calls(structure, kinds); notes = &mut kinds.notes;
+    share_note_calls(structure, kinds);
+    let notes = &mut kinds.notes;
     // Notes a source left unlabelled and unnumbered are numbered as they stand.
     if notes.iter().all(|note| note.printed_label().is_empty()) {
         for (index, note) in notes.iter_mut().enumerate() {
@@ -1533,8 +1532,8 @@ fn label_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 
 /// Each heading's words and level: a family of enumerators keeps its level, a new one goes under the last.
 fn title_headings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut notes = &mut kinds.notes;
-    let mut headings = &mut kinds.headings;
+    let notes = &mut kinds.notes;
+    let headings = &mut kinds.headings;
 
     let mut calls = notes.iter().flat_map(|note| note.calls.iter().copied()).collect::<Vec<_>>();
     calls.sort_by_key(|call| call.start);
@@ -1567,7 +1566,7 @@ fn title_headings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 
 /// A heading's words decide last: a mark, a rule, a list's title or a contents line is none.
 fn sift_headings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut headings = &mut kinds.headings;
+    let headings = &mut kinds.headings;
 
     for heading in std::mem::take(headings) {
         let range = Some(ScalarRange { start: heading.range.start, end: heading.range.end });
@@ -1587,9 +1586,7 @@ fn sift_headings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 /// What is read from the finished text and paragraphs.
 fn read_the_text(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     let mut paragraphs = &mut kinds.paragraphs;
-    let mut notes = &mut kinds.notes;
-    let mut headings = &mut kinds.headings;
-    let mut parts = &mut kinds.parts;
+    let notes = &mut kinds.notes;
 
     let searched = paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end))
         .chain(notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end)))).collect::<Vec<_>>();
@@ -1598,7 +1595,9 @@ fn read_the_text(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     structure.opinion.as_mut().unwrap().instruments = instruments(&structure.text, &*paragraphs);
     
     let gaps = record_gaps(structure, kinds);
-    paragraphs = &mut kinds.paragraphs; headings = &mut kinds.headings; parts = &mut kinds.parts;
+    paragraphs = &mut kinds.paragraphs;
+    let headings = &mut kinds.headings;
+    let parts = &mut kinds.parts;
     structure.opinion.as_mut().unwrap().record_gaps = gaps;
     structure.opinion.as_mut().unwrap().document_kind = document_kind(&structure.text).to_owned();
     // Blocks past the last paragraph, or lines of the foot, may carry the order the paragraphs do not.
@@ -1620,11 +1619,11 @@ const CALL_AT_FOOT: usize = 120;
 
 /// The lead numbering's page of everything found, its pins in every numbering, and each paragraph's part.
 fn place_on_pages(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut pages = &mut kinds.pages;
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut notes = &mut kinds.notes;
-    let mut headings = &mut kinds.headings;
-    let mut parts = &mut kinds.parts;
+    let pages = &mut kinds.pages;
+    let paragraphs = &mut kinds.paragraphs;
+    let notes = &mut kinds.notes;
+    let headings = &mut kinds.headings;
+    let parts = &mut kinds.parts;
 
     let of_the_opinion = |page: &&StructureNode| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray");
     let mut counts = HashMap::<&str, usize>::new();

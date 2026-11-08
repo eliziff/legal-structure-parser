@@ -189,8 +189,8 @@ pub(super) fn heading_line(body: &str, set_apart: bool) -> bool {
 /// not well founded. The fact is ...". Roman numerals running on from block to block say what they are; each title is its
 /// block's first sentence.
 pub(super) fn enumerated_titles(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut headings = &mut kinds.headings;
+    let paragraphs = &mut kinds.paragraphs;
+    let headings = &mut kinds.headings;
     const TITLE_WORDS: usize = 16;
     static OPENING: OnceLock<Regex> = OnceLock::new();
     let opening = OPENING.get_or_init(|| Regex::new(r"^\s*([IVXLC]{1,6})\.\s+\p{Lu}").unwrap());
@@ -219,8 +219,8 @@ pub(super) fn enumerated_titles(structure: &mut DocumentStructure, kinds: &mut K
 
 /// Bracketed lines of one form with no text between them are a list's items: a title has a section under it.
 pub(super) fn list_items(kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut headings = &mut kinds.headings;
+    let paragraphs = &mut kinds.paragraphs;
+    let headings = &mut kinds.headings;
 
     // An outline numbers with a stop, "I." over "A."; a list with a bracket, "(a)", "d)", "6)".
     static ITEM: OnceLock<Regex> = OnceLock::new();
