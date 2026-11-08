@@ -845,7 +845,7 @@ pub struct QuoteBlockInput {
 }
 
 /// How a source's locators are read: a provider's text by every block its structure labels; a PDF by what it prints,
-/// its numbered paragraphs, provisions and page numbers; a statute's PDF with its provisions as its print reads them.
+/// its numbered paragraphs, provisions and page numbers; a statute's PDF likewise, its provisions the parse's sections.
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum QuoteSource {
@@ -855,14 +855,12 @@ pub enum QuoteSource {
 }
 
 /// Prepare quotation locators from the document's own reflected structure. A PDF uses the
-/// paragraph numbers it prints, its provisions (`provisions`, a statute's as its print reads them)
-/// and the page numbers it prints, front matter's and every sequence's as printed; a PDF that
-/// prints no page numbers, its PDF pages.
+/// paragraph numbers it prints, its sections and the page numbers it prints, front matter's and
+/// every sequence's as printed; a PDF that prints no page numbers, its PDF pages.
 pub fn document_quote_blocks(
     document: &legal_structure_model::DocumentStructure,
     query: &legal_document_query::DocumentQuery,
     source: QuoteSource,
-    provisions: Option<Vec<QuoteBlockInput>>,
 ) -> Vec<QuoteBlockInput> {
     let pdf = source != QuoteSource::Text;
     use legal_structure::parse_ordinal;
@@ -893,8 +891,6 @@ pub fn document_quote_blocks(
         }).collect::<Vec<_>>();
         printed.sort_by_key(|block| (block.start, block.end));
     }
-    let statute = provisions.is_some();
-    printed.extend(provisions.unwrap_or_default());
     let numbered_pages = pdf && blocks.iter().any(|block| block.kind == NodeKind::Page && !block.aliases.is_empty());
     static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:paras?\.?|par|¶){JS_WHITESPACE_CLASS}*([0-9])")).unwrap());
     static PAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:pages?|pp?\.?){JS_WHITESPACE_CLASS}*([0-9])")).unwrap());
@@ -903,7 +899,7 @@ pub fn document_quote_blocks(
         let (kind, prefix) = match block.kind {
             NodeKind::Paragraph if !pdf => (QuoteBlockKind::Paragraph, &*PARAGRAPH),
             NodeKind::Page => (QuoteBlockKind::Page, &*PAGE),
-            NodeKind::Section if !statute => (QuoteBlockKind::Section, &*SECTION),
+            NodeKind::Section => (QuoteBlockKind::Section, &*SECTION),
             _ => return None,
         };
         // A page is the number it prints, where the PDF prints them; a page printing none is no locator then.

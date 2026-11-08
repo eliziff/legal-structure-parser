@@ -37,22 +37,6 @@ fn titled_around_references_once(text: &str) -> bool {
     titled
 }
 
-/// A title set apart in bold can also name a case by its parties ("R. v. Stone and
-/// Automatons"), when it carries no citation the citation grammar finds and does not end
-/// in a page number, as a contents entry or a cited page does.
-pub fn styled_heading_text_plausible(value: &str) -> bool {
-    let text = value.trim();
-    heading_text_plausible(text)
-        || (text
-            .starts_with(|character: char| character.is_alphabetic() && character.is_uppercase())
-            && !text.ends_with(',')
-            && !text
-                .rsplit(char::is_whitespace)
-                .next()
-                .is_some_and(|word| word.chars().all(|character| character.is_ascii_digit()))
-            && title_cased(text.split_whitespace())
-            && crate::analysis::citation_spans(text).is_empty())
-}
 
 fn title_cased<'a>(words: impl Iterator<Item = &'a str>) -> bool {
     let lettered = words

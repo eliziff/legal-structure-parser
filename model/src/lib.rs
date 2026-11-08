@@ -223,6 +223,8 @@ pub fn provision_locator(value: &str, level: usize) -> &'static str {
         "article"
     } else if value.starts_with("part") {
         "part"
+    } else if value.starts_with("div") {
+        "division"
     } else if value.starts_with("sched") {
         "schedule"
     } else if value.starts_with("exh") {
@@ -239,15 +241,6 @@ pub fn provision_locator(value: &str, level: usize) -> &'static str {
 }
 
 impl UnitRole {
-    /// The kind of node the unit is.
-    pub fn node_kind(self) -> NodeKind {
-        match self {
-            Self::Paragraph => NodeKind::Paragraph,
-            Self::Section => NodeKind::Section,
-            Self::Item => NodeKind::ListItem,
-        }
-    }
-
     /// The kind a numbering's family fixes, read on a marker's label, as the structure gold's
     /// numbering rule does: numbers, decimals ("1.01") and bare capitals ("A." recitals) are the
     /// document's own numbered paragraphs; letters, roman numerals, bullets and a bracketed capital
