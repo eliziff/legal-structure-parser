@@ -131,10 +131,9 @@ fn closing_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 /// already hold stays out. Ahead of the first paragraph only running prose counts: a reader can find its first paragraph late,
 /// and a caption's lines are no prose.
 pub(super) fn hold_leftovers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
     const WORDS: usize = 4;
     const PROSE_WORDS: usize = 15;
-    let Some(first) = paragraphs.iter().map(|paragraph| paragraph.range.start).min() else { return };
+    let Some(first) = kinds.paragraphs.iter().map(|paragraph| paragraph.range.start).min() else { return };
     static BLANK: OnceLock<Regex> = OnceLock::new();
     let blank = BLANK.get_or_init(|| Regex::new(r"\n[ \t]*\n").unwrap());
     let plain = structure.opinion.as_ref().unwrap().rendition == "plain_text.txt";
@@ -158,8 +157,8 @@ pub(super) fn hold_leftovers(structure: &mut DocumentStructure, kinds: &mut Kind
         }
     }
     if !found.is_empty() {
-        paragraphs.append(&mut found);
-        paragraphs.sort_by_key(|paragraph| paragraph.range.start);
+        kinds.paragraphs.append(&mut found);
+        kinds.paragraphs.sort_by_key(|paragraph| paragraph.range.start);
     }
 }
 
