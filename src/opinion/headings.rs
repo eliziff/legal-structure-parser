@@ -196,7 +196,7 @@ pub(super) fn enumerated_titles(layer: &mut OpinionLayer) {
     let mut run = Vec::new();
     let mut next = None;
     for (index, paragraph) in layer.paragraphs.iter().enumerate() {
-        let Some(raw) = coordinates.slice_utf16(paragraph.start..paragraph.end) else { continue };
+        let Some(raw) = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end) else { continue };
         let Some(number) = opening.captures(raw).and_then(|capture| page_number(&capture[1])) else { continue };
         if next.is_none_or(|next| next == number) {
             next = Some(number + 1);
@@ -210,8 +210,8 @@ pub(super) fn enumerated_titles(layer: &mut OpinionLayer) {
     }
     for (index, length) in run {
         let paragraph = &mut layer.paragraphs[index];
-        layer.headings.push(OpinionHeading { text: String::new(), level: 0, start: paragraph.start, end: paragraph.start + length, page: None, source: "run-in", line: 0, pins: Vec::new() });
-        paragraph.start += length;
+        layer.headings.push(read_heading(paragraph.range.start, paragraph.range.start + length, "run-in"));
+        paragraph.range.start += length;
     }
 }
 
@@ -224,9 +224,9 @@ pub(super) fn list_items(layer: &mut OpinionLayer) {
     let mut listed = vec![false; layer.headings.len()];
     for at in 1..layer.headings.len() {
         let (before, heading) = (&layer.headings[at - 1], &layer.headings[at]);
-        let after = layer.paragraphs.partition_point(|paragraph| paragraph.start <= before.start);
-        let adjacent = layer.paragraphs.get(after).is_none_or(|paragraph| paragraph.start >= heading.start);
-        if adjacent && family(&before.text).is_some() && family(&before.text) == family(&heading.text) {
+        let after = layer.paragraphs.partition_point(|paragraph| paragraph.range.start <= before.start);
+        let adjacent = layer.paragraphs.get(after).is_none_or(|paragraph| paragraph.range.start >= heading.range.start);
+        if adjacent && family(&before.text).is_some() && family(&before.text) == family(&heading.display_value.as_deref().unwrap_or("")) {
             listed[at - 1] = true;
             listed[at] = true;
         }
@@ -236,13 +236,13 @@ pub(super) fn list_items(layer: &mut OpinionLayer) {
     layer.headings.retain(|heading| {
         index += 1;
         if listed[index - 1] {
-            items.push(OpinionParagraph { continues: false, item: None, number: None, start: heading.start, end: heading.end, page: None, quote: false, part: None, speaker: None, pins: Vec::new() });
+            items.push(read_paragraph(heading.range.start, heading.range.end, None));
         }
         !listed[index - 1]
     });
     if !items.is_empty() {
         layer.paragraphs.append(&mut items);
-        layer.paragraphs.sort_by_key(|paragraph| paragraph.start);
+        layer.paragraphs.sort_by_key(|paragraph| paragraph.range.start);
     }
 }
 

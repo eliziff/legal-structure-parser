@@ -173,6 +173,12 @@ pub struct StructureNode {
     /// the slip opinion's (`slip`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub series: String,
+    /// Where a note is called: each mark in the text that points to it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<ScalarRange>,
+    /// Where the node stands in each of the document's page numberings: "226 La." at 123, running to 124.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pins: Vec<crate::opinion::Pin>,
     /// What a reader knows of the node past its kind and place, each under the reader's own name: a paragraph's list
     /// item or speaker.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -224,8 +230,22 @@ impl StructureNode {
             grammar: None,
             proof: None,
             series: String::new(),
+            calls: Vec::new(),
+            pins: Vec::new(),
             properties: BTreeMap::new(),
         }
+    }
+
+    /// The label as the document prints it, past the prefix its kind gives every label: "page702" is 702, "par12" 12,
+    /// "fn3" 3; empty where there is none.
+    pub fn printed_label(&self) -> &str {
+        let prefix = match self.kind {
+            NodeKind::Page => "page",
+            NodeKind::Paragraph | NodeKind::Quote | NodeKind::Prose => "par",
+            NodeKind::Footnote | NodeKind::Endnote => "fn",
+            _ => "",
+        };
+        self.label.as_deref().map_or("", |label| label.strip_prefix(prefix).unwrap_or(label))
     }
 }
 

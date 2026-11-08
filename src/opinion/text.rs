@@ -278,9 +278,9 @@ fn heads_pages(chain: &Chain) -> bool {
 #[derive(Default)]
 pub(super) struct Reading {
     pub pages: Vec<StructureNode>,
-    pub paragraphs: Vec<OpinionParagraph>,
-    pub notes: Vec<OpinionNote>,
-    pub headings: Vec<OpinionHeading>,
+    pub paragraphs: Vec<StructureNode>,
+    pub notes: Vec<StructureNode>,
+    pub headings: Vec<StructureNode>,
     pub furniture: Vec<ScalarRange>,
     pub front: Vec<FrontLine>,
     pub tables: Vec<OpinionTable>,
@@ -620,7 +620,7 @@ fn fill_skips(lines: &[Line<'_>], masked: &[bool], pages: &[(usize, usize)], zon
     }
 }
 
-fn notes_of(lines: &[Line<'_>], zones: &[Vec<Zone>], pages: &[(usize, usize)]) -> Vec<OpinionNote> {
+fn notes_of(lines: &[Line<'_>], zones: &[Vec<Zone>], pages: &[(usize, usize)]) -> Vec<StructureNode> {
     let in_zone = zones.iter().flatten().flat_map(|zone| zone.lines.iter().copied()).collect::<HashSet<_>>();
     let mut protected = BTreeMap::new();
     let laid = pages.iter().enumerate().map(|(page_index, &(from, to))| {
@@ -663,7 +663,7 @@ fn notes_of(lines: &[Line<'_>], zones: &[Vec<Zone>], pages: &[(usize, usize)]) -
         Some((line, claim.reference_anchors.iter()
             .filter_map(|anchor| place(&anchor.line_id, anchor.start, anchor.end)).collect::<Vec<_>>()))
     }).collect::<HashMap<_, _>>();
-    let mut notes = Vec::<OpinionNote>::new();
+    let mut notes = Vec::<StructureNode>::new();
     for (index, zone) in zones.iter().enumerate().flat_map(|(page, zones)| zones.iter().map(move |zone| (page, zone))) {
         let first = lines[zone.lines[0]].body_range();
         let last = lines[*zone.lines.last().unwrap()].body_range();
@@ -685,13 +685,10 @@ fn notes_of(lines: &[Line<'_>], zones: &[Vec<Zone>], pages: &[(usize, usize)]) -
                         Some(ScalarRange { start, end: start + utf16_len(&number.to_string()) })
                     }));
                 }
-                notes.push(OpinionNote {
-                    items: Vec::new(), label: zone.symbol.clone().unwrap_or_else(|| number.to_string()), start: first.start, end: last.end, ranges: vec![ScalarRange { start: first.start, end: last.end }],
-                    references: called, page: None, called_outside: false, pins: Vec::new(),
-                });
+                notes.push(read_note(zone.symbol.clone().unwrap_or_else(|| number.to_string()), first.start, last.end, vec![ScalarRange { start: first.start, end: last.end }], called));
             }
             None => if let Some(note) = notes.last_mut() {
-                note.end = last.end;
+                note.range.end = last.end;
                 note.ranges.push(ScalarRange { start: first.start, end: last.end });
             },
         }
@@ -979,8 +976,8 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
     let tables = table_runs.iter().map(|&(first, last)| OpinionTable { start: lines[first].start, end: lines[last].body_range().end, page: None }).collect();
     let in_table = |at: usize| table_runs.iter().any(|&(first, last)| first <= at && at <= last);
 
-    let mut paragraphs = Vec::<OpinionParagraph>::new();
-    let mut headings = Vec::<OpinionHeading>::new();
+    let mut paragraphs = Vec::<StructureNode>::new();
+    let mut headings = Vec::<StructureNode>::new();
     let mut previous: Option<usize> = None;
     // A number on a section's title belongs to the text under it: "¶3   I. BACKGROUND".
     let mut carried: Option<u32> = None;
@@ -998,10 +995,11 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
             let title = past_marker(line.body);
             if !title.is_empty() && !title.chars().any(char::is_lowercase) && heading_line(title, true) {
                 let start = range.end - utf16_len(title);
-                headings.push(OpinionHeading { text: String::new(), level: 0, start, end: range.end, page: None, source: "layout", line: at, pins: Vec::new() });
+                headings.push(read_heading(start, range.end, "layout"));
+                heading_line = Some(at);
                 // With a number of its own on the next line, it keeps this one where it stands.
                 if body.get(position + 1).is_some_and(|next| numbered.contains_key(next)) {
-                    paragraphs.push(OpinionParagraph { continues: false, item: None, number: Some(number.to_string()), start: range.start, end: start, page: None, quote: false, part: None, speaker: None, pins: Vec::new() });
+                    paragraphs.push(read_paragraph(range.start, start, Some(number.to_string())));
                 } else {
                     carried = Some(number);
                 }
@@ -1018,14 +1016,15 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
         let isolated = line.width() * 10 < width * 6 && before.is_none_or(|p| p + 1 < at || ended_sentence(lines[p].body)) && !ended_sentence(line.body);
         let apart = centered(line) || isolated || section;
         if !numbered.contains_key(&at) && (stands || isolated || section || centered(line)) && heading_line(line.body, apart) && (!in_head || title_line(line.body)) {
-            match headings.last_mut().filter(|heading| before == Some(heading.line) && centered(line)) {
-                Some(heading) => { heading.end = range.end; heading.line = at; }
+            match headings.last_mut().filter(|_| before.is_some() && before == heading_line && centered(line)) {
+                Some(heading) => { heading.range.end = range.end; heading_line = Some(at); }
                 None => {
                     // A title's first line, broken at a comma, read as text.
                     let first = before.filter(|&p| lines[p].body.ends_with(',') && lines[p].indent == line.indent)
-                        .filter(|&p| paragraphs.last().is_some_and(|last| last.start == lines[p].body_range().start && last.end == lines[p].body_range().end));
-                    let start = if first.is_some() { paragraphs.pop().map_or(range.start, |last| last.start) } else { range.start };
-                    headings.push(OpinionHeading { text: String::new(), level: 0, start, end: range.end, page: None, source: "layout", line: at, pins: Vec::new() });
+                        .filter(|&p| paragraphs.last().is_some_and(|last| last.range.start == lines[p].body_range().start && last.range.end == lines[p].body_range().end));
+                    let start = if first.is_some() { paragraphs.pop().map_or(range.start, |last| last.range.start) } else { range.start };
+                    headings.push(read_heading(start, range.end, "layout"));
+                    heading_line = Some(at);
                 }
             }
             previous = None;
@@ -1049,16 +1048,16 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
         let quote = line.indent >= base + 4 && !centered(line) && line.width() <= width;
         match paragraphs.last_mut().filter(|_| !opens) {
             Some(paragraph) => {
-                paragraph.end = range.end;
-                paragraph.quote &= quote;
+                paragraph.range.end = range.end;
+                (paragraph.kind == NodeKind::Quote) &= quote;
             }
-            None => paragraphs.push(OpinionParagraph { continues: false, item: None, number: number.map(|number| number.to_string()), start: range.start, end: range.end, page: None, quote: quote && number.is_none(), part: None, speaker: None, pins: Vec::new() }),
+            None => paragraphs.push({ let mut paragraph = read_paragraph(range.start, range.end, number.map(|number| number.to_string())); paragraph.kind = if quote && number.is_none() { NodeKind::Quote } else { NodeKind::Paragraph }; paragraph }),
         }
         previous = Some(at);
     }
     // A title with no text under it is a name at the foot of the opinion.
-    let last_text = paragraphs.last().map_or(0, |paragraph| paragraph.end);
-    headings.retain(|heading| heading.start < last_text);
+    let last_text = paragraphs.last().map_or(0, |paragraph| paragraph.range.end);
+    headings.retain(|heading| heading.range.start < last_text);
     Reading { pages, paragraphs, notes, headings, furniture, front, tables }
 }
 

@@ -14,7 +14,7 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
         *counts.entry(word).or_default() += 1;
     }
     let mut cuts = Vec::new();
-    for mark in layer.pages.iter().filter(|page| page.source() != "furniture").filter_map(|page| page.marker_range) {
+    for mark in layer.pages.iter().filter(|page| page.grammar.as_deref() != Some("furniture")).filter_map(|page| page.marker_range) {
         let before = (0..4).find_map(|short| coordinates.slice_utf16(mark.start.saturating_sub(40 - short)..mark.start)).unwrap_or("");
         let after = (0..4).find_map(|short| coordinates.slice_utf16(mark.end..(mark.end + 40 - short).min(end))).unwrap_or("");
         let left = before.trim_end_matches(javascript_whitespace);
@@ -85,7 +85,7 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
     }
     // A note's call is out of the words too, its place kept: "defendant7 s" reads "defendant s", the note still called there.
     if layer.rendition != "plain_text.txt" {
-        for call in layer.notes.iter().flat_map(|note| note.references.iter()).map(|call| (call.start, call.end)).chain(layer.unmatched_calls.iter().map(|call| (call.start, call.end))) {
+        for call in layer.notes.iter().flat_map(|note| note.calls.iter()).map(|call| (call.start, call.end)).chain(layer.unmatched_calls.iter().map(|call| (call.start, call.end))) {
             if call.1 > call.0 && call.1 - call.0 <= 8 {
                 cuts.push(Cut { start: call.0, end: call.1, keep: "" });
             }
@@ -137,14 +137,14 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
         numbers.iter_mut().for_each(|number| number.1 = moved(number.1));
     }
     for paragraph in &mut layer.paragraphs {
-        (paragraph.start, paragraph.end) = (moved(paragraph.start), moved(paragraph.end));
+        (paragraph.range.start, paragraph.range.end) = (moved(paragraph.range.start), moved(paragraph.range.end));
     }
     for note in &mut layer.notes {
-        (note.start, note.end) = (moved(note.start), moved(note.end));
-        note.ranges.iter_mut().chain(note.references.iter_mut()).for_each(span);
+        (note.range.start, note.range.end) = (moved(note.range.start), moved(note.range.end));
+        note.ranges.iter_mut().chain(note.calls.iter_mut()).for_each(span);
     }
     for heading in &mut layer.headings {
-        (heading.start, heading.end) = (moved(heading.start), moved(heading.end));
+        (heading.range.start, heading.range.end) = (moved(heading.range.start), moved(heading.range.end));
     }
     for headnote in &mut layer.headnotes {
         if let Some(range) = &mut headnote.range { span(range); }
@@ -153,7 +153,7 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
         (mark.start, mark.end) = (moved(mark.start), moved(mark.end));
     }
     for part in &mut layer.parts {
-        (part.start, part.end) = (moved(part.start), moved(part.end));
+        (part.range.start, part.range.end) = (moved(part.range.start), moved(part.range.end));
     }
     for line in &mut layer.front {
         if let Some(range) = &mut line.range { span(range); }

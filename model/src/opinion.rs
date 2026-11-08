@@ -1,10 +1,8 @@
 //! A court opinion's readings that are no node of it: the printings its pages belong to, where each passage stands in each,
 //! its outcome, the quotations, terms and documents it carries, and what the record shows is missing. Ranges are UTF-16 in
-//! the structure's text. The structure's nodes hold its pages, paragraphs, notes, headings, headnotes and parts.
+//! the structure's text. The structure's nodes hold its pages, paragraphs, notes, headings and parts.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-
 use crate::ScalarRange;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -17,10 +15,7 @@ pub struct OpinionReading {
     /// Each page numbering and the printing it belongs to.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub page_series: Vec<PageSeries>,
-    /// Each node's place in every numbering, by node id: a paragraph's, a heading's, a note's call's.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub pins: BTreeMap<String, Vec<Pin>>,
-    /// Headnotes the opinion's text does not carry: the cluster's, with their words alone.
+    /// The headnotes, syllabus points and summary paragraphs: where the text carries one, its place in it; the cluster's have their words alone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headnotes: Vec<OpinionHeadnote>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -197,7 +192,7 @@ pub struct PageSeries {
 }
 
 /// Where a passage falls in one numbering: "226 La." at 123, running to 124.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Pin {
     pub series: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

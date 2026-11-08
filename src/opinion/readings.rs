@@ -59,7 +59,7 @@ pub(super) fn defined_terms(text: &str, ranges: &[(usize, usize)]) -> Vec<Define
 }
 
 /// Each quotation, inline in double marks of two words or more or set as a block, with the marks an editor made in it.
-pub(super) fn quotations(text: &str, paragraphs: &[OpinionParagraph]) -> Vec<OpinionQuote> {
+pub(super) fn quotations(text: &str, paragraphs: &[StructureNode]) -> Vec<OpinionQuote> {
     static INLINE: OnceLock<Regex> = OnceLock::new();
     static MARK: OnceLock<Regex> = OnceLock::new();
     let inline = INLINE.get_or_init(|| Regex::new(r#"“[^“”]{3,}”|"[^"\n]{3,}""#).unwrap());
@@ -75,16 +75,16 @@ pub(super) fn quotations(text: &str, paragraphs: &[OpinionParagraph]) -> Vec<Opi
     }).collect::<Vec<_>>();
     let mut quotes = Vec::new();
     for paragraph in paragraphs {
-        let Some(raw) = coordinates.slice_utf16(paragraph.start..paragraph.end) else { continue };
-        if paragraph.quote {
-            quotes.push(OpinionQuote { block: true, start: paragraph.start, end: paragraph.end, marks: marks_of(raw, paragraph.start), page: None });
+        let Some(raw) = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end) else { continue };
+        if (paragraph.kind == NodeKind::Quote) {
+            quotes.push(OpinionQuote { block: true, start: paragraph.range.start, end: paragraph.range.end, marks: marks_of(raw, paragraph.range.start), page: None });
             continue;
         }
         for found in inline.find_iter(raw) {
             if found.as_str().split_whitespace().count() < 2 {
                 continue;
             }
-            let start = paragraph.start + utf16_len(&raw[..found.start()]);
+            let start = paragraph.range.start + utf16_len(&raw[..found.start()]);
             // The words after a quotation that say whose emphasis it is.
             let after = &raw[found.end()..];
             let tail = after.char_indices().nth(40).map_or(after.len(), |(at, _)| at);
@@ -98,7 +98,7 @@ pub(super) fn quotations(text: &str, paragraphs: &[OpinionParagraph]) -> Vec<Opi
 }
 
 /// Documents reproduced in the opinion: a lead-in that names one and the quoted passages after it.
-pub(super) fn instruments(text: &str, paragraphs: &[OpinionParagraph]) -> Vec<OpinionInstrument> {
+pub(super) fn instruments(text: &str, paragraphs: &[StructureNode]) -> Vec<OpinionInstrument> {
     static LEAD: OnceLock<Regex> = OnceLock::new();
     static KINDS: OnceLock<[(Regex, &'static str); 12]> = OnceLock::new();
     let lead = LEAD.get_or_init(|| Regex::new(r"(?i)(?:as follows|the following|in (?:relevant |pertinent )?part|reads?|provides?|provided|states?|stated|stating|exchange occurred|said|recites?|charged the jury)\b[^.]{0,60}:[”\x22]?$").unwrap());
@@ -119,10 +119,10 @@ pub(super) fn instruments(text: &str, paragraphs: &[OpinionParagraph]) -> Vec<Op
     let coordinates = ScalarText::new(text);
     let mut found = Vec::new();
     for (index, paragraph) in paragraphs.iter().enumerate() {
-        if paragraph.quote || !paragraphs.get(index + 1).is_some_and(|next| next.quote) {
+        if (paragraph.kind == NodeKind::Quote) || !paragraphs.get(index + 1).is_some_and(|next| next.quote) {
             continue;
         }
-        let printed = coordinates.slice_utf16(paragraph.start..paragraph.end).map(trim_js).unwrap_or("");
+        let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
         if !lead.is_match(printed) {
             continue;
         }
@@ -131,7 +131,7 @@ pub(super) fn instruments(text: &str, paragraphs: &[OpinionParagraph]) -> Vec<Op
         // "For the following reasons:" lists; only a lead-in that names a document, or says one speaks, brings one.
         let Some(kind) = kinds.iter().find(|(pattern, _)| pattern.is_match(sentence)).map(|(_, kind)| *kind)
             .or_else(|| sentence.contains(" provides").then_some("passage")).or_else(|| sentence.contains(" reads").then_some("passage")) else { continue };
-        found.push(OpinionInstrument { kind: kind.to_owned(), lead_in: squeezed(sentence), start: paragraphs[index + 1].start, end: last.end });
+        found.push(OpinionInstrument { kind: kind.to_owned(), lead_in: squeezed(sentence), start: paragraphs[index + 1].range.start, end: last.end });
     }
     found
 }
