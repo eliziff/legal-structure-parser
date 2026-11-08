@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) fn build_pairs<'a>(
     pages: &'a [Page],
-    protected_citation_spans: &'a BTreeMap<String, Vec<PdfSourceSpan>>,
+    protected_citation_spans: &'a BTreeMap<String, Vec<ScalarRange>>,
     include_audit: bool,
 ) -> (Vec<Pair>, Vec<PairLine<'a>>, Option<Value>) {
     let lines = build_lines(pages, protected_citation_spans);

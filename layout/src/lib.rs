@@ -278,12 +278,6 @@ impl Diagnostic {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PdfSourceSpan {
-    pub start: usize,
-    pub end: usize,
-}
-
 /// Capitals stand about seven tenths of the type size in common text faces (Times 0.66, Arial
 /// 0.72), so a measured capital height reads as a type size.
 pub const CAP_HEIGHT_SHARE: f64 = 0.7;

@@ -34,37 +34,28 @@ pub(super) fn materialize(
                 .or_default() += 1;
         }
     }
+    // A pair is a note on positive evidence, plain numbers alone being none: a reference read for it that is typographic
+    // (raised, detached, a symbol), stands by a label in the note region, or belongs to a run whose references the text
+    // shows for a third of it at least (three at least); or its label alone (`label_only`), where the label stands in its
+    // page's note band, which is final, or in the note region within a run whose references the text shows for a third
+    // at least (two at least), or whose labels stand there for three quarters (three at least). Each count is of distinct
+    // labels within one numbering's restart, after detached references are recovered, over the whole run the selector saw.
     let pairs = pairs
         .into_iter()
         .filter_map(|pair| {
             let label_line = &lines[pair.label.line];
-            let support = NotePairSupportV2 {
-                sequence_id: pair.restart_sequence,
-                sequence_labels: pair.sequence_labels,
-                sequence_observed_pairs: if pair.label.value.is_some() {
-                    observed_sequences
-                        .get(&(pair.restart_sequence, pair.endnote))
-                        .copied()
-                        .unwrap_or(0)
-                } else {
-                    usize::from(observed_pair(&pair))
-                },
-                sequence_note_labels: if pair.label.value.is_some() {
-                    note_sequences
-                        .get(&(pair.restart_sequence, pair.endnote))
-                        .copied()
-                        .unwrap_or(0)
-                } else {
-                    usize::from(label_line.zone == Zone::Note && !label_line.region_witness_demoted)
-                },
-                observed_pair: observed_pair(&pair),
-                typographic_reference: pair.refs.iter().any(|reference| {
-                    !reference.repaired && matches!(reference.form, "sup" | "detached" | "symbol")
-                }),
-                note_region: label_line.zone == Zone::Note && !label_line.region_witness_demoted,
-                note_band: label_line.in_note_band(),
-            };
-            support.supports_note().then_some((pair, support))
+            let run = (pair.restart_sequence, pair.endnote);
+            let numbered = pair.label.value.is_some();
+            let observed = observed_pair(&pair);
+            let note_region = label_line.zone == Zone::Note && !label_line.region_witness_demoted;
+            let labels = pair.sequence_labels;
+            let observed_pairs = if numbered { observed_sequences.get(&run).copied().unwrap_or(0) } else { usize::from(observed) };
+            let note_labels = if numbered { note_sequences.get(&run).copied().unwrap_or(0) } else { usize::from(note_region) };
+            let label_only = label_line.in_note_band()
+                || note_region && (observed_pairs >= 2 && labels <= 3 * observed_pairs || note_labels >= 3 && 4 * note_labels >= 3 * labels);
+            let typographic = pair.refs.iter().any(|reference| !reference.repaired && matches!(reference.form, "sup" | "detached" | "symbol"));
+            let corroborated = observed_pairs >= 3 && 3 * observed_pairs >= labels;
+            (observed && (typographic || note_region || corroborated) || label_only).then_some((pair, label_only))
         })
         .collect::<Vec<_>>();
     let pairing_audit = pairing_summary.map(|mut summary| {
@@ -75,7 +66,7 @@ pub(super) fn materialize(
             pairing_summary: summary,
         }
     });
-    for (index, (pair, support)) in pairs.iter().enumerate() {
+    for (index, &(ref pair, label_only)) in pairs.iter().enumerate() {
         let label_line = &lines[pair.label.line];
         let next = pairs.get(index + 1).map(|(pair, _)| pair);
         let next_page = next.map(|value| lines[value.label.line].page);
@@ -167,7 +158,7 @@ pub(super) fn materialize(
         let calls = pair.refs.iter().map(|reference| place(&lines[reference.line].id, reference.start, reference.end)
             .filter(|range| range.start < range.end)).collect::<Option<Vec<_>>>();
         let whole = body_lines.iter().any(|line| place(&line.id, 0, line.text.chars().count()).is_some_and(|range| range.start < range.end));
-        let (Some(label_range), Some(calls), true) = (label_range, calls, whole && (!pair.refs.is_empty() || support.supports_label_only())) else {
+        let (Some(label_range), Some(calls), true) = (label_range, calls, whole && (!pair.refs.is_empty() || label_only)) else {
             continue;
         };
         let ranges: Vec<ScalarRange> = body_lines.iter()

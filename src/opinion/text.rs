@@ -8,7 +8,7 @@
 use super::*;
 use crate::note_pairing::pair_footnotes;
 use legal_citations::cues;
-use legal_structure_model::layout::{Line as LaidLine, Page as LaidPage, PdfSourceSpan};
+use legal_structure_model::layout::{Line as LaidLine, Page as LaidPage, ScalarRange};
 use std::collections::BTreeMap;
 
 /// The lines between one page number and the next, at the least: a list's numbers come closer than a page.
@@ -630,7 +630,7 @@ fn notes_of(lines: &[Line<'_>], zones: &[Vec<Zone>], pages: &[(usize, usize)]) -
             if body.bytes().any(|byte| byte.is_ascii_digit()) {
                 let characters = ScalarText::new(body);
                 let spans = cues::layout_protected_spans(body).into_iter()
-                    .map(|span| PdfSourceSpan { start: characters.scalar(span.start), end: characters.scalar(span.end) })
+                    .map(|span| ScalarRange { start: characters.scalar(span.start), end: characters.scalar(span.end) })
                     .collect::<Vec<_>>();
                 if !spans.is_empty() { protected.insert(id.clone(), spans); }
             }

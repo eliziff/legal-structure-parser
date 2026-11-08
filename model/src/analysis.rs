@@ -34,7 +34,7 @@ pub trait StructureAnalysis: LayoutAnalysis {
     fn pair_footnotes(
         &self,
         pages: &[legal_layout::Page],
-        protected_citation_spans: &std::collections::BTreeMap<String, Vec<legal_layout::PdfSourceSpan>>,
+        protected_citation_spans: &std::collections::BTreeMap<String, Vec<legal_layout::ScalarRange>>,
         include_audit: bool,
         place: &dyn Fn(&str, usize, usize) -> Option<crate::ScalarRange>,
     ) -> NotePairing;

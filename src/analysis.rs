@@ -5,7 +5,7 @@ use crate::{
     AuthoritativeTableCell, CandidateEvidenceV2, CandidateRoleV2, DocumentStructure, EngineError,
     StructureCandidateRun, };
 use legal_citations::cues;
-use legal_structure_model::layout::{Page, PdfSourceSpan};
+use legal_structure_model::layout::{Page, ScalarRange};
 use legal_structure_model::{CitationSpan, LayoutAnalysis, StructureAnalysis};
 use std::collections::BTreeMap;
 
@@ -82,7 +82,7 @@ impl StructureAnalysis for EngineAnalysis {
     fn pair_footnotes(
         &self,
         pages: &[Page],
-        protected_citation_spans: &BTreeMap<String, Vec<PdfSourceSpan>>,
+        protected_citation_spans: &BTreeMap<String, Vec<ScalarRange>>,
         include_audit: bool,
         place: &dyn Fn(&str, usize, usize) -> Option<legal_structure_model::ScalarRange>,
     ) -> legal_structure_model::NotePairing {

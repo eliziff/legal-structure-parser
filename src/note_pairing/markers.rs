@@ -149,7 +149,7 @@ pub(super) fn insert_shared_marker_fields(
     );
 }
 
-pub(super) fn pair_markers(pairs: &[(Pair, NotePairSupportV2)], lines: &[PairLine<'_>]) -> Vec<Value> {
+pub(super) fn pair_markers(pairs: &[(Pair, bool)], lines: &[PairLine<'_>]) -> Vec<Value> {
     let mut ordered_pairs = pairs.iter().map(|(pair, _)| pair).collect::<Vec<_>>();
     ordered_pairs.sort_by(|left, right| left.pair_id.cmp(&right.pair_id));
     let mut rows = Vec::<Value>::new();

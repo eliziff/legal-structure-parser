@@ -1,6 +1,6 @@
 use legal_citations::cues;
 use legal_citations::cues::is_counter_noun as counter_noun;
-use legal_structure_model::layout::{self, line_font_size, DetachedReference, Diagnostic, Line, Page, PdfSourceSpan};
+use legal_structure_model::layout::{self, line_font_size, DetachedReference, Diagnostic, Line, Page, ScalarRange};
 use legal_structure_model::PdfPairingAudit;
 use legal_structure_model::{Derivation, NodeKind, NotePairing, ScalarRange, StructureNode, NOTE_PAIRING_ORIGIN};
 use crate::{select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy};
@@ -13,46 +13,6 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Deref;
 use std::sync::OnceLock;
-
-/// Evidence from an occurrence-level assignment within one numbering restart.
-/// Counts concern distinct labels, not repeated references to the same note.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
-pub(crate) struct NotePairSupportV2 {
-    pub sequence_id: usize,
-    pub sequence_labels: usize,
-    pub sequence_observed_pairs: usize,
-    pub sequence_note_labels: usize,
-    pub observed_pair: bool,
-    pub typographic_reference: bool,
-    pub note_region: bool,
-    /// The label stands in its page's note band, which is final: its note stands whether or not a
-    /// reference to it was read.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub note_band: bool,
-}
-
-impl NotePairSupportV2 {
-    /// The pair stands in a run of labels whose references the text shows for a third of it at
-    /// least: the note sequence itself is the evidence, whatever region the lines were given.
-    pub fn corroborated_sequence(&self) -> bool {
-        self.sequence_observed_pairs >= 3 && 3 * self.sequence_observed_pairs >= self.sequence_labels
-    }
-
-    pub fn supports_label_only(&self) -> bool {
-        self.note_band
-            || (self.note_region
-                && (self.sequence_observed_pairs >= 2
-                    && self.sequence_labels <= 3 * self.sequence_observed_pairs
-                    || self.sequence_note_labels >= 3
-                        && 4 * self.sequence_note_labels >= 3 * self.sequence_labels))
-    }
-
-    /// Plain numbers alone are not positive evidence for a note.
-    pub fn supports_note(&self) -> bool {
-        (self.observed_pair && (self.typographic_reference || self.note_region || self.corroborated_sequence()))
-            || self.supports_label_only()
-    }
-}
 
 mod labels;
 use labels::*;
@@ -105,7 +65,7 @@ struct PairLine<'a> {
     page_width: f64,
     page_height: f64,
     zone: Zone,
-    citation_spans: &'a [PdfSourceSpan],
+    citation_spans: &'a [ScalarRange],
     outline_spans: Vec<(usize, usize)>,
     note_column_fit: bool,
     small_font: bool,
@@ -372,7 +332,7 @@ fn median(values: Vec<f64>) -> Option<f64> {
 
 fn build_lines<'a>(
     pages: &'a [Page],
-    protected_citation_spans: &'a BTreeMap<String, Vec<PdfSourceSpan>>,
+    protected_citation_spans: &'a BTreeMap<String, Vec<ScalarRange>>,
 ) -> Vec<PairLine<'a>> {
     let mut source: Vec<(&Page, &Line)> = pages
         .iter()
@@ -478,7 +438,7 @@ fn build_lines<'a>(
 /// and a range of its characters), with what the pairing found wanting.
 pub fn pair_footnotes(
     pages: &[Page],
-    protected_citation_spans: &BTreeMap<String, Vec<PdfSourceSpan>>,
+    protected_citation_spans: &BTreeMap<String, Vec<ScalarRange>>,
     include_audit: bool,
     place: &dyn Fn(&str, usize, usize) -> Option<ScalarRange>,
 ) -> NotePairing {
