@@ -4,7 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
 
 mod analysis;
@@ -283,40 +282,6 @@ const fn one() -> f64 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FootnoteCrossref {
-    pub source_pair_id: String,
-    pub kind: String,
-    pub number: u32,
-    pub shortform: String,
-    pub start: usize,
-    pub end: usize,
-    pub resolved: bool,
-    pub target_pair_id: String,
-    pub target_count: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Footnote {
-    pub pair_id: String,
-    pub label: String,
-    pub occurrence: usize,
-    pub restart_sequence: usize,
-    pub reference_page: Option<u32>,
-    pub body_pages: Vec<u32>,
-    pub reference_line_id: Option<String>,
-    pub body_line_ids: Vec<String>,
-    pub body: String,
-    pub sentence_proposition: String,
-    pub passage_since_prior_note: String,
-    pub confidence: f64,
-    pub provenance: String,
-    #[serde(default)]
-    pub warnings: Vec<String>,
-    #[serde(default)]
-    pub crossrefs: Vec<FootnoteCrossref>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub code: String,
     pub severity: String,
@@ -363,47 +328,6 @@ pub struct PdfSourceSpan {
 pub struct PdfPairingAudit {
     pub markers: Vec<Value>,
     pub pairing_summary: Value,
-}
-
-#[derive(Debug, Clone)]
-pub struct Anchor {
-    pub pair_id: String,
-    pub label: String,
-    pub start: usize,
-    pub end: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NotePairKind {
-    Footnote,
-    Endnote,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SourceAnchor {
-    pub line_id: String,
-    pub start: usize,
-    pub end: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NotePairClaim {
-    pub pair_id: String,
-    pub support: NotePairSupportV2,
-    pub label: String,
-    pub kind: NotePairKind,
-    pub label_anchor: SourceAnchor,
-    pub reference_anchors: Vec<SourceAnchor>,
-    pub body_line_ids: Vec<String>,
-}
-
-pub struct PairingOutput {
-    pub footnotes: Vec<Footnote>,
-    pub diagnostics: Vec<Diagnostic>,
-    pub anchors: HashMap<String, Vec<Anchor>>,
-    pub pair_claims: Vec<NotePairClaim>,
-    pub pairing_audit: Option<PdfPairingAudit>,
 }
 
 /// Capitals stand about seven tenths of the type size in common text faces (Times 0.66, Arial

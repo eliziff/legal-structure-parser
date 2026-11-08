@@ -1,9 +1,7 @@
 use legal_citations::cues;
 use legal_citations::cues::is_counter_noun as counter_noun;
-use legal_structure_model::layout::{
-    self, line_font_size, Anchor, DetachedReference, Diagnostic, Footnote, Line, NotePairClaim,
-    NotePairKind, Page, PairingOutput, PdfPairingAudit, PdfSourceSpan, SourceAnchor,
-};
+use legal_structure_model::layout::{self, line_font_size, DetachedReference, Diagnostic, Line, Page, PdfPairingAudit, PdfSourceSpan};
+use legal_structure_model::{Derivation, NodeKind, NotePairing, ScalarRange, StructureNode, NOTE_PAIRING_ORIGIN};
 use crate::{select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy};
 use legal_structure_model::{
     normalize_decimal_digit, normalize_note_symbol, NotePairSupportV2, ScalarText,
@@ -435,11 +433,14 @@ fn build_lines<'a>(
     lines
 }
 
+/// A laid-out document's notes paired with their calls, each a node placed in the reader's text by `place` (a line's id
+/// and a range of its characters), with what the pairing found wanting.
 pub fn pair_footnotes(
     pages: &[Page],
     protected_citation_spans: &BTreeMap<String, Vec<PdfSourceSpan>>,
     include_audit: bool,
-) -> PairingOutput {
+    place: &dyn Fn(&str, usize, usize) -> Option<ScalarRange>,
+) -> NotePairing {
     let (pairs, lines, summary) = build_pairs(pages, protected_citation_spans, include_audit);
-    materialize(pairs, &lines, summary)
+    materialize(pairs, &lines, summary, place)
 }

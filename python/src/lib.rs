@@ -24,28 +24,15 @@ fn pair_numbered_footnotes<'py>(
         item.set_item("note_page_index", note.note_page_index)?;
         item.set_item("ref_page_index", note.ref_page_index)?;
         item.set_item("body", note.body)?;
-        item.set_item("truncated", note.truncated)?;
         if include_context {
             item.set_item("proposition", note.proposition)?;
-            item.set_item("passage", note.passage)?;
         }
         notes.append(item)?;
     }
     let output = PyDict::new(py);
     output.set_item("notes", notes)?;
-    for (name, value) in [
-        ("symbol_labels_dropped", result.symbol_labels_dropped),
-        ("labels_candidates", result.labels_candidates),
-        ("labels_selected", result.labels_selected),
-        ("refs_assigned", result.refs_assigned),
-        ("ambiguous_sites", result.ambiguous_sites),
-        ("crossrefs", result.crossrefs),
-        ("crossrefs_unresolved", result.crossrefs_unresolved),
-        ("pages", result.pages),
-    ] {
-        output.set_item(name, value)?;
-    }
-    output.set_item("footnote_mode", result.footnote_mode)?;
+    output.set_item("labels_candidates", result.labels_candidates)?;
+    output.set_item("pages", result.pages)?;
     Ok(output)
 }
 

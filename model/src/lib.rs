@@ -21,7 +21,7 @@ pub use legal_layout as layout;
 pub use legal_layout::{NotePairSupportV2, ScalarRange};
 pub mod text;
 
-pub use analysis::{install_structure_analysis, structure_analysis, StructureAnalysis};
+pub use analysis::{install_structure_analysis, structure_analysis, NotePairing, StructureAnalysis, NOTE_PAIRING_ORIGIN};
 pub use assembly::assemble_in_place;
 pub use legal_layout::{ablated, CitationSpan, LayoutAnalysis, NumberingMarker, PARTY_ROLES};
 pub use definitions::{DefinedTerm, DefinitionOccurrence};

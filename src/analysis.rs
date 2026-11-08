@@ -5,7 +5,7 @@ use crate::{
     AuthoritativeTableCell, CandidateEvidenceV2, CandidateRoleV2, DocumentStructure, EngineError,
     StructureCandidateRun, };
 use legal_citations::cues;
-use legal_structure_model::layout::{Page, PairingOutput, PdfSourceSpan};
+use legal_structure_model::layout::{Page, PdfSourceSpan};
 use legal_structure_model::{CitationSpan, LayoutAnalysis, StructureAnalysis};
 use std::collections::BTreeMap;
 
@@ -64,14 +64,6 @@ impl LayoutAnalysis for EngineAnalysis {
         cues::crossref_short_form(text, byte_start)
     }
 
-    fn pair_footnotes(
-        &self,
-        pages: &[Page],
-        protected_citation_spans: &BTreeMap<String, Vec<PdfSourceSpan>>,
-        include_audit: bool,
-    ) -> PairingOutput {
-        crate::note_pairing::pair_footnotes(pages, protected_citation_spans, include_audit)
-    }
 
     fn repair_label_dropouts(&self, pages: &mut [Page]) {
         crate::numbering_repair::repair_label_dropouts(pages);
@@ -92,6 +84,16 @@ impl LayoutAnalysis for EngineAnalysis {
 }
 
 impl StructureAnalysis for EngineAnalysis {
+    fn pair_footnotes(
+        &self,
+        pages: &[Page],
+        protected_citation_spans: &BTreeMap<String, Vec<PdfSourceSpan>>,
+        include_audit: bool,
+        place: &dyn Fn(&str, usize, usize) -> Option<legal_structure_model::ScalarRange>,
+    ) -> legal_structure_model::NotePairing {
+        crate::note_pairing::pair_footnotes(pages, protected_citation_spans, include_audit, place)
+    }
+
     fn signature_line(&self, line: &str) -> bool {
         crate::judgment::signature_line(line)
     }

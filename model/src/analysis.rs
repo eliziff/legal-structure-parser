@@ -6,7 +6,29 @@ use legal_layout::LayoutAnalysis;
 /// The structure engine's document reading, as parsers that build documents on the model call it,
 /// beside its services on laid-out text. A parser takes this as a dependency on the model alone, so
 /// editing the engine recompiles the engine and the program that supplies it, not every parser.
+/// A laid-out document's notes as the pairer writes them: each a Footnote (or Endnote) node placed in the reader's text,
+/// its body its ranges, its label its marker range, its calls; the diagnostics of what it could not pair or place; and,
+/// where asked for, its audit of the markers.
+/// The origin of the notes the pairer writes.
+pub const NOTE_PAIRING_ORIGIN: &str = "legal-structure.note-pairing";
+
+pub struct NotePairing {
+    pub notes: Vec<crate::StructureNode>,
+    pub diagnostics: Vec<legal_layout::Diagnostic>,
+    pub audit: Option<legal_layout::PdfPairingAudit>,
+}
+
 pub trait StructureAnalysis: LayoutAnalysis {
+    /// A laid-out document's notes paired with their references, its lines' citations (by line id, in scalar offsets)
+    /// protected from being read as either, each note placed in the reader's text by `place` (a line's id and a range
+    /// of its characters).
+    fn pair_footnotes(
+        &self,
+        pages: &[legal_layout::Page],
+        protected_citation_spans: &std::collections::BTreeMap<String, Vec<legal_layout::PdfSourceSpan>>,
+        include_audit: bool,
+        place: &dyn Fn(&str, usize, usize) -> Option<crate::ScalarRange>,
+    ) -> NotePairing;
     /// The numbering runs in `text`: its counts of numbers, letters and bullets, and the provision
     /// ladder the instrument grammar reads. With `refinements`, the ladder also reads a section's
     /// number its subsections repeat ("33(2) The …"), and leaves out enactment history notes,

@@ -6,7 +6,7 @@
 use crate::note_pairing::pair_footnotes;
 use crate::{NodeKind, ScalarRange, ScalarText, StructureNode};
 use legal_citations::cues;
-use legal_structure_model::layout::{Anchor, Line, Page, PdfSourceSpan};
+use legal_structure_model::layout::{Line, Page, PdfSourceSpan};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The notes of a text whose note list may open at `note_start` (a scalar offset at a line's start),
@@ -74,30 +74,17 @@ pub(crate) fn text_note_blocks(
         text_quality: 1.0,
         ..Default::default()
     };
-    let pairing = pair_footnotes(std::slice::from_ref(&page), &protected, false);
     let at = |id: &str, offset: usize| starts.get(id).map(|(start, _)| start + offset);
+    let place = |id: &str, start: usize, end: usize| Some(ScalarRange { start: at(id, start)?, end: at(id, end)? });
+    let pairing = pair_footnotes(std::slice::from_ref(&page), &protected, false, &place);
     // Each paired note: its label, the start of its label's line, its number and its calls.
     let mut notes = pairing
-        .pair_claims
+        .notes
         .iter()
-        .filter_map(|claim| {
-            let label = &claim.label_anchor;
-            let range = ScalarRange {
-                start: at(&label.line_id, label.start)?,
-                end: at(&label.line_id, label.end)?,
-            };
-            let references = claim
-                .reference_anchors
-                .iter()
-                .filter_map(|anchor| {
-                    Some(ScalarRange {
-                        start: at(&anchor.line_id, anchor.start)?,
-                        end: at(&anchor.line_id, anchor.end)?,
-                    })
-                })
-                .collect::<Vec<_>>();
-            (range.start >= note_start)
-                .then(|| (range, starts[label.line_id.as_str()].0, claim.label.clone(), references))
+        .filter_map(|note| {
+            let range = note.marker_range?;
+            let line_start = starts.get(note.line_ids.first()?.as_str())?.0;
+            (range.start >= note_start).then(|| (range, line_start, note.printed_label().to_owned(), note.calls.clone()))
         })
         .collect::<Vec<_>>();
     // The list counts from 1 whether or not its calls survived the flattening: a label the pairer
@@ -173,21 +160,12 @@ pub struct PairedFootnote {
     pub note_page_index: usize,
     pub ref_page_index: Option<usize>,
     pub body: String,
-    pub truncated: bool,
     pub proposition: Option<String>,
-    pub passage: Option<String>,
 }
 
 pub struct NumberedFootnotePairing {
     pub notes: Vec<PairedFootnote>,
-    pub symbol_labels_dropped: usize,
     pub labels_candidates: usize,
-    pub labels_selected: usize,
-    pub refs_assigned: usize,
-    pub ambiguous_sites: usize,
-    pub footnote_mode: bool,
-    pub crossrefs: usize,
-    pub crossrefs_unresolved: usize,
     pub pages: usize,
     /// Each page's printed label, by page index; none for matter before the first marker.
     pub page_labels: Vec<Option<String>>,
@@ -197,16 +175,16 @@ pub struct NumberedFootnotePairing {
 /// ranges) left out: the sentence holding the marker, or the one it follows. `before` and `after` are the lines the
 /// text runs on from and into, with their own markers.
 #[cfg(all(feature = "citator", feature = "document-query"))]
-fn sentence_at_reference(text: &str, anchors: &[Anchor], own: &Anchor, before: Option<(&str, &[Anchor])>,
-    after: Option<(&str, &[Anchor])>) -> Option<String> {
-    let unmarked = |text: &str, anchors: &[Anchor]| text.chars().enumerate()
-        .filter(|(index, _)| !anchors.iter().any(|anchor| anchor.start <= *index && *index < anchor.end))
+fn sentence_at_reference(text: &str, anchors: &[(usize, usize)], own: usize, before: Option<(&str, &[(usize, usize)])>,
+    after: Option<(&str, &[(usize, usize)])>) -> Option<String> {
+    let unmarked = |text: &str, anchors: &[(usize, usize)]| text.chars().enumerate()
+        .filter(|(index, _)| !anchors.iter().any(|&(start, end)| start <= *index && *index < end))
         .map(|(_, character)| character).collect::<String>();
     let mut clean = before.map(|(text, anchors)| format!("{} ", unmarked(text, anchors).trim_end())).unwrap_or_default();
     let mut at = None;
     for (index, character) in text.chars().enumerate() {
-        if index == own.start { at = Some(clean.encode_utf16().count()); }
-        if !anchors.iter().any(|anchor| anchor.start <= index && index < anchor.end) { clean.push(character); }
+        if index == own { at = Some(clean.encode_utf16().count()); }
+        if !anchors.iter().any(|&(start, end)| start <= index && index < end) { clean.push(character); }
     }
     let at = at.unwrap_or_else(|| clean.encode_utf16().count());
     if let Some((text, anchors)) = after { clean = format!("{} {}", clean.trim_end(), unmarked(text, anchors)); }
@@ -217,7 +195,7 @@ fn sentence_at_reference(text: &str, anchors: &[Anchor], own: &Anchor, before: O
 }
 
 #[cfg(not(all(feature = "citator", feature = "document-query")))]
-fn sentence_at_reference(_: &str, _: &[Anchor], _: &Anchor, _: Option<(&str, &[Anchor])>, _: Option<(&str, &[Anchor])>)
+fn sentence_at_reference(_: &str, _: &[(usize, usize)], _: usize, _: Option<(&str, &[(usize, usize)])>, _: Option<(&str, &[(usize, usize)])>)
     -> Option<String> { None }
 
 /// A journal article's flattened text paired by note pairing's plain-text mode: its pages are the
@@ -226,6 +204,7 @@ fn sentence_at_reference(_: &str, _: &[Anchor], _: &Anchor, _: Option<(&str, &[A
 /// into the words before them.
 pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFootnotePairing {
     let mut pages = Vec::with_capacity(page_labels.len());
+    let mut page_starts = Vec::with_capacity(page_labels.len());
     let mut labels = Vec::with_capacity(page_labels.len());
     let (mut from, mut current) = (0, None);
     for label in page_labels {
@@ -233,13 +212,18 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
         let Some(at) = text[from..].find(&marker).map(|at| from + at) else { continue };
         if from > 0 || !text[..at].trim().is_empty() {
             pages.push(&text[from..at]);
+            page_starts.push(from);
             labels.push(current.clone());
         }
         from = at + marker.len();
         current = Some(label.clone());
     }
     pages.push(&text[from..]);
+    page_starts.push(from);
     labels.push(current);
+    let coordinates = ScalarText::new(text);
+    // Each line's start in the text (scalars), its length and its page.
+    let mut placed = HashMap::<String, (usize, usize, usize)>::new();
     let mut built = Vec::with_capacity(pages.len());
     let mut protected = BTreeMap::new();
     let mut order = 0;
@@ -270,8 +254,11 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
             zone = *position;
         }
         let mut page_lines = Vec::with_capacity(lines.len());
+        let mut byte = page_starts[page_index];
         for (position, line) in lines.iter().enumerate() {
             let id = format!("p{page_index}l{position}");
+            placed.insert(id.clone(), (coordinates.scalar(byte), line.chars().count(), page_index));
+            byte += line.len() + 1;
             if position < zone && !line.trim().is_empty() {
                 if let Some(previous) = last_body.replace(id.clone()) {
                     previous_body.insert(id.clone(), previous.clone());
@@ -315,46 +302,49 @@ pub fn pair_numbered_footnotes(text: &str, page_labels: &[String]) -> NumberedFo
             ..Default::default()
         });
     }
-    let pairing = pair_footnotes(&built, &protected, true);
+    let place = |id: &str, start: usize, end: usize| placed.get(id).map(|&(at, ..)| ScalarRange { start: at + start, end: at + end });
+    let pairing = pair_footnotes(&built, &protected, true, &place);
     let line_text: HashMap<&str, &str> = built.iter()
         .flat_map(|page| page.lines.iter().map(|line| (line.id.as_str(), line.text.as_str()))).collect();
-    // A note's proposition: the sentence the reference marks. A line opening in the middle of a sentence (with a
+    // The line a call stands on, and every note's calls on each line, in the line's characters.
+    let line_of = |offset: usize| placed.iter().find(|(_, &(at, length, _))| at <= offset && offset < at + length.max(1)).map(|(id, &(at, _, page))| (id.as_str(), at, page));
+    let mut marks = HashMap::<&str, Vec<(usize, usize)>>::new();
+    for call in pairing.notes.iter().flat_map(|note| &note.calls) {
+        if let Some((id, at, _)) = line_of(call.start) {
+            marks.entry(id).or_default().push((call.start - at, call.end - at));
+        }
+    }
+    // A note's proposition: the sentence its first call marks. A line opening in the middle of a sentence (with a
     // lowercase word) continues the body line before it, across a blank line, a note list or a page break.
-    let no_anchors = Vec::new();
     let continues = |id: &str| line_text.get(id).and_then(|text| text.trim_start().chars().next()).is_some_and(char::is_lowercase);
-    let proposition = |pair_id: &str, line_id: Option<&String>| {
-        let line_id = line_id?.as_str();
-        let anchors = pairing.anchors.get(line_id)?;
-        let line = |id: &String| Some((*line_text.get(id.as_str())?, pairing.anchors.get(id.as_str()).unwrap_or(&no_anchors).as_slice()));
-        sentence_at_reference(line_text.get(line_id)?, anchors, anchors.iter().find(|anchor| anchor.pair_id == pair_id)?,
-            previous_body.get(line_id).filter(|_| continues(line_id)).and_then(line),
-            next_body.get(line_id).filter(|next| continues(next)).and_then(line))
+    let unmarked: Vec<(usize, usize)> = Vec::new();
+    let line = |id: &String| Some((*line_text.get(id.as_str())?, marks.get(id.as_str()).unwrap_or(&unmarked).as_slice()));
+    let proposition = |call: &ScalarRange| {
+        let (id, at, _) = line_of(call.start)?;
+        sentence_at_reference(line_text.get(id)?, marks.get(id)?, call.start - at,
+            previous_body.get(id).filter(|_| continues(id)).and_then(line),
+            next_body.get(id).filter(|next| continues(next)).and_then(line))
     };
-    let summary = pairing.pairing_audit.as_ref().map(|audit| &audit.pairing_summary);
+    let summary = pairing.audit.as_ref().map(|audit| &audit.pairing_summary);
     let count = |name: &str| summary.and_then(|summary| summary[name].as_u64()).unwrap_or(0) as usize;
     let notes = pairing
-        .footnotes
+        .notes
         .iter()
-        .map(|note| PairedFootnote {
-            label: note.label.clone(),
-            restart_sequence: note.restart_sequence,
-            note_page_index: note.body_pages.first().map_or(0, |page| *page as usize - 1),
-            ref_page_index: note.reference_page.map(|page| page as usize - 1),
-            body: note.body.clone(),
-            truncated: note.warnings.iter().any(|warning| warning.contains("truncat")),
-            proposition: proposition(&note.pair_id, note.reference_line_id.as_ref()),
-            passage: Some(note.passage_since_prior_note.clone()),
+        .map(|note| {
+            let body = note.ranges.iter().filter_map(|range| coordinates.slice(range.start..range.end)).collect::<Vec<_>>().join(" ");
+            let body = body.trim();
+            PairedFootnote {
+                label: note.printed_label().to_owned(),
+                restart_sequence: note.series.parse().unwrap_or(0),
+                note_page_index: note.page_indexes.first().copied().unwrap_or(0),
+                ref_page_index: note.calls.first().and_then(|call| line_of(call.start)).map(|(.., page)| page),
+                body: if body.is_empty() { note.printed_label().to_owned() } else { body.to_owned() },
+                proposition: note.calls.first().and_then(proposition),
+            }
         })
         .collect::<Vec<_>>();
     NumberedFootnotePairing {
-        symbol_labels_dropped: 0,
         labels_candidates: count("label_candidate_count"),
-        labels_selected: notes.len(),
-        refs_assigned: notes.iter().filter(|note| note.ref_page_index.is_some()).count(),
-        ambiguous_sites: 0,
-        footnote_mode: true,
-        crossrefs: pairing.footnotes.iter().map(|note| note.crossrefs.len()).sum(),
-        crossrefs_unresolved: pairing.footnotes.iter().flat_map(|note| &note.crossrefs).filter(|crossref| !crossref.resolved).count(),
         pages: built.len(),
         page_labels: labels,
         notes,

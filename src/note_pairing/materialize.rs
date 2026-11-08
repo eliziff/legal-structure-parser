@@ -1,4 +1,4 @@
-//! Pairs made notes: their bodies, anchors, claims and diagnostics.
+//! Pairs made notes: each a Footnote (or Endnote) node placed in the reader's text, and the diagnostics.
 
 use super::*;
 
@@ -6,17 +6,15 @@ pub(super) fn materialize(
     pairs: Vec<Pair>,
     lines: &[PairLine<'_>],
     pairing_summary: Option<Value>,
-) -> PairingOutput {
-    let mut occurrences: HashMap<String, usize> = HashMap::new();
+    place: &dyn Fn(&str, usize, usize) -> Option<ScalarRange>,
+) -> NotePairing {
     let continuation_pages: HashSet<u32> = lines
         .iter()
         .filter(|line| line.note_region_mode == "footnote_continuation")
         .map(|line| line.page)
         .collect();
-    let mut footnotes = Vec::new();
+    let mut notes = Vec::new();
     let mut diagnostics = Vec::new();
-    let mut anchors: HashMap<String, Vec<Anchor>> = HashMap::new();
-    let mut pair_claims = Vec::new();
     let observed_pair =
         |pair: &Pair| !pair.label.repaired && pair.refs.iter().any(|reference| !reference.repaired);
     // Count after detached-reference recovery, once per distinct numeric label.
@@ -155,115 +153,60 @@ pub(super) fn materialize(
             }
             body_lines = bounded;
         }
-        let mut parts = Vec::new();
-        for line in &body_lines {
-            let mut text = line.text.as_str();
-            if line.id == label_line.id {
-                let body_start = label_token(text, provider_text(line))
-                    .filter(|token| {
-                        token.start == pair.label.start && token.value == pair.label.value
-                    })
-                    .map_or(pair.label.end, |token| token.match_end);
-                text = char_slice(text, body_start, text.chars().count()).trim_start_matches(
-                    |character: char| character.is_whitespace() || ".)],:;-".contains(character),
-                );
-            }
-            if !text.is_empty() {
-                parts.push(text);
-            }
-        }
+        // The body opens after the label and what sets it off (".", ")", a space) on the label's line.
+        let line_text = label_line.text.as_str();
+        let start_of_body = label_token(line_text, provider_text(label_line))
+            .filter(|token| token.start == pair.label.start && token.value == pair.label.value)
+            .map_or(pair.label.end, |token| token.match_end);
+        let after = char_slice(line_text, start_of_body, line_text.chars().count());
+        let body_start = start_of_body + after.chars().count()
+            - after.trim_start_matches(|character: char| character.is_whitespace() || ".)],:;-".contains(character)).chars().count();
         let display = pair.label.note_id();
-        let body = parts.join(" ").trim().to_owned();
-        let body = if body.is_empty() {
-            display.clone()
-        } else {
-            body
+        let unmaterialized = |diagnostics: &mut Vec<Diagnostic>| {
+            let mut diagnostic = Diagnostic::info("note_pair_unmaterialized", format!("Note '{display}' could not be placed."), Some(label_line.page_index));
+            diagnostic.details.insert("pair_id".to_owned(), json!(pair.pair_id));
+            diagnostics.push(diagnostic);
         };
-        let occurrence = occurrences.entry(display.clone()).or_insert(0);
-        *occurrence += 1;
-        for reference in &pair.refs {
-            let line = &lines[reference.line];
-            anchors.entry(line.id.clone()).or_default().push(Anchor {
-                pair_id: pair.pair_id.clone(),
-                label: display.clone(),
-                start: reference.start,
-                end: reference.end,
-            });
-        }
-        let primary = pair.refs.first();
-        let mut warnings = Vec::new();
-        if primary.is_none() {
-            warnings.push("label_only".to_owned());
+        // Placed in the reader's text: the label, the calls, and each body line (the label's from where the body opens).
+        let label_range = place(&label_line.id, pair.label.start, pair.label.end).filter(|range| range.start < range.end);
+        let calls = pair.refs.iter().map(|reference| place(&lines[reference.line].id, reference.start, reference.end)
+            .filter(|range| range.start < range.end)).collect::<Option<Vec<_>>>();
+        let whole = body_lines.iter().any(|line| place(&line.id, 0, line.text.chars().count()).is_some_and(|range| range.start < range.end));
+        let (Some(label_range), Some(calls), true) = (label_range, calls, whole && (!pair.refs.is_empty() || support.supports_label_only())) else {
+            unmaterialized(&mut diagnostics);
+            continue;
+        };
+        let ranges: Vec<ScalarRange> = body_lines.iter()
+            .filter_map(|line| place(&line.id, if line.id == label_line.id { body_start } else { 0 }, line.text.chars().count()))
+            .filter(|range| range.start < range.end)
+            .collect();
+        if pair.refs.is_empty() {
             let mut diagnostic = Diagnostic::warning(
                 "FOOTNOTE_UNMATCHED_LABEL",
                 format!("Footnote label '{display}' has no paired reference."),
                 Some(label_line.page_index),
             );
             diagnostic.line_ids.push(label_line.id.clone());
-            diagnostic
-                .details
-                .insert("pair_id".to_owned(), json!(pair.pair_id));
-            diagnostic
-                .details
-                .insert("label".to_owned(), json!(display));
+            diagnostic.details.insert("pair_id".to_owned(), json!(pair.pair_id));
+            diagnostic.details.insert("label".to_owned(), json!(display));
             diagnostics.push(diagnostic);
         }
-        footnotes.push(Footnote {
-            pair_id: pair.pair_id.clone(),
-            label: display,
-            occurrence: *occurrence,
-            restart_sequence: pair.restart_sequence,
-            reference_page: primary.map(|reference| lines[reference.line].page),
-            body_pages: body_lines
-                .iter()
-                .map(|line| line.page)
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect(),
-            reference_line_id: primary.map(|reference| lines[reference.line].id.clone()),
-            body_line_ids: body_lines.iter().map(|line| line.id.clone()).collect(),
-            body,
-            sentence_proposition: String::new(),
-            passage_since_prior_note: String::new(),
-            // The Python materializer reads the marker row's `confidence`
-            // field. Canonical pairer rows expose `candidate_confidence`
-            // instead, so the established public value is the 0.75 default.
-            confidence: 0.75,
-            provenance: pair.provenance.clone(),
-            warnings,
-            crossrefs: Vec::new(),
-        });
-        pair_claims.push(NotePairClaim {
-            pair_id: pair.pair_id.clone(),
-            support: support.clone(),
-            label: pair.label.note_id(),
-            kind: if pair.endnote {
-                NotePairKind::Endnote
-            } else {
-                NotePairKind::Footnote
-            },
-            label_anchor: SourceAnchor {
-                line_id: label_line.id.clone(),
-                start: pair.label.start,
-                end: pair.label.end,
-            },
-            reference_anchors: pair
-                .refs
-                .iter()
-                .map(|reference| SourceAnchor {
-                    line_id: lines[reference.line].id.clone(),
-                    start: reference.start,
-                    end: reference.end,
-                })
-                .collect(),
-            body_line_ids: body_lines.iter().map(|line| line.id.clone()).collect(),
-        });
+        let kind = if pair.endnote { NodeKind::Endnote } else { NodeKind::Footnote };
+        let range = ranges.first().zip(ranges.last()).map_or(ScalarRange { start: label_range.end, end: label_range.end },
+            |(first, last)| ScalarRange { start: first.start, end: last.end });
+        let mut node = StructureNode::new(pair.pair_id.clone(), kind, range, NOTE_PAIRING_ORIGIN, Derivation::Heuristic, None);
+        node.ranges = ranges;
+        node.line_ids = body_lines.iter().map(|line| line.id.clone()).collect();
+        node.page_indexes = body_lines.iter().map(|line| line.page_index).collect::<BTreeSet<_>>().into_iter().collect();
+        node.marker_range = Some(label_range);
+        node.calls = calls;
+        node.label = Some(format!("fn{display}"));
+        node.series = pair.restart_sequence.to_string();
+        node.grammar = Some("region:note".to_owned());
+        if !pair.provenance.is_empty() {
+            node.properties.insert("provenance".to_owned(), pair.provenance.clone());
+        }
+        notes.push(node);
     }
-    PairingOutput {
-        footnotes,
-        diagnostics,
-        anchors,
-        pair_claims,
-        pairing_audit,
-    }
+    NotePairing { notes, diagnostics, audit: pairing_audit }
 }

@@ -24,14 +24,6 @@ pub trait LayoutAnalysis: Sync {
     fn is_citation_shaped_tail(&self, text: &str) -> bool;
     fn crossref_short_form(&self, text: &str, byte_start: usize) -> String;
 
-    /// A laid-out document's note labels paired with their references, its lines' citations
-    /// (by line id, in scalar offsets) protected from being read as either.
-    fn pair_footnotes(
-        &self,
-        pages: &[Page],
-        protected_citation_spans: &BTreeMap<String, Vec<PdfSourceSpan>>,
-        include_audit: bool,
-    ) -> PairingOutput;
     /// Restores the labels recognition misread from the runs they stand in: note labels whose
     /// leading digits it dropped, from the note chain, and paragraph and item numbers.
     fn repair_label_dropouts(&self, pages: &mut [Page]);

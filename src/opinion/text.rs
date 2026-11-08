@@ -660,17 +660,17 @@ fn notes_of(lines: &[Line<'_>], zones: &[Vec<Zone>], pages: &[(usize, usize)]) -
             ..Default::default()
         }
     }).collect::<Vec<_>>();
-    let pairing = pair_footnotes(&laid, &protected, false);
     let place = |line_id: &str, start: usize, end: usize| -> Option<ScalarRange> {
         let line = &lines[line_id.strip_prefix('l')?.parse::<usize>().ok()?];
         let origin = line.body_range().start;
         let unit = |scalars: usize| line.body.chars().take(scalars).map(char::len_utf16).sum::<usize>();
         Some(ScalarRange { start: origin + unit(start), end: origin + unit(end) })
     };
-    let references = pairing.pair_claims.iter().filter_map(|claim| {
-        let line = claim.label_anchor.line_id.strip_prefix('l')?.parse::<usize>().ok()?;
-        Some((line, claim.reference_anchors.iter()
-            .filter_map(|anchor| place(&anchor.line_id, anchor.start, anchor.end)).collect::<Vec<_>>()))
+    let pairing = pair_footnotes(&laid, &protected, false, &place);
+    // Each note's calls, by its label's line.
+    let references = pairing.notes.iter().filter_map(|note| {
+        let line = note.line_ids.first()?.strip_prefix('l')?.parse::<usize>().ok()?;
+        Some((line, note.calls.clone()))
     }).collect::<HashMap<_, _>>();
     let mut notes = Vec::<StructureNode>::new();
     for (index, zone) in zones.iter().enumerate().flat_map(|(page, zones)| zones.iter().map(move |zone| (page, zone))) {
