@@ -129,9 +129,8 @@ const PAGE_TEXT: usize = 400;
 /// on page 580 of 78 N.M. The head matter's first block is on the case's first page, which its citation names; with no head
 /// matter the opinion's first leaf stands for it, the pages reckoned and said to be. With no printed citation they stay leaves.
 pub(super) fn leaves_to_pages(kinds: &mut Kinds, record: &OpinionRecord) {
-    let pages = &mut kinds.pages;
     static BLOCK: OnceLock<Regex> = OnceLock::new();
-    let leaves = pages.iter().enumerate().filter(|(_, page)| page.grammar.as_deref() == Some("pgmap")).filter_map(|(at, page)| Some((at, page_number(&page.printed_label())?))).collect::<Vec<_>>();
+    let leaves = kinds.pages.iter().enumerate().filter(|(_, page)| page.grammar.as_deref() == Some("pgmap")).filter_map(|(at, page)| Some((at, page_number(&page.printed_label())?))).collect::<Vec<_>>();
     let Some(first) = leaves.iter().map(|leaf| leaf.1).min() else { return };
     let head = record.cluster.iter().find(|(field, _)| field == "headmatter").and_then(|(_, matter)| {
         BLOCK.get_or_init(|| Regex::new(r#"\bid="b(\d+)-"#).unwrap()).captures(matter)?[1].parse::<u32>().ok()
@@ -147,14 +146,14 @@ pub(super) fn leaves_to_pages(kinds: &mut Kinds, record: &OpinionRecord) {
         .and_then(|citation| page_number(&citation.page)).filter(|page| *page <= anchor);
     let Some(opening) = scanned.or_else(|| printed(&["1", "2", "4", "5"])).or_else(|| printed(&["3"])) else {
         for (at, _) in leaves {
-            pages[at].series = "leaf".to_owned();
+            kinds.pages[at].series = "leaf".to_owned();
         }
         return;
     };
     for (at, leaf) in leaves {
-        pages[at].label = Some(format!("page{}", (leaf - (anchor - opening)).to_string()));
+        kinds.pages[at].label = Some(format!("page{}", (leaf - (anchor - opening)).to_string()));
         if head.is_none() {
-            pages[at].grammar = Some(("reckoned").to_owned());
+            kinds.pages[at].grammar = Some(("reckoned").to_owned());
         }
     }
 }
@@ -164,13 +163,11 @@ pub(super) fn leaves_to_pages(kinds: &mut Kinds, record: &OpinionRecord) {
 /// "*Page 169". A framed form says what it is; bare stars must run, and a bare "(642)" or "[522]" run from the first pages
 /// of one of the case's printed citations.
 pub(super) fn printed_page_marks(structure: &mut DocumentStructure, kinds: &mut Kinds, citations: &[OpinionCitation]) {
-    let pages = &mut kinds.pages;
-
     static MARK: OnceLock<Regex> = OnceLock::new();
-    let held = pages.iter().filter_map(|page| page.series.strip_prefix("reporter-")?.parse::<usize>().ok()).collect::<HashSet<_>>();
+    let held = kinds.pages.iter().filter_map(|page| page.series.strip_prefix("reporter-")?.parse::<usize>().ok()).collect::<HashSet<_>>();
     let numbered = |stars: usize| held.contains(&stars);
     let mark = MARK.get_or_init(|| Regex::new(r"\{\*+\d+\s[^{}\n]{1,30}\sat\s(\d{1,5})\}|\[ ?(\*+) ?(\d{1,5}) ?[\]J]|\[(?:(?i:original) )?(?i:page|pg\.?) (\d{1,5})\]|(\*{1,3}) ?(?:Page )?(\d{1,5})(?-u:\b)|\((\d{2,5})\)|\[(\d{2,5})\]").unwrap());
-    let mut existing = pages.iter().filter_map(|page| page.marker_range).collect::<Vec<_>>();
+    let mut existing = kinds.pages.iter().filter_map(|page| page.marker_range).collect::<Vec<_>>();
     existing.sort_by_key(|mark| mark.start);
     let cited = citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7" | "8") && !citation.reporter.contains("LEXIS")).filter_map(|citation| citation.page.parse::<u32>().ok()).collect::<Vec<_>>();
     let within_citation = |number: u32| cited.iter().any(|first| (*first..=first + PAGE_REACH).contains(&number));
@@ -204,7 +201,7 @@ pub(super) fn printed_page_marks(structure: &mut DocumentStructure, kinds: &mut 
     }
     // "[*5]" alone is a slip opinion's; beside "[**709]" each count is a reporter.
     let several = found.keys().any(|form| (12..14).contains(form));
-    let slip_held = pages.iter().any(|page| page.series == "slip");
+    let slip_held = kinds.pages.iter().any(|page| page.series == "slip");
     let mut printed_pages = Vec::new();
     for (form, marks) in found {
         let mut run = Vec::<(usize, usize, u32)>::new();
@@ -233,7 +230,7 @@ pub(super) fn printed_page_marks(structure: &mut DocumentStructure, kinds: &mut 
             printed_pages.push(read_page(number.to_string(), series.clone(), start, longest.get(index + 1).map_or(utf16_len(&structure.text), |next| next.0), Some(ScalarRange { start, end }), "printed"));
         }
     }
-    pages.extend(printed_pages);
+    kinds.pages.extend(printed_pages);
 }
 
 /// Head matter Harvard sets ahead of the opinion, wherever the book printed it: counsel printed on the case's last page, dates,
@@ -294,12 +291,10 @@ fn own_count(series: &str) -> bool {
 /// A numbering climbs. Marks of one source's numbering that run apart from its longest run, "364 365 366 697 367", are a
 /// second printing if one of the case's citations opens there; otherwise strays, as a rendition's closing "*Page 264" is.
 fn separate_printings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let pages = &mut kinds.pages;
-
     const STEP: u32 = 3;
-    let names = pages.iter().map(|page| page.series.clone()).filter(|series| !own_count(series) && !series.ends_with("-b")).collect::<HashSet<_>>();
+    let names = kinds.pages.iter().map(|page| page.series.clone()).filter(|series| !own_count(series) && !series.ends_with("-b")).collect::<HashSet<_>>();
     for series in names {
-        let mut members = pages.iter().enumerate().filter(|(_, page)| page.series == series && !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray"))
+        let mut members = kinds.pages.iter().enumerate().filter(|(_, page)| page.series == series && !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray"))
             .filter_map(|(at, page)| Some((page.range.start, at, page_number(&page.printed_label())?))).collect::<Vec<_>>();
         members.sort_by_key(|member| (member.0, member.2));
         let mut runs = Vec::<Vec<(usize, u32)>>::new();
@@ -330,10 +325,10 @@ fn separate_printings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
             }
         }
         for at in second {
-            pages[at].series = format!("{series}-b");
+            kinds.pages[at].series = format!("{series}-b");
         }
         for at in strays {
-            pages[at].grammar = Some(("stray").to_owned());
+            kinds.pages[at].grammar = Some(("stray").to_owned());
         }
     }
 }
@@ -357,7 +352,6 @@ pub(super) fn page_series(structure: &mut DocumentStructure, kinds: &mut Kinds, 
         }).collect();
     }
     separate_printings(structure, kinds);
-    let pages = &mut kinds.pages;
     // Harvard files a case under the book it scanned, "law.free.cap.us.476/426.12567.json", and its marks are that book's unless
     // another citation fits them far better: "nys.138/212" holds the marks of 78 Misc. 264 from 266.
     static SCANNED: OnceLock<Regex> = OnceLock::new();
@@ -367,7 +361,7 @@ pub(super) fn page_series(structure: &mut DocumentStructure, kinds: &mut Kinds, 
     // The first mark in the text's order: one stray low label is no numbering's start. Nor is a first mark the next one falls
     // below: a block the source moved ahead of the opinion, "*394" on counsel printed at the case's end, before "*391".
     let mut by_series = HashMap::<String, Vec<(usize, u32)>>::new();
-    for page in pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray") && !own_count(&page.series)) {
+    for page in kinds.pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray") && !own_count(&page.series)) {
         if let Some(number) = page_number(&page.printed_label()) {
             by_series.entry(page.series.clone()).or_default().push((page.range.start, number));
         }
@@ -379,7 +373,7 @@ pub(super) fn page_series(structure: &mut DocumentStructure, kinds: &mut Kinds, 
     }).collect::<HashMap<_, _>>();
     let marked = !firsts.is_empty();
     let mut lowest_of = HashMap::<String, u32>::new();
-    for page in pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray") && page.grammar.as_deref() != Some("reckoned")) {
+    for page in kinds.pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray") && page.grammar.as_deref() != Some("reckoned")) {
         if let Some(number) = page_number(&page.printed_label()) {
             let entry = lowest_of.entry(page.series.clone()).or_insert(number);
             *entry = number.min(*entry);
@@ -390,7 +384,7 @@ pub(super) fn page_series(structure: &mut DocumentStructure, kinds: &mut Kinds, 
     let mut nearest_to = HashMap::<String, u32>::new();
     let mut distances = HashMap::<String, u32>::new();
     // The book Harvard scanned names its own marks; a numbering named only for opening nearest a citation keeps the others it
-    // could open on, nearest first, (citation, pages from its first mark), in case the book's marks take that one.
+    // could open on, nearest first, (citation, kinds.pages from its first mark), in case the book's marks take that one.
     let mut by_book = HashSet::<String>::new();
     let mut fallbacks = HashMap::<String, Vec<(OpinionCitation, u32)>>::new();
     let mut first_of = HashMap::<String, u32>::new();
@@ -431,7 +425,7 @@ pub(super) fn page_series(structure: &mut DocumentStructure, kinds: &mut Kinds, 
             ranked.sort_by_key(|citation| opens(citation));
             fallbacks.insert(series.clone(), ranked.into_iter().map(|citation| (citation.clone(), opens(&citation).unwrap_or(u32::MAX))).collect());
             let mut printed = pool.iter().copied().filter(|citation| opens(citation) == nearest && nearest.is_some()).collect::<Vec<_>>();
-            // The table files some reporters as neutral citations, "60 M.J. 178": past page 3, marks that open at one are its pages.
+            // The table files some reporters as neutral citations, "60 M.J. 178": past page 3, marks that open at one are its kinds.pages.
             if printed.is_empty() && first > 3 {
                 let filed = eligible.iter().filter(|citation| citation.kind == "8").filter_map(|citation| opens(citation)).min();
                 printed = eligible.iter().copied().filter(|citation| citation.kind == "8" && filed.is_some() && opens(citation) == filed).collect();
@@ -452,11 +446,11 @@ pub(super) fn page_series(structure: &mut DocumentStructure, kinds: &mut Kinds, 
         distances.insert(series.clone(), distance);
         if by_name.is_none() {
             if let Some(page) = page_number(&citation.page).filter(|_| !matches!(citation.kind.as_str(), "6" | "7" | "8")) {
-                if page < first && first_at > 0 && !pages.iter().any(|known| known.series == series && known.range.start == 0) {
+                if page < first && first_at > 0 && !kinds.pages.iter().any(|known| known.series == series && known.range.start == 0) {
                     if first - page <= 3 {
                         opening.push(read_page(citation.page.clone(), series.clone(), 0, 0, None, "citation"));
                     } else if first_at <= ONE_PAGE {
-                        // An opinion that opens a few pages into its case: the words before the first mark are on the page before it.
+                        // An opinion that opens a few kinds.pages into its case: the words before the first mark are on the page before it.
                         opening.push(read_page((first - 1).to_string(), series.clone(), 0, 0, None, "reckoned"));
                     }
                 }
@@ -467,7 +461,7 @@ pub(super) fn page_series(structure: &mut DocumentStructure, kinds: &mut Kinds, 
             also: chosen[1..].iter().map(|other| other.printed()).collect(),
         });
     }
-    // The scanned book's marks are its pages, however near another numbering opens to its first page: "259 Ala. 152" is Harvard's
+    // The scanned book's marks are its kinds.pages, however near another numbering opens to its first page: "259 Ala. 152" is Harvard's
     // marks from 157, not Lawbox's from 153, which are 66 So. 2d 151's. A numbering named only by nearness to the book's citation
     // takes the next citation it could open on that no other numbering holds, or none.
     let books = named.iter().filter(|known| by_book.contains(&known.series)).map(|known| known.citation.clone()).collect::<HashSet<_>>();
@@ -511,7 +505,7 @@ pub(super) fn page_series(structure: &mut DocumentStructure, kinds: &mut Kinds, 
         }
     }
     named.sort_by(|left, right| left.series.cmp(&right.series));
-    pages.extend(opening);
+    kinds.pages.extend(opening);
     structure.opinion.as_mut().unwrap().page_series = named;
 }
 

@@ -17,7 +17,6 @@ pub(super) fn note_label_of(coordinates: &ScalarText, note: &StructureNode) -> (
 /// whatever a scanner did to the rest; else it is new, and its words join the end of the reading text. Either way a note of
 /// ours with no call takes the other's, placed by the words before it.
 pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds, other: &DocumentStructure) {
-    let notes = &mut kinds.notes;
     const SHINGLE: usize = 4;
     if !other.nodes.iter().any(|node| node.kind == NodeKind::Footnote) {
         return;
@@ -26,7 +25,7 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds,
     let coordinates = ScalarText::new(other.query_text());
     let held = {
         let ours = ScalarText::new(&structure.text);
-        notes.iter().map(|note| {
+        kinds.notes.iter().map(|note| {
             note.ranges.iter().filter_map(|range| ours.slice_utf16(range.start..range.end)).map(words_of).fold(HashSet::new(), |mut all, part| { all.extend(part); all })
         }).collect::<Vec<_>>()
     };
@@ -54,12 +53,12 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds,
         }
         let calls = note.calls.iter().filter_map(|call| placed(*call)).collect::<Vec<_>>();
         if let Some(same) = held.iter().position(|ours| words.iter().filter(|word| ours.contains(*word)).count() * 2 > words.len()) {
-            structure.opinion.as_mut().unwrap().note_witness[usize::from(notes[same].calls.is_empty())] += 1;
-            if notes[same].calls.is_empty() {
+            structure.opinion.as_mut().unwrap().note_witness[usize::from(kinds.notes[same].calls.is_empty())] += 1;
+            if kinds.notes[same].calls.is_empty() {
                 if calls.is_empty() && !note.calls.is_empty() {
-                    notes[same].properties.insert("called_outside".to_owned(), String::new());
+                    kinds.notes[same].properties.insert("called_outside".to_owned(), String::new());
                 }
-                notes[same].calls = calls;
+                kinds.notes[same].calls = calls;
             }
             continue;
         }
@@ -69,7 +68,7 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds,
         structure.text.push_str(body);
         let range = ScalarRange { start, end: start + utf16_len(body) };
         let called_outside = calls.is_empty() && !note.calls.is_empty();
-        notes.push({ let mut note = read_note(label, start, range.end, vec![range], calls); if called_outside { note.properties.insert("called_outside".to_owned(), String::new()); } note });
+        kinds.notes.push({ let mut note = read_note(label, start, range.end, vec![range], calls); if called_outside { note.properties.insert("called_outside".to_owned(), String::new()); } note });
     }
 }
 
@@ -218,19 +217,17 @@ pub(super) fn unmatched_calls(structure: &DocumentStructure, coordinates: &Scala
 /// Calls the source left unlinked find their notes by label, in order; and where no note answers, the numbered paragraphs
 /// past the last call that run through their labels are the notes, set as text.
 pub(super) fn answer_calls(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let paragraphs = &mut kinds.paragraphs;
-    let notes = &mut kinds.notes;
     static OPENING: OnceLock<Regex> = OnceLock::new();
     let mut calls = std::mem::take(&mut structure.opinion.as_mut().unwrap().unmatched_calls);
     calls.sort_by_key(|call| call.start);
-    for note in notes.iter_mut().filter(|note| note.calls.is_empty()) {
+    for note in kinds.notes.iter_mut().filter(|note| note.calls.is_empty()) {
         if let Some(at) = calls.iter().position(|call| plain_label(&call.label) == plain_label(&note.printed_label())) {
             let call = calls.remove(at);
             note.calls.push(ScalarRange { start: call.start, end: call.end });
         }
     }
     calls.retain(|call| {
-        let Some(note) = notes.iter_mut().find(|note| plain_label(&note.printed_label()) == plain_label(&call.label)) else { return true };
+        let Some(note) = kinds.notes.iter_mut().find(|note| plain_label(&note.printed_label()) == plain_label(&call.label)) else { return true };
         note.calls.push(ScalarRange { start: call.start, end: call.end });
         false
     });
@@ -238,13 +235,13 @@ pub(super) fn answer_calls(structure: &mut DocumentStructure, kinds: &mut Kinds)
     wanted.sort_unstable();
     wanted.dedup();
     // A note list's own markers open their paragraphs: the last call is the last in the text's run.
-    let opens = |call: &&UnmatchedCall| paragraphs.binary_search_by_key(&call.start, |paragraph| paragraph.range.start).is_ok();
+    let opens = |call: &&UnmatchedCall| kinds.paragraphs.binary_search_by_key(&call.start, |paragraph| paragraph.range.start).is_ok();
     let mut last_call = calls.iter().filter(|call| !opens(call)).map(|call| call.end).max().unwrap_or(0);
-    // A list under a notes title needs no call at all.
+    // A list under a kinds.notes title needs no call at all.
     static TITLE: OnceLock<Regex> = OnceLock::new();
-    let title = TITLE.get_or_init(|| Regex::new(r"(?mi)^[ \t]*(?:(?:foot|end)?notes?|escolios?)[ \t]*:?[ \t]*$").unwrap()).find_iter(&structure.text).last();
-    let titled = title.is_some() && notes.is_empty();
-    if let Some(title) = title.filter(|_| notes.is_empty()) {
+    let title = TITLE.get_or_init(|| Regex::new(r"(?mi)^[ \t]*(?:(?:foot|end)?kinds.notes?|escolios?)[ \t]*:?[ \t]*$").unwrap()).find_iter(&structure.text).last();
+    let titled = title.is_some() && kinds.notes.is_empty();
+    if let Some(title) = title.filter(|_| kinds.notes.is_empty()) {
         last_call = utf16_len(&structure.text[..title.end()]);
         if wanted.is_empty() {
             wanted = (1..1000).collect();
@@ -255,22 +252,22 @@ pub(super) fn answer_calls(structure: &mut DocumentStructure, kinds: &mut Kinds)
         let coordinates = ScalarText::new(&structure.text);
         let mut found = Vec::new();
         let printed_of = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js);
-        // A list of notes stands last, and a list in the opinion may print its numbers first: "(3) Was the conduct ...". Read from
+        // A list of kinds.notes stands last, and a list in the opinion may print its numbers first: "(3) Was the conduct ...". Read from
         // the tail back, each note is the last paragraph that prints its number.
         let mut chosen = HashMap::new();
         let mut ceiling = u32::MAX;
-        for paragraph in paragraphs.iter().rev().take_while(|paragraph| paragraph.range.start >= last_call) {
+        for paragraph in kinds.paragraphs.iter().rev().take_while(|paragraph| paragraph.range.start >= last_call) {
             let number = printed_of(paragraph).and_then(|printed| opening.captures(printed)).and_then(|capture| capture[1].parse::<u32>().ok());
             if let Some(number) = number.filter(|number| *number < ceiling && wanted.contains(number)) {
                 chosen.insert(paragraph.range.start, number);
                 ceiling = number;
             }
         }
-        // The paragraphs under a note belong to it only where another note closes them, or a notes title heads the list: past
+        // The kinds.paragraphs under a note belong to it only where another note closes them, or a kinds.notes title heads the list: past
         // the last note of no list is the opinion, a number having opened a paragraph of it. A paragraph's own mark ends any note.
         let mut under = None;
         let mut closed = false;
-        for paragraph in paragraphs.iter().filter(|paragraph| paragraph.range.start >= last_call) {
+        for paragraph in kinds.paragraphs.iter().filter(|paragraph| paragraph.range.start >= last_call) {
             let Some(printed) = printed_of(paragraph) else { continue };
             if let Some(number) = chosen.get(&paragraph.range.start) {
                 if let (Some(last), Some(end)) = (found.last_mut(), under.take()) {
@@ -293,11 +290,11 @@ pub(super) fn answer_calls(structure: &mut DocumentStructure, kinds: &mut Kinds)
             for (number, start, end) in found {
                 let label = number.to_string();
                 let references = calls.iter().filter(|call| plain_label(&call.label) == label).map(|call| ScalarRange { start: call.start, end: call.end }).collect();
-                notes.push(read_note(label, start, end, vec![ScalarRange { start, end }], references));
+                kinds.notes.push(read_note(label, start, end, vec![ScalarRange { start, end }], references));
             }
-            let answered = notes.iter().map(|note| plain_label(&note.printed_label())).collect::<HashSet<_>>();
+            let answered = kinds.notes.iter().map(|note| plain_label(&note.printed_label())).collect::<HashSet<_>>();
             calls.retain(|call| !answered.contains(plain_label(&call.label)));
-            notes.sort_by_key(|note| note.range.start);
+            kinds.notes.sort_by_key(|note| note.range.start);
         }
     }
     structure.opinion.as_mut().unwrap().unmatched_calls = calls;
@@ -306,7 +303,6 @@ pub(super) fn answer_calls(structure: &mut DocumentStructure, kinds: &mut Kinds)
 /// Notes set flat in the text, each under its own "Footnote 1:" or "[Note 1]", with the calls that name them ("[FN1]",
 /// "[Note 1]"). A source's one note round all of them gives way to them.
 pub(super) fn flat_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let notes = &mut kinds.notes;
     static LABEL: OnceLock<Regex> = OnceLock::new();
     static CALL: OnceLock<Regex> = OnceLock::new();
     let label = LABEL.get_or_init(|| Regex::new(r"(?m)^[ \t]*(?:(?:Footnote|FN) ?(\d{1,3}|\*+)(?: ?[:.]|[ \t]+\p{Lu}|[ \t]*$)|\[(?:Note|FN) ?(\d{1,3})\])").unwrap());
@@ -339,28 +335,26 @@ pub(super) fn flat_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     }).collect::<Vec<_>>();
     let found = opened.iter().enumerate().map(|(index, (_, _, number))| (number.clone(), starts[index], stops[index])).collect::<Vec<_>>();
     for (number, start, stop) in found {
-        if notes.iter().any(|note| note.printed_label() == number && note.range.start <= start && start < note.range.end) {
+        if kinds.notes.iter().any(|note| note.printed_label() == number && note.range.start <= start && start < note.range.end) {
             continue;
         }
-        notes.retain(|note| !(note.range.start <= start && start < note.range.end));
+        kinds.notes.retain(|note| !(note.range.start <= start && start < note.range.end));
         let references = calls.iter().filter(|call| call.0 == number).map(|call| ScalarRange { start: call.1, end: call.1 + call.2 }).collect();
-        notes.push(read_note(number, start, stop, vec![ScalarRange { start, end: stop }], references));
+        kinds.notes.push(read_note(number, start, stop, vec![ScalarRange { start, end: stop }], references));
     }
-    notes.sort_by_key(|note| note.range.start);
+    kinds.notes.sort_by_key(|note| note.range.start);
 }
 
 /// A note whose body runs on through the next notes' numbers, "... 110. Id. 111. See note 86 supra.": a source's list of notes set
 /// as one block. Numbers climbing by ones from the note's own, after a finished sentence, are each a note if the text calls them.
 pub(super) fn split_note_lists(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let notes = &mut kinds.notes;
-
     const LEAST_RUN: usize = 2;
     static NUMBER: OnceLock<Regex> = OnceLock::new();
     let number = NUMBER.get_or_init(|| Regex::new(r"(?-u:\b)(\d{1,3})\. +\p{Lu}").unwrap());
     let coordinates = ScalarText::new(&structure.text);
     let called = structure.opinion.as_ref().unwrap().unmatched_calls.iter().filter_map(|call| plain_label(&call.label).parse::<u32>().ok()).collect::<HashSet<_>>();
     let mut added = Vec::new();
-    for note in notes.iter_mut().filter(|note| note.ranges.len() == 1) {
+    for note in kinds.notes.iter_mut().filter(|note| note.ranges.len() == 1) {
         let Ok(mut next) = note.printed_label().parse::<u32>().map(|label| label + 1) else { continue };
         let range = note.ranges[0];
         let Some(body) = coordinates.slice_utf16(range.start..range.end) else { continue };
@@ -386,23 +380,21 @@ pub(super) fn split_note_lists(structure: &mut DocumentStructure, kinds: &mut Ki
         }
     }
     if !added.is_empty() {
-        notes.append(&mut added);
-        notes.sort_by_key(|note| note.range.start);
+        kinds.notes.append(&mut added);
+        kinds.notes.sort_by_key(|note| note.range.start);
     }
 }
 
 /// Notes of one label more than once (each opinion's own series) share their calls in order; a note with none takes a
 /// bracketed number in the text, where the source left it as words.
 pub(super) fn share_note_calls(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let paragraphs = &mut kinds.paragraphs;
-    let notes = &mut kinds.notes;
     static CALL: OnceLock<Regex> = OnceLock::new();
     let mut by_label = HashMap::<String, Vec<usize>>::new();
-    for (index, note) in notes.iter().enumerate() {
+    for (index, note) in kinds.notes.iter().enumerate() {
         by_label.entry(note.printed_label().to_owned()).or_default().push(index);
     }
     for indices in by_label.values().filter(|indices| indices.len() > 1) {
-        let mut calls = indices.iter().flat_map(|&index| notes[index].calls.iter().copied()).collect::<Vec<_>>();
+        let mut calls = indices.iter().flat_map(|&index| kinds.notes[index].calls.iter().copied()).collect::<Vec<_>>();
         calls.sort_by_key(|call| call.start);
         // One call found twice, by the engine and through another rendition's copy of its note, a unit or two apart, is one call.
         calls.dedup_by(|later, kept| later.start <= kept.end + 2);
@@ -410,13 +402,13 @@ pub(super) fn share_note_calls(structure: &mut DocumentStructure, kinds: &mut Ki
             // In the text's order each opinion's series follows the last; a note left over, another rendition's copy set at the
             // end, has no call of its own and takes none.
             let mut order = indices.clone();
-            order.sort_by_key(|&index| notes[index].range.start);
+            order.sort_by_key(|&index| kinds.notes[index].range.start);
             for (position, &index) in order.iter().enumerate() {
-                notes[index].calls = calls.get(position).copied().into_iter().collect();
+                kinds.notes[index].calls = calls.get(position).copied().into_iter().collect();
             }
         }
     }
-    if !notes.iter().any(|note| note.calls.is_empty() && note.printed_label().bytes().all(|byte| byte.is_ascii_digit())) {
+    if !kinds.notes.iter().any(|note| note.calls.is_empty() && note.printed_label().bytes().all(|byte| byte.is_ascii_digit())) {
         return;
     }
     let mut units = Units::new(&structure.text);
@@ -425,13 +417,13 @@ pub(super) fn share_note_calls(structure: &mut DocumentStructure, kinds: &mut Ki
     for capture in call.captures_iter(&structure.text) {
         let whole = capture.get(0).unwrap();
         let unit = units.at(whole.start());
-        let opening = paragraphs.iter().any(|paragraph| paragraph.range.start == unit);
-        if !opening && !notes.iter().any(|note| note.ranges.iter().any(|range| range.start <= unit && unit < range.end)) {
+        let opening = kinds.paragraphs.iter().any(|paragraph| paragraph.range.start == unit);
+        if !opening && !kinds.notes.iter().any(|note| note.ranges.iter().any(|range| range.start <= unit && unit < range.end)) {
             printed.entry(capture[1].to_owned()).or_default().push(ScalarRange { start: unit, end: unit + utf16_len(whole.as_str()) });
         }
     }
-    let used = notes.iter().flat_map(|note| note.calls.iter().map(|call| call.start)).collect::<HashSet<_>>();
-    for note in notes.iter_mut().filter(|note| note.calls.is_empty()) {
+    let used = kinds.notes.iter().flat_map(|note| note.calls.iter().map(|call| call.start)).collect::<HashSet<_>>();
+    for note in kinds.notes.iter_mut().filter(|note| note.calls.is_empty()) {
         if let Some(calls) = printed.get_mut(note.printed_label()) {
             calls.retain(|call| !used.contains(&call.start));
             if !calls.is_empty() {

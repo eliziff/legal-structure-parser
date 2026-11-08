@@ -457,22 +457,20 @@ fn section_title(title: &str) -> bool {
 
 /// A paragraph of ours that opens on a title another rendition marks has that title at its head, or is that title.
 fn take_marked_titles(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
-    let paragraphs = &mut kinds.paragraphs;
-    let headings = &mut kinds.headings;
     if pending.marked_titles.is_empty() {
         return;
     }
     let coordinates = ScalarText::new(&structure.text);
     let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
-    let ours = headings.iter().filter_map(|heading| coordinates.slice_utf16(heading.range.start..heading.range.end)).map(|text| bare_title(&key(text))).collect::<HashSet<_>>();
+    let ours = kinds.headings.iter().filter_map(|heading| coordinates.slice_utf16(heading.range.start..heading.range.end)).map(|text| bare_title(&key(text))).collect::<HashSet<_>>();
     let mut wanted = HashMap::<String, Vec<Vec<String>>>::new();
     for title in pending.marked_titles.iter().filter(|title| section_title(title)).map(|title| bare_title(title)).filter(|title| title.len() > 3 && !ours.contains(title)) {
         let words = title.split(' ').map(str::to_owned).collect::<Vec<_>>();
         wanted.entry(words[0].clone()).or_default().push(words);
     }
     let mut taken = Vec::new();
-    let mut kept = Vec::with_capacity(paragraphs.len());
-    for mut paragraph in std::mem::take(paragraphs) {
+    let mut kept = Vec::with_capacity(kinds.paragraphs.len());
+    for mut paragraph in std::mem::take(&mut kinds.paragraphs) {
         let raw = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).unwrap_or("");
         let words = word_starts(raw);
         let title = words.first().and_then(|first| wanted.get(&first.0)).and_then(|titles| {
@@ -490,20 +488,18 @@ fn take_marked_titles(structure: &mut DocumentStructure, kinds: &mut Kinds, pend
             kept.push(paragraph);
         }
     }
-    *paragraphs = kept;
-    headings.append(&mut taken);
+    kinds.paragraphs = kept;
+    kinds.headings.append(&mut taken);
 }
 
 /// The titles other renditions mark, against the headings this reading came to. A case's name and a list of notes are no section's
 /// title. A title compares by its words alone, without a page mark at its head or a note's call at its tail, and may stand in two
 /// headings here, "IV." over "Conclusion". Of those not held, the words that stand in this text are titles missed.
 fn witness_headings(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
-    let headings = &mut kinds.headings;
-
     let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
     // A title's paragraph or outline number stays off it here: a rendition may print the mark inside what it marks.
     let unnumbered = |title: String| title.split(' ').skip_while(|word| !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_digit())).collect::<Vec<_>>().join(" ");
-    let keys = headings.iter().map(|heading| key(&heading.display_value.as_deref().unwrap_or(""))).collect::<Vec<_>>();
+    let keys = kinds.headings.iter().map(|heading| key(&heading.display_value.as_deref().unwrap_or(""))).collect::<Vec<_>>();
     let mut ours = keys.iter().map(|title| unnumbered(bare_title(title))).collect::<HashSet<_>>();
     ours.extend(keys.windows(2).map(|pair| unnumbered(bare_title(&format!("{} {}", pair[0], pair[1])))));
     let wanted = pending.marked_titles.iter().filter(|title| section_title(title)).map(|title| unnumbered(bare_title(title))).collect::<HashSet<_>>();
@@ -526,10 +522,8 @@ fn in_their_order(places: Vec<Option<usize>>) -> Vec<Option<usize>> {
 /// do, else reckoned by number between the pages either side. A mark that joins no run of the numbering, like the "*Page 1"
 /// some renditions close on, is held as a stray: printed, and no page of the run.
 fn place_by_number(structure: &mut DocumentStructure, kinds: &mut Kinds, series: &str, labels: Vec<String>) {
-    let pages = &mut kinds.pages;
-
     let held = |pages: &[StructureNode]| pages.iter().filter(|page| page.series == series).filter_map(|page| Some((page_number(&page.printed_label())?, page.range.start))).collect::<Vec<_>>();
-    let mut known = held(&*pages).into_iter().map(|page| page.0).collect::<HashSet<_>>();
+    let mut known = held(&kinds.pages).into_iter().map(|page| page.0).collect::<HashSet<_>>();
     let open = known.is_empty();
     let mut numbered = labels.into_iter().filter_map(|label| Some((page_number(&label)?, label))).collect::<Vec<_>>();
     numbered.sort_by_key(|mark| mark.0);
@@ -541,13 +535,13 @@ fn place_by_number(structure: &mut DocumentStructure, kinds: &mut Kinds, series:
             joined.insert(mark.0);
         }
     }
-    let held_pages = held(&*pages);
+    let held_pages = held(&kinds.pages);
     let text_end = utf16_len(&structure.text);
     let word_places = word_starts(&structure.text).into_iter().map(|word| word.1).collect::<Vec<_>>();
     for (number, label) in numbered {
         let past_the_last = !held_pages.is_empty() && held_pages.iter().all(|page| page.0 < number);
         if !joined.contains(&number) || past_the_last {
-            pages.push(read_page(label, series.to_owned(), text_end, text_end, None, "stray"));
+            kinds.pages.push(read_page(label, series.to_owned(), text_end, text_end, None, "stray"));
             continue;
         }
         let lowest = joined.iter().copied().min().unwrap_or(number);
@@ -559,17 +553,16 @@ fn place_by_number(structure: &mut DocumentStructure, kinds: &mut Kinds, series:
             let reckoned = low.1 + high_start.saturating_sub(low.1) * (number - low.0) as usize / (high_number - low.0) as usize;
             word_places.get(word_places.partition_point(|place| *place < reckoned)).copied().unwrap_or(reckoned)
         });
-        pages.push(read_page(label, series.to_owned(), start, 0, None, "reckoned"));
+        kinds.pages.push(read_page(label, series.to_owned(), start, 0, None, "reckoned"));
     }
 }
 
 /// The numbering a plain text prints on its pages, where the markup chosen has lost it: each page placed in our text by the
 /// words it opens on.
 fn supply_plain_pages(structure: &mut DocumentStructure, kinds: &mut Kinds, plain: &str, page_count: Option<u32>) {
-    let pages = &mut kinds.pages;
     const SHINGLE: usize = 5;
     let plain_pages = text::read(plain, page_count).kinds.pages.into_iter().filter(|page| page.series != "sheet").collect::<Vec<_>>();
-    if plain_pages.is_empty() || plain_pages.iter().any(|page| pages.iter().any(|ours| ours.series == page.series)) {
+    if plain_pages.is_empty() || plain_pages.iter().any(|page| kinds.pages.iter().any(|ours| ours.series == page.series)) {
         return;
     }
     let shingle = |window: &[(String, usize)]| window.iter().map(|word| word.0.as_str()).collect::<Vec<_>>().join(" ");
@@ -587,7 +580,7 @@ fn supply_plain_pages(structure: &mut DocumentStructure, kinds: &mut Kinds, plai
     let mut unplaced = HashMap::<String, Vec<String>>::new();
     for (page, place) in plain_pages.into_iter().zip(places) {
         match place {
-            Some(place) => pages.push(read_page(page.printed_label(), page.series.clone(), words[place].1, 0, None, "other-rendition")),
+            Some(place) => kinds.pages.push(read_page(page.printed_label(), page.series.clone(), words[place].1, 0, None, "other-rendition")),
             None => unplaced.entry(page.series.clone()).or_default().push(page.printed_label().to_owned()),
         }
     }
@@ -1132,12 +1125,9 @@ fn note_paragraphs_elsewhere(pending: &mut Pending, name: &str, other: &Document
 /// Item by item, what another rendition offers against the finished structure. Text counts as not held only in a run of words none
 /// of which stand in ours: a scanner's slips break a run long before that.
 fn witness_union(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending, text: &HashSet<String>) {
-    let pages = &mut kinds.pages;
-    let paragraphs = &mut kinds.paragraphs;
-
     const TEXT_RUN: usize = 40;
-    let held_pages = pages.iter().filter(|page| page.grammar.as_deref() != Some("stray")).map(|page| page.printed_label()).collect::<HashSet<_>>();
-    let held_numbers = paragraphs.iter().filter_map(|paragraph| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par"))).collect::<HashSet<_>>();
+    let held_pages = kinds.pages.iter().filter(|page| page.grammar.as_deref() != Some("stray")).map(|page| page.printed_label()).collect::<HashSet<_>>();
+    let held_numbers = kinds.paragraphs.iter().filter_map(|paragraph| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par"))).collect::<HashSet<_>>();
     let summaries = structure.opinion.as_ref().unwrap().headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
     let mut tally = BTreeMap::<&'static str, [usize; 2]>::new();
     let mut samples = Vec::new();
@@ -1177,10 +1167,8 @@ fn witness_union(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: 
 /// Each other rendition that sets paragraphs at all against ours. One with under half our count has lost its breaks and says
 /// nothing of ours.
 fn witness_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
-    let paragraphs = &mut kinds.paragraphs;
-
     let coordinates = ScalarText::new(&structure.text);
-    let ours = paragraphs.iter().filter_map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end)).filter_map(opening_words).collect::<HashSet<_>>();
+    let ours = kinds.paragraphs.iter().filter_map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end)).filter_map(opening_words).collect::<HashSet<_>>();
     let text = places(&structure.text).into_iter().collect::<HashSet<_>>();
     witness_union(structure, kinds, pending, &text);
     for other in std::mem::take(&mut pending.elsewhere) {
@@ -1201,9 +1189,6 @@ fn witness_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pend
 }
 
 fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending, name: &str, other: &DocumentStructure, witness: bool) {
-    let mut pages = &mut kinds.pages;
-    let mut paragraphs = &mut kinds.paragraphs;
-    let mut headings = &mut kinds.headings;
     {
         let coordinates = ScalarText::new(other.query_text());
         pending.quoted_elsewhere.extend(other.nodes.iter().filter(|node| node.kind == NodeKind::Quote || node.markup_tag.as_deref().is_some_and(|tag| matches!(tag, "blockquote" | "excerpt")))
@@ -1215,7 +1200,7 @@ fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &m
     const SHINGLE: usize = 5;
     // How far apart, in UTF-16 units, two renditions may set one page's mark.
     const SAME_PLACE: usize = 300;
-    let have = pages.iter().map(|page| (page.printed_label().to_owned(), page.range.start)).collect::<HashMap<_, _>>();
+    let have = kinds.pages.iter().map(|page| (page.printed_label().to_owned(), page.range.start)).collect::<HashMap<_, _>>();
     // One rendition may carry several numberings, a reporter's and a vendor's, each by its page scheme. The one most like ours is
     // compared with ours; each other stands as its own, a parallel printing.
     let mut schemes = BTreeMap::<String, Vec<(String, usize)>>::new();
@@ -1224,7 +1209,7 @@ fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &m
     }
     let closest = schemes.iter().max_by_key(|(_, marks)| (marks.iter().filter(|(label, _)| have.contains_key(label)).count(), marks.len())).map(|(scheme, _)| scheme.clone());
     let marks = closest.as_ref().and_then(|scheme| schemes.remove(scheme)).unwrap_or_default();
-    let held_series = pages.iter().map(|page| page.series.clone()).collect::<HashSet<_>>();
+    let held_series = kinds.pages.iter().map(|page| page.series.clone()).collect::<HashSet<_>>();
     schemes.retain(|scheme, _| !held_series.contains(scheme));
     let counted = block_marks(name, other, &ScalarText::new(other.query_text()));
     let (named, numbers) = if counts_its_blocks(other) || !counted.is_empty() { (false, Vec::new()) } else { printed_numbers(other) };
@@ -1247,36 +1232,36 @@ fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &m
             })
         };
         // One reporter's numbering only if the labels in common fall where ours do. How many of theirs we hold says nothing: our
-        // markup may print every other page. Two reporters' ranges can overlap, and their pages must stay apart.
+        // markup may print every other page. Two reporters' ranges can overlap, and their kinds.pages must stay apart.
         let common = marks.iter().filter(|(label, _)| have.contains_key(label)).collect::<Vec<_>>();
         let placed = common.iter().filter_map(|(label, start)| Some((have[label], words[place_of(*start)?].1))).collect::<Vec<_>>();
         let agreeing = placed.iter().filter(|(ours, theirs)| ours.abs_diff(*theirs) <= SAME_PLACE).count();
         let shared = agreeing * 2 >= placed.len() && (agreeing >= 2 || common.len() * 2 >= marks.len());
         let missing = marks.iter().filter(|(label, _)| !shared || !have.contains_key(label)).cloned().collect::<Vec<_>>();
-        let series = if shared || pages.is_empty() { pages.first().map_or("reporter-1".to_owned(), |page| page.series.clone()) } else { name.trim_end_matches(".html").to_owned() };
+        let series = if shared || kinds.pages.is_empty() { kinds.pages.first().map_or("reporter-1".to_owned(), |page| page.series.clone()) } else { name.trim_end_matches(".html").to_owned() };
         let places = in_their_order(missing.iter().map(|mark| place_of(mark.1)).collect());
         let mut unplaced = Vec::new();
         for ((label, _), place) in missing.into_iter().zip(places) {
             match place {
-                Some(place) => pages.push(read_page(label, series.clone(), words[place].1, 0, None, "other-rendition")),
+                Some(place) => kinds.pages.push(read_page(label, series.clone(), words[place].1, 0, None, "other-rendition")),
                 None => unplaced.push(label),
             }
         }
-        place_by_number(structure, kinds, &series, unplaced); pages = &mut kinds.pages; paragraphs = &mut kinds.paragraphs; headings = &mut kinds.headings;
+        place_by_number(structure, kinds, &series, unplaced);
         for (scheme, group) in std::mem::take(&mut schemes) {
             let mut unplaced = Vec::new();
             for ((label, _), place) in group.iter().cloned().zip(in_their_order(group.iter().map(|mark| place_of(mark.1)).collect())) {
                 match place {
-                    Some(place) => pages.push(read_page(label, scheme.clone(), words[place].1, 0, None, "other-rendition")),
+                    Some(place) => kinds.pages.push(read_page(label, scheme.clone(), words[place].1, 0, None, "other-rendition")),
                     None => unplaced.push(label),
                 }
             }
-            place_by_number(structure, kinds, &scheme, unplaced); pages = &mut kinds.pages; paragraphs = &mut kinds.paragraphs; headings = &mut kinds.headings;
+            place_by_number(structure, kinds, &scheme, unplaced);
         }
         if witness && shared {
             let ordered = in_their_order(marks.iter().map(|mark| place_of(mark.1)).collect());
             let found = marks.iter().zip(ordered).filter_map(|((label, _), place)| Some((page_number(label)?, words[place?].1))).collect::<Vec<_>>();
-            witness_pages(structure, kinds, &found, SAME_PLACE); paragraphs = &mut kinds.paragraphs; headings = &mut kinds.headings;
+            witness_pages(structure, kinds, &found, SAME_PLACE);
         }
         // Counters another rendition sets, each where its words fall; one whose words we lack, between its neighbours.
         // Scanned texts differ word by word: the nearest words the two share fix the place, after the counter or before it.
@@ -1321,12 +1306,12 @@ fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &m
     let wanted = wanted.into_iter().filter_map(|range| coordinates.slice_utf16(range.start..range.end).map(key)).filter(|text| !text.is_empty()).collect::<HashSet<_>>();
     pending.marked_titles.extend(wanted.iter().cloned());
     let mine = ScalarText::new(&structure.text);
-    let promoted = paragraphs.iter().enumerate().filter(|(_, paragraph)| paragraph.label.is_none())
+    let promoted = kinds.paragraphs.iter().enumerate().filter(|(_, paragraph)| paragraph.label.is_none())
         .filter(|(_, paragraph)| mine.slice_utf16(paragraph.range.start..paragraph.range.end).is_some_and(|text| wanted.contains(&key(text))))
         .map(|(index, _)| index).collect::<Vec<_>>();
     for index in promoted.into_iter().rev() {
-        let paragraph = paragraphs.remove(index);
-        headings.push(read_heading(paragraph.range.start, paragraph.range.end, "other-rendition"));
+        let paragraph = kinds.paragraphs.remove(index);
+        kinds.headings.push(read_heading(paragraph.range.start, paragraph.range.end, "other-rendition"));
     }
 }
 
@@ -1357,27 +1342,23 @@ fn supply_head(structure: &mut DocumentStructure, other: &DocumentStructure) {
 /// What the readings leave to do, in order: each step needs the ones before it.
 /// A block one rendition sets as a quotation is one in the union, whichever text is read.
 fn quotes_from_elsewhere(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
-    let paragraphs = &mut kinds.paragraphs;
     if pending.quoted_elsewhere.is_empty() {
         return;
     }
     let coordinates = ScalarText::new(&structure.text);
-    let quoted = paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).and_then(opening_words).is_some_and(|opening| pending.quoted_elsewhere.contains(&opening))).collect::<Vec<_>>();
-    for (paragraph, quoted) in paragraphs.iter_mut().zip(quoted) {
+    let quoted = kinds.paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).and_then(opening_words).is_some_and(|opening| pending.quoted_elsewhere.contains(&opening))).collect::<Vec<_>>();
+    for (paragraph, quoted) in kinds.paragraphs.iter_mut().zip(quoted) {
         if quoted { paragraph.kind = NodeKind::Quote; }
     }
 }
 
 /// A note found late, by answering its call, can still stand among the paragraphs: its words belong to the note.
 fn notes_out_of_the_body(kinds: &mut Kinds) {
-    let paragraphs = &mut kinds.paragraphs;
-    let notes = &mut kinds.notes;
-
-    /// How much of a paragraph must lie in notes for it to be theirs, in fifths.
+    /// How much of a paragraph must lie in kinds.notes for it to be theirs, in fifths.
     const MOSTLY: usize = 4;
-    let mut ranges = notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
+    let mut ranges = kinds.notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
     ranges.sort_by_key(|range| range.start);
-    paragraphs.retain(|paragraph| {
+    kinds.paragraphs.retain(|paragraph| {
         let first = ranges.partition_point(|range| range.end <= paragraph.range.start);
         let held = ranges[first..].iter().take_while(|range| range.start < paragraph.range.end).map(|range| range.end.min(paragraph.range.end).saturating_sub(range.start.max(paragraph.range.start))).sum::<usize>();
         held * 5 < (paragraph.range.end - paragraph.range.start) * MOSTLY
@@ -1387,16 +1368,14 @@ fn notes_out_of_the_body(kinds: &mut Kinds) {
 /// Another rendition's marks set ahead of the opinion's first words, "*508" in a heading our text does not hold, were estimated at
 /// its start and named no page. The one just below the first mark placed is the page the opinion opens on; any before it, strays.
 fn opening_from_other_renditions(kinds: &mut Kinds) {
-    let pages = &mut kinds.pages;
-
-    let from_elsewhere = pages.iter().filter(|page| page.grammar.as_deref() == Some("other-rendition")).map(|page| page.series.clone()).collect::<HashSet<_>>();
+    let from_elsewhere = kinds.pages.iter().filter(|page| page.grammar.as_deref() == Some("other-rendition")).map(|page| page.series.clone()).collect::<HashSet<_>>();
     for series in from_elsewhere {
-        let first_placed = pages.iter().filter(|page| page.series == series && page.grammar.as_deref() == Some("other-rendition")).min_by_key(|page| page.range.start).and_then(|page| page_number(&page.printed_label()));
+        let first_placed = kinds.pages.iter().filter(|page| page.series == series && page.grammar.as_deref() == Some("other-rendition")).min_by_key(|page| page.range.start).and_then(|page| page_number(&page.printed_label()));
         let Some(first_placed) = first_placed else { continue };
-        let ahead = pages.iter().enumerate().filter(|(_, page)| page.series == series && page.grammar.as_deref() == Some("reckoned") && page.range.start == 0).filter_map(|(at, page)| Some((at, page_number(&page.printed_label())?))).collect::<Vec<_>>();
+        let ahead = kinds.pages.iter().enumerate().filter(|(_, page)| page.series == series && page.grammar.as_deref() == Some("reckoned") && page.range.start == 0).filter_map(|(at, page)| Some((at, page_number(&page.printed_label())?))).collect::<Vec<_>>();
         let opening = ahead.iter().filter(|mark| mark.1 + 1 == first_placed).map(|mark| mark.0).next();
         for (at, _) in &ahead {
-            pages[*at].grammar = Some((if Some(*at) == opening { "opening" } else { "stray" }).to_owned());
+            kinds.pages[*at].grammar = Some((if Some(*at) == opening { "opening" } else { "stray" }).to_owned());
         }
     }
 }
@@ -1427,12 +1406,9 @@ fn finish(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pe
 
 /// Marks placed from other renditions fall in notes too, and a note's page says nothing of the opinion's.
 fn flag_pages_in_notes(kinds: &mut Kinds) {
-    let pages = &mut kinds.pages;
-    let notes = &mut kinds.notes;
-
-    let mut ranges = notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
+    let mut ranges = kinds.notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
     ranges.sort_by_key(|note| note.start);
-    for page in pages.iter_mut() {
+    for page in kinds.pages.iter_mut() {
         { let in_note = page.properties.contains_key("in_note") || ranges[..ranges.partition_point(|note| note.start <= page.range.start)].last().is_some_and(|note| page.range.start < note.end); if in_note { page.properties.insert("in_note".to_owned(), String::new()); } else { page.properties.remove("in_note"); } }
     }
 }
@@ -1440,10 +1416,8 @@ fn flag_pages_in_notes(kinds: &mut Kinds) {
 /// An opinion-only rendition marks the case's first page where the opinion opens, past the marks another carried through the
 /// head: 739, 740, 738, 741. Lower than all before it and the run going straight on after it, it heads the text.
 fn opening_page_first(kinds: &mut Kinds) {
-    let pages = &mut kinds.pages;
-
     let mut lowered = false;
-    let series = pages.iter().enumerate().filter(|(_, page)| !page.properties.contains_key("in_note") && page.series.starts_with("reporter")).fold(BTreeMap::<&str, Vec<(usize, u32)>>::new(), |mut all, (index, page)| {
+    let series = kinds.pages.iter().enumerate().filter(|(_, page)| !page.properties.contains_key("in_note") && page.series.starts_with("reporter")).fold(BTreeMap::<&str, Vec<(usize, u32)>>::new(), |mut all, (index, page)| {
         if let Some(number) = page_number(&page.printed_label()) { all.entry(&page.series).or_default().push((index, number)); }
         all
     }).into_values().collect::<Vec<_>>();
@@ -1457,54 +1431,48 @@ fn opening_page_first(kinds: &mut Kinds) {
         }
     }
     for index in opening {
-        pages[index].range.start = 0;
+        kinds.pages[index].range.start = 0;
         lowered = true;
     }
     if lowered {
-        pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.printed_label())).cmp(&(&right.series, right.range.start, page_number(right.printed_label()))));
+        kinds.pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.printed_label())).cmp(&(&right.series, right.range.start, page_number(right.printed_label()))));
     }
 }
 
 /// Each numbering's pages in the text's order, each running to the next.
 fn close_pages(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut pages = &mut kinds.pages;
-
     let text_end = utf16_len(&structure.text);
-    pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.printed_label())).cmp(&(&right.series, right.range.start, page_number(right.printed_label()))));
+    kinds.pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.printed_label())).cmp(&(&right.series, right.range.start, page_number(right.printed_label()))));
     // A plain text can print a page's number twice, at its head and its foot: one page.
     if structure.opinion.as_ref().unwrap().rendition == "plain_text.txt" {
-        pages.dedup_by(|later, kept| {
+        kinds.pages.dedup_by(|later, kept| {
             let same = later.series == kept.series && later.label == kept.label;
             if same { kept.range.end = kept.range.end.max(later.range.end); }
             same
         });
     }
-    opening_page_first(kinds); pages = &mut kinds.pages;
+    opening_page_first(kinds);
     // A page opened twice is one page; a moved block's page is its block's alone and leaves the opinion's page as it was.
     let mut opened = HashSet::new();
-    pages.retain(|page| page.properties.contains_key("in_note") || !page.series.starts_with("reporter") || page.grammar.as_deref() == Some("stray") || page.grammar.as_deref() == Some("moved") || opened.insert((page.series.clone(), page.printed_label().to_owned())));
-    let count = pages.len();
+    kinds.pages.retain(|page| page.properties.contains_key("in_note") || !page.series.starts_with("reporter") || page.grammar.as_deref() == Some("stray") || page.grammar.as_deref() == Some("moved") || opened.insert((page.series.clone(), page.printed_label().to_owned())));
+    let count = kinds.pages.len();
     for index in 0..count {
-        if pages[index].range.end == 0 || matches!(pages[index].grammar.as_deref(), Some("other-rendition" | "reckoned")) {
-            let next = pages[index + 1..].iter().find(|page| page.series == pages[index].series).map_or(text_end, |page| page.range.start);
-            pages[index].range.end = next;
+        if kinds.pages[index].range.end == 0 || matches!(kinds.pages[index].grammar.as_deref(), Some("other-rendition" | "reckoned")) {
+            let next = kinds.pages[index + 1..].iter().find(|page| page.series == kinds.pages[index].series).map_or(text_end, |page| page.range.start);
+            kinds.pages[index].range.end = next;
         }
     }
     // What other renditions added cuts the page before it.
     for index in 1..count {
-        if pages[index].series == pages[index - 1].series && pages[index - 1].range.end > pages[index].range.start {
-            pages[index - 1].range.end = pages[index].range.start;
+        if kinds.pages[index].series == kinds.pages[index - 1].series && kinds.pages[index - 1].range.end > kinds.pages[index].range.start {
+            kinds.pages[index - 1].range.end = kinds.pages[index].range.start;
         }
     }
 }
 
 fn tidy_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
-    let paragraphs = &mut kinds.paragraphs;
-    let notes = &mut kinds.notes;
-    let headings = &mut kinds.headings;
-
-    let note_ranges = notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
-    settle(&mut *paragraphs, &*headings, &note_ranges);
+    let note_ranges = kinds.notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
+    settle(&mut kinds.paragraphs, &kinds.headings, &note_ranges);
     rejoin_paragraphs(structure, kinds);
     drop_empty_paragraphs(structure, kinds);
     hold_leftovers(structure, kinds);
@@ -1516,14 +1484,13 @@ fn tidy_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending
 
 fn label_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     share_note_calls(structure, kinds);
-    let notes = &mut kinds.notes;
     // Notes a source left unlabelled and unnumbered are numbered as they stand.
-    if notes.iter().all(|note| note.printed_label().is_empty()) {
-        for (index, note) in notes.iter_mut().enumerate() {
+    if kinds.notes.iter().all(|note| note.printed_label().is_empty()) {
+        for (index, note) in kinds.notes.iter_mut().enumerate() {
             note.label = Some(format!("fn{}", index + 1));
         }
     }
-    let mut answered = notes.iter().flat_map(|note| note.calls.iter().copied()).collect::<Vec<_>>();
+    let mut answered = kinds.notes.iter().flat_map(|note| note.calls.iter().copied()).collect::<Vec<_>>();
     answered.sort_by_key(|known| known.start);
     structure.opinion.as_mut().unwrap().unmatched_calls.retain(|call| {
         answered[..answered.partition_point(|known| known.start < call.end)].last().is_none_or(|known| known.end <= call.start)
@@ -1532,16 +1499,13 @@ fn label_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 
 /// Each heading's words and level: a family of enumerators keeps its level, a new one goes under the last.
 fn title_headings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let notes = &mut kinds.notes;
-    let headings = &mut kinds.headings;
-
-    let mut calls = notes.iter().flat_map(|note| note.calls.iter().copied()).collect::<Vec<_>>();
+    let mut calls = kinds.notes.iter().flat_map(|note| note.calls.iter().copied()).collect::<Vec<_>>();
     calls.sort_by_key(|call| call.start);
     let coordinates = ScalarText::new(&structure.text);
-    headings.sort_by_key(|heading| heading.range.start);
+    kinds.headings.sort_by_key(|heading| heading.range.start);
     let mut ladder = Vec::<String>::new();
     let mut letter = None;
-    for heading in headings.iter_mut() {
+    for heading in kinds.headings.iter_mut() {
         // A note's call on a title is no word of it.
         let within = &calls[calls.partition_point(|call| call.start <= heading.range.start)..];
         let words_end = within.iter().take_while(|call| call.start < heading.range.end).find(|call| call.end + 1 >= heading.range.end).map_or(heading.range.end, |call| call.start);
@@ -1566,9 +1530,7 @@ fn title_headings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 
 /// A heading's words decide last: a mark, a rule, a list's title or a contents line is none.
 fn sift_headings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let headings = &mut kinds.headings;
-
-    for heading in std::mem::take(headings) {
+    for heading in std::mem::take(&mut kinds.headings) {
         let range = Some(ScalarRange { start: heading.range.start, end: heading.range.end });
         if !heading.display_value.as_deref().unwrap_or("").chars().any(char::is_alphanumeric) {
             continue;
@@ -1578,37 +1540,30 @@ fn sift_headings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
         } else if let Some(numbers) = heading.display_value.as_deref().unwrap_or("").starts_with('[').then(|| headnote_numbers(&heading.display_value.as_deref().unwrap_or(""))).flatten() {
             structure.opinion.as_mut().unwrap().headnote_marks.push(HeadnoteMark { numbers, start: heading.range.start, end: heading.range.end, page: None });
         } else {
-            headings.push(heading);
+            kinds.headings.push(heading);
         }
     }
 }
 
 /// What is read from the finished text and paragraphs.
 fn read_the_text(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let mut paragraphs = &mut kinds.paragraphs;
-    let notes = &mut kinds.notes;
-
-    let searched = paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end))
-        .chain(notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end)))).collect::<Vec<_>>();
+    let searched = kinds.paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end))
+        .chain(kinds.notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end)))).collect::<Vec<_>>();
     structure.opinion.as_mut().unwrap().defined_terms = defined_terms(&structure.text, &searched);
-    structure.opinion.as_mut().unwrap().quotes = quotations(&structure.text, &*paragraphs);
-    structure.opinion.as_mut().unwrap().instruments = instruments(&structure.text, &*paragraphs);
-    
+    structure.opinion.as_mut().unwrap().quotes = quotations(&structure.text, &kinds.paragraphs);
+    structure.opinion.as_mut().unwrap().instruments = instruments(&structure.text, &kinds.paragraphs);
     let gaps = record_gaps(structure, kinds);
-    paragraphs = &mut kinds.paragraphs;
-    let headings = &mut kinds.headings;
-    let parts = &mut kinds.parts;
     structure.opinion.as_mut().unwrap().record_gaps = gaps;
     structure.opinion.as_mut().unwrap().document_kind = document_kind(&structure.text).to_owned();
-    // Blocks past the last paragraph, or lines of the foot, may carry the order the paragraphs do not.
-    let last_text = paragraphs.iter().map(|paragraph| paragraph.range.start).max().unwrap_or(0);
-    let closing = headings.iter().map(|heading| ScalarRange { start: heading.range.start, end: heading.range.end })
+    // Blocks past the last paragraph, or lines of the foot, may carry the order the kinds.paragraphs do not.
+    let last_text = kinds.paragraphs.iter().map(|paragraph| paragraph.range.start).max().unwrap_or(0);
+    let closing = kinds.headings.iter().map(|heading| ScalarRange { start: heading.range.start, end: heading.range.end })
         .chain(structure.opinion.as_ref().unwrap().headnotes.iter().filter(|headnote| headnote.kind == "topics").filter_map(|headnote| headnote.range))
         .chain(structure.opinion.as_ref().unwrap().front.iter().filter_map(|line| line.range))
         .filter(|range| range.start >= last_text)
         // A slip's head may print its disposition: "AFFIRMED."
         .chain(structure.opinion.as_ref().unwrap().front.iter().filter(|line| line.role == "cover").filter_map(|line| line.range)).collect::<Vec<_>>();
-    let (lines, outcomes) = dispositions(&structure.text, &*paragraphs, &*parts, &closing);
+    let (lines, outcomes) = dispositions(&structure.text, &kinds.paragraphs, &kinds.parts, &closing);
     structure.opinion.as_mut().unwrap().front.extend(lines);
     structure.opinion.as_mut().unwrap().outcomes = outcomes;
     name_dates(&mut structure.opinion.as_mut().unwrap().front);
@@ -1619,46 +1574,40 @@ const CALL_AT_FOOT: usize = 120;
 
 /// The lead numbering's page of everything found, its pins in every numbering, and each paragraph's part.
 fn place_on_pages(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let pages = &mut kinds.pages;
-    let paragraphs = &mut kinds.paragraphs;
-    let notes = &mut kinds.notes;
-    let headings = &mut kinds.headings;
-    let parts = &mut kinds.parts;
-
     let of_the_opinion = |page: &&StructureNode| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray");
     let mut counts = HashMap::<&str, usize>::new();
-    for page in pages.iter().filter(of_the_opinion) {
+    for page in kinds.pages.iter().filter(of_the_opinion) {
         *counts.entry(page.series.as_str()).or_default() += 1;
     }
     let lead = counts.iter().max_by_key(|(series, count)| (series.starts_with("reporter"), **count, std::cmp::Reverse(**series))).map(|(series, _)| *series);
-    let lead_pages = pages.iter().filter(of_the_opinion).filter(|page| Some(page.series.as_str()) == lead).map(|page| (page.range.start, page.printed_label().to_owned())).collect::<Vec<_>>();
+    let lead_pages = kinds.pages.iter().filter(of_the_opinion).filter(|page| Some(page.series.as_str()) == lead).map(|page| (page.range.start, page.printed_label().to_owned())).collect::<Vec<_>>();
     let page_at = |offset: usize| lead_pages.partition_point(|page| page.0 <= offset).checked_sub(1).map(|at| lead_pages[at].1.clone());
     // Each page under the names a pin cites it by: "*702", and "226 La. 702" where its numbering is a printing's.
-    for page in pages.iter_mut() {
+    for page in kinds.pages.iter_mut() {
         let mut aliases = vec![format!("*{}", page.printed_label())];
         aliases.extend(structure.opinion.as_ref().unwrap().page_series.iter().filter(|series| series.series == page.series).map(|series| format!("{} {}", series.reporter, page.printed_label())));
         page.aliases = Some(aliases);
     }
-    for (index, part) in parts.iter_mut().enumerate() {
+    for (index, part) in kinds.parts.iter_mut().enumerate() {
         part.id = format!("opinion-part-{}", index + 1);
     }
-    let table = pin_table(&*pages, &structure.opinion.as_mut().unwrap().page_series);
+    let table = pin_table(&kinds.pages, &structure.opinion.as_mut().unwrap().page_series);
     for block in &mut structure.opinion.as_mut().unwrap().blocks {
         block.pins = pins_of(&table, block.start, block.start + 1);
     }
-    for heading in headings.iter_mut() {
+    for heading in kinds.headings.iter_mut() {
         heading.pins = pins_of(&table, heading.range.start, heading.range.end);
     }
-    for paragraph in paragraphs.iter_mut() {
+    for paragraph in kinds.paragraphs.iter_mut() {
         paragraph.pins = pins_of(&table, paragraph.range.start, paragraph.range.end);
-        paragraph.parent_id = parts.iter().find(|part| part.range.start <= paragraph.range.start && paragraph.range.start < part.range.end).map(|part| part.id.clone());
+        paragraph.parent_id = kinds.parts.iter().find(|part| part.range.start <= paragraph.range.start && paragraph.range.start < part.range.end).map(|part| part.id.clone());
     }
-    // A note's page is its call's: the notes of a text set at its end are still on the page that calls them. But a call on a
-    // page's last line can have its note set on the next page, or run on to it; a source that marks where notes run on (Harvard)
+    // A note's page is its call's: the kinds.notes of a text set at its end are still on the page that calls them. But a call on a
+    // page's last line can have its note set on the next page, or run on to it; a source that marks where kinds.notes run on (Harvard)
     // says so, and one that marks no page inside any note cannot: there a call that close to the next page names no page.
-    let marks_run_ons = pages.iter().any(|page| page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray"));
+    let marks_run_ons = kinds.pages.iter().any(|page| page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray"));
     let next_turn = |offset: usize| lead_pages.get(lead_pages.partition_point(|page| page.0 <= offset)).map(|page| page.0);
-    for note in notes.iter_mut() {
+    for note in kinds.notes.iter_mut() {
         let call = note.calls.first().map_or(note.range.start, |call| call.start);
         let at_foot = !marks_run_ons && note.calls.first().is_some() && next_turn(call).is_some_and(|turn| turn - call <= CALL_AT_FOOT);
         note.pins = if at_foot { Vec::new() } else { pins_of(&table, call, call + 1) };
