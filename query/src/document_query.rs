@@ -1670,7 +1670,7 @@ pub fn normalize_document_locator(kind: NodeKind, locator: &str) -> String {
                 &[
                     r"(?iu)^(?:\[",
                     JS_WS,
-                    r"*)?(?:paras?\.?|paragraphs?)?",
+                    r"*)?(?:paras?\.?|paragraphs?|par)?",
                     JS_WS,
                     r"*(\d{1,4})(?:",
                     JS_WS,

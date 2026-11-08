@@ -30,7 +30,7 @@ pub use journal_titles::{journal_title_choice, journal_title_searches, JournalTi
 pub use outline::{document_outline, OutlineEntry};
 #[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
 pub use passage_links::{cited_passage_link, courtlistener_link, law_web_link, CourtListenerAnchor, CourtListenerCluster, CourtListenerOpinion, CourtListenerPage, passage_link, source_link, PassageLink, PassageLinkRequest,
-    SourceLinkRequest, SourceLocator, VerifiedPdf};
+    SourceLinkRequest, VerifiedPdf};
 #[cfg(feature = "document-query")]
 pub use quote_location::{
     corrected_quote, document_quote_blocks, editorial_quote, locate_quotes_in, locate_source_quotes, locate_source_quotes_kept, quote_text_comparison,
