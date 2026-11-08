@@ -203,6 +203,7 @@ pub fn journal_text_document_structure(
             vec![label.clone()],
         );
         item.anchor = pdf_page.map(|pdf_page| format!("page={pdf_page}"));
+        item.page_indexes = pdf_page.and_then(|pdf_page| pdf_page.checked_sub(1)).into_iter().collect();
         claims.push(item);
     }
     structure(article_id, url, clean, claims)
@@ -267,6 +268,7 @@ pub fn journal_document_structure(
                 vec![label],
             );
             item.anchor = Some(format!("page={pdf_page}"));
+            item.page_indexes = vec![pdf_page - 1];
             claims.push(item);
         }
 

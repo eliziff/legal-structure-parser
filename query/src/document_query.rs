@@ -1361,21 +1361,7 @@ impl DocumentQuery {
         }) {
             let node = &document.nodes[position.node];
             let range = document.query_range(node);
-            let page_number = |value: &str, prefix: &str| {
-                value
-                    .strip_prefix(prefix)
-                    .filter(|value| {
-                        !value.is_empty()
-                            && value.len() <= 6
-                            && value.bytes().all(|byte| byte.is_ascii_digit())
-                    })
-                    .and_then(|value| value.parse().ok())
-            };
-            let pdf_page = node
-                .anchor
-                .as_deref()
-                .and_then(|anchor| page_number(anchor, "page="))
-                .or_else(|| node.page_indexes.first().map(|page| *page + 1));
+            let pdf_page = node.page_indexes.first().map(|page| *page + 1);
             let printed_labels = node
                 .aliases
                 .as_deref()
