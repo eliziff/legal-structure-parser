@@ -59,6 +59,8 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, other: &DocumentSt
             structure.opinion.as_mut().unwrap().note_witness[usize::from(notes[same].calls.is_empty())] += 1;
             if notes[same].calls.is_empty() {
                 if calls.is_empty() && !note.calls.is_empty() {
+                    notes[same].properties.insert("called_outside".to_owned(), String::new());
+                }
                 notes[same].calls = calls;
             }
             continue;
@@ -88,12 +90,12 @@ pub(super) fn join_citation_fragments(notes: Vec<StructureNode>, coordinates: &S
     let mut joined = Vec::<StructureNode>::with_capacity(notes.len());
     for note in notes {
         let number = note.printed_label().parse::<u32>().ok();
-        let before = joined.iter().rev().find_map(|held| held.label.parse::<u32>().ok());
+        let before = joined.iter().rev().find_map(|held| held.printed_label().parse::<u32>().ok());
         let fragment = number.zip(before).is_some_and(|(number, before)| number > before + 1)
             && coordinates.slice_utf16(note.range.start..note.range.end).is_some_and(opens_on_reporter);
         match joined.last_mut().filter(|_| fragment) {
             Some(last) => {
-                last.end = note.range.end;
+                last.range.end = note.range.end;
                 last.ranges.extend(note.ranges);
             }
             None => joined.push(note),
@@ -143,7 +145,7 @@ pub(super) fn word_notes(structure: &DocumentStructure, coordinates: &ScalarText
         match label.captures(printed) {
             Some(capture) => found.push(read_note(capture[1].to_owned(), range.start, range.end, vec![range], Vec::new())),
             None => if let Some(last) = found.last_mut() {
-                last.end = range.end;
+                last.range.end = range.end;
                 last.ranges.push(range);
             },
         }
@@ -340,7 +342,7 @@ pub(super) fn flat_notes(structure: &mut DocumentStructure) {
     static BROKEN: OnceLock<Regex> = OnceLock::new();
     let past = PAST.get_or_init(|| Regex::new(r"\n[ \t]*\n|\n[ \t]*[\[{(]?¶").unwrap());
     let broken = BROKEN.get_or_init(|| Regex::new(r"\n").unwrap());
-    let closes = if structure.opinion.as_mut().unwrap().rendition == "plain_text.txt" { past } else { broken };
+    let closes = if structure.opinion.as_ref().unwrap().rendition == "plain_text.txt" { past } else { broken };
     let mut units = Units::new(&structure.text);
     let stops = opened.iter().enumerate().map(|(index, open)| {
         let limit = opened.get(index + 1).map_or(structure.text.len(), |next| next.0);
@@ -372,7 +374,7 @@ pub(super) fn split_note_lists(structure: &mut DocumentStructure) {
     static NUMBER: OnceLock<Regex> = OnceLock::new();
     let number = NUMBER.get_or_init(|| Regex::new(r"(?-u:\b)(\d{1,3})\. +\p{Lu}").unwrap());
     let coordinates = ScalarText::new(&structure.text);
-    let called = structure.opinion.as_mut().unwrap().unmatched_calls.iter().filter_map(|call| plain_label(&call.label).parse::<u32>().ok()).collect::<HashSet<_>>();
+    let called = structure.opinion.as_ref().unwrap().unmatched_calls.iter().filter_map(|call| plain_label(&call.label).parse::<u32>().ok()).collect::<HashSet<_>>();
     let mut added = Vec::new();
     for note in notes.iter_mut().filter(|note| note.ranges.len() == 1) {
         let Ok(mut next) = note.printed_label().parse::<u32>().map(|label| label + 1) else { continue };
@@ -416,7 +418,7 @@ pub(super) fn share_note_calls(structure: &mut DocumentStructure) {
     static CALL: OnceLock<Regex> = OnceLock::new();
     let mut by_label = HashMap::<String, Vec<usize>>::new();
     for (index, note) in notes.iter().enumerate() {
-        by_label.entry(note.printed_label().clone()).or_default().push(index);
+        by_label.entry(note.printed_label().to_owned()).or_default().push(index);
     }
     for indices in by_label.values().filter(|indices| indices.len() > 1) {
         let mut calls = indices.iter().flat_map(|&index| notes[index].calls.iter().copied()).collect::<Vec<_>>();
@@ -449,7 +451,7 @@ pub(super) fn share_note_calls(structure: &mut DocumentStructure) {
     }
     let used = notes.iter().flat_map(|note| note.calls.iter().map(|call| call.start)).collect::<HashSet<_>>();
     for note in notes.iter_mut().filter(|note| note.calls.is_empty()) {
-        if let Some(calls) = printed.get_mut(&note.printed_label()) {
+        if let Some(calls) = printed.get_mut(note.printed_label()) {
             calls.retain(|call| !used.contains(&call.start));
             if !calls.is_empty() {
                 note.calls.push(calls.remove(0));

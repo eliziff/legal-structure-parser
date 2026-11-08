@@ -580,7 +580,7 @@ pub(super) fn supplement_courtlistener_declared_note_references(
         if !note
             .calls
             .iter()
-            .any(|reference| reference.range == range)
+            .any(|reference| *reference == range)
         {
             // IDREF markers retain only their own actual unique ID, if any.
             // Label-only same-opinion relationships supply no source fragment.

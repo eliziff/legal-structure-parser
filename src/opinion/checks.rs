@@ -3,7 +3,7 @@
 use super::*;
 
 /// Each failure the structure shows: its class, and the detail to read it by.
-pub fn failures(structure: &DocumentStructure) -> Vec<(&'static str, String)> {
+pub fn parse_failures(structure: &DocumentStructure) -> Vec<(&'static str, String)> {
     let pages: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Pages.holds(node)).cloned().collect();
     let paragraphs: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Paragraphs.holds(node)).cloned().collect();
     let notes: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Notes.holds(node)).cloned().collect();
@@ -21,7 +21,7 @@ pub fn failures(structure: &DocumentStructure) -> Vec<(&'static str, String)> {
     }
     let mut series = HashMap::<&str, Vec<&str>>::new();
     for page in opinion_pages() {
-        series.entry(&page.series).or_default().push(&page.printed_label());
+        series.entry(&page.series).or_default().push(page.printed_label());
     }
     for (name, labels) in &series {
         let printed = name.starts_with("reporter") || name.starts_with("html");
@@ -86,7 +86,7 @@ pub fn failures(structure: &DocumentStructure) -> Vec<(&'static str, String)> {
 
 /// A screen flags a record to read, not an error: each asks a question only reading settles, and a class is worth reading where
 /// it fills up. All cheap enough for every record of a run.
-pub fn screens(structure: &DocumentStructure, record: &OpinionRecord) -> Vec<(&'static str, String)> {
+pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> Vec<(&'static str, String)> {
     let pages: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Pages.holds(node)).cloned().collect();
     let paragraphs: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Paragraphs.holds(node)).cloned().collect();
     let notes: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Notes.holds(node)).cloned().collect();
@@ -166,11 +166,11 @@ pub fn screens(structure: &DocumentStructure, record: &OpinionRecord) -> Vec<(&'
     let body = paragraphs.iter().filter(|paragraph| !(paragraph.kind == NodeKind::Quote)).collect::<Vec<_>>();
     let low = body.iter().filter(|paragraph| !paragraph.properties.contains_key("continues") && printed(paragraph.range.start, paragraph.range.end).starts_with(char::is_lowercase)).collect::<Vec<_>>();
     if low.len() >= 8 && low.len() * 6 >= body.len() {
-        found.push(("screen: paragraphs open lower case", format!("{} of {}: {}", low.len(), body.len(), quoted(low[0].start, low[0].end))));
+        found.push(("screen: paragraphs open lower case", format!("{} of {}: {}", low.len(), body.len(), quoted(low[0].range.start, low[0].range.end))));
     }
-    let open = body.windows(2).filter(|pair| !pair[1].continues && !text::ended_sentence(printed(pair[0].start, pair[0].end)) && printed(pair[1].start, pair[1].end).starts_with(char::is_lowercase)).collect::<Vec<_>>();
+    let open = body.windows(2).filter(|pair| !pair[1].properties.contains_key("continues") && !text::ended_sentence(printed(pair[0].range.start, pair[0].range.end)) && printed(pair[1].range.start, pair[1].range.end).starts_with(char::is_lowercase)).collect::<Vec<_>>();
     if open.len() >= 8 && open.len() * 6 >= body.len() {
-        found.push(("screen: sentences split across paragraphs", format!("{} of {}: {}", open.len(), body.len(), quoted(open[0][1].start, open[0][1].end))));
+        found.push(("screen: sentences split across paragraphs", format!("{} of {}: {}", open.len(), body.len(), quoted(open[0][1].range.start, open[0][1].range.end))));
     }
     static MARKED: OnceLock<Regex> = OnceLock::new();
     let marked = MARKED.get_or_init(|| Regex::new(r"(?m)^[ \t]*(?:¶ ?\d{1,4}|\[¶ ?\d{1,4}\.?\]|\{¶ ?\d{1,4}\}) +\p{Lu}").unwrap());

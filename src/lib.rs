@@ -243,5 +243,3 @@ pub use judgment::{date_line, figure_caption};
 
 #[cfg(feature = "structure-inference")]
 pub use candidates::detect_structure_candidate_runs;
-#[cfg(feature = "journal")]
-

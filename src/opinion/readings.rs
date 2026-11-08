@@ -119,7 +119,7 @@ pub(super) fn instruments(text: &str, paragraphs: &[StructureNode]) -> Vec<Opini
     let coordinates = ScalarText::new(text);
     let mut found = Vec::new();
     for (index, paragraph) in paragraphs.iter().enumerate() {
-        if (paragraph.kind == NodeKind::Quote) || !paragraphs.get(index + 1).is_some_and(|next| next.quote) {
+        if (paragraph.kind == NodeKind::Quote) || !paragraphs.get(index + 1).is_some_and(|next| (next.kind == NodeKind::Quote)) {
             continue;
         }
         let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
@@ -127,11 +127,11 @@ pub(super) fn instruments(text: &str, paragraphs: &[StructureNode]) -> Vec<Opini
             continue;
         }
         let sentence = printed.rfind(". ").map_or(printed, |stop| &printed[stop + 2..]);
-        let last = paragraphs[index + 1..].iter().take_while(|next| next.quote).last().unwrap();
+        let last = paragraphs[index + 1..].iter().take_while(|next| (next.kind == NodeKind::Quote)).last().unwrap();
         // "For the following reasons:" lists; only a lead-in that names a document, or says one speaks, brings one.
         let Some(kind) = kinds.iter().find(|(pattern, _)| pattern.is_match(sentence)).map(|(_, kind)| *kind)
             .or_else(|| sentence.contains(" provides").then_some("passage")).or_else(|| sentence.contains(" reads").then_some("passage")) else { continue };
-        found.push(OpinionInstrument { kind: kind.to_owned(), lead_in: squeezed(sentence), start: paragraphs[index + 1].range.start, end: last.end });
+        found.push(OpinionInstrument { kind: kind.to_owned(), lead_in: squeezed(sentence), start: paragraphs[index + 1].range.start, end: last.range.end });
     }
     found
 }

@@ -987,6 +987,8 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
 
     let mut paragraphs = Vec::<StructureNode>::new();
     let mut headings = Vec::<StructureNode>::new();
+    // The source line the last heading ends on: a centred line under it continues its title.
+    let mut last_heading_line = None;
     let mut previous: Option<usize> = None;
     // A number on a section's title belongs to the text under it: "¶3   I. BACKGROUND".
     let mut carried: Option<u32> = None;
@@ -1005,7 +1007,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
             if !title.is_empty() && !title.chars().any(char::is_lowercase) && heading_line(title, true) {
                 let start = range.end - utf16_len(title);
                 headings.push(read_heading(start, range.end, "layout"));
-                heading_line = Some(at);
+                last_heading_line = Some(at);
                 // With a number of its own on the next line, it keeps this one where it stands.
                 if body.get(position + 1).is_some_and(|next| numbered.contains_key(next)) {
                     paragraphs.push(read_paragraph(range.start, start, Some(number.to_string())));
@@ -1025,15 +1027,15 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
         let isolated = line.width() * 10 < width * 6 && before.is_none_or(|p| p + 1 < at || ended_sentence(lines[p].body)) && !ended_sentence(line.body);
         let apart = centered(line) || isolated || section;
         if !numbered.contains_key(&at) && (stands || isolated || section || centered(line)) && heading_line(line.body, apart) && (!in_head || title_line(line.body)) {
-            match headings.last_mut().filter(|_| before.is_some() && before == heading_line && centered(line)) {
-                Some(heading) => { heading.range.end = range.end; heading_line = Some(at); }
+            match headings.last_mut().filter(|_| before.is_some() && before == last_heading_line && centered(line)) {
+                Some(heading) => { heading.range.end = range.end; last_heading_line = Some(at); }
                 None => {
                     // A title's first line, broken at a comma, read as text.
                     let first = before.filter(|&p| lines[p].body.ends_with(',') && lines[p].indent == line.indent)
                         .filter(|&p| paragraphs.last().is_some_and(|last| last.range.start == lines[p].body_range().start && last.range.end == lines[p].body_range().end));
                     let start = if first.is_some() { paragraphs.pop().map_or(range.start, |last| last.range.start) } else { range.start };
                     headings.push(read_heading(start, range.end, "layout"));
-                    heading_line = Some(at);
+                    last_heading_line = Some(at);
                 }
             }
             previous = None;
@@ -1058,7 +1060,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
         match paragraphs.last_mut().filter(|_| !opens) {
             Some(paragraph) => {
                 paragraph.range.end = range.end;
-                (paragraph.kind == NodeKind::Quote) &= quote;
+                if !quote && paragraph.kind == NodeKind::Quote { paragraph.kind = NodeKind::Paragraph; }
             }
             None => paragraphs.push({ let mut paragraph = read_paragraph(range.start, range.end, number.map(|number| number.to_string())); paragraph.kind = if quote && number.is_none() { NodeKind::Quote } else { NodeKind::Paragraph }; paragraph }),
         }

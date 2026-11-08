@@ -6,23 +6,23 @@ use super::*;
 /// another gives way to the numbered one; a paragraph that is mostly a note is the note.
 pub(super) fn settle(paragraphs: &mut Vec<StructureNode>, headings: &[StructureNode], notes: &[ScalarRange]) {
     paragraphs.sort_by_key(|paragraph| (paragraph.range.start, paragraph.label.is_none()));
-    let mut stops = headings.iter().map(|heading| heading.range.start).chain(notes.iter().map(|note| note.range.start)).collect::<Vec<_>>();
+    let mut stops = headings.iter().map(|heading| heading.range.start).chain(notes.iter().map(|note| note.start)).collect::<Vec<_>>();
     stops.sort_unstable();
     let mut kept = Vec::<StructureNode>::with_capacity(paragraphs.len());
     let mut notes = notes.to_vec();
-    notes.sort_by_key(|note| note.range.end);
+    notes.sort_by_key(|note| note.end);
     // A note a page's foot set in a paragraph's course: the words past it are still the paragraph's.
     let mut pieces = Vec::with_capacity(paragraphs.len());
     for mut paragraph in std::mem::take(paragraphs) {
-        for note in &notes[notes.partition_point(|note| note.range.end <= paragraph.range.start)..] {
-            if note.range.start >= paragraph.range.end {
+        for note in &notes[notes.partition_point(|note| note.end <= paragraph.range.start)..] {
+            if note.start >= paragraph.range.end {
                 break;
             }
-            if paragraph.range.start < note.range.start && note.range.end < paragraph.range.end {
+            if paragraph.range.start < note.start && note.end < paragraph.range.end {
                 let mut head = paragraph.clone();
-                head.end = note.range.start;
-                paragraph.range.start = note.range.end;
-                paragraph.label = (None).map(|number| format!("par{number}"));
+                head.range.end = note.start;
+                paragraph.range.start = note.end;
+                paragraph.label = None;
                 pieces.push(head);
             }
         }
@@ -32,21 +32,21 @@ pub(super) fn settle(paragraphs: &mut Vec<StructureNode>, headings: &[StructureN
         if let Some(stop) = stops.get(stops.partition_point(|stop| *stop <= paragraph.range.start)).filter(|stop| **stop < paragraph.range.end) {
             paragraph.range.end = *stop;
         }
-        let touched = &notes[notes.partition_point(|note| note.range.end <= paragraph.range.start)..];
-        let covered = touched.iter().take_while(|note| note.range.start < paragraph.range.end || note.range.end < paragraph.range.end)
-            .map(|note| note.range.end.min(paragraph.range.end).saturating_sub(note.range.start.max(paragraph.range.start))).sum::<usize>();
+        let touched = &notes[notes.partition_point(|note| note.end <= paragraph.range.start)..];
+        let covered = touched.iter().take_while(|note| note.start < paragraph.range.end || note.end < paragraph.range.end)
+            .map(|note| note.end.min(paragraph.range.end).saturating_sub(note.start.max(paragraph.range.start))).sum::<usize>();
         if covered * 2 >= (paragraph.range.end - paragraph.range.start).max(1) {
             continue;
         }
         if let Some(last) = kept.last_mut() {
-            if paragraph.range.start <= last.start + 2 {
-                if last.number.is_none() && paragraph.label.is_some() {
+            if paragraph.range.start <= last.range.start + 2 {
+                if last.label.as_deref().and_then(|label| label.strip_prefix("par")).is_none() && paragraph.label.is_some() {
                     *last = paragraph;
                 }
                 continue;
             }
-            if paragraph.range.start < last.end {
-                last.end = paragraph.range.start;
+            if paragraph.range.start < last.range.end {
+                last.range.end = paragraph.range.start;
             }
         }
         if paragraph.range.end > paragraph.range.start {
@@ -146,9 +146,9 @@ pub(super) fn hold_leftovers(structure: &mut DocumentStructure) {
     let Some(first) = paragraphs.iter().map(|paragraph| paragraph.range.start).min() else { return };
     static BLANK: OnceLock<Regex> = OnceLock::new();
     let blank = BLANK.get_or_init(|| Regex::new(r"\n[ \t]*\n").unwrap());
-    let plain = structure.opinion.as_mut().unwrap().rendition == "plain_text.txt";
+    let plain = structure.opinion.as_ref().unwrap().rendition == "plain_text.txt";
     let coordinates = ScalarText::new(&structure.text);
-    let summaries = structure.opinion.as_mut().unwrap().headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
+    let summaries = structure.opinion.as_ref().unwrap().headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
     let mut found = Vec::new();
     for (start, end) in unheld_stretches(structure) {
         let Some(raw) = coordinates.slice_utf16(start..end) else { continue };
@@ -255,7 +255,9 @@ fn numbers_from_elsewhere(structure: &mut DocumentStructure, pending: &mut Pendi
     }).max_by_key(|(_, taken)| taken.len()).unwrap_or_default();
     let (named, best) = best;
     // Fewer than ours is still the better reading where they run in order: ours may hold every mark, half of them misread.
-    let held = put(structure, std::mem::take(&mut paragraphs)); numbers_held(structure); paragraphs = take(structure, Of::Paragraphs);
+    put(structure, std::mem::take(&mut paragraphs));
+    let held = numbers_held(structure);
+    paragraphs = take(structure, Of::Paragraphs);
     if best.len() >= LEAST && (best.len() > held || named && best.len() * 2 >= held && best.windows(2).all(|pair| pair[0].1 < pair[1].1)) {
         put(structure, std::mem::take(&mut paragraphs)); take_numbers(structure, best); paragraphs = take(structure, Of::Paragraphs);
     }
@@ -299,7 +301,7 @@ fn join_block_counters(structure: &mut DocumentStructure) {
     for index in (0..paragraphs.len().saturating_sub(1)).rev() {
         if bare[index] && !bare[index + 1] && paragraphs[index].label.is_none() {
             let counter = paragraphs.remove(index);
-            paragraphs[index].range.start = counter.start;
+            paragraphs[index].range.start = counter.range.start;
         }
     }
     put(structure, paragraphs);
@@ -387,8 +389,9 @@ fn carry_title_numbers(structure: &mut DocumentStructure) {
         coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).is_some_and(|opening| text::says_paragraph(opening) && text::past_marker(opening).is_empty())
     }).map(|(index, _)| index).collect::<Vec<_>>();
     for index in bare.into_iter().rev() {
-        if paragraphs.get(index + 1).is_some_and(|next| next.number.is_none() && !next.quote) {
-            let number = paragraphs.remove(index).number;
+        if paragraphs.get(index + 1).is_some_and(|next| next.label.as_deref().and_then(|label| label.strip_prefix("par")).is_none() && !(next.kind == NodeKind::Quote)) {
+            let removed = paragraphs.remove(index);
+        let number = removed.label.as_deref().and_then(|label| label.strip_prefix("par"));
             paragraphs[index].label = number.map(|number| format!("par{number}"));
         }
     }
@@ -409,12 +412,12 @@ fn misread_numbers(structure: &mut DocumentStructure) {
         let (before, here, after) = (numbered[at - 1].1, numbered[at].1, numbered[at + 1].1);
         if after == before + 2 && here != before + 1 {
             numbered[at].1 = before + 1;
-            paragraphs[numbered[at].0].number = Some((before + 1).to_string());
+            paragraphs[numbered[at].0].label = Some(format!("par{}", (before + 1).to_string()));
         } else if here == before + 2 && after == before + 1 && numbered.get(at + 2).is_some_and(|next| next.1 == before + 3) {
             numbered[at].1 = before + 1;
             numbered[at + 1].1 = before + 2;
-            paragraphs[numbered[at].0].number = Some((before + 1).to_string());
-            paragraphs[numbered[at + 1].0].number = Some((before + 2).to_string());
+            paragraphs[numbered[at].0].label = Some(format!("par{}", (before + 1).to_string()));
+            paragraphs[numbered[at + 1].0].label = Some(format!("par{}", (before + 2).to_string()));
         }
     }
 })();
@@ -449,8 +452,8 @@ fn split_numbered_blocks(structure: &mut DocumentStructure) {
             let Some(place) = marker_in_course(raw, number) else { break };
             let split = paragraph.range.start + utf16_len(&raw[..place]);
             let mut next = paragraph.clone();
-            next.start = split;
-            next.number = Some(number.to_string());
+            next.range.start = split;
+            next.label = Some(format!("par{}", number.to_string()));
             paragraph.range.end = split;
             kept.push(std::mem::replace(&mut paragraph, next));
             due = Some(number + 1);
@@ -586,30 +589,30 @@ pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure) {
     let coordinates = ScalarText::new(&structure.text);
     let printed = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
     // A plain text's short lines are its wrapping, not its margin.
-    let columned = structure.opinion.as_mut().unwrap().rendition != "plain_text.txt";
+    let columned = structure.opinion.as_ref().unwrap().rendition != "plain_text.txt";
     let interleaved = (1..paragraphs.len().saturating_sub(1)).filter(|&index| {
         let (before, line, after) = (&paragraphs[index - 1], &paragraphs[index], &paragraphs[index + 1]);
-        columned && !line.quote && line.number.is_none() && printed(line).len() < 60 && printed(line).starts_with(char::is_uppercase)
+        columned && !(line.kind == NodeKind::Quote) && line.label.as_deref().and_then(|label| label.strip_prefix("par")).is_none() && printed(line).len() < 60 && printed(line).starts_with(char::is_uppercase)
             && !text::ended_sentence(printed(before)) && printed(after).starts_with(char::is_lowercase)
     }).collect::<Vec<_>>();
     for &index in interleaved.iter().rev() {
         let line = paragraphs.remove(index);
-        structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("catchword", squeezed(printed(&line)), Some(ScalarRange { start: line.start, end: line.end })));
+        structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("catchword", squeezed(printed(&line)), Some(ScalarRange { start: line.range.start, end: line.range.end })));
     }
     let mut kept = Vec::<StructureNode>::with_capacity(paragraphs.len());
     let mut titles = headings.iter().map(|heading| heading.range.start).collect::<Vec<_>>();
     titles.sort_unstable();
-    let mut notes = notes.iter().flat_map(|note| note.ranges.iter().map(|range| range.start)).collect::<Vec<_>>();
-    notes.sort_unstable();
+    let mut note_starts = notes.iter().flat_map(|note| note.ranges.iter().map(|range| range.start)).collect::<Vec<_>>();
+    note_starts.sort_unstable();
     for mut paragraph in std::mem::take(&mut paragraphs) {
         if let Some(last) = kept.last_mut() {
-            let between = |marks: &[usize]| marks.get(marks.partition_point(|mark| *mark < last.end)).is_some_and(|mark| *mark < paragraph.range.start);
-            if !between(&titles) && last.quote == (paragraph.kind == NodeKind::Quote) && paragraph.label.is_none() && !text::ended_sentence(printed(last)) && printed(&paragraph).starts_with(char::is_lowercase) {
-                if !between(&notes) {
-                    last.end = paragraph.range.end;
+            let between = |marks: &[usize]| marks.get(marks.partition_point(|mark| *mark < last.range.end)).is_some_and(|mark| *mark < paragraph.range.start);
+            if !between(&titles) && (last.kind == NodeKind::Quote) == (paragraph.kind == NodeKind::Quote) && paragraph.label.is_none() && !text::ended_sentence(printed(last)) && printed(&paragraph).starts_with(char::is_lowercase) {
+                if !between(&note_starts) {
+                    last.range.end = paragraph.range.end;
                     continue;
                 }
-                if true { paragraph.properties.insert("continues".to_owned(), String::new()); } else { paragraph.properties.remove("continues"); }
+                paragraph.properties.insert("continues".to_owned(), String::new());
             }
         }
         kept.push(paragraph);
@@ -646,9 +649,9 @@ pub(super) fn speakers(structure: &mut DocumentStructure) {
     }).collect::<Vec<_>>();
     let questions = found.iter().filter(|(_, speaker)| speaker == "Q.").count();
     if questions >= 2 {
-        let (answers, headings): (Vec<_>, Vec<_>) = std::mem::take(&mut headings).into_iter()
+        let (answers, kept_headings): (Vec<_>, Vec<_>) = std::mem::take(&mut headings).into_iter()
             .partition(|heading| coordinates.slice_utf16(heading.range.start..heading.range.end).map(trim_js).is_some_and(|printed| printed.starts_with("A. ") || printed.starts_with("Q. ")));
-        headings = headings;
+        headings = kept_headings;
         paragraphs.extend(answers.into_iter().map(|heading| { let mut paragraph = read_paragraph(heading.range.start, heading.range.end, None); paragraph.properties.insert("speaker".to_owned(), "A.".to_owned()); paragraph }));
     }
     for (index, speaker) in found {
@@ -756,7 +759,7 @@ pub(super) fn separate_parts(structure: &mut DocumentStructure) {
         opening(&printed[lead.find(printed).map_or(0, |found| found.end())..], false).map(|(kind, author)| (heading.range.start, kind, author))
     })).collect::<Vec<_>>();
     // A second author's line, past the opinion's first text, opens another opinion.
-    for line in structure.opinion.as_mut().unwrap().front.iter().filter(|line| line.role == "author") {
+    for line in structure.opinion.as_ref().unwrap().front.iter().filter(|line| line.role == "author") {
         let Some(range) = line.range else { continue };
         let written = paragraphs.iter().filter(|paragraph| paragraph.range.end <= range.start).map(|paragraph| paragraph.range.end - paragraph.range.start).sum::<usize>();
         if written >= 400 && !breaks.iter().any(|known| known.0.abs_diff(range.start) < 4) {
@@ -810,7 +813,7 @@ pub(super) fn separate_parts(structure: &mut DocumentStructure) {
     for part in parts.iter_mut().filter(|part| part.display_value.as_deref().unwrap_or("") == "opinion") {
         let author = part.properties.get("author").map(String::as_str).unwrap_or("").to_lowercase();
         if let Some((_, kind)) = stated.iter().find(|(name, _)| author.contains(name.as_str())) {
-            part.display_value.as_deref().unwrap_or("") = kind.clone();
+            part.display_value = Some(kind.clone());
         }
     }
 })();

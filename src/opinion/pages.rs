@@ -78,7 +78,7 @@ pub(super) fn element_pages(structure: &DocumentStructure, coordinates: &ScalarT
     for element in &structure.markup_elements {
         let class = element.attributes.get("class").map_or("", String::as_str);
         if let Some(map) = element.attributes.get("pgmap") {
-            if notes.iter().any(|note| note.range.start <= element.range.start && element.range.start < note.range.end) {
+            if notes.iter().any(|note| note.start <= element.range.start && element.range.start < note.end) {
                 continue;
             }
             let body = coordinates.slice_utf16(element.range.start..element.range.end).unwrap_or("");
@@ -210,7 +210,7 @@ pub(super) fn printed_page_marks(structure: &mut DocumentStructure, citations: &
     // "[*5]" alone is a slip opinion's; beside "[**709]" each count is a reporter.
     let several = found.keys().any(|form| (12..14).contains(form));
     let slip_held = pages.iter().any(|page| page.series == "slip");
-    let mut pages = Vec::new();
+    let mut printed_pages = Vec::new();
     for (form, marks) in found {
         let mut run = Vec::<(usize, usize, u32)>::new();
         let mut longest = Vec::new();
@@ -235,10 +235,10 @@ pub(super) fn printed_page_marks(structure: &mut DocumentStructure, citations: &
             stars => format!("reporter-{}", stars - 20),
         };
         for (index, &(start, end, number)) in longest.iter().enumerate() {
-            pages.push(read_page(number.to_string(), series.clone(), start, longest.get(index + 1).map_or(utf16_len(&structure.text), |next| next.0), Some(ScalarRange { start, end }), "printed"));
+            printed_pages.push(read_page(number.to_string(), series.clone(), start, longest.get(index + 1).map_or(utf16_len(&structure.text), |next| next.0), Some(ScalarRange { start, end }), "printed"));
         }
     }
-    pages.extend(pages);
+    pages.extend(printed_pages);
     put(structure, pages);
 }
 
@@ -320,7 +320,7 @@ fn separate_printings(structure: &mut DocumentStructure) {
         }
         let longest = (0..runs.len()).max_by_key(|run| runs[*run].len()).unwrap_or(0);
         let (low, high) = (runs[longest][0].1, runs[longest][runs[longest].len() - 1].1);
-        let printed = |page: u32| structure.opinion.as_mut().unwrap().citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7" | "8")).filter_map(|citation| page_number(&citation.page)).filter(|first| *first <= page + 1 && page + 1 - first <= PAGE_REACH).collect::<Vec<_>>();
+        let printed = |page: u32| structure.opinion.as_ref().unwrap().citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7" | "8")).filter_map(|citation| page_number(&citation.page)).filter(|first| *first <= page + 1 && page + 1 - first <= PAGE_REACH).collect::<Vec<_>>();
         let held = printed(low);
         let mut second = Vec::new();
         let mut strays = Vec::new();
@@ -358,9 +358,9 @@ pub(super) fn page_series(structure: &mut DocumentStructure, record: &OpinionRec
     let mut pages = take(structure, Of::Pages);
 
     static OWN: OnceLock<Regex> = OnceLock::new();
-    if structure.opinion.as_mut().unwrap().citations.is_empty() {
+    if structure.opinion.as_ref().unwrap().citations.is_empty() {
         let own = OWN.get_or_init(|| Regex::new(r"^(\d{1,4})\s+(\D.*?)\s(\d{1,5})\b").unwrap());
-        structure.opinion.as_mut().unwrap().citations = structure.opinion.as_mut().unwrap().front.iter().filter(|line| line.role == "citation").flat_map(|line| line.text.split(';')).filter_map(|citation| {
+        structure.opinion.as_mut().unwrap().citations = structure.opinion.as_ref().unwrap().front.iter().filter(|line| line.role == "citation").flat_map(|line| line.text.split(';')).filter_map(|citation| {
             let capture = own.captures(citation.trim())?;
             Some(OpinionCitation { volume: capture[1].to_owned(), reporter: capture[2].to_owned(), page: capture[3].to_owned(), kind: String::new() })
         }).collect();
@@ -371,7 +371,7 @@ pub(super) fn page_series(structure: &mut DocumentStructure, record: &OpinionRec
     static SCANNED: OnceLock<Regex> = OnceLock::new();
     let scanned = record.cluster.iter().find(|(field, _)| field == "filepath_json_harvard")
         .and_then(|(_, path)| SCANNED.get_or_init(|| Regex::new(r"\.(\d+)/(\d+)\.\d+\.json$").unwrap()).captures(path))
-        .and_then(|book| structure.opinion.as_mut().unwrap().citations.iter().find(|citation| citation.volume == book[1] && citation.page == book[2]).cloned());
+        .and_then(|book| structure.opinion.as_ref().unwrap().citations.iter().find(|citation| citation.volume == book[1] && citation.page == book[2]).cloned());
     // The first mark in the text's order: one stray low label is no numbering's start. Nor is a first mark the next one falls
     // below: a block the source moved ahead of the opinion, "*394" on counsel printed at the case's end, before "*391".
     let mut by_series = HashMap::<String, Vec<(usize, u32)>>::new();
@@ -409,23 +409,23 @@ pub(super) fn page_series(structure: &mut DocumentStructure, record: &OpinionRec
         let memo = squeezed_series.strip_prefix("T.C. Memo ").and_then(|rest| rest.split_once('-')).map(|(year, number)| format!("{year} T.C. Memo. {number}"));
         // A vendor's name on a reporter's pages: "1911 N.C. LEXIS 201" over 359, 360 is 157 N.C. 359, printed under the vendor's scheme.
         let vendor_scheme_only = |citation: &&OpinionCitation| (matches!(citation.kind.as_str(), "6" | "7") || citation.reporter.contains("LEXIS")) && first > 3 && page_number(&citation.page).is_some_and(|page| first.abs_diff(page) > 3);
-        let closest = structure.opinion.as_mut().unwrap().citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7" | "8")).filter_map(|citation| page_number(&citation.page)).filter(|page| *page <= first + 1).map(|page| first + 1 - page).min();
+        let closest = structure.opinion.as_ref().unwrap().citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7" | "8")).filter_map(|citation| page_number(&citation.page)).filter(|page| *page <= first + 1).map(|page| first + 1 - page).min();
         // Unless another reporter of record opens right at the marks, a page or two below the first, and the book further off:
         // "643 F.2d 10" is Harvard's book, but marks from 16 at the opinion's first words are 207 U.S. App. D.C. 15's.
-        let exact = structure.opinion.as_mut().unwrap().citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7" | "8") && !citation.reporter.contains("LEXIS") && Some(citation.page.as_str()) != scanned.as_ref().map(|book| book.page.as_str()))
+        let exact = structure.opinion.as_ref().unwrap().citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7" | "8") && !citation.reporter.contains("LEXIS") && Some(citation.page.as_str()) != scanned.as_ref().map(|book| book.page.as_str()))
             .filter_map(|citation| page_number(&citation.page)).filter(|page| *page <= first + 1).map(|page| first + 1 - page).min();
         let book = scanned.as_ref().filter(|book| series == "reporter-1" && page_number(&book.page).is_some_and(|page| page <= first + 1 && first + 1 - page <= PAGE_REACH
             && closest.is_none_or(|closest| first + 1 - page <= closest + BOOK_MARGIN) && exact.is_none_or(|exact| exact > 2 || first + 1 - page < exact + 3)));
-        let by_name = book.or_else(|| structure.opinion.as_mut().unwrap().citations.iter().find(|citation| citation.printed() == squeezed_series || squeezed_series.starts_with(&citation.printed()) || memo.as_deref() == Some(citation.printed().as_str())).filter(|citation| !vendor_scheme_only(citation)));
+        let by_name = book.or_else(|| structure.opinion.as_ref().unwrap().citations.iter().find(|citation| citation.printed() == squeezed_series || squeezed_series.starts_with(&citation.printed()) || memo.as_deref() == Some(citation.printed().as_str())).filter(|citation| !vendor_scheme_only(citation)));
         // One printing can go by two names, "23 U.S. 181" and "10 Wheat. 181".
-        let twins = |citation: &'_ OpinionCitation| structure.opinion.as_mut().unwrap().citations.iter().filter(|other| other.page == citation.page && other.printed() != citation.printed() && !matches!(other.kind.as_str(), "6" | "7" | "8") && !other.reporter.contains("LEXIS")).collect::<Vec<_>>();
+        let twins = |citation: &'_ OpinionCitation| structure.opinion.as_ref().unwrap().citations.iter().filter(|other| other.page == citation.page && other.printed() != citation.printed() && !matches!(other.kind.as_str(), "6" | "7" | "8") && !other.reporter.contains("LEXIS")).collect::<Vec<_>>();
         let chosen = by_name.map(|citation| std::iter::once(citation).chain(if book.is_some() { twins(citation) } else { Vec::new() }).collect::<Vec<_>>()).unwrap_or_else(|| {
             // A case's first mark can stand a page before its citation's: the printed page it shares with the case before.
             // Nor can it open past the numbering's lowest page.
             let lowest = lowest_of.get(&series).copied().unwrap_or(first).min(first);
             let opens = |citation: &&OpinionCitation| page_number(&citation.page).filter(|page| *page <= lowest + 1 && first + 1 - page <= PAGE_REACH).map(|page| first + 1 - page);
             // A vendor's number is a document's, however the table files it: "1964 N.J. LEXIS 195" is no page near 197.
-            let eligible = structure.opinion.as_mut().unwrap().citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7") && !citation.reporter.contains("LEXIS") && citation.reporter != "WL").collect::<Vec<_>>();
+            let eligible = structure.opinion.as_ref().unwrap().citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7") && !citation.reporter.contains("LEXIS") && citation.reporter != "WL").collect::<Vec<_>>();
             // A separate writing opens far into its case, near some other reporter's first page by chance: "146 L. Ed. 2d 389" over
             // the marks of 529 U.S. 362 from 390. The reporters of record are asked first; the specialty and parallel federal
             // series, "L. Ed.", "S. Ct.", "Ohio Op.", only where none of those fits.
@@ -445,7 +445,7 @@ pub(super) fn page_series(structure: &mut DocumentStructure, record: &OpinionRec
                 printed = eligible.iter().copied().filter(|citation| citation.kind == "8" && filed.is_some() && opens(citation) == filed).collect();
             }
             // A neutral or a vendor's citation numbers no printed pages: the opinion's own, counted from 1, are all it has.
-            if printed.is_empty() && first <= 3 { structure.opinion.as_mut().unwrap().citations.iter().filter(|citation| matches!(citation.kind.as_str(), "6" | "7" | "8")).collect() } else { printed }
+            if printed.is_empty() && first <= 3 { structure.opinion.as_ref().unwrap().citations.iter().filter(|citation| matches!(citation.kind.as_str(), "6" | "7" | "8")).collect() } else { printed }
         });
         let Some(citation) = chosen.first() else { continue };
         if book.is_some() {
@@ -512,7 +512,7 @@ pub(super) fn page_series(structure: &mut DocumentStructure, record: &OpinionRec
     opening.retain(|page: &StructureNode| page.grammar.as_deref() != Some("citation") || named.iter().any(|known| known.series == page.series));
     // A short opinion prints no page mark: it still opens on each page its citations give.
     if !marked {
-        for (index, citation) in structure.opinion.as_mut().unwrap().citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7" | "8") && page_number(&citation.page).is_some()).enumerate() {
+        for (index, citation) in structure.opinion.as_ref().unwrap().citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7" | "8") && page_number(&citation.page).is_some()).enumerate() {
             let series = format!("citation-{}", index + 1);
             opening.push(read_page(citation.page.clone(), series.clone(), 0, 0, None, "citation"));
             named.push(PageSeries { series, citation: citation.printed(), reporter: format!("{} {}", citation.volume, citation.reporter), also: Vec::new() });

@@ -235,9 +235,9 @@ pub(super) fn list_items(structure: &mut DocumentStructure) {
     let mut listed = vec![false; headings.len()];
     for at in 1..headings.len() {
         let (before, heading) = (&headings[at - 1], &headings[at]);
-        let after = paragraphs.partition_point(|paragraph| paragraph.range.start <= before.start);
+        let after = paragraphs.partition_point(|paragraph| paragraph.range.start <= before.range.start);
         let adjacent = paragraphs.get(after).is_none_or(|paragraph| paragraph.range.start >= heading.range.start);
-        if adjacent && family(&before.text).is_some() && family(&before.text) == family(&heading.display_value.as_deref().unwrap_or("")) {
+        if adjacent && family(&before.display_value.as_deref().unwrap_or("")).is_some() && family(&before.display_value.as_deref().unwrap_or("")) == family(&heading.display_value.as_deref().unwrap_or("")) {
             listed[at - 1] = true;
             listed[at] = true;
         }

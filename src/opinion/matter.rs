@@ -88,13 +88,13 @@ pub(super) fn head_lines(structure: &mut DocumentStructure) {
         paragraph.label.is_none() && !printed.starts_with("We ") && !printed.starts_with("I ")
     }));
     let mut lines = Vec::new();
-    for (index, paragraph) in paragraphs.iter().enumerate().take_while(|(_, paragraph)| paragraph.label.is_none() && (!(paragraph.kind == NodeKind::Quote) || structure.opinion.as_mut().unwrap().rendition == "plain_text.txt") && paragraph.range.start < first_heading) {
+    for (index, paragraph) in paragraphs.iter().enumerate().take_while(|(_, paragraph)| paragraph.label.is_none() && (!(paragraph.kind == NodeKind::Quote) || structure.opinion.as_ref().unwrap().rendition == "plain_text.txt") && paragraph.range.start < first_heading) {
         let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(squeezed).unwrap_or_default();
         if byline.is_some_and(|at| index <= at) {
             lines.push(FrontLine { role: front_role(&printed).unwrap_or("cover").to_owned(), text: printed, range: Some(ScalarRange { start: paragraph.range.start, end: paragraph.range.end }) });
             continue;
         }
-        let next = paragraphs.get(index + 1).and_then(|next| coordinates.slice_utf16(next.start..next.end)).map_or("", trim_js);
+        let next = paragraphs.get(index + 1).and_then(|next| coordinates.slice_utf16(next.range.start..next.range.end)).map_or("", trim_js);
         if next.starts_with(char::is_lowercase) {
             break;
         }
@@ -112,12 +112,12 @@ pub(super) fn head_lines(structure: &mut DocumentStructure) {
     if lines.len() < paragraphs.len() {
         paragraphs.drain(..lines.len());
         let none_taken = lines.is_empty();
-        let head_end = paragraphs.first().map_or(0, |first| first.start);
+        let head_end = paragraphs.first().map_or(0, |first| first.range.start);
         structure.opinion.as_mut().unwrap().front.extend(lines);
-        let (head, headings): (Vec<_>, Vec<_>) = std::mem::take(&mut headings).into_iter().partition(|heading| heading.range.start < head_end && !section(heading) && !title.is_match(&heading.display_value.as_deref().unwrap_or("")) && (!none_taken || front_role(&heading.display_value.as_deref().unwrap_or("")).is_some() || heading.display_value.as_deref().unwrap_or("").contains(|c: char| c.is_ascii_digit())));
-        headings = headings;
+        let (head, kept_headings): (Vec<_>, Vec<_>) = std::mem::take(&mut headings).into_iter().partition(|heading| heading.range.start < head_end && !section(heading) && !title.is_match(&heading.display_value.as_deref().unwrap_or("")) && (!none_taken || front_role(&heading.display_value.as_deref().unwrap_or("")).is_some() || heading.display_value.as_deref().unwrap_or("").contains(|c: char| c.is_ascii_digit())));
+        headings = kept_headings;
         structure.opinion.as_mut().unwrap().front.extend(head.into_iter().map(|heading| FrontLine {
-            role: front_role(&heading.display_value.as_deref().unwrap_or("")).unwrap_or("cover").to_owned(), range: Some(ScalarRange { start: heading.range.start, end: heading.range.end }), text: heading.display_value.as_deref().unwrap_or(""),
+            role: front_role(&heading.display_value.as_deref().unwrap_or("")).unwrap_or("cover").to_owned(), range: Some(ScalarRange { start: heading.range.start, end: heading.range.end }), text: heading.display_value.clone().unwrap_or_default(),
         }));
     }
     put(structure, paragraphs);
@@ -218,24 +218,24 @@ pub(super) fn reporter_matter(structure: &mut DocumentStructure) {
         kept.push(paragraph);
     }
     paragraphs = kept;
-    let (editorial, notes): (Vec<_>, Vec<_>) = std::mem::take(&mut notes).into_iter().partition(|called| {
-        called.references.is_empty() && !called.called_outside && coordinates.slice_utf16(called.start..called.end).is_some_and(|body| note.is_match(trim_js(body)))
+    let (editorial, kept_notes): (Vec<_>, Vec<_>) = std::mem::take(&mut notes).into_iter().partition(|called| {
+        called.calls.is_empty() && !called.properties.contains_key("called_outside") && coordinates.slice_utf16(called.range.start..called.range.end).is_some_and(|body| note.is_match(trim_js(body)))
     });
-    notes = notes;
+    notes = kept_notes;
     for called in editorial {
-        let printed = coordinates.slice_utf16(called.start..called.end).map(squeezed).unwrap_or_default();
-        structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("note", printed, Some(ScalarRange { start: called.start, end: called.end })));
+        let printed = coordinates.slice_utf16(called.range.start..called.range.end).map(squeezed).unwrap_or_default();
+        structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("note", printed, Some(ScalarRange { start: called.range.start, end: called.range.end })));
     }
     // Capitals past the last text are an index's subjects, no heading.
     let last_text = paragraphs.iter().map(|paragraph| paragraph.range.end).max().unwrap_or(0);
-    let (trailing, headings): (Vec<_>, Vec<_>) = std::mem::take(&mut headings).into_iter().partition(|heading| {
+    let (trailing, kept_headings): (Vec<_>, Vec<_>) = std::mem::take(&mut headings).into_iter().partition(|heading| {
         heading.range.start >= last_text && !heading.display_value.as_deref().unwrap_or("").chars().any(char::is_lowercase) && !section_keyword(&heading.display_value.as_deref().unwrap_or("")) && !notes_title(&heading.display_value.as_deref().unwrap_or(""))
             && !["OPINION", "REHEARING", "APPENDIX"].iter().any(|word| heading.display_value.as_deref().unwrap_or("").contains(word))
     });
-    headings = headings;
+    headings = kept_headings;
     structure.opinion.as_mut().unwrap().headnotes.extend(trailing.into_iter().map(|heading| {
         let range = Some(ScalarRange { start: heading.range.start, end: heading.range.end });
-        headnote_of("topics", heading.display_value.as_deref().unwrap_or(""), range)
+        headnote_of("topics", heading.display_value.clone().unwrap_or_default(), range)
     }));
     put(structure, paragraphs);
     put(structure, notes);
@@ -347,7 +347,7 @@ pub(super) fn cover_matter(structure: &mut DocumentStructure) {
     static BOARD: OnceLock<Regex> = OnceLock::new();
     static CHARGE: OnceLock<Regex> = OnceLock::new();
     static MEMORANDUM: OnceLock<Regex> = OnceLock::new();
-    if structure.opinion.as_mut().unwrap().rendition != "plain_text.txt" {
+    if structure.opinion.as_ref().unwrap().rendition != "plain_text.txt" {
         return;
     }
     let units = |byte: usize| utf16_len(&structure.text[..byte]);
@@ -410,7 +410,7 @@ pub(super) fn divisions_of_headnotes(structure: &mut DocumentStructure) {
         if !name.is_match(trim_js(printed)) { continue; }
         let title = trim_js(printed).to_lowercase();
         let kind = if title.starts_with("note") { "note" } else if title.starts_with("synopsis") { "summary" } else { "syllabus" };
-        let until = headings.iter().map(|other| other.start).filter(|start| *start > heading.range.end).min().unwrap_or(usize::MAX);
+        let until = headings.iter().map(|other| other.range.start).filter(|start| *start > heading.range.end).min().unwrap_or(usize::MAX);
         let start = heading.range.end;
         static OPENS: OnceLock<Regex> = OnceLock::new();
         static AUTHOR: OnceLock<Regex> = OnceLock::new();
@@ -513,7 +513,7 @@ pub(super) fn record_gaps(structure: &DocumentStructure) -> Vec<RecordGap> {
     // Text that opens on a second section has lost its first.
     let opening = paragraphs.iter().map(|paragraph| paragraph.range.start).min().unwrap_or(usize::MAX);
     if let Some(first) = headings.first().filter(|heading| heading.range.start < opening.saturating_add(40) && matches!(heading.display_value.as_deref().unwrap_or("").trim_end_matches('.'), "II" | "B" | "2")) {
-        gaps.push(RecordGap { kind: "opens-midway".to_owned(), evidence: first.text.clone() });
+        gaps.push(RecordGap { kind: "opens-midway".to_owned(), evidence: first.display_value.clone().unwrap_or_default() });
     }
     gaps
 }
