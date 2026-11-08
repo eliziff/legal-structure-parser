@@ -210,37 +210,19 @@ pub(crate) struct ResolvedCandidate<'a> {
     pub(crate) line_ids: &'a [String],
 }
 
-#[derive(Clone)]
-struct Block {
-    kind: NodeKind,
-    range: ScalarRange,
-    label: Option<String>,
-    aliases: Vec<String>,
-    parent_label: Option<String>,
-    content_start: Option<usize>,
-    marker_range: Option<ScalarRange>,
-    calls: Vec<ScalarRange>,
-    diagnostic: Option<&'static str>,
-    source: Derivation,
-    origin_id: &'static str,
-}
-
-impl Block {
-    fn labelled(kind: NodeKind, label: String, start: usize, end: usize) -> Self {
-        Self {
-            kind,
-            range: ScalarRange { start, end },
-            label: Some(label),
-            aliases: Vec::new(),
-            parent_label: None,
-            content_start: None,
-            marker_range: None,
-            calls: Vec::new(),
-            diagnostic: None,
-            source: Derivation::Heuristic,
-            origin_id: ENGINE_ORIGIN,
-        }
-    }
+/// A node inference reads, by its kind, label and span in scalars; `derive` numbers it, and a diagnostic it raises
+/// stands in its `properties` under "diagnostic" until `derive` makes it the structure's.
+fn labelled_node(kind: NodeKind, label: String, start: usize, end: usize) -> StructureNode {
+    let mut node = StructureNode::new(
+        String::new(),
+        kind,
+        ScalarRange { start, end },
+        ENGINE_ORIGIN,
+        Derivation::Heuristic,
+        None,
+    );
+    node.label = Some(label);
+    node
 }
 
 #[cfg(feature = "structure-inference")]

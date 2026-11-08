@@ -52,7 +52,7 @@ pub(super) fn detect_pages(
     text: &ScalarText<'_>,
     report_start: Option<u32>,
     require_report_start: bool,
-) -> Vec<Block> {
+) -> Vec<StructureNode> {
     if require_report_start && report_start.is_none() {
         return Vec::new();
     }
@@ -95,7 +95,7 @@ pub(super) fn detect_pages(
     let mut blocks = best
         .windows(2)
         .map(|pair| {
-            Block::labelled(
+            crate::labelled_node(
                 NodeKind::Page,
                 format!("page{}", pair[0].number),
                 pair[0].content_start,
@@ -106,7 +106,7 @@ pub(super) fn detect_pages(
     if report_start.is_some_and(|start| best[0].number == start + 1) {
         blocks.insert(
             0,
-            Block::labelled(
+            crate::labelled_node(
                 NodeKind::Page,
                 format!("page{}", report_start.unwrap()),
                 0,
@@ -119,7 +119,7 @@ pub(super) fn detect_pages(
 
 /// Form feeds are the source's own page breaks, so a physical page no printed number marks is
 /// still a page. It takes the number the printed pages count it to, else its place in the text.
-pub(super) fn form_feed_pages(evidence: &DocumentInput, text: &ScalarText<'_>, blocks: &[Block]) -> Vec<Block> {
+pub(super) fn form_feed_pages(evidence: &DocumentInput, text: &ScalarText<'_>, blocks: &[StructureNode]) -> Vec<StructureNode> {
     let form_feeds = text.value.char_indices().filter(|(_, character)| *character == '\u{c}')
         .map(|(byte, _)| text.scalar(byte)).collect::<Vec<_>>();
     if form_feeds.is_empty() {
@@ -152,8 +152,8 @@ pub(super) fn form_feed_pages(evidence: &DocumentInput, text: &ScalarText<'_>, b
             || pages.iter().any(|(page, _, _)| page.start < range.end && range.start < page.end) {
             continue;
         }
-        let mut block = Block::labelled(NodeKind::Page, label.clone(), range.start, range.end);
-        block.aliases.push(label);
+        let mut block = crate::labelled_node(NodeKind::Page, label.clone(), range.start, range.end);
+        block.aliases = Some(vec![label]);
         result.push(block);
     }
     result

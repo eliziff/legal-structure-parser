@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) fn add_ranges(mut blocks: Vec<Block>, length: usize) -> Vec<Block> {
+pub(super) fn add_ranges(mut blocks: Vec<StructureNode>, length: usize) -> Vec<StructureNode> {
     for index in 0..blocks.len() {
         blocks[index].range.end = blocks
             .get(index + 1)
@@ -11,7 +11,7 @@ pub(super) fn add_ranges(mut blocks: Vec<Block>, length: usize) -> Vec<Block> {
     blocks
 }
 
-pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<Block> {
+pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<StructureNode> {
     let source = javascript_lines(text);
     let section = cached_regex!(
         SECTION,
@@ -37,15 +37,15 @@ pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<Block> {
                             alias
                         },
                     );
-                let mut block = Block::labelled(
+                let mut block = crate::labelled_node(
                     NodeKind::Section,
                     format!("sec{}", &capture[1]),
                     text.scalar(line.byte_start + whole.start()),
                     0,
                 );
-                block.aliases = std::iter::once(capture[1].to_owned())
+                block.aliases = Some(std::iter::once(capture[1].to_owned())
                     .chain((!alias.is_empty()).then(|| format!("sectitle:{alias}")))
-                    .collect();
+                    .collect());
                 block
             })
             .collect(),
@@ -58,13 +58,13 @@ pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<Block> {
             .filter_map(|line| note.captures(line.text).map(|capture| (line, capture)))
             .map(|(line, capture)| {
                 let whole = capture.get(0).unwrap();
-                let mut block = Block::labelled(
+                let mut block = crate::labelled_node(
                     NodeKind::Footnote,
                     format!("fn{}", capture[1].parse::<u32>().unwrap()),
                     text.scalar(line.byte_start + whole.start()),
                     0,
                 );
-                block.aliases.push(capture[1].to_owned());
+                block.aliases = Some(vec![capture[1].to_owned()]);
                 block
             })
             .collect(),
@@ -105,22 +105,10 @@ pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<Block> {
                 block_start
             };
             if block_start < end {
-                result.push(Block {
-                    kind: NodeKind::Prose,
-                    range: ScalarRange {
-                        start: block_start,
-                        end,
-                    },
-                    label: None,
-                    aliases: Vec::new(),
-                    parent_label: None,
-                    content_start: None,
-                    marker_range: None,
-                    calls: Vec::new(),
-                    diagnostic: None,
-                    source: Derivation::Heuristic,
-                    origin_id: ENGINE_ORIGIN,
-                });
+                result.push(prose_block(ScalarRange {
+                    start: block_start,
+                    end,
+                }));
             }
             start = None;
         }

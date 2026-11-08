@@ -25,20 +25,14 @@ pub(crate) struct GrammarPoint {
 }
 
 impl GrammarPoint {
-    fn into_section(self) -> Block {
-        Block {
-            kind: NodeKind::Section,
-            range: self.range,
-            label: Some(self.label),
-            aliases: Vec::new(),
-            parent_label: self.parent_label,
-            content_start: Some(self.content_start),
-            marker_range: None,
-            calls: Vec::new(),
-            diagnostic: self.diagnostic,
-            source: Derivation::Heuristic,
-            origin_id: ENGINE_ORIGIN,
+    fn into_section(self) -> StructureNode {
+        let mut node = StructureNode::new(String::new(), NodeKind::Section, self.range, ENGINE_ORIGIN, Derivation::Heuristic, self.parent_label);
+        node.label = Some(self.label);
+        node.content_start = Some(self.content_start);
+        if let Some(code) = self.diagnostic {
+            node.properties.insert("diagnostic".to_owned(), code.to_owned());
         }
+        node
     }
 }
 
@@ -659,7 +653,7 @@ pub(super) fn enumerated_children(
     content_start: usize,
     inline_at_root: bool,
     leading_label: Option<&str>,
-) -> Vec<Block> {
+) -> Vec<StructureNode> {
     let bytes = text.byte(range.start)..text.byte(range.end);
     let value = &text.value[bytes.clone()];
     let mut markers = Vec::new();
@@ -946,7 +940,7 @@ pub(crate) fn detect_instrument_grammar(
     state.nodes.into_iter().map(|(point, _)| point).collect()
 }
 
-pub(crate) fn detect_instrument(text: &ScalarText<'_>) -> Vec<Block> {
+pub(crate) fn detect_instrument(text: &ScalarText<'_>) -> Vec<StructureNode> {
     detect_instrument_grammar(text, true)
         .into_iter()
         .map(GrammarPoint::into_section)

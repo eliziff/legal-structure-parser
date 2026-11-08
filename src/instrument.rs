@@ -5,9 +5,9 @@ use crate::{
         find_provision_references, populate_instrument_node_metadata,
         resolve_instrument_references, FindProvisionReferencesOptions,
     },
-    javascript_whitespace, node_depths, AuthoritativeTableCell, AuthoritativeTables, Block,
+    javascript_whitespace, node_depths, AuthoritativeTableCell, AuthoritativeTables,
     DetectionProfile, DocumentInput,
-    DocumentStructure, EngineError, NodeKind, ScalarRange, ScalarText,
+    DocumentStructure, EngineError, NodeKind, ScalarRange, ScalarText, StructureNode,
 };
 #[cfg(feature = "structure-inference")]
 use legal_structure_model::{DefinedTerm, DefinitionOccurrence};
@@ -275,7 +275,7 @@ fn endorsed_references(references: &[ProvisionReference]) -> Vec<(String, usize,
 
 #[cfg(feature = "structure-inference")]
 fn instrument_lineation_score_blocks(
-    blocks: &[Block],
+    blocks: &[StructureNode],
     endorsed: &[(String, usize, usize)],
     coordinates: &ScalarText<'_>,
 ) -> usize {
@@ -307,7 +307,7 @@ fn instrument_lineation_score_sections<'a>(
 }
 
 #[cfg(feature = "structure-inference")]
-fn instrument_block_head_span(blocks: &[Block], coordinates: &ScalarText<'_>) -> f64 {
+fn instrument_block_head_span(blocks: &[StructureNode], coordinates: &ScalarText<'_>) -> f64 {
     instrument_head_span_sections(
         blocks.iter().filter_map(|block| {
             let label = block.label.as_deref()?;

@@ -2,7 +2,7 @@ use super::*;
 
 /// The structure from a reader's evidence: its own nodes, with what inference finds (or the blocks it was given in
 /// place of inference), each node's parent resolved from the label (or id) it names, ranges in UTF-16.
-pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>>) -> DocumentStructure {
+pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<StructureNode>>) -> DocumentStructure {
     let coordinates = ScalarText::new(&evidence.text);
     #[cfg(feature = "structure-inference")]
     let inferred = precomputed.unwrap_or_else(|| {
@@ -46,33 +46,20 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Block>
             Derivation::Native => "native",
             Derivation::Heuristic => "heuristic",
         };
-        let id = format!("{source}-{}-{:06}", block.kind.name(), ordinal);
-        if let Some(code) = block.diagnostic {
+        block.id = format!("{source}-{}-{:06}", block.kind.name(), ordinal);
+        if let Some(code) = block.properties.remove("diagnostic") {
             diagnostics.push(StructureDiagnostic {
-                code: code.to_owned(),
                 severity: if code.ends_with("violation") {
                     DiagnosticSeverity::Warning
                 } else {
                     DiagnosticSeverity::Info
                 },
+                code,
                 ranges: vec![block.range],
-                node_ids: vec![id.clone()],
+                node_ids: vec![block.id.clone()],
             });
         }
-        let mut node = StructureNode::new(
-            id,
-            block.kind,
-            block.range,
-            block.origin_id,
-            block.source,
-            block.parent_label,
-        );
-        node.label = block.label;
-        node.aliases = (!block.aliases.is_empty()).then_some(block.aliases);
-        node.content_start = block.content_start;
-        node.marker_range = block.marker_range;
-        node.calls = block.calls;
-        nodes.push(node);
+        nodes.push(block);
     }
     if nodes.iter().any(|node| node.parent_id.is_some()) {
         let identities = nodes

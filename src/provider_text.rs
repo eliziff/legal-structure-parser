@@ -1,5 +1,5 @@
 use crate::{
-    locator::normalize_section_locator, text::equal_fold, utf16_len, Block,
+    locator::normalize_section_locator, text::equal_fold, utf16_len,
     Derivation, DetectionProfile, DocumentInput, DocumentStructure, EngineError,
     NodeKind, ScalarRange, ScalarText, Scope, ScopeKind, StructureNode,
 };
@@ -332,7 +332,7 @@ fn words(text: &str) -> Vec<(Cow<'_, str>, usize, usize, usize, usize)> {
 
 fn apply_provider_section_evidence(
     coordinates: &ScalarText<'_>,
-    blocks: &mut Vec<Block>,
+    blocks: &mut Vec<StructureNode>,
     native_claims: &[StructureNode],
     map: &ProviderSectionMap,
 ) {
@@ -369,9 +369,9 @@ fn apply_provider_section_evidence(
     for (index, block) in blocks
         .iter()
         .enumerate()
-        .filter(|(_, block)| block.kind == NodeKind::Section && block.parent_label.is_none())
+        .filter(|(_, block)| block.kind == NodeKind::Section && block.parent_id.is_none())
     {
-        for label in block.label.iter().chain(&block.aliases) {
+        for label in block.label.iter().chain(block.aliases.iter().flatten()) {
             let candidates = top_sections.entry(label.to_lowercase()).or_default();
             if candidates.last() != Some(&index) {
                 candidates.push(index);
@@ -436,8 +436,8 @@ fn apply_provider_section_evidence(
                 continue;
             }
             blocks[index].source = Derivation::Native;
-            blocks[index].origin_id = ORIGIN;
-            blocks[index].diagnostic = None;
+            blocks[index].origin_id = ORIGIN.into();
+            blocks[index].properties.remove("diagnostic");
         } else if candidates.is_empty() {
             let Some((body_start, _, body_utf16_start, body_utf16_end)) = body else {
                 continue;
@@ -456,20 +456,20 @@ fn apply_provider_section_evidence(
             let start = printed.map_or(body_utf16_start, |_| {
                 body_utf16_start - utf16_len(&text[line_start + lead..body_start])
             });
-            let mut block = Block::labelled(
+            let mut block = crate::labelled_node(
                 NodeKind::Section,
                 provider_label,
                 coordinates.scalar_at_utf16(start).unwrap(),
                 coordinates.scalar_at_utf16(body_utf16_end).unwrap(),
             );
             block.source = Derivation::Native;
-            block.origin_id = ORIGIN;
+            block.origin_id = ORIGIN.into();
             blocks.push(block);
         }
     }
     let mut seen = HashSet::new();
     blocks.retain(|block| seen.insert((block.label.clone(), block.range)));
-    blocks.sort_by_key(|block| (block.range.start, block.parent_label.is_some()));
+    blocks.sort_by_key(|block| (block.range.start, block.parent_id.is_some()));
 }
 
 pub fn provider_text_document_structure(

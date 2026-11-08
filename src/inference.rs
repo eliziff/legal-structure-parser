@@ -67,20 +67,8 @@ impl Marker {
 }
 
 /// A passage of running prose the reading found.
-fn prose_block(range: ScalarRange) -> Block {
-    Block {
-        kind: NodeKind::Prose,
-        range,
-        label: None,
-        aliases: Vec::new(),
-        parent_label: None,
-        content_start: None,
-        marker_range: None,
-        calls: Vec::new(),
-        diagnostic: None,
-        source: Derivation::Heuristic,
-        origin_id: ENGINE_ORIGIN,
-    }
+fn prose_block(range: ScalarRange) -> StructureNode {
+    StructureNode::new(String::new(), NodeKind::Prose, range, ENGINE_ORIGIN, Derivation::Heuristic, None)
 }
 
 #[derive(Clone, Copy)]
@@ -148,7 +136,7 @@ fn decimal_prefix(value: &str, maximum: usize) -> Option<(&str, usize)> {
     (length > 0 && length <= maximum).then(|| (&value[..length], length))
 }
 
-pub(super) fn inferred_blocks(evidence: &DocumentInput, text: &ScalarText<'_>) -> Vec<Block> {
+pub(super) fn inferred_blocks(evidence: &DocumentInput, text: &ScalarText<'_>) -> Vec<StructureNode> {
     match evidence.profile {
         DetectionProfile::Legislation => {
             let mut blocks = detect_legislation(

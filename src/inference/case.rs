@@ -10,7 +10,7 @@ pub(super) fn detect_case(
     require_report_start: bool,
     excluded: &[ScalarRange],
     courtlistener: bool,
-) -> Vec<Block> {
+) -> Vec<StructureNode> {
     let mut paragraphs = match profile {
         DetectionProfile::CaseContiguousComplete => {
             let complete = clipped_case_paragraphs(
@@ -42,7 +42,7 @@ pub(super) fn detect_case(
 /// mode: the list may open at the last "[1] …" or "Footnote 1" line after the paragraphs' last
 /// number (with a "Footnotes" heading just above it), and the paragraphs' numbered lines are labels
 /// the pairer may take for notes instead. Where it pairs notes, the paragraphs end where they open.
-pub(super) fn with_endnotes(text: &ScalarText<'_>, mut paragraphs: Vec<Block>) -> Vec<Block> {
+pub(super) fn with_endnotes(text: &ScalarText<'_>, mut paragraphs: Vec<StructureNode>) -> Vec<StructureNode> {
     let after = paragraphs.iter().map(|block| block.range.start).max().unwrap_or(0);
     let index = text.lines();
     let opening = index.iter().rposition(|line| {
@@ -84,7 +84,7 @@ pub(super) fn with_endnotes(text: &ScalarText<'_>, mut paragraphs: Vec<Block>) -
 
 #[derive(Default)]
 pub(super) struct CaseSourceLayout {
-    pub(super) blocks: Vec<Block>,
+    pub(super) blocks: Vec<StructureNode>,
     pub(super) exclusions: Vec<ScalarRange>,
     note_ranges: Vec<ScalarRange>,
     running_heads: HashSet<usize>,
@@ -106,7 +106,7 @@ pub(super) fn case_decimal_subheadings(
     text: &ScalarText<'_>,
     source_lines: &[Line<'_>],
     numeric: &[Marker],
-) -> Vec<Block> {
+) -> Vec<StructureNode> {
     let markers = numeric.iter().filter(|marker| marker.style == MarkerStyle::Dot)
         .map(|marker| (marker.start, marker)).collect::<HashMap<_, _>>();
     let mut parent = None;
@@ -185,7 +185,7 @@ pub(super) fn case_decimal_subheadings(
                     && separated.contains(&marker.start)) {
                 let range = titles[&marker.start];
                 let title = text.slice(range.start..range.end).unwrap().trim().to_owned();
-                result.push(Block::labelled(NodeKind::Heading, title, range.start, range.end));
+                result.push(crate::labelled_node(NodeKind::Heading, title, range.start, range.end));
             }
         }
     }
@@ -408,8 +408,8 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
                         if marker.number != 1 { continue; }
                         let end = page.line.start;
                         if end == 0 { continue; }
-                        let mut block = Block::labelled(NodeKind::Page, marker.number.to_string(), 0, end);
-                        block.aliases.push(marker.number.to_string());
+                        let mut block = crate::labelled_node(NodeKind::Page, marker.number.to_string(), 0, end);
+                        block.aliases = Some(vec![marker.number.to_string()]);
                         block.marker_range = Some(page.range);
                         result.blocks.push(block);
                         continue;
@@ -421,8 +421,8 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
                     (page.physical.start, page.line.start)
                 };
                 if start >= end { continue; }
-                let mut block = Block::labelled(NodeKind::Page, marker.number.to_string(), start, end);
-                block.aliases.push(marker.number.to_string());
+                let mut block = crate::labelled_node(NodeKind::Page, marker.number.to_string(), start, end);
+                block.aliases = Some(vec![marker.number.to_string()]);
                 block.marker_range = Some(page.range);
                 result.blocks.push(block);
             }
@@ -526,14 +526,14 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
                 .is_some_and(|line| line.text.chars().any(char::is_alphabetic)) { continue; }
         let body_range = ScalarRange { start: body_start, end: body_end };
         if evidence.clip_inference(EvidenceKind::Footnote, body_range) != Some(body_range) { continue; }
-        let mut block = Block::labelled(NodeKind::Footnote, format!("fn{number}"), body_start, body_end);
+        let mut block = crate::labelled_node(NodeKind::Footnote, format!("fn{number}"), body_start, body_end);
         block.marker_range = Some(label_range);
         block.calls = vec![reference];
         if separate_block {
-            block.diagnostic = Some("source-note-block-fragment");
+            block.properties.insert("diagnostic".to_owned(), "source-note-block-fragment".to_owned());
         } else if physical.end < text.len() && (body_end == physical.end
             || pages.iter().any(|page| page.line.start == body_end)) {
-            block.diagnostic = Some("source-note-page-fragment");
+            block.properties.insert("diagnostic".to_owned(), "source-note-page-fragment".to_owned());
         }
         // A later separate block on the note's physical page is unresolved note continuation or
         // trailing matter: preserve it verbatim without manufacturing paragraph/heading roles inside it.
@@ -553,7 +553,7 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
     result
 }
 
-pub(super) fn detect_case_headings(evidence: &DocumentInput, text: &ScalarText<'_>, layout: &CaseSourceLayout) -> Vec<Block> {
+pub(super) fn detect_case_headings(evidence: &DocumentInput, text: &ScalarText<'_>, layout: &CaseSourceLayout) -> Vec<StructureNode> {
     // This supplement has CourtListener corpus evidence; other providers retain their readers.
     if evidence.provider != "courtlistener" {
         return Vec::new();
@@ -592,7 +592,7 @@ pub(super) fn detect_case_headings(evidence: &DocumentInput, text: &ScalarText<'
             end: text.scalar(line.byte_start + lead + value.len()),
         }
     };
-    let mut candidates = Vec::<(Block, bool)>::new();
+    let mut candidates = Vec::<(StructureNode, bool)>::new();
     let mut families = BTreeMap::<(u8, bool, bool), Vec<(usize, u32, usize)>>::new();
     let (mut prose_units, mut sentence_seen) = (0, false);
     for (position, (line_index, line)) in nonempty.iter().enumerate() {
@@ -681,7 +681,7 @@ pub(super) fn detect_case_headings(evidence: &DocumentInput, text: &ScalarText<'
                 }
             }
             candidates.push((
-                Block::labelled(NodeKind::Heading, value.to_owned(), range.start, range.end),
+                crate::labelled_node(NodeKind::Heading, value.to_owned(), range.start, range.end),
                 bare,
             ));
         } else if !enumerated
@@ -735,8 +735,8 @@ pub(super) fn detect_case_prose(
     evidence: &DocumentInput,
     text: &ScalarText<'_>,
     layout: &CaseSourceLayout,
-    recovered: &[Block],
-) -> Vec<Block> {
+    recovered: &[StructureNode],
+) -> Vec<StructureNode> {
     // Supplement only unaddressed CourtListener text, leaving every supplied or
     // recovered passage intact. Anonymous ranges do not print paragraph numbers.
     if evidence.provider != "courtlistener" {

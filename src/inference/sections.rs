@@ -1203,7 +1203,7 @@ pub(super) fn detect_legislation(
     text: &ScalarText<'_>,
     allow_hyphenated_sections: bool,
     native_claims: &[StructureNode],
-) -> Vec<Block> {
+) -> Vec<StructureNode> {
     let sections = selected_sections(text, allow_hyphenated_sections);
     let merge_native = native_claims
         .iter()
@@ -1216,12 +1216,9 @@ pub(super) fn detect_legislation(
             .map_or(text.len(), |value| value.start);
         let end = schedule_start(text, section.content_start, end);
         let parent = format!("sec{}", section.label);
-        let mut top = Block::labelled(NodeKind::Section, parent.clone(), section.start, end);
-        top.aliases = section
-            .aliases
-            .iter()
-            .map(|value| format!("sec{value}"))
-            .collect();
+        let mut top = crate::labelled_node(NodeKind::Section, parent.clone(), section.start, end);
+        top.aliases = (!section.aliases.is_empty())
+            .then(|| section.aliases.iter().map(|value| format!("sec{value}")).collect());
         top.content_start = Some(section.content_start);
         result.push(top);
         let children = enumerated_children(

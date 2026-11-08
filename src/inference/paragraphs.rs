@@ -726,7 +726,7 @@ pub(super) fn bare_heading_joined(text: &ScalarText<'_>, known: &HashSet<usize>)
 
 /// A provider text's paragraphs numbered in parentheses ("(3) I note the decision …"), read only
 /// where it has no other count: a quoted provision numbers its subsections the same way.
-pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[ScalarRange]) -> Vec<Block> {
+pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[ScalarRange]) -> Vec<StructureNode> {
     let markers = lines(text)
         .filter_map(|line| {
             let lead = leading_ascii_space(line.text);
@@ -813,7 +813,7 @@ pub(super) fn running_prose(line: &str) -> bool {
 /// A provider text's paragraphs where it numbers none, a line each: from where its reasons open
 /// (an author's "MARTLAND J.—…", "The judgment of the Court was delivered by", else the end of its
 /// catalogue record), or from `after`, to its note list at `until`, the lines that read as running prose.
-pub(super) fn unnumbered_paragraphs(text: &ScalarText<'_>, after: usize, until: usize) -> Vec<Block> {
+pub(super) fn unnumbered_paragraphs(text: &ScalarText<'_>, after: usize, until: usize) -> Vec<StructureNode> {
     let index = text.lines();
     let value = |line: &[usize; 3]| text.value[line[0]..line[1]].trim();
     let record = index.iter().position(|line| value(line) == "Decision Content").map_or(0, |at| at + 1);
@@ -1035,7 +1035,7 @@ pub(super) fn paragraph_ranges(
     style: MarkerStyle,
     fill_gaps: bool,
     extra: &[ScalarRange],
-) -> Vec<Block> {
+) -> Vec<StructureNode> {
     let selected = if fill_gaps && style != MarkerStyle::Bare {
         fill_lossy_marker_gaps(text, selected, style)
     } else {
@@ -1060,7 +1060,7 @@ pub(super) fn paragraph_ranges(
                 next_boundary(&boundaries, marker.start, text.len()),
                 Some(marker.start) == last,
             );
-            let mut block = Block::labelled(
+            let mut block = crate::labelled_node(
                 NodeKind::Paragraph,
                 format!("par{}", marker.number),
                 marker.start,
@@ -1149,7 +1149,7 @@ pub(super) fn detect_paragraphs(
     profile: DetectionProfile,
     excluded: &[ScalarRange],
     courtlistener: bool,
-) -> Vec<Block> {
+) -> Vec<StructureNode> {
     let text_length = text.utf16_len();
     let strict = profile != DetectionProfile::CaseLossy;
     let contiguous = profile == DetectionProfile::CaseContiguousComplete;
@@ -1413,7 +1413,7 @@ pub(super) fn detect_paragraphs(
     Vec::new()
 }
 
-pub(super) fn gapped_paragraphs(blocks: &[Block]) -> bool {
+pub(super) fn gapped_paragraphs(blocks: &[StructureNode]) -> bool {
     let mut prior = None;
     blocks
         .iter()
@@ -1434,10 +1434,10 @@ pub(super) fn gapped_paragraphs(blocks: &[Block]) -> bool {
 }
 
 pub(super) fn clipped_case_paragraphs(
-    mut blocks: Vec<Block>,
+    mut blocks: Vec<StructureNode>,
     excluded: &[ScalarRange],
     text: &ScalarText<'_>,
-) -> Vec<Block> {
+) -> Vec<StructureNode> {
     blocks.retain_mut(|block| {
         for range in excluded {
             if range.start >= block.range.end {
