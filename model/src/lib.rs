@@ -26,7 +26,7 @@ pub use assembly::{assemble_in_place, legislation_outline, write_levels};
 pub use legal_layout::{ablated, CitationSpan, LayoutAnalysis, NumberingMarker, PARTY_ROLES};
 pub use definitions::{DefinedTerm, DefinitionOccurrence};
 pub use document::{
-    CitedAuthority, Derivation, DocumentStructure, MarkupAncestor,
+    CitedAuthority, Derivation, DocumentStructure, MarkupAncestor, NodeReading,
     ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, PrimaryRole, SourceFragment, StructureNode,
 };
 pub use docx::{

@@ -241,6 +241,18 @@ impl StructureNode {
     }
 }
 
+/// A node as a reader takes it, with what the structure reads of it: the spans of its query text the node holds and
+/// their envelope (`query_ranges`, `query_range`), its link fragment, and whether it prints its label where it stands.
+#[derive(Clone, Debug, Serialize)]
+pub struct NodeReading<'a> {
+    pub node: &'a StructureNode,
+    pub ranges: Cow<'a, [ScalarRange]>,
+    pub span: ScalarRange,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fragment: Option<String>,
+    pub prints_label: bool,
+}
+
 /// The members of a JSON object as serde_json writes it, compact: each `"key":value`, in order.
 fn object_members(object: &[u8]) -> Vec<&[u8]> {
     let mut members = Vec::new();
@@ -441,6 +453,12 @@ pub struct DocumentStructure {
 }
 
 impl DocumentStructure {
+    /// A node of the structure as a reader takes it (`NodeReading`).
+    pub fn reading<'a>(&self, node: &'a StructureNode) -> NodeReading<'a> {
+        NodeReading { node, ranges: self.query_ranges(node), span: self.query_range(node), fragment: node.fragment(),
+            prints_label: node.prints_label() }
+    }
+
     /// A structure of `text` from one origin, complete, its digest taken, with no nodes yet: a reader sets on it what
     /// else it knows.
     pub fn new(document_id: String, provider: impl Into<String>, text: String, origin_id: &str) -> Self {
