@@ -296,6 +296,11 @@ impl Kinds {
     }
 }
 
+/// A page mark of the opinion's own run of pages: neither one a note carries on to its next page nor a stray mark.
+pub fn in_flow(page: &StructureNode) -> bool {
+    !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray")
+}
+
 /// The structure's nodes of a kind the opinion parse wrote, in the text's order.
 pub fn nodes(structure: &DocumentStructure, kind: NodeKind) -> impl Iterator<Item = &StructureNode> {
     structure.nodes.iter().filter(move |node| node.kind == kind && node.origin_id == ORIGIN)
@@ -432,7 +437,7 @@ fn opinion_document(record: &OpinionRecord, rendition: &str, text: String, mut k
 /// of its numberings, within `tolerance`, it agrees; otherwise the nearest numbering answers, by how many pages it is off.
 fn witness_pages(kinds: &mut Kinds, marks: &[(u32, usize)], tolerance: usize) {
     let mut numberings = HashMap::<&str, Vec<(usize, u32, &str)>>::new();
-    for page in kinds.pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray")) {
+    for page in kinds.pages.iter().filter(|page| in_flow(page)) {
         if let Some(number) = page_number(page.label.as_deref().unwrap_or("")) {
             numberings.entry(page.series.as_str()).or_default().push((page.range.start, number, page.grammar.as_deref().unwrap_or("")));
         }
@@ -1590,13 +1595,12 @@ const CALL_AT_FOOT: usize = 120;
 
 /// The lead numbering's page of everything found, its pins in every numbering, and each paragraph's part.
 fn place_on_pages(kinds: &mut Kinds) {
-    let of_the_opinion = |page: &&StructureNode| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray");
     let mut counts = HashMap::<&str, usize>::new();
-    for page in kinds.pages.iter().filter(of_the_opinion) {
+    for page in kinds.pages.iter().filter(|page| in_flow(page)) {
         *counts.entry(page.series.as_str()).or_default() += 1;
     }
     let lead = counts.iter().max_by_key(|(series, count)| (series.starts_with("reporter"), **count, std::cmp::Reverse(**series))).map(|(series, _)| *series);
-    let lead_turns = kinds.pages.iter().filter(of_the_opinion).filter(|page| Some(page.series.as_str()) == lead).map(|page| page.range.start).collect::<Vec<_>>();
+    let lead_turns = kinds.pages.iter().filter(|page| in_flow(page)).filter(|page| Some(page.series.as_str()) == lead).map(|page| page.range.start).collect::<Vec<_>>();
     // Each page under the names a pin cites it by: "*702", and "226 La. 702" where its numbering is a printing's.
     for page in kinds.pages.iter_mut() {
         let mut aliases = vec![format!("*{}", page.label.as_deref().unwrap_or(""))];

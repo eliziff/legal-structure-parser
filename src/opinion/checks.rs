@@ -9,7 +9,7 @@ pub fn parse_failures(structure: &DocumentStructure) -> Vec<(&'static str, Strin
     let notes: Vec<&StructureNode> = nodes(structure, NodeKind::Footnote).collect();
     let parts: Vec<&StructureNode> = nodes(structure, NodeKind::Section).collect();
     let mut failures = Vec::new();
-    let opinion_pages = || pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray"));
+    let opinion_pages = || pages.iter().filter(|page| in_flow(page));
     if opinion_pages().next().is_none() {
         failures.push(("no pages", String::new()));
     }
@@ -232,7 +232,7 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
         }
     }
     // Paragraphs with no pin where the text has pages.
-    let paged = pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray")).count();
+    let paged = pages.iter().filter(|page| in_flow(page)).count();
     let table = super::pages::pin_table(pages.iter().copied(), &super::reading(structure).page_series);
     let unpinned = paragraphs.iter().filter(|paragraph| super::pages::pins_of(&table, paragraph.range.start, paragraph.range.end).is_empty()).count();
     if paged >= 2 && unpinned * 5 > paragraphs.len() {

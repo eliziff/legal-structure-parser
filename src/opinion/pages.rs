@@ -244,11 +244,11 @@ const MOVED_BLOCKS: [&str; 12] = ["attorneys", "otherdate", "decisiondate", "doc
 pub(super) fn never_down(structure: &DocumentStructure, pages: &mut [StructureNode]) {
     let moved = structure.markup_elements.iter().filter(|element| MOVED_BLOCKS.contains(&element.tag.as_str())).map(|element| element.range).collect::<Vec<_>>();
     let in_moved = |start: usize| moved.iter().any(|block| block.start <= start && start < block.end);
-    let mut series = pages.iter().filter(|page| page.series.starts_with("reporter") && !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray")).map(|page| page.series.clone()).collect::<Vec<_>>();
+    let mut series = pages.iter().filter(|page| page.series.starts_with("reporter") && in_flow(page)).map(|page| page.series.clone()).collect::<Vec<_>>();
     series.sort();
     series.dedup();
     for name in series {
-        let mut marks = pages.iter().enumerate().filter(|(_, page)| page.series == name && !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray") && !in_moved(page.range.start))
+        let mut marks = pages.iter().enumerate().filter(|(_, page)| page.series == name && in_flow(page) && !in_moved(page.range.start))
             .filter_map(|(at, page)| Some((page.range.start, at, page_number(page.label.as_deref().unwrap_or(""))?))).collect::<Vec<_>>();
         marks.sort_unstable();
         // The longest run that never falls, by patience: each mark extends the longest run ending at or below its number.
@@ -294,7 +294,7 @@ fn separate_printings(kinds: &mut Kinds) {
     const STEP: u32 = 3;
     let names = kinds.pages.iter().map(|page| page.series.clone()).filter(|series| !own_count(series) && !series.ends_with("-b")).collect::<HashSet<_>>();
     for series in names {
-        let mut members = kinds.pages.iter().enumerate().filter(|(_, page)| page.series == series && !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray"))
+        let mut members = kinds.pages.iter().enumerate().filter(|(_, page)| page.series == series && in_flow(page))
             .filter_map(|(at, page)| Some((page.range.start, at, page_number(page.label.as_deref().unwrap_or(""))?))).collect::<Vec<_>>();
         members.sort_by_key(|member| (member.0, member.2));
         let mut runs = Vec::<Vec<(usize, u32)>>::new();
@@ -361,7 +361,7 @@ pub(super) fn page_series(kinds: &mut Kinds, record: &OpinionRecord) {
     // The first mark in the text's order: one stray low label is no numbering's start. Nor is a first mark the next one falls
     // below: a block the source moved ahead of the opinion, "*394" on counsel printed at the case's end, before "*391".
     let mut by_series = HashMap::<String, Vec<(usize, u32)>>::new();
-    for page in kinds.pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray") && !own_count(&page.series)) {
+    for page in kinds.pages.iter().filter(|page| in_flow(page) && !own_count(&page.series)) {
         if let Some(number) = page_number(page.label.as_deref().unwrap_or("")) {
             by_series.entry(page.series.clone()).or_default().push((page.range.start, number));
         }
@@ -373,7 +373,7 @@ pub(super) fn page_series(kinds: &mut Kinds, record: &OpinionRecord) {
     }).collect::<HashMap<_, _>>();
     let marked = !firsts.is_empty();
     let mut lowest_of = HashMap::<String, u32>::new();
-    for page in kinds.pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray") && page.grammar.as_deref() != Some("reckoned")) {
+    for page in kinds.pages.iter().filter(|page| in_flow(page) && page.grammar.as_deref() != Some("reckoned")) {
         if let Some(number) = page_number(page.label.as_deref().unwrap_or("")) {
             let entry = lowest_of.entry(page.series.clone()).or_insert(number);
             *entry = number.min(*entry);
@@ -586,7 +586,7 @@ pub fn citers_page(numbering: &[(usize, u32, u32)], place: usize) -> Option<(u32
 pub(super) fn pin_table<'a>(pages: impl IntoIterator<Item = &'a StructureNode>, page_series: &[PageSeries]) -> Vec<(String, Option<String>, Vec<(usize, String)>)> {
     let mut table = HashMap::<&str, Vec<(usize, String)>>::new();
     // An estimated mark stands for no label: the words past it fall between the marks either side, on no page that can be named.
-    let mut ordered = pages.into_iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray")).collect::<Vec<_>>();
+    let mut ordered = pages.into_iter().filter(|page| in_flow(page)).collect::<Vec<_>>();
     ordered.sort_by_key(|page| page.range.start);
     for (index, page) in ordered.iter().enumerate() {
         let rows = table.entry(&page.series).or_default();
