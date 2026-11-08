@@ -346,10 +346,11 @@ pub(super) fn page_series(kinds: &mut Kinds, record: &OpinionRecord) {
     static OWN: OnceLock<Regex> = OnceLock::new();
     if kinds.opinion.citations.is_empty() {
         let own = OWN.get_or_init(|| Regex::new(r"^(\d{1,4})\s+(\D.*?)\s(\d{1,5})\b").unwrap());
-        kinds.opinion.citations = kinds.opinion.front.iter().filter(|line| line.role == "citation").flat_map(|line| line.text.split(';')).filter_map(|citation| {
+        let citations = kinds.front_lines().filter(|(role, _)| *role == "citation").flat_map(|(_, text)| text.split(';')).filter_map(|citation| {
             let capture = own.captures(citation.trim())?;
             Some(OpinionCitation { volume: capture[1].to_owned(), reporter: capture[2].to_owned(), page: capture[3].to_owned(), kind: String::new() })
         }).collect();
+        kinds.opinion.citations = citations;
     }
     separate_printings(kinds);
     // Harvard files a case under the book it scanned, "law.free.cap.us.476/426.12567.json", and its marks are that book's unless

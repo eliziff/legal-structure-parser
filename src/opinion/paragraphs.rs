@@ -60,7 +60,7 @@ pub(super) fn settle(paragraphs: &mut Vec<StructureNode>, headings: &[StructureN
 pub(super) fn number_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
     join_block_counters(structure, kinds);
     numbers_off_titles(structure, kinds);
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     // A quotation's numbers are the quotation's.
     let openings = kinds.paragraphs.iter().enumerate().filter(|(_, paragraph)| !(paragraph.kind == NodeKind::Quote)).filter_map(|(index, paragraph)| {
         Some((index, trim_js(coordinates.slice_utf16(paragraph.range.start..paragraph.range.end)?)))
@@ -103,7 +103,7 @@ fn closing_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
         return;
     }
     let Some((from, mut due)) = kinds.paragraphs.iter().rev().find_map(|paragraph| Some((paragraph.range.end, paragraph.label.as_deref().as_deref()?.parse::<u32>().ok()? + 1))) else { return };
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let Some(rest) = coordinates.slice_utf16(from..utf16_len(&structure.text)) else { return };
     let held = kinds.paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end)).chain(kinds.notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end)))).collect::<Vec<_>>();
     let mut at = from;
@@ -133,10 +133,10 @@ pub(super) fn hold_leftovers(structure: &mut DocumentStructure, kinds: &mut Kind
     static BLANK: OnceLock<Regex> = OnceLock::new();
     let blank = BLANK.get_or_init(|| Regex::new(r"\n[ \t]*\n").unwrap());
     let plain = kinds.opinion.rendition == "plain_text.txt";
-    let coordinates = ScalarText::new(&structure.text);
-    let summaries = kinds.opinion.headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
+    let summaries = kinds.headnotes().flat_map(|(_, text)| places(text)).collect::<HashSet<_>>();
     let mut found = Vec::new();
-    for (start, end) in unheld_stretches(structure, &kinds.opinion, kinds.paragraphs.iter().chain(&kinds.headings).chain(&kinds.notes)) {
+    for (start, end) in unheld_stretches(structure, kinds.paragraphs.iter().chain(&kinds.headings).chain(&kinds.notes).chain(&kinds.spans)) {
         let Some(raw) = coordinates.slice_utf16(start..end) else { continue };
         let cuts = if plain { blank.find_iter(raw).map(|cut| (cut.start(), cut.end())).collect::<Vec<_>>() } else { raw.match_indices('\n').map(|(at, _)| (at, at + 1)).collect() };
         let mut from = 0;
@@ -189,7 +189,7 @@ fn walk_scanned_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     const LEAST: usize = 4;
     /// How many marks in a row the walk may find past reading.
     const STEP: u32 = 2;
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let mut due = 1;
     let mut taken = Vec::new();
     let mut open = 0;
@@ -243,7 +243,7 @@ fn list_labels(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     let label = LABEL.get_or_init(|| Regex::new(r"^(?:\d{1,4}\s*\n\s*)?(\(?(?:\d{1,3}|[a-zA-Z]|[ivxl]{2,5}|[IVXL]{2,5})\)|(?:\d{1,3}|[a-zA-Z]|[ivxl]{2,5}|[IVXL]{2,5})[.)])\s+\S").unwrap());
     static WITHIN: OnceLock<Regex> = OnceLock::new();
     let within = WITHIN.get_or_init(|| Regex::new(r"(?m)^[ \t]*(\(?(?:\d{1,3}|[a-zA-Z]|[ivxl]{2,5}|[IVXL]{2,5})\)|(?:\d{1,3}|[a-zA-Z]|[ivxl]{2,5}|[IVXL]{2,5})[.)])[ \t]+\S").unwrap());
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     // A court's own named paragraph: an advisory opinion's question and answer, a certified question.
     static NAMED: OnceLock<Regex> = OnceLock::new();
     let named = NAMED.get_or_init(|| Regex::new(r"^(QUESTIONS?(?: (?:NO\. )?(?:\d{1,2}|[IVX]{1,4}))?(?: PRESENTED)?|WE ANSWER|ANSWERS?(?: (?:NO\. )?(?:\d{1,2}|[IVX]{1,4}))?|CERTIFIED QUESTIONS?|Certified [Qq]uestions?|Question(?: (?:No\. )?\d{1,2})?(?: [Pp]resented)?|Answer(?: \d{1,2})?)[:.]").unwrap());
@@ -260,7 +260,7 @@ fn list_labels(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 /// A block's counter split from its words, a paragraph of "57" alone: it opens the paragraph after it.
 fn join_block_counters(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     let bare = {
-        let coordinates = ScalarText::new(&structure.text);
+        let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
         kinds.paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).is_some_and(|printed| !printed.is_empty() && printed.len() <= 4 && printed.bytes().all(|byte| byte.is_ascii_digit()))).collect::<Vec<_>>()
     };
     for index in (0..kinds.paragraphs.len().saturating_sub(1)).rev() {
@@ -275,7 +275,7 @@ fn join_block_counters(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 /// numbered sentence whose number the paragraphs either side leave open, "6. Robert Poe is the Chairman.", is no title at all;
 /// an outline's "3. The Order Was Proper." sits among paragraphs numbered in their own right.
 fn numbers_off_titles(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let opening = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
     let plain_numbers = kinds.paragraphs.iter().filter_map(|paragraph| text::paragraph_marker(opening(paragraph)).filter(|(_, family)| *family == 4).map(|(number, _)| number)).collect::<HashSet<_>>();
     let left_open = |number: u32| !plain_numbers.contains(&number) && plain_numbers.contains(&(number + 1)) && (number == 1 || plain_numbers.contains(&(number - 1)));
@@ -313,7 +313,7 @@ fn numbers_off_titles(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 /// thing: a separate opinion may open at it.
 fn pilcrow_read_as_one(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     let printed = {
-        let coordinates = ScalarText::new(&structure.text);
+        let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
         kinds.paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map_or(false, |opening| trim_js(opening).trim_start_matches(['[', '{']).starts_with('¶'))).collect::<Vec<_>>()
     };
     let shed = |number: u32| number.to_string().strip_prefix('1').and_then(|rest| rest.parse::<u32>().ok()).filter(|rest| *rest > 0);
@@ -332,7 +332,7 @@ fn pilcrow_read_as_one(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 
 /// A number left alone by the title it stood on belongs to the text under the title, unless that has its own.
 fn carry_title_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let bare = kinds.paragraphs.iter().enumerate().filter(|(_, paragraph)| paragraph.label.is_some()).filter(|(_, paragraph)| {
         coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).is_some_and(|opening| text::says_paragraph(opening) && text::past_marker(opening).is_empty())
     }).map(|(index, _)| index).collect::<Vec<_>>();
@@ -373,7 +373,7 @@ fn split_numbered_blocks(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     if kinds.paragraphs.iter().filter(|paragraph| number_of(paragraph).is_some()).count() < 3 {
         return;
     }
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let upcoming = {
         let mut later = None;
         let mut upcoming = kinds.paragraphs.iter().rev().map(|paragraph| { let next = later; later = number_of(paragraph).or(later); next }).collect::<Vec<_>>();
@@ -439,7 +439,7 @@ fn scanned_number(opening: &str, low: u32, high: u32) -> Option<u32> {
 
 /// A number the reader passed over inside a run: "1, 2, 4" where the paragraph between them opens "3.".
 pub(super) fn fill_skipped_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let numbered = kinds.paragraphs.iter().enumerate().filter_map(|(index, paragraph)| Some((index, paragraph.label.as_deref().as_deref()?.parse::<u32>().ok()?))).collect::<Vec<_>>();
     let marked_between = |span: std::ops::Range<usize>, low: u32, high: u32| {
         let (mut last, mut found) = (low, Vec::new());
@@ -514,7 +514,7 @@ pub(super) fn lettered_paragraphs(openings: &[(usize, &str)], numbered: &HashMap
 /// Short lines set in a sentence's course are the margin's: an old report's catchwords, read into the column. The
 /// sentence then rejoins over them, as it does over a page's turn.
 pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let printed = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
     // A plain text's short lines are its wrapping, not its margin.
     let columned = kinds.opinion.rendition != "plain_text.txt";
@@ -525,7 +525,7 @@ pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure, kinds: &mut K
     }).collect::<Vec<_>>();
     for &index in interleaved.iter().rev() {
         let line = kinds.paragraphs.remove(index);
-        kinds.opinion.headnotes.push(headnote_of("catchword", squeezed(printed(&line)), Some(ScalarRange { start: line.range.start, end: line.range.end })));
+        kinds.spans.push(headnote_node("catchword", squeezed(printed(&line)), line.range));
     }
     let mut kept = Vec::<StructureNode>::with_capacity(kinds.paragraphs.len());
     let mut titles = kinds.headings.iter().map(|heading| heading.range.start).collect::<Vec<_>>();
@@ -550,7 +550,7 @@ pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure, kinds: &mut K
 
 /// Paragraphs that hold no words: a rule, or a page mark's whole block once it has gone.
 pub(super) fn drop_empty_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let spoken = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).is_some_and(|text| text.chars().any(|c| c.is_alphanumeric() || c == '*'));
     let kept = std::mem::take(&mut kinds.paragraphs).into_iter().filter(|paragraph| spoken(paragraph)).collect();
     kinds.paragraphs = kept;
@@ -561,7 +561,7 @@ pub(super) fn drop_empty_paragraphs(structure: &mut DocumentStructure, kinds: &m
 pub(super) fn speakers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     static LABEL: OnceLock<Regex> = OnceLock::new();
     let label = LABEL.get_or_init(|| Regex::new(r"^(Q\.|A\.|THE COURT:|The Court:|THE WITNESS:|The Witness:|M(?:R|S|RS)\.\s+\p{Lu}[\p{Lu}'’-]+:)\s").unwrap());
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let found = kinds.paragraphs.iter().enumerate().filter_map(|(index, paragraph)| {
         let printed = trim_js(coordinates.slice_utf16(paragraph.range.start..paragraph.range.end)?);
         Some((index, label.captures(printed)?[1].trim_end_matches(':').to_owned()))
@@ -615,7 +615,7 @@ pub(super) fn separate_parts(structure: &mut DocumentStructure, kinds: &mut Kind
             _ => "concurrence",
         }.to_owned()
     };
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     // Is a writing opening here? `inner` is a line inside a flat body, where only a finished sentence can open one: a wrapped
     // "Kavanaugh, J., dissenting)." or a running head "ALITO, J., concurring" does not.
     static A_JUDGE: OnceLock<Regex> = OnceLock::new();
@@ -671,12 +671,12 @@ pub(super) fn separate_parts(structure: &mut DocumentStructure, kinds: &mut Kind
         opening(&printed[lead.find(printed).map_or(0, |found| found.end())..], false).map(|(kind, author)| (heading.range.start, kind, author))
     })).collect::<Vec<_>>();
     // A second author's line, past the opinion's first text, opens another opinion.
-    for line in kinds.opinion.front.iter().filter(|line| line.role == "author") {
-        let Some(range) = line.range else { continue };
+    for line in kinds.spans_of("front").filter(|line| role_of(line) == "author") {
+        let (range, words) = (line.range, line.display_value.as_deref().unwrap_or(""));
         let written = kinds.paragraphs.iter().filter(|paragraph| paragraph.range.end <= range.start).map(|paragraph| paragraph.range.end - paragraph.range.start).sum::<usize>();
         if written >= 400 && !breaks.iter().any(|known| known.0.abs_diff(range.start) < 4) {
-            let says = { let lower = line.text.to_lowercase(); lower.contains("dissent") || lower.contains("concur") };
-            breaks.push((range.start, if says { kind_of(&line.text) } else { "opinion".to_owned() }, line.text.clone()));
+            let says = { let lower = words.to_lowercase(); lower.contains("dissent") || lower.contains("concur") };
+            breaks.push((range.start, if says { kind_of(words) } else { "opinion".to_owned() }, words.to_owned()));
         }
     }
     // A later document stacked in the record, under a title of its own.

@@ -275,12 +275,10 @@ fn heads_pages(chain: &Chain) -> bool {
     (pages_before - (first as f64 - 1.0)).abs() < (pages_before - first as f64).abs()
 }
 
-#[derive(Default)]
 pub(super) struct Reading {
-    /// The nodes it read, each in its kind's list (no parts: a plain text marks none).
+    /// The nodes it read, each in its kind's list (no parts: a plain text marks none), its front lines among its spans.
     pub kinds: Kinds,
     pub furniture: Vec<ScalarRange>,
-    pub front: Vec<FrontLine>,
 }
 
 fn pages_of(lines: &[Line<'_>], text_end: usize, chains: &mut [Chain], margins: bool) -> Vec<StructureNode> {
@@ -890,7 +888,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
     let margins = margin_numbers(&mut lines);
     let end = utf16_len(text);
     if lines.is_empty() {
-        return Reading::default();
+        return Reading { kinds: Kinds::of(text), furniture: Vec::new() };
     }
     let mut widths = lines.iter().filter(|line| !line.blank()).map(Line::width).collect::<Vec<_>>();
     widths.sort_unstable();
@@ -971,7 +969,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
             let piece = line[from..stop.0].trim_matches(javascript_whitespace);
             if let Some(role) = (!piece.is_empty()).then(|| front_role(piece)).flatten() {
                 let start = origin + utf16_len(&line[..from]);
-                front.push(FrontLine { role: role.to_owned(), text: super::squeezed(piece), range: Some(ScalarRange { start, end: start + utf16_len(piece) }) });
+                front.push(super::front_node(role, super::squeezed(piece), ScalarRange { start, end: start + utf16_len(piece) }));
             }
             from = stop.1;
         }
@@ -995,7 +993,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
             continue;
         }
         if contents_line(line.body) {
-            front.push(FrontLine { role: "contents".to_owned(), text: super::squeezed(line.body), range: Some(range) });
+            front.push(super::front_node("contents", super::squeezed(line.body), range));
             continue;
         }
         if let Some(&number) = numbered.get(&at) {
@@ -1065,7 +1063,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
     // A title with no text under it is a name at the foot of the opinion.
     let last_text = paragraphs.last().map_or(0, |paragraph| paragraph.range.end);
     headings.retain(|heading| heading.range.start < last_text);
-    Reading { kinds: Kinds { pages, paragraphs, notes, headings, tables, ..Kinds::default() }, furniture, front }
+    Reading { kinds: Kinds { pages, paragraphs, notes, headings, tables, spans: front, ..Kinds::of(text) }, furniture }
 }
 
 pub(super) fn ended_sentence(body: &str) -> bool {

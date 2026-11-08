@@ -192,7 +192,7 @@ pub(super) fn enumerated_titles(structure: &mut DocumentStructure, kinds: &mut K
     const TITLE_WORDS: usize = 16;
     static OPENING: OnceLock<Regex> = OnceLock::new();
     let opening = OPENING.get_or_init(|| Regex::new(r"^\s*([IVXLC]{1,6})\.\s+\p{Lu}").unwrap());
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let mut run = Vec::new();
     let mut next = None;
     for (index, paragraph) in kinds.paragraphs.iter().enumerate() {

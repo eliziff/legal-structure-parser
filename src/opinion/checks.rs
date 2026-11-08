@@ -40,8 +40,8 @@ pub fn parse_failures(structure: &DocumentStructure) -> Vec<(&'static str, Strin
     if uncalled > 0 {
         failures.push(("notes without a call", format!("{uncalled} of {}", notes.len())));
     }
-    if !super::reading(structure).unmatched_calls.is_empty() {
-        failures.push(("calls without a note", super::reading(structure).unmatched_calls.iter().take(8).map(|call| call.label.as_str()).collect::<Vec<_>>().join(" ")));
+    if spans(structure, "unmatched-call").next().is_some() {
+        failures.push(("calls without a note", spans(structure, "unmatched-call").take(8).map(|call| call.label.as_deref().unwrap_or("")).collect::<Vec<_>>().join(" ")));
     }
     // An opinion names its own notes: "footnote 7", "note 7, supra". One the structure does not hold was missed.
     static NAMED: OnceLock<Regex> = OnceLock::new();
@@ -105,8 +105,7 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
     let mut held = paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end))
         .chain(headings.iter().map(|heading| (heading.range.start, heading.range.end)))
         .chain(notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end))))
-        .chain(super::reading(structure).front.iter().filter_map(|line| line.range).map(|range| (range.start, range.end)))
-        .chain(super::reading(structure).headnotes.iter().filter_map(|headnote| headnote.range).map(|range| (range.start, range.end)))
+        .chain(spans(structure, "front").chain(spans(structure, "headnote")).map(|line| (line.range.start, line.range.end)))
         .chain(nodes(structure, NodeKind::Table).map(|table| (table.range.start, table.range.end)))
         .collect::<Vec<_>>();
     held.sort_unstable();
@@ -266,7 +265,7 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
     }
 
     // Headnotes.
-    if super::reading(structure).headnotes.is_empty() {
+    if super::headnotes(structure).next().is_none() {
         if let Some((name, _)) = record.cluster.iter().find(|(name, value)| matches!(name.as_str(), "syllabus" | "headnotes" | "summary") && value.trim().len() > 40) {
             found.push(("screen: the cluster has a headnote, the structure none", name.clone()));
         }
@@ -324,18 +323,18 @@ pub fn quote_miss(structure: &DocumentStructure, target: &'static str, quote: &s
         "note" => nodes(structure, NodeKind::Footnote).any(|note| {
             let body = note.ranges.iter().map(|range| printed(range.start, range.end)).collect::<Vec<_>>().join(" ");
             body.contains(&wanted) || wanted.contains(&body) && !body.is_empty()
-        }) || reading(structure).headnotes.iter().any(|headnote| key(&headnote.text).contains(&wanted))
+        }) || super::headnotes(structure).any(|(_, _, text)| key(text).contains(&wanted))
             || nodes(structure, NodeKind::Footnote).any(|note| plain_label(note.label.as_deref().unwrap_or("")) == wanted.trim_start_matches("footnote ")),
         "heading" => nodes(structure, NodeKind::Heading).any(|heading| {
             let title = key(&heading.display_value.as_deref().unwrap_or(""));
             !title.is_empty() && (title.contains(&wanted) || wanted.contains(&title))
-        }) || reading(structure).front.iter().any(|line| line.role == "author" && key(&line.text) == wanted),
+        }) || front_lines(structure).any(|(role, text)| role == "author" && key(text) == wanted),
         "paragraph number" => wanted.split(' ').find(|word| word.bytes().all(|byte| byte.is_ascii_digit())).is_none_or(|number| paragraphs(structure).any(|paragraph| paragraph.label.as_deref().as_deref().is_some_and(|printed| printed.trim_matches(['(', ')']) == number))),
-        "headnote" => reading(structure).headnotes.iter().any(|headnote| {
-            let text = key(&headnote.text);
+        "headnote" => super::headnotes(structure).any(|(_, _, text)| {
+            let text = key(text);
             text.contains(&wanted) || wanted.contains(&text) && !text.is_empty()
-        }) || !reading(structure).headnote_marks.is_empty(),
-        _ => !reading(structure).outcomes.is_empty() || reading(structure).front.iter().any(|line| line.role == "disposition" && (key(&line.text).contains(&wanted) || wanted.contains(&key(&line.text)))),
+        }) || spans(structure, "headnote-mark").next().is_some(),
+        _ => !reading(structure).outcomes.is_empty() || front_lines(structure).any(|(role, text)| role == "disposition" && (key(text).contains(&wanted) || wanted.contains(&key(text)))),
     };
     (!found).then_some(target)
 }

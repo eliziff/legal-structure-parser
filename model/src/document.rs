@@ -26,12 +26,15 @@ pub enum NodeKind {
     Table,
     Row,
     Cell,
+    /// A stretch of the text a reader names that is no block of it: a headnote or a line of the front matter, a defined
+    /// term, a quotation and an editor's mark in it, a mark keying a headnote. Its `grammar` says which reading it is.
+    Span,
 }
 
 impl NodeKind {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Paragraph, Self::Page, Self::Section, Self::Heading, Self::Footnote, Self::Endnote, Self::Prose, Self::List,
-        Self::ListItem, Self::Quote, Self::Table, Self::Row, Self::Cell,
+        Self::ListItem, Self::Quote, Self::Table, Self::Row, Self::Cell, Self::Span,
     ];
 
     /// The kind `name` names: `name`'s inverse.
@@ -54,6 +57,7 @@ impl NodeKind {
             Self::Table => "table",
             Self::Row => "row",
             Self::Cell => "cell",
+            Self::Span => "span",
         }
     }
 }

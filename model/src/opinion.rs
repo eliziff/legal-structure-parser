@@ -1,10 +1,10 @@
-//! A court opinion's readings that are no node of it: the printings its pages belong to, where each passage stands in each,
-//! its outcome, the quotations, terms and documents it carries, and what the record shows is missing. Ranges are UTF-16 in
-//! the structure's text. The structure's nodes hold its pages, paragraphs, notes, headings and parts.
+//! A court opinion's readings that have no place in its text: the printings its pages belong to, its outcome and kind, the
+//! headnotes and front lines the record holds apart from the text, what the record shows is missing, and what other
+//! renditions witness against the reading. The structure's nodes hold the rest: its pages, paragraphs, notes, headings and
+//! parts, and as spans (`NodeKind::Span`) the readings that stand in its text.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use crate::ScalarRange;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct OpinionReading {
@@ -16,25 +16,12 @@ pub struct OpinionReading {
     /// Each page numbering and the printing it belongs to.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub page_series: Vec<PageSeries>,
-    /// The headnotes, syllabus points and summary paragraphs: where the text carries one, its place in it; the cluster's have their words alone.
+    /// The headnotes, syllabus points and summary paragraphs the text does not hold: the cluster's, another rendition's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headnotes: Vec<OpinionHeadnote>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub headnote_marks: Vec<HeadnoteMark>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocks: Vec<OpinionBlock>,
+    /// The front lines the text does not hold: the cluster's fields, another rendition's head.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub front: Vec<FrontLine>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub furniture: Vec<FurnitureLine>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub unmatched_calls: Vec<UnmatchedCall>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub defined_terms: Vec<DefinedTerm>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub quotes: Vec<OpinionQuote>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub instruments: Vec<OpinionInstrument>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub record_gaps: Vec<RecordGap>,
     /// What the court did: `affirmed`, `reversed`, `remanded`, `vacated`, `dismissed`, `denied`, `granted`, `modified`.
@@ -76,8 +63,7 @@ pub struct OpinionReading {
     pub titles_not_held: Vec<String>,
 }
 
-/// One headnote, syllabus point or summary paragraph. Its place is in the text where the opinion carries it; the
-/// cluster's have only their words.
+/// One headnote, syllabus point or summary paragraph the record holds apart from the text: its words alone.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct OpinionHeadnote {
     /// `headnotes`, `syllabus`, `summary`, `arguments`, `history`, `posture`, `procedural_history`, `cross_reference`,
@@ -88,84 +74,15 @@ pub struct OpinionHeadnote {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub number: Option<String>,
     pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub range: Option<ScalarRange>,
 }
 
-/// A headnote's number printed in the opinion, "[3]" or "[5, 6]", at the passage it keys.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct HeadnoteMark {
-    pub numbers: Vec<u32>,
-    pub start: usize,
-    pub end: usize,
-}
-
-/// A block counter a source sets, `<div class="num"><span class="num">14</span>`: no number the court printed, but the only one
-/// some texts carry, and it may stand on a paragraph, a title or a note. `source`: `marked` in this text, `other-rendition`
-/// placed by the words after it, `reckoned` between its neighbours where those words are not in this text.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct OpinionBlock {
-    pub label: String,
-    pub start: usize,
-    pub source: String,
-}
-
-/// A line of the case's front matter: `court`, `docket`, `date`, `judges`, `counsel`, `caption`, `author`, `title`,
-/// `citation` (the case's own), `disposition`, `case_name`, `case_name_full`, `date_filed`, `other_dates`, `nature_of_suit`, `lower_court`,
-/// `publication`, `subject`, `addressee`, `contents`, `closing`, `joinder`.
+/// A line of the case's front matter the record holds apart from the text: `court`, `docket`, `date`, `judges`, `counsel`,
+/// `caption`, `author`, `title`, `citation` (the case's own), `disposition`, `case_name`, `case_name_full`, `date_filed`,
+/// `other_dates`, `nature_of_suit`, `lower_court`, `publication`, `subject`, `addressee`, `contents`, `closing`, `joinder`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct FrontLine {
     pub role: String,
     pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub range: Option<ScalarRange>,
-}
-
-/// A note's call with no note anywhere in the record: the mark stands, its note was never reported.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct UnmatchedCall {
-    pub label: String,
-    pub start: usize,
-    pub end: usize,
-}
-
-/// A short name the opinion gives something: `("Debtor")`, `Administrative Procedure Act (APA)`, `"Lease" means`.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct DefinedTerm {
-    pub term: String,
-    /// `parenthetical`, `acronym` or `means`.
-    pub form: String,
-    pub start: usize,
-    pub end: usize,
-}
-
-/// An editor's mark in a quotation.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct QuoteMark {
-    /// `insertion`, `sic`, `omission`, `omitted-note`, or `emphasis` for the words that say so after it.
-    pub kind: String,
-    pub start: usize,
-    pub end: usize,
-}
-
-/// A quotation, set inline or as a block, with the marks an editor made in it.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct OpinionQuote {
-    pub block: bool,
-    pub start: usize,
-    pub end: usize,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub marks: Vec<QuoteMark>,
-}
-
-/// A document the opinion reproduces: the quoted passages a lead-in names, "the will provides as follows:".
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct OpinionInstrument {
-    /// `will`, `contract`, `jury-charge`, `verdict`, `testimony`, `letter`, `order`, `statute`, `passage` and the like.
-    pub kind: String,
-    pub lead_in: String,
-    pub start: usize,
-    pub end: usize,
 }
 
 /// Something the record itself shows is not all here.
@@ -213,11 +130,4 @@ pub struct Pin {
     pub page: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub through: Option<String>,
-}
-
-/// A line the reading text leaves out of its flow: a page's running title, number or stamp, and where it stood.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct FurnitureLine {
-    pub text: String,
-    pub at: usize,
 }

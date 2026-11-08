@@ -2,11 +2,12 @@
 
 use super::*;
 
-/// Takes the page marks and the page furniture out of the text and moves every range to match. A word a mark split is
-/// joined: where its fragments are not words of this text on their own, or the whole word is.
+/// Takes the page marks and the page furniture out of the text and moves every range to match, each furniture line held as
+/// a span where it stood. A word a mark split is joined: where its fragments are not words of this text on their own, or
+/// the whole word is. The text's index is built again over the new text.
 pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furniture: Vec<ScalarRange>, printed_elsewhere: &mut [(bool, Vec<(u32, usize)>)]) {
     struct Cut { start: usize, end: usize, keep: &'static str }
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let end = utf16_len(&structure.text);
     let lowered = structure.text.to_lowercase();
     let mut counts = HashMap::<&str, usize>::new();
@@ -85,17 +86,24 @@ pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furni
     }
     // A note's call is out of the words too, its place kept: "defendant7 s" reads "defendant s", the note still called there.
     if kinds.opinion.rendition != "plain_text.txt" {
-        for call in kinds.notes.iter().flat_map(|note| note.calls.iter()).map(|call| (call.start, call.end)).chain(kinds.opinion.unmatched_calls.iter().map(|call| (call.start, call.end))) {
-            if call.1 > call.0 && call.1 - call.0 <= 8 {
-                cuts.push(Cut { start: call.0, end: call.1, keep: "" });
+        for call in kinds.notes.iter().flat_map(|note| note.calls.iter()).chain(kinds.spans_of("unmatched-call").map(|call| &call.range)) {
+            if call.end > call.start && call.end - call.start <= 8 {
+                cuts.push(Cut { start: call.start, end: call.end, keep: "" });
             }
         }
     }
     cuts.extend(furniture.iter().map(|range| Cut { start: range.start, end: range.end, keep: "" }));
-    let printed = furniture.iter().map(|range| (range.start, coordinates.slice_utf16(range.start..range.end).map(squeezed).unwrap_or_default())).collect::<Vec<_>>();
     if cuts.is_empty() {
         return;
     }
+    // A furniture line stands where it was, as the cut moves that place.
+    let lines = furniture.iter().map(|range| {
+        let mut line = span("furniture", range.start, range.start);
+        line.role = Some(PrimaryRole::Furniture);
+        line.display_value = Some(coordinates.slice_utf16(range.start..range.end).map(squeezed).unwrap_or_default());
+        line
+    }).collect::<Vec<_>>();
+    kinds.spans.extend(lines);
     cuts.sort_by_key(|cut| cut.start);
     let mut merged = Vec::<Cut>::with_capacity(cuts.len());
     for cut in cuts {
@@ -124,10 +132,10 @@ pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furni
         let before = previous.checked_sub(1).map_or(0, |index| lost[index]);
         if offset >= cut.end { (offset as isize - lost[previous]) as usize } else { (cut.start as isize - before) as usize + (offset - cut.start).min(cut.keep.len()) }
     };
-    let span = |range: &mut ScalarRange| { range.start = moved(range.start); range.end = moved(range.end); };
+    let shift = |range: &mut ScalarRange| { range.start = moved(range.start); range.end = moved(range.end); };
     for node in structure.nodes.iter_mut().chain(kinds.all_mut()) {
-        (node.range.start, node.range.end) = (moved(node.range.start), moved(node.range.end));
-        node.ranges.iter_mut().chain(node.calls.iter_mut()).for_each(span);
+        shift(&mut node.range);
+        node.ranges.iter_mut().chain(node.calls.iter_mut()).for_each(shift);
         if node.kind == NodeKind::Page {
             node.marker_range = None;
         }
@@ -135,23 +143,6 @@ pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furni
     for (_, numbers) in printed_elsewhere.iter_mut() {
         numbers.iter_mut().for_each(|number| number.1 = moved(number.1));
     }
-    let opinion = &mut kinds.opinion;
-    for block in &mut opinion.blocks {
-        block.start = moved(block.start);
-    }
-    for headnote in &mut opinion.headnotes {
-        if let Some(range) = &mut headnote.range { span(range); }
-    }
-    for mark in &mut opinion.headnote_marks {
-        (mark.start, mark.end) = (moved(mark.start), moved(mark.end));
-    }
-    for line in &mut opinion.front {
-        if let Some(range) = &mut line.range { span(range); }
-    }
-    for call in &mut opinion.unmatched_calls {
-        (call.start, call.end) = (moved(call.start), moved(call.end));
-    }
-    opinion.furniture = printed.into_iter().map(|(at, text)| FurnitureLine { text, at: moved(at) }).collect();
     let mut text = String::with_capacity(structure.text.len());
     let (mut unit, mut index) = (0, 0);
     for c in structure.text.chars() {
@@ -166,5 +157,6 @@ pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furni
         }
         unit += c.len_utf16();
     }
+    kinds.coordinates = ScalarCoordinates::new(&text);
     structure.text = text;
 }
