@@ -63,8 +63,8 @@ pub use text_units::text_units;
 pub use canlii::{canlii_case_url, canlii_court_route, canlii_law_url};
 pub(crate) use document::node_depths;
 pub use document::{
-    CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,
-    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, PrimaryRole, SourceFragment, StructureDiagnostic, StructureNode,
+    CitedAuthority, Derivation, DocumentStructure, MarkupAncestor,
+    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, PrimaryRole, SourceFragment, StructureNode,
 };
 pub use docx_lint::*;
 pub use docx_numbering::*;
@@ -159,8 +159,7 @@ impl Evidence {
 
 }
 
-/// A node inference reads, by its kind, label and span in scalars; `derive` numbers it, and a diagnostic it raises
-/// stands in its `properties` under "diagnostic" until `derive` makes it the structure's.
+/// A node inference reads, by its kind, label and span in scalars; `derive` numbers it.
 fn labelled_node(kind: NodeKind, label: String, start: usize, end: usize) -> StructureNode {
     let mut node = StructureNode::new(
         String::new(),

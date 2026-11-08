@@ -15,7 +15,6 @@ const COMPONENTS: [&str; 12] = [
     "docx",
     "contents",
     "crossReferences",
-    "diagnostics",
     "selection",
 ];
 
@@ -36,7 +35,6 @@ pub struct DocumentFingerprintCounts {
     pub notes: usize,
     pub authorities: usize,
     pub definitions: usize,
-    pub diagnostics: usize,
 }
 
 /// A SHA-256 written to as serde writes JSON, so a value is hashed without its text being kept.
@@ -150,7 +148,6 @@ pub fn document_fingerprint(document: &DocumentStructure) -> DocumentFingerprint
             "crossReferences",
             serialization_sha256(&document.cross_references),
         ),
-        ("diagnostics", serialization_sha256(&document.diagnostics)),
         (
             "selection",
             serialization_sha256(&document.selected_hypothesis),
@@ -164,7 +161,6 @@ pub fn document_fingerprint(document: &DocumentStructure) -> DocumentFingerprint
         notes: document.nodes.iter().filter(|node| matches!(node.kind, NodeKind::Footnote | NodeKind::Endnote)).count(),
         authorities: document.cited_authorities.len(),
         definitions: document.definitions.len(),
-        diagnostics: document.diagnostics.len(),
     };
     DocumentFingerprint {
         schema_version: "legalpdf.document-fingerprint.v1",

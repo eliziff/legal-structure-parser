@@ -334,21 +334,6 @@ pub struct CitedAuthority {
     pub kind: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiagnosticSeverity {
-    Info,
-    Warning,
-    Error,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct StructureDiagnostic {
-    pub code: String,
-    pub severity: DiagnosticSeverity,
-    pub ranges: Vec<ScalarRange>,
-    pub node_ids: Vec<String>,
-}
 
 /// Source markup without an inferred legal role. Byte offsets address the
 /// exact markup identified by `DocumentStructure::markup_sha256`; ranges
@@ -459,15 +444,10 @@ pub struct DocumentStructure {
     /// A court opinion's readings that are no node of it (`opinion`).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub opinion: Option<Box<crate::opinion::OpinionReading>>,
-    pub diagnostics: Vec<StructureDiagnostic>,
 }
 
 impl DocumentStructure {
-    pub fn project_scalar_parts(
-        coordinates: &ScalarText<'_>,
-        nodes: &mut [StructureNode],
-        diagnostics: &mut [StructureDiagnostic],
-    ) {
+    pub fn project_scalar_parts(coordinates: &ScalarText<'_>, nodes: &mut [StructureNode]) {
         if coordinates.len() == coordinates.utf16_len() {
             return;
         }
@@ -494,11 +474,6 @@ impl DocumentStructure {
             }
             for call in &mut node.calls {
                 utf16_range(call);
-            }
-        }
-        for diagnostic in diagnostics {
-            for range in &mut diagnostic.ranges {
-                utf16_range(range);
             }
         }
     }
@@ -537,7 +512,6 @@ impl DocumentStructure {
             contents: None,
             cross_references: None,
             opinion: None,
-            diagnostics: Vec::new(),
         }
     }
 

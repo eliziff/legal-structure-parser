@@ -26,8 +26,8 @@ pub use assembly::assemble_in_place;
 pub use legal_layout::{ablated, CitationSpan, LayoutAnalysis, NumberingMarker, PARTY_ROLES};
 pub use definitions::{DefinedTerm, DefinitionOccurrence};
 pub use document::{
-    CitedAuthority, Derivation, DiagnosticSeverity, DocumentStructure, MarkupAncestor,
-    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, PrimaryRole, SourceFragment, StructureDiagnostic, StructureNode,
+    CitedAuthority, Derivation, DocumentStructure, MarkupAncestor,
+    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, PrimaryRole, SourceFragment, StructureNode,
 };
 pub use docx::{
     DocxAttachmentReference, DocxAttachmentReferenceStatus, DocxCrossReference,

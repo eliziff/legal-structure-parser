@@ -26,7 +26,6 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
         })
         .unwrap_or_default();
     let mut counters = HashMap::<NodeKind, usize>::new();
-    let mut diagnostics = Vec::new();
     for mut block in inferred {
         let Some(range) = evidence.clip_inference(block.kind, block.range) else {
             continue;
@@ -48,18 +47,8 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
             Derivation::Heuristic => "heuristic",
         };
         block.id = format!("{source}-{}-{:06}", block.kind.name(), ordinal);
-        if let Some(code) = block.properties.remove("diagnostic") {
-            diagnostics.push(StructureDiagnostic {
-                severity: if code.ends_with("violation") {
-                    DiagnosticSeverity::Warning
-                } else {
-                    DiagnosticSeverity::Info
-                },
-                code,
-                ranges: vec![block.range],
-                node_ids: vec![block.id.clone()],
-            });
-        }
+        // An instrument's ladder fault is the candidate runs' to read (`detect_structure_candidate_runs`), no node's.
+        block.properties.remove("diagnostic");
         nodes.push(block);
     }
     if nodes.iter().any(|node| node.parent_id.is_some()) {
@@ -117,11 +106,10 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
                 .map(|parent_position| nodes[parent_position].id.clone());
         }
     }
-    DocumentStructure::project_scalar_parts(&coordinates, &mut nodes, &mut diagnostics);
+    DocumentStructure::project_scalar_parts(&coordinates, &mut nodes);
     drop(coordinates);
     let mut structure = evidence.structure;
     structure.profile = Some(evidence.profile);
     structure.nodes = nodes;
-    structure.diagnostics = diagnostics;
     structure
 }

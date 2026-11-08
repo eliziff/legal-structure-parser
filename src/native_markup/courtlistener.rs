@@ -2008,9 +2008,6 @@ pub(super) fn drop_note_numbered_paragraphs(structure: &mut DocumentStructure) {
             node.parent_id = parent;
         }
     }
-    for diagnostic in &mut structure.diagnostics {
-        diagnostic.node_ids.retain(|id| !dropped.contains_key(id));
-    }
 }
 
 pub(super) fn courtlistener_uncontained_note_blocks(
@@ -2671,13 +2668,6 @@ pub(super) fn prefer_source_headings(structure: &mut DocumentStructure) {
             node.parent_id = Some(native.clone());
         }
     }
-    for diagnostic in &mut structure.diagnostics {
-        for id in &mut diagnostic.node_ids {
-            if let Some(native) = replacements.get(id) {
-                *id = native.clone();
-            }
-        }
-    }
 }
 
 pub(super) fn prefer_source_note_markers(structure: &mut DocumentStructure) {
@@ -2712,13 +2702,6 @@ pub(super) fn prefer_source_note_markers(structure: &mut DocumentStructure) {
     for node in &mut structure.nodes {
         if let Some(native) = node.parent_id.as_ref().and_then(|id| replacements.get(id)) {
             node.parent_id = Some(native.clone());
-        }
-    }
-    for diagnostic in &mut structure.diagnostics {
-        for id in &mut diagnostic.node_ids {
-            if let Some(native) = replacements.get(id) {
-                *id = native.clone();
-            }
         }
     }
 }

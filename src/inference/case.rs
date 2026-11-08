@@ -499,7 +499,7 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
             && page.physical == physical) {
             body_end = body_end.min(page.line.start);
         }
-        let (mut body_seen, mut blanks, mut blank_start, mut separate_block) = (false, 0, 0, false);
+        let (mut body_seen, mut blanks, mut blank_start) = (false, 0, 0);
         let fragment_limit = body_end;
         for following in source_lines.iter().skip(at).take_while(|line| line.scalar_start < fragment_limit) {
             if following.text.trim().is_empty() {
@@ -507,7 +507,6 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
                 blanks += 1;
                 if body_seen && blanks >= 2 {
                     body_end = blank_start;
-                    separate_block = true;
                     break;
                 }
             } else {
@@ -529,12 +528,6 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
         let mut block = crate::labelled_node(NodeKind::Footnote, format!("fn{number}"), body_start, body_end);
         block.marker_range = Some(label_range);
         block.calls = vec![reference];
-        if separate_block {
-            block.properties.insert("diagnostic".to_owned(), "source-note-block-fragment".to_owned());
-        } else if physical.end < text.len() && (body_end == physical.end
-            || pages.iter().any(|page| page.line.start == body_end)) {
-            block.properties.insert("diagnostic".to_owned(), "source-note-page-fragment".to_owned());
-        }
         // A later separate block on the note's physical page is unresolved note continuation or
         // trailing matter: preserve it verbatim without manufacturing paragraph/heading roles inside it.
         // Text with no page breaks bounds nothing after the note's body, so the text after it stays readable.
