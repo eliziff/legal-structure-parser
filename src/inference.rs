@@ -136,13 +136,13 @@ fn decimal_prefix(value: &str, maximum: usize) -> Option<(&str, usize)> {
     (length > 0 && length <= maximum).then(|| (&value[..length], length))
 }
 
-pub(super) fn inferred_blocks(evidence: &DocumentInput, text: &ScalarText<'_>) -> Vec<StructureNode> {
+pub(super) fn inferred_blocks(evidence: &Evidence, text: &ScalarText<'_>) -> Vec<StructureNode> {
     match evidence.profile {
         DetectionProfile::Legislation => {
             let mut blocks = detect_legislation(
                 text,
                 evidence.allow_hyphenated_sections,
-                &evidence.nodes,
+                &evidence.structure.nodes,
             );
             // A marginal note or heading printed before the next provision belongs to that
             // provision, not to the end of the one before it.
@@ -173,13 +173,13 @@ pub(super) fn inferred_blocks(evidence: &DocumentInput, text: &ScalarText<'_>) -
                 evidence.report_start_page,
                 evidence.require_report_start,
                 &exclusions,
-                evidence.provider == "courtlistener",
+                evidence.structure.provider == "courtlistener",
             );
             blocks.extend(detect_case_headings(evidence, text, &layout));
             let prose = detect_case_prose(evidence, text, &layout, &blocks);
             blocks.extend(layout.blocks);
             blocks.extend(prose);
-            if evidence.provider == "courtlistener" {
+            if evidence.structure.provider == "courtlistener" {
                 let pages = form_feed_pages(evidence, text, &blocks);
                 blocks.extend(pages);
             }

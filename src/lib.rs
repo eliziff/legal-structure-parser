@@ -1,6 +1,5 @@
 #[cfg(feature = "structure-inference")]
 use regex::Regex;
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "structure-inference")]
 use std::sync::OnceLock;
@@ -115,64 +114,25 @@ struct Exclusion {
     applies_to: Vec<NodeKind>,
 }
 
-pub(crate) struct DocumentInput {
-    document_id: String,
-    provider: String,
-    url: Option<String>,
-    doc_type: Option<&'static str>,
+/// What a reader hands `derive`: the structure it read, its own nodes in scalars, each naming its parent (`parent_id`)
+/// by its id or label until `derive` resolves it; the profile inference reads it by; and what it tells inference.
+pub(crate) struct Evidence {
+    structure: DocumentStructure,
     profile: DetectionProfile,
     report_start_page: Option<u32>,
     require_report_start: bool,
     allow_hyphenated_sections: bool,
-    text: String,
-    text_sha256: String,
-    source_sha256: Option<String>,
-    scope: Scope,
-    origins: Vec<Origin>,
-    /// The reader's own nodes, in scalars, each naming its parent (`parent_id`) by its id or label until `derive`
-    /// resolves it.
-    nodes: Vec<StructureNode>,
     exclusions: Vec<Exclusion>,
 }
 
-impl DocumentInput {
-    fn new(
-        document_id: String,
-        provider: &str,
-        profile: DetectionProfile,
-        text: String,
-        origin_id: &str,
-    ) -> Self {
-        let text_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
-        Self::with_sha256(document_id, provider, profile, text, text_sha256, origin_id)
-    }
-
-    /// `new` for a text whose digest the caller already holds.
-    fn with_sha256(
-        document_id: String,
-        provider: &str,
-        profile: DetectionProfile,
-        text: String,
-        text_sha256: String,
-        origin_id: &str,
-    ) -> Self {
+impl Evidence {
+    fn new(structure: DocumentStructure, profile: DetectionProfile) -> Self {
         Self {
-            document_id,
-            provider: provider.to_owned(),
-            url: None,
-            doc_type: None,
+            structure,
             profile,
             report_start_page: None,
             require_report_start: false,
             allow_hyphenated_sections: false,
-            text,
-            text_sha256,
-            source_sha256: None,
-            scope: Scope::complete(),
-            origins: vec![Origin {
-                id: origin_id.to_owned(),
-            }],
-            nodes: Vec::new(),
             exclusions: Vec::new(),
         }
     }

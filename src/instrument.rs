@@ -6,7 +6,7 @@ use crate::{
         resolve_instrument_references, FindProvisionReferencesOptions,
     },
     javascript_whitespace, node_depths, AuthoritativeTableCell, AuthoritativeTables,
-    DetectionProfile, DocumentInput,
+    DetectionProfile, Evidence,
     DocumentStructure, EngineError, NodeKind, ScalarRange, ScalarText, StructureNode,
 };
 #[cfg(feature = "structure-inference")]
@@ -398,7 +398,6 @@ fn derive_instrument_structure(
         }
     }
     let selected_original = selected == 0 && first_is_original;
-    let scalar_end = text_view.len();
     drop(coordinates);
     let (input_text, original_text) = if selected_original {
         (text, None)
@@ -408,16 +407,8 @@ fn derive_instrument_structure(
             Some(text),
         )
     };
-    // The original text's digest is already known; a recovered text carries none.
-    let mut input = DocumentInput::with_sha256(
-        document_id,
-        "internal",
-        DetectionProfile::Instrument,
-        input_text,
-        if selected_original { original_sha256.to_owned() } else { String::new() },
-        "provider-adapter",
-    );
-    let mut structure = crate::derive::derive(input, Some(selected_blocks));
+    let structure = DocumentStructure::new(document_id, "internal", input_text, "provider-adapter");
+    let mut structure = crate::derive::derive(Evidence::new(structure, DetectionProfile::Instrument), Some(selected_blocks));
     structure.selected_hypothesis = Some(selected);
     let original = original_text.as_deref().unwrap_or(&structure.text);
     let text = ScalarText::new(original);

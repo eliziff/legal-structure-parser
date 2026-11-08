@@ -102,7 +102,7 @@ pub(super) struct SourcePageMarker {
 }
 
 pub(super) fn case_decimal_subheadings(
-    evidence: &DocumentInput,
+    evidence: &Evidence,
     text: &ScalarText<'_>,
     source_lines: &[Line<'_>],
     numeric: &[Marker],
@@ -192,9 +192,9 @@ pub(super) fn case_decimal_subheadings(
     result
 }
 
-pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>) -> CaseSourceLayout {
+pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> CaseSourceLayout {
     let mut result = CaseSourceLayout::default();
-    if evidence.provider != "courtlistener" {
+    if evidence.structure.provider != "courtlistener" {
         return result;
     }
     let source_lines = lines(text).map(|line| case_source_line(text, line)).collect::<Vec<_>>();
@@ -448,7 +448,7 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
             start: text.scalar(byte), end: text.scalar(byte + length),
         });
     }
-    let declared_paragraph_markers = evidence.nodes.iter()
+    let declared_paragraph_markers = evidence.structure.nodes.iter()
         .filter(|claim| claim.kind == NodeKind::Paragraph)
         .filter_map(|claim| Some((claim.range.start, claim.label.as_deref()?.strip_prefix("par")?.parse::<u32>().ok()?)))
         .collect::<HashSet<_>>();
@@ -484,7 +484,7 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
         let label_start = text.scalar(line.byte_start + line.text.len() - line.text.trim_start().len());
         let label_range = ScalarRange { start: label_start, end: label_start + length };
         // A number the markup sets as a heading ("<h2>1</h2>") or in a table is that, however alone it stands.
-        if evidence.nodes.iter().any(|claim| matches!(claim.kind, NodeKind::Heading | NodeKind::Table | NodeKind::Row | NodeKind::Cell)
+        if evidence.structure.nodes.iter().any(|claim| matches!(claim.kind, NodeKind::Heading | NodeKind::Table | NodeKind::Row | NodeKind::Cell)
             && claim.range.start <= label_start && label_start < claim.range.end) { continue; }
         let physical = physical_page(label_start);
         let Some(&reference) = supported_references.get(&marker.start) else { continue; };
@@ -516,7 +516,7 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
             }
         }
         // A text with no pages has no foot to stop a note: in markup its own block ends it.
-        if let Some(block) = evidence.nodes.iter().find(|claim| matches!(claim.kind, NodeKind::Paragraph | NodeKind::Prose)
+        if let Some(block) = evidence.structure.nodes.iter().find(|claim| matches!(claim.kind, NodeKind::Paragraph | NodeKind::Prose)
             && claim.range.start <= body_start && body_start < claim.range.end) {
             body_end = body_end.min(block.range.end);
         }
@@ -553,9 +553,9 @@ pub(super) fn case_source_layout(evidence: &DocumentInput, text: &ScalarText<'_>
     result
 }
 
-pub(super) fn detect_case_headings(evidence: &DocumentInput, text: &ScalarText<'_>, layout: &CaseSourceLayout) -> Vec<StructureNode> {
+pub(super) fn detect_case_headings(evidence: &Evidence, text: &ScalarText<'_>, layout: &CaseSourceLayout) -> Vec<StructureNode> {
     // This supplement has CourtListener corpus evidence; other providers retain their readers.
-    if evidence.provider != "courtlistener" {
+    if evidence.structure.provider != "courtlistener" {
         return Vec::new();
     }
     let nonempty = lines(text).map(|line| case_source_line(text, line))
@@ -563,12 +563,14 @@ pub(super) fn detect_case_headings(evidence: &DocumentInput, text: &ScalarText<'
         .filter(|(_, line)| !line.text.trim().is_empty())
         .collect::<Vec<_>>();
     let native_prose = evidence
+        .structure
         .nodes
         .iter()
         .filter(|claim| claim.kind == NodeKind::Prose)
         .map(|claim| claim.range)
         .collect::<HashSet<_>>();
     let notes = evidence
+        .structure
         .nodes
         .iter()
         .filter(|claim| matches!(claim.kind, NodeKind::Footnote | NodeKind::Endnote))
@@ -576,6 +578,7 @@ pub(super) fn detect_case_headings(evidence: &DocumentInput, text: &ScalarText<'
         .chain(layout.note_ranges.iter().copied())
         .collect::<Vec<_>>();
     let native_headings = evidence
+        .structure
         .nodes
         .iter()
         .filter(|claim| claim.kind == NodeKind::Heading)
@@ -732,14 +735,14 @@ pub(super) fn detect_case_headings(evidence: &DocumentInput, text: &ScalarText<'
 }
 
 pub(super) fn detect_case_prose(
-    evidence: &DocumentInput,
+    evidence: &Evidence,
     text: &ScalarText<'_>,
     layout: &CaseSourceLayout,
     recovered: &[StructureNode],
 ) -> Vec<StructureNode> {
     // Supplement only unaddressed CourtListener text, leaving every supplied or
     // recovered passage intact. Anonymous ranges do not print paragraph numbers.
-    if evidence.provider != "courtlistener" {
+    if evidence.structure.provider != "courtlistener" {
         return Vec::new();
     }
     let line_range = |line: Line<'_>| {
@@ -751,7 +754,7 @@ pub(super) fn detect_case_prose(
         .map(|item| item.range)
         .chain(layout.exclusions.iter().copied())
         .chain(layout.note_ranges.iter().copied())
-        .chain(evidence.nodes.iter().filter(|claim|
+        .chain(evidence.structure.nodes.iter().filter(|claim|
             !matches!(claim.kind, NodeKind::Section | NodeKind::Page)).map(|claim| claim.range))
         .chain(recovered.iter().chain(&layout.blocks).filter(|block|
             !matches!(block.kind, NodeKind::Section | NodeKind::Page)).map(|block| block.range))
@@ -815,7 +818,7 @@ pub(super) fn detect_case_prose(
         let at = merged.partition_point(|other| other.end <= range.start);
         merged.get(at).is_some_and(|other| other.start < range.end)
     };
-    let mut boundaries = evidence.nodes.iter().filter(|claim|
+    let mut boundaries = evidence.structure.nodes.iter().filter(|claim|
         matches!(claim.kind, NodeKind::Section | NodeKind::Page))
         .flat_map(|claim| [claim.range.start, claim.range.end])
         .chain(recovered.iter().chain(&layout.blocks).filter(|block|

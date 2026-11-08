@@ -489,6 +489,45 @@ impl DocumentStructure {
         }
     }
 
+    /// A structure of `text` from one origin, complete, its digest taken, with no nodes yet: a reader sets on it what
+    /// else it knows.
+    pub fn new(document_id: String, provider: impl Into<String>, text: String, origin_id: &str) -> Self {
+        use sha2::{Digest, Sha256};
+        Self {
+            schema_version: Cow::Borrowed(DOCUMENT_STRUCTURE_SCHEMA),
+            document_id,
+            offset_unit: Cow::Borrowed("utf16"),
+            provider: provider.into(),
+            url: None,
+            doc_type: None,
+            profile: None,
+            revision: String::new(),
+            text_sha256: format!("{:x}", Sha256::digest(text.as_bytes())),
+            text,
+            rendered_text: None,
+            source_sha256: None,
+            scope: Scope::complete(),
+            origins: vec![Origin { id: origin_id.to_owned() }],
+            nodes: Vec::new(),
+            source_fragments: Vec::new(),
+            continuations: None,
+            joins: Vec::new(),
+            manuscript_edits: BTreeMap::new(),
+            markup_elements: Vec::new(),
+            markup_ancestors: Vec::new(),
+            markup_sha256: None,
+            cited_authorities: Vec::new(),
+            definitions: Vec::new(),
+            docx: None,
+            selected_hypothesis: None,
+            contents: None,
+            cross_references: None,
+            opinion: None,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// A structure of nodes and diagnostics read in scalars, put in UTF-16, its revision taken.
     pub fn from_scalar_parts(
         document_id: String,
         provider: String,
@@ -500,24 +539,21 @@ impl DocumentStructure {
         mut nodes: Vec<StructureNode>,
         mut diagnostics: Vec<StructureDiagnostic>,
     ) -> Self {
-        let coordinates = ScalarText::new(&text);
-        Self::project_scalar_parts(&coordinates, &mut nodes, &mut diagnostics);
-        Self::from_projected_parts(
-            document_id,
-            provider,
-            None,
-            None,
-            None,
-            text,
+        Self::project_scalar_parts(&ScalarText::new(&text), &mut nodes, &mut diagnostics);
+        let mut structure = Self {
             text_sha256,
             source_sha256,
             scope,
             origins,
             nodes,
             diagnostics,
-        )
+            ..Self::new(document_id, provider, text, "")
+        };
+        structure.refresh_revision().expect("Typed document structure is serializable");
+        structure
     }
 
+    /// A structure of nodes and diagnostics already in UTF-16, its revision taken.
     pub fn from_projected_parts(
         document_id: String,
         provider: String,
@@ -533,36 +569,16 @@ impl DocumentStructure {
         diagnostics: Vec<StructureDiagnostic>,
     ) -> Self {
         let mut structure = Self {
-            schema_version: Cow::Borrowed(DOCUMENT_STRUCTURE_SCHEMA),
-            document_id,
-            offset_unit: Cow::Borrowed("utf16"),
-            provider,
             url,
             doc_type,
             profile,
-            revision: text_sha256.clone(),
-            text,
-            rendered_text: None,
             text_sha256,
             source_sha256,
             scope,
             origins,
             nodes,
-            source_fragments: Vec::new(),
-            continuations: None,
-            joins: Vec::new(),
-            manuscript_edits: BTreeMap::new(),
-            markup_elements: Vec::new(),
-            markup_ancestors: Vec::new(),
-            markup_sha256: None,
-            cited_authorities: Vec::new(),
-            definitions: Vec::new(),
-            docx: None,
-            selected_hypothesis: None,
-            contents: None,
-            cross_references: None,
-            opinion: None,
             diagnostics,
+            ..Self::new(document_id, provider, text, "")
         };
         structure.refresh_revision().expect("Typed document structure is serializable");
         structure

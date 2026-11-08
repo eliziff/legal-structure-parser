@@ -3,7 +3,7 @@ use crate::text::{
 };
 use crate::{
     utf16_len, CitedAuthority, Derivation, DetectionProfile,
-    DocumentInput, DocumentStructure, EngineError, Exclusion, MarkupAncestor,
+    Evidence, DocumentStructure, EngineError, Exclusion, MarkupAncestor,
     MarkupElement, NodeKind, ScalarRange, ScalarText,
     Scope, ScopeKind, StructureNode,
 };
@@ -2189,7 +2189,7 @@ fn native_markup_evidence(
     input: NativeMarkupInput,
 ) -> Result<
     (
-        DocumentInput,
+        Evidence,
         Vec<CitedAuthority>,
         Vec<(String, Option<String>, ScalarRange)>,
         Vec<MarkupElement>,
@@ -2406,27 +2406,20 @@ fn native_markup_evidence(
         "excerpt" => ScopeKind::Excerpt,
         _ => return Err(EngineError::source("invalid native-markup scope")),
     };
-    let evidence = DocumentInput {
-        url,
-        doc_type: Some("cases"),
+    let mut structure = DocumentStructure::new(id, provider.as_str(), text, ORIGIN);
+    structure.url = url;
+    structure.doc_type = Some("cases".to_owned());
+    structure.source_sha256 = Some(adapter_revision);
+    structure.scope = Scope { kind: scope_kind, excerpt_of: scope.excerpt_of };
+    structure.nodes = claims;
+    let profile = match profile {
+        "case_contiguous_complete" => DetectionProfile::CaseContiguousComplete,
+        _ => DetectionProfile::CaseLossy,
+    };
+    let evidence = Evidence {
         report_start_page: report_start(citation.as_deref()),
-        source_sha256: Some(adapter_revision),
-        scope: Scope {
-            kind: scope_kind,
-            excerpt_of: scope.excerpt_of,
-        },
-        nodes: claims,
         exclusions,
-        ..DocumentInput::new(
-            id,
-            provider.as_str(),
-            match profile {
-                "case_contiguous_complete" => DetectionProfile::CaseContiguousComplete,
-                _ => DetectionProfile::CaseLossy,
-            },
-            text,
-            ORIGIN,
-        )
+        ..Evidence::new(structure, profile)
     };
     Ok((
         evidence,
@@ -2518,7 +2511,7 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
     // Retain the existing inference exclusions for the source-aware supplement,
     // in the final UTF-16 coordinates used by the retained markup graph.
     #[cfg(feature = "courtlistener")]
-    let exclusions = (evidence.provider == "courtlistener").then(|| courtlistener::inference_exclusions(&evidence));
+    let exclusions = (evidence.structure.provider == "courtlistener").then(|| courtlistener::inference_exclusions(&evidence));
     let mut structure = crate::derive::derive(evidence, None);
     structure.cited_authorities = cited_authorities;
     if structure.provider == "courtlistener" {
@@ -2540,5 +2533,6 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         let (heading_exclusions, body_exclusions) = exclusions.unwrap_or_default();
         courtlistener::finish(&mut structure, note_references, &matched_role_starts, printed_notes, &heading_exclusions, &body_exclusions);
     }
+    structure.refresh_revision().expect("Typed document structure is serializable");
     Ok(structure)
 }

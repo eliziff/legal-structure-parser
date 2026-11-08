@@ -119,7 +119,7 @@ pub(super) fn detect_pages(
 
 /// Form feeds are the source's own page breaks, so a physical page no printed number marks is
 /// still a page. It takes the number the printed pages count it to, else its place in the text.
-pub(super) fn form_feed_pages(evidence: &DocumentInput, text: &ScalarText<'_>, blocks: &[StructureNode]) -> Vec<StructureNode> {
+pub(super) fn form_feed_pages(evidence: &Evidence, text: &ScalarText<'_>, blocks: &[StructureNode]) -> Vec<StructureNode> {
     let form_feeds = text.value.char_indices().filter(|(_, character)| *character == '\u{c}')
         .map(|(byte, _)| text.scalar(byte)).collect::<Vec<_>>();
     if form_feeds.is_empty() {
@@ -127,7 +127,7 @@ pub(super) fn form_feed_pages(evidence: &DocumentInput, text: &ScalarText<'_>, b
     }
     let pages = blocks.iter().filter(|block| block.kind == NodeKind::Page)
         .map(|block| (block.range, block.label.as_deref(), block.marker_range))
-        .chain(evidence.nodes.iter().filter(|claim| claim.kind == NodeKind::Page)
+        .chain(evidence.structure.nodes.iter().filter(|claim| claim.kind == NodeKind::Page)
             .map(|claim| (claim.range, claim.label.as_deref(), None)))
         .collect::<Vec<_>>();
     let mut offsets = HashMap::<i64, usize>::new();

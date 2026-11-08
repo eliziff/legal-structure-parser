@@ -1,6 +1,6 @@
 use crate::{
     locator::normalize_section_locator, text::equal_fold, utf16_len,
-    Derivation, DetectionProfile, DocumentInput, DocumentStructure, EngineError,
+    Derivation, DetectionProfile, Evidence, DocumentStructure, EngineError,
     NodeKind, ScalarRange, ScalarText, Scope, ScopeKind, StructureNode,
 };
 use aho_corasick::{AhoCorasick, AhoCorasickKind};
@@ -250,54 +250,33 @@ fn provider_claims(coordinates: &ScalarText<'_>, map: &ProviderSectionMap) -> Ve
     claims
 }
 
-fn evidence(
-    input: &ProviderTextInput,
-    text: String,
-    claims: Vec<StructureNode>,
-) -> Result<DocumentInput, EngineError> {
-    let profile = if input.source_kind == ProviderTextSourceKind::Cases {
-        DetectionProfile::CaseRootedComplete
-    } else {
-        DetectionProfile::Legislation
+fn evidence(input: &ProviderTextInput, text: String, claims: Vec<StructureNode>) -> Evidence {
+    let cases = input.source_kind == ProviderTextSourceKind::Cases;
+    let mut structure = DocumentStructure::new(
+        input.id.clone().unwrap_or_else(|| input.citation.clone()),
+        input.provider.as_deref().unwrap_or("provider-text"),
+        text,
+        ORIGIN,
+    );
+    structure.url = input.url.clone();
+    structure.doc_type = Some(if cases { "cases" } else { "laws" }.to_owned());
+    structure.scope = Scope {
+        kind: if input.excerpt_of.is_some() { ScopeKind::Excerpt } else { ScopeKind::Complete },
+        excerpt_of: input.excerpt_of.clone(),
     };
-    let report_start_page = report_start(input);
-    let require_report_start = input.require_report_start;
-    let allow_hyphenated_sections = input.source_kind == ProviderTextSourceKind::Laws
-        && input.name.as_deref().is_some_and(|value| {
-            static RE: OnceLock<Regex> = OnceLock::new();
-            RE.get_or_init(|| {
-                Regex::new(r"(?iu)\b(?:rules?|regulations?|r[eè]glements?)\b").unwrap()
-            })
-            .is_match(value)
-        });
-    Ok(DocumentInput {
-        url: input.url.clone(),
-        doc_type: Some(if input.source_kind == ProviderTextSourceKind::Cases {
-            "cases"
-        } else {
-            "laws"
-        }),
-        profile,
-        report_start_page,
-        require_report_start,
-        allow_hyphenated_sections,
-        scope: Scope {
-            kind: if input.excerpt_of.is_some() {
-                ScopeKind::Excerpt
-            } else {
-                ScopeKind::Complete
-            },
-            excerpt_of: input.excerpt_of.clone(),
-        },
-        nodes: claims,
-        ..DocumentInput::new(
-            input.id.clone().unwrap_or_else(|| input.citation.clone()),
-            input.provider.as_deref().unwrap_or("provider-text"),
-            profile,
-            text,
-            ORIGIN,
-        )
-    })
+    structure.nodes = claims;
+    let profile = if cases { DetectionProfile::CaseRootedComplete } else { DetectionProfile::Legislation };
+    Evidence {
+        report_start_page: report_start(input),
+        require_report_start: input.require_report_start,
+        allow_hyphenated_sections: !cases
+            && input.name.as_deref().is_some_and(|value| {
+                static RE: OnceLock<Regex> = OnceLock::new();
+                RE.get_or_init(|| Regex::new(r"(?iu)\b(?:rules?|regulations?|r[eè]glements?)\b").unwrap())
+                    .is_match(value)
+            }),
+        ..Evidence::new(structure, profile)
+    }
 }
 
 fn report_start(input: &ProviderTextInput) -> Option<u32> {
@@ -478,14 +457,12 @@ pub fn provider_text_document_structure(
     let source_kind = input.source_kind;
     let mut structure = provider_text_reading(input)?;
     match source_kind {
-        ProviderTextSourceKind::Cases => {
-            crate::case_outline::add_case_nodes(&mut structure);
-            structure.refresh_revision().expect("Typed document structure is serializable");
-        }
+        ProviderTextSourceKind::Cases => crate::case_outline::add_case_nodes(&mut structure),
         ProviderTextSourceKind::Laws => {
             structure.cross_references = Some(crate::instrument::cross_reference_graph(&structure)?);
         }
     }
+    structure.refresh_revision().expect("Typed document structure is serializable");
     Ok(structure)
 }
 
@@ -524,17 +501,17 @@ pub(crate) fn provider_text_reading(
         (None, _) => Vec::new(),
     };
     let (text, claims) = provider_source(std::mem::take(&mut input.text), &ordered);
-    let mut evidence = evidence(&input, text, claims)?;
-    let coordinates = ScalarText::new(&evidence.text);
+    let mut evidence = evidence(&input, text, claims);
+    let coordinates = ScalarText::new(&evidence.structure.text);
     if let (true, Some(map)) = (has_text, &input.section_map) {
-        evidence.nodes = provider_claims(&coordinates, map);
+        evidence.structure.nodes = provider_claims(&coordinates, map);
     }
-    evidence.nodes.extend(printed_page_claims(&input.printed_pages, coordinates.len()));
+    evidence.structure.nodes.extend(printed_page_claims(&input.printed_pages, coordinates.len()));
     let mut inferred = crate::inference::inferred_blocks(&evidence, &coordinates);
     if let (ProviderTextSourceKind::Laws, true, Some(map)) =
         (input.source_kind, has_text, input.section_map.as_ref())
     {
-        apply_provider_section_evidence(&coordinates, &mut inferred, &evidence.nodes, map);
+        apply_provider_section_evidence(&coordinates, &mut inferred, &evidence.structure.nodes, map);
     }
     Ok(crate::derive::derive(evidence, Some(inferred)))
 }

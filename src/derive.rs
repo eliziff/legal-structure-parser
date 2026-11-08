@@ -1,16 +1,17 @@
 use super::*;
 
 /// The structure from a reader's evidence: its own nodes, with what inference finds (or the blocks it was given in
-/// place of inference), each node's parent resolved from the label (or id) it names, ranges in UTF-16.
-pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<StructureNode>>) -> DocumentStructure {
-    let coordinates = ScalarText::new(&evidence.text);
+/// place of inference), each node's parent resolved from the label (or id) it names, ranges in UTF-16. The reader takes
+/// its revision once it has set all it adds.
+pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNode>>) -> DocumentStructure {
+    let coordinates = ScalarText::new(&evidence.structure.text);
     #[cfg(feature = "structure-inference")]
     let inferred = precomputed.unwrap_or_else(|| {
         inference::inferred_blocks(&evidence, &coordinates)
     });
     #[cfg(not(feature = "structure-inference"))]
     let inferred = precomputed.unwrap_or_default();
-    let mut nodes = std::mem::take(&mut evidence.nodes);
+    let mut nodes = std::mem::take(&mut evidence.structure.nodes);
     let native_labels = (!inferred.is_empty())
         .then(|| {
             nodes
@@ -118,18 +119,9 @@ pub(crate) fn derive(mut evidence: DocumentInput, precomputed: Option<Vec<Struct
     }
     DocumentStructure::project_scalar_parts(&coordinates, &mut nodes, &mut diagnostics);
     drop(coordinates);
-    DocumentStructure::from_projected_parts(
-        evidence.document_id,
-        evidence.provider,
-        evidence.url,
-        evidence.doc_type.map(str::to_owned),
-        Some(evidence.profile),
-        evidence.text,
-        evidence.text_sha256,
-        evidence.source_sha256,
-        evidence.scope,
-        evidence.origins,
-        nodes,
-        diagnostics,
-    )
+    let mut structure = evidence.structure;
+    structure.profile = Some(evidence.profile);
+    structure.nodes = nodes;
+    structure.diagnostics = diagnostics;
+    structure
 }

@@ -1,6 +1,6 @@
 use crate::locator::literal_page_marker;
 use crate::{
-    Derivation, DetectionProfile, DocumentInput, DocumentStructure, EngineError, NodeKind,
+    Derivation, DetectionProfile, Evidence, DocumentStructure, EngineError, NodeKind,
     ScalarRange, ScalarText, StructureNode,
 };
 use serde::Deserialize;
@@ -152,17 +152,12 @@ fn structure(
     for (index, claim) in claims.iter_mut().enumerate() {
         claim.id = format!("native-{:06}", index + 1);
     }
-    Ok(crate::derive::derive(DocumentInput {
-        url,
-        nodes: claims,
-        ..DocumentInput::new(
-            article_id.to_string(),
-            "journal",
-            DetectionProfile::Journal,
-            text,
-            ORIGIN,
-        )
-    }, Some(Vec::new())))
+    let mut structure = DocumentStructure::new(article_id.to_string(), "journal", text, ORIGIN);
+    structure.url = url;
+    structure.nodes = claims;
+    let mut structure = crate::derive::derive(Evidence::new(structure, DetectionProfile::Journal), Some(Vec::new()));
+    structure.refresh_revision().expect("Typed document structure is serializable");
+    Ok(structure)
 }
 
 pub fn journal_text_document_structure(
