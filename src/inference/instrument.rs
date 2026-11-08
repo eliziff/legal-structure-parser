@@ -838,6 +838,15 @@ pub(crate) fn detect_instrument_grammar(
                 instrument_top(value, direct).map(|(label, at, container)| {
                     (label, text.scalar(line.byte_start + at), container)
                 })
+            })
+            // A subsection repeating the number of the section it is in ("50.4(2) The ...", under "50.4(1) ...") is
+            // that section's, read as its marker below, and opens no second section of the number.
+            .filter(|(label, _, container)| {
+                *container
+                    || !(provider_refinements
+                        && numbered
+                        && state.section.as_ref().is_some_and(|(open, _)| open == label)
+                        && label.strip_prefix("sec").and_then(|number| value.strip_prefix(number)).is_some_and(repeated_subsection))
             });
         if let Some((label, content_start, container)) = selected {
             let depth = usize::from(!container && state.container.is_some());
