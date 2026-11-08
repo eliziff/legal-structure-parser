@@ -1,8 +1,7 @@
 use legal_locator::{literal_page_marker, normalize_section_locator};
 use crate::{
-    public_structure_label,
     text::{equal_fold, trim_javascript_whitespace as js_trim, JS_WHITESPACE_CLASS as JS_WS},
-    AuthoritativeTableCell, Derivation, DetectionProfile, DocumentBlock,
+    AuthoritativeTableCell, Derivation, DetectionProfile,
     DocumentStructure, InstrumentCrossReferenceGraph,
     InstrumentCrossReferenceStatus, NodeKind, ScalarRange, ScalarText, StructureNode,
 };
@@ -47,10 +46,10 @@ fn context(value: usize) -> usize {
 const READ_OUTPUT_UTF16_BUDGET: usize = 63_000;
 const READ_LINE_UTF16_LIMIT: usize = READ_OUTPUT_UTF16_BUDGET - 1_000;
 
+/// A node the query found, and its text as the query reads it (its membership in the document's query text).
 #[derive(Clone, Serialize)]
-pub struct MaterializedDocumentBlock {
-    #[serde(flatten)]
-    pub block: DocumentBlock,
+pub struct Passage<'a> {
+    pub node: &'a StructureNode,
     pub text: String,
 }
 
@@ -65,20 +64,20 @@ pub enum DocumentLookupStatus {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DocumentLookup {
+pub struct DocumentLookup<'a> {
     pub status: DocumentLookupStatus,
     pub requested_label: String,
     pub matches: Vec<String>,
-    pub block: Option<MaterializedDocumentBlock>,
-    pub before: Vec<MaterializedDocumentBlock>,
-    pub after: Vec<MaterializedDocumentBlock>,
+    pub block: Option<Passage<'a>>,
+    pub before: Vec<Passage<'a>>,
+    pub after: Vec<Passage<'a>>,
 }
 
 #[derive(Serialize)]
-pub struct DocumentRangeLookup {
-    pub selected: Vec<MaterializedDocumentBlock>,
-    pub before: Vec<MaterializedDocumentBlock>,
-    pub after: Vec<MaterializedDocumentBlock>,
+pub struct DocumentRangeLookup<'a> {
+    pub selected: Vec<Passage<'a>>,
+    pub before: Vec<Passage<'a>>,
+    pub after: Vec<Passage<'a>>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Serialize)]
@@ -172,9 +171,9 @@ pub enum GraphScopeSeed {
 }
 
 #[derive(Serialize)]
-pub struct GraphScope {
-    pub seed: MaterializedDocumentBlock,
-    pub nodes: Vec<GraphScopeNode>,
+pub struct GraphScope<'a> {
+    pub seed: Passage<'a>,
+    pub nodes: Vec<GraphScopeNode<'a>>,
     pub depth: usize,
     /// Relevant edges omitted from traversal, separate from returned-text coverage.
     /// Edges need a mapped endpoint on the requested traversal side to be relevant.
@@ -196,11 +195,11 @@ pub struct GraphScopeOmission {
 }
 
 #[derive(Serialize)]
-pub struct GraphScopeNode {
+pub struct GraphScopeNode<'a> {
     #[serde(flatten)]
-    pub block: MaterializedDocumentBlock,
+    pub block: Passage<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub units: Option<Vec<MaterializedDocumentBlock>>,
+    pub units: Option<Vec<Passage<'a>>>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -215,8 +214,6 @@ enum ProjectionOrder {
 #[derive(Clone, Copy)]
 struct BlockPosition {
     node: usize,
-    prose: Option<usize>,
-    parent: Option<usize>,
 }
 
 fn projection_order(profile: Option<DetectionProfile>) -> ProjectionOrder {
@@ -231,80 +228,30 @@ fn projection_order(profile: Option<DetectionProfile>) -> ProjectionOrder {
     }
 }
 
-/// The kind of block a node is queried as: its own, a prose passage's a paragraph's; a heading, an endnote, a list, its
-/// item and a quotation are none.
-fn projected_kind(node: &StructureNode) -> Option<NodeKind> {
-    match node.kind {
-        NodeKind::Prose => Some(NodeKind::Paragraph),
-        NodeKind::Paragraph | NodeKind::Page | NodeKind::Section | NodeKind::Footnote | NodeKind::Table | NodeKind::Row
-        | NodeKind::Cell => Some(node.kind),
-        NodeKind::Heading | NodeKind::Endnote | NodeKind::List | NodeKind::ListItem | NodeKind::Quote => None,
-    }
+/// Whether a node is one the query serves: a paragraph, prose, a page, a provision, a footnote, a table, its row or its
+/// cell; a heading, an endnote, a list, its item and a quotation are none.
+fn projected(node: &StructureNode) -> bool {
+    matches!(node.kind, NodeKind::Prose | NodeKind::Paragraph | NodeKind::Page | NodeKind::Section | NodeKind::Footnote
+        | NodeKind::Table | NodeKind::Row | NodeKind::Cell)
 }
 
-fn position_label<'a>(document: &'a DocumentStructure, position: &BlockPosition) -> Cow<'a, str> {
-    let node = &document.nodes[position.node];
-    let label = position.prose.map_or_else(
-        || Cow::Borrowed(node.label.as_deref().expect("projected node has a label")),
-        |number| Cow::Owned(number.to_string()),
-    );
-    if projection_order(document.profile) == ProjectionOrder::Legislation {
-        match label {
-            Cow::Borrowed(label) => public_structure_label(label),
-            Cow::Owned(label) => Cow::Owned(public_structure_label(&label).into_owned()),
-        }
-    } else {
-        label
-    }
+/// Whether a node is served as `kind`: its own kind, or prose where paragraphs are asked for.
+pub(crate) fn queried_as(node: &StructureNode, kind: NodeKind) -> bool {
+    node.kind == kind || kind == NodeKind::Paragraph && node.kind == NodeKind::Prose
 }
 
-fn parent_label<'a>(
-    document: &'a DocumentStructure,
-    position: &BlockPosition,
-) -> Option<Cow<'a, str>> {
-    let label = position
-        .parent
-        .and_then(|parent| document.nodes[parent].label.as_deref())?;
-    Some(
-        if projection_order(document.profile) == ProjectionOrder::Legislation {
-            public_structure_label(label)
-        } else {
-            Cow::Borrowed(label)
-        },
-    )
+/// A served node's label as the document prints it (none for prose).
+fn position_label<'a>(document: &'a DocumentStructure, position: &BlockPosition) -> &'a str {
+    document.nodes[position.node].label.as_deref().unwrap_or_default()
 }
 
 fn projected_positions(document: &DocumentStructure) -> Vec<BlockPosition> {
-    let mut prose = 0;
-    // Insertion order deliberately preserves the old reverse lookup when IDs repeat.
-    let nodes_by_id = document
-        .nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| (node.id.as_str(), index))
-        .collect::<HashMap<_, _>>();
     let mut positions = document
         .nodes
         .iter()
         .enumerate()
-        .filter_map(|(index, node)| {
-            projected_kind(node)?;
-            let prose_number = if node.kind == NodeKind::Prose && node.label.is_none() {
-                prose += 1;
-                Some(prose)
-            } else {
-                node.label.as_ref()?;
-                None
-            };
-            Some(BlockPosition {
-                node: index,
-                prose: prose_number,
-                parent: node
-                    .parent_id
-                    .as_deref()
-                    .and_then(|parent| nodes_by_id.get(parent).copied()),
-            })
-        })
+        .filter(|(_, node)| projected(node) && (node.kind == NodeKind::Prose || node.label.is_some()))
+        .map(|(node, _)| BlockPosition { node })
         .collect::<Vec<_>>();
     match projection_order(document.profile) {
         ProjectionOrder::StablePosition => positions.sort_by_key(|position| {
@@ -314,16 +261,8 @@ fn projected_positions(document: &DocumentStructure) -> Vec<BlockPosition> {
         ProjectionOrder::Position => positions.sort_by(|left, right| {
             let left_range = document.query_range(&document.nodes[left.node]);
             let right_range = document.query_range(&document.nodes[right.node]);
-            (
-                left_range.start,
-                left_range.end,
-                position_label(document, left),
-            )
-                .cmp(&(
-                    right_range.start,
-                    right_range.end,
-                    position_label(document, right),
-                ))
+            (left_range.start, left_range.end, position_label(document, left))
+                .cmp(&(right_range.start, right_range.end, position_label(document, right)))
         }),
         ProjectionOrder::Legislation => positions.sort_by(|left, right| {
             let left_range = document.query_range(&document.nodes[left.node]);
@@ -332,71 +271,11 @@ fn projected_positions(document: &DocumentStructure) -> Vec<BlockPosition> {
                 .start
                 .cmp(&right_range.start)
                 .then_with(|| right_range.end.cmp(&left_range.end))
-                .then_with(|| position_label(document, left).cmp(&position_label(document, right)))
+                .then_with(|| position_label(document, left).cmp(position_label(document, right)))
         }),
         ProjectionOrder::Case | ProjectionOrder::Native => {}
     }
-    if projection_order(document.profile) == ProjectionOrder::Legislation {
-        let owners = positions
-            .iter()
-            .enumerate()
-            .map(|(index, position)| (position_label(document, position), index))
-            .collect::<HashMap<_, _>>();
-        for index in 0..positions.len() {
-            let owner = owners
-                .get::<str>(position_label(document, &positions[index]).as_ref())
-                .copied()
-                .unwrap_or(index);
-            let mut seen = HashSet::new();
-            let parent = std::iter::successors(positions[owner].parent, |&parent| {
-                let label = public_structure_label(document.nodes[parent].label.as_deref()?);
-                seen.insert(label.clone())
-                    .then(|| {
-                        owners
-                            .get::<str>(label.as_ref())
-                            .and_then(|owner| positions[*owner].parent)
-                    })
-                    .flatten()
-            })
-            .last();
-            positions[index].parent = parent;
-        }
-    }
     positions
-}
-
-#[derive(Clone, Serialize)]
-pub struct DocumentAnchor<'a> {
-    #[serde(rename = "nodeId")]
-    node_id: &'a str,
-    #[serde(rename = "printedLabel")]
-    printed_label: bool,
-    ranges: Vec<ScalarRange>,
-    level: usize,
-    kind: NodeKind,
-    label: Cow<'a, str>,
-    /// The label as the document prints it ("par12" is "12").
-    printed: String,
-    start: usize,
-    end: usize,
-    #[serde(rename = "parentLabel", skip_serializing_if = "Option::is_none")]
-    parent_label: Option<Cow<'a, str>>,
-    #[serde(rename = "rowSpan", skip_serializing_if = "Option::is_none")]
-    row_span: Option<usize>,
-    #[serde(rename = "columnSpan", skip_serializing_if = "Option::is_none")]
-    column_span: Option<usize>,
-    /// The block's function where its kind does not say it: a headnote, a caption, the bench,
-    /// counsel, a date, a docket number, the court.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    role: Option<legal_structure_model::PrimaryRole>,
-}
-
-impl DocumentAnchor<'_> {
-    pub fn kind(&self) -> NodeKind { self.kind }
-    pub fn label(&self) -> &str { &self.label }
-    /// Its range in the document's text, in characters.
-    pub fn range(&self) -> (usize, usize) { (self.start, self.end) }
-    pub fn parent_label(&self) -> Option<&str> { self.parent_label.as_deref() }
 }
 
 #[derive(Serialize)]
@@ -405,8 +284,8 @@ pub struct DocumentViewerSlice<'a> {
     pub start: usize,
     pub end: usize,
     pub text: &'a str,
-    pub anchors: Vec<DocumentAnchor<'a>>,
-    pub primary: Option<DocumentAnchor<'a>>,
+    pub anchors: Vec<&'a StructureNode>,
+    pub primary: Option<&'a StructureNode>,
     pub depth: usize,
     /// The slice is a heading the structure reads, not a block of text.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -745,77 +624,6 @@ impl DocumentQuery {
         window
     }
 
-    fn block(&self, document: &DocumentStructure, position: &BlockPosition) -> DocumentBlock {
-        let node = &document.nodes[position.node];
-        let range = document.query_range(node);
-        let mut block = DocumentBlock::new(
-            projected_kind(node).expect("projected node kind"),
-            position_label(document, position),
-            range.start,
-            range.end,
-            node.source,
-        );
-        if projection_order(document.profile) == ProjectionOrder::StablePosition
-            && node.kind != NodeKind::Prose
-        {
-            block.field_order = crate::document_block::BlockFieldOrder::EndLast;
-        }
-        block.node_id = Some(node.id.clone());
-        block.printed_label = node.label.is_some()
-            && node.marker_range.is_some_and(|range| range.start < range.end);
-        block.ranges = document.query_ranges(node).into_owned();
-        block.aliases = node.aliases.clone().unwrap_or_default();
-        block.anchor.clone_from(&node.anchor);
-        block.parent_label = parent_label(document, position).map(Cow::into_owned);
-        block.row_span = node.row_span;
-        block.column_span = node.column_span;
-        block
-    }
-
-    pub fn anchors<'a>(
-        &'a self,
-        document: &'a DocumentStructure,
-        end: Option<usize>,
-    ) -> impl Iterator<Item = DocumentAnchor<'a>> + 'a {
-        self.positions(document).iter().filter_map(move |position| {
-            let node = &document.nodes[position.node];
-            let range = document.query_range(node);
-            if end.is_some_and(|end| range.start >= end) {
-                return None;
-            }
-            Some(DocumentAnchor {
-                node_id: &node.id,
-                printed_label: node.label.is_some()
-                    && node.marker_range.is_some_and(|range| range.start < range.end),
-                ranges: document.query_ranges(node).iter().filter_map(|range| {
-                    let end = end.map_or(range.end, |end| range.end.min(end));
-                    (range.start <= end).then_some(ScalarRange { start: range.start, end })
-                }).collect(),
-                level: node.level.unwrap_or_else(|| {
-                    let mut level = 1;
-                    let mut parent = position.parent;
-                    let mut seen = HashSet::new();
-                    while let Some(index) = parent.filter(|index| seen.insert(*index)) {
-                        level += 1;
-                        parent = document.nodes[index].parent_id.as_ref()
-                            .and_then(|id| document.nodes.iter().position(|node| &node.id == id));
-                    }
-                    level
-                }),
-                kind: projected_kind(node).expect("projected node kind"),
-                printed: position_label(document, position).into_owned(),
-                label: position_label(document, position),
-                start: range.start,
-                end: end.map_or(range.end, |end| range.end.min(end)),
-                parent_label: parent_label(document, position),
-                row_span: node.row_span,
-                column_span: node.column_span,
-                role: node.role.filter(|role| !matches!(role,
-                    legal_structure_model::PrimaryRole::Text | legal_structure_model::PrimaryRole::Heading)),
-            })
-        })
-    }
-
     pub fn viewer<'a>(
         &'a self,
         document: &'a DocumentStructure,
@@ -836,19 +644,19 @@ impl DocumentQuery {
             scalar.utf16_at_byte(text.len()).unwrap_or_default()
         };
         let anchors = self
-            .anchors(document, Some(end))
-            .filter(|anchor| {
-                anchor.start < end
-                    && (anchor.kind == NodeKind::Page || anchor.kind == primary_kind)
+            .blocks(document, None)
+            .filter(|node| {
+                document.query_range(node).start < end && (node.kind == NodeKind::Page || queried_as(node, primary_kind))
             })
             .collect::<Vec<_>>();
-        let mut grouped = BTreeMap::<usize, Vec<_>>::new();
+        let mut grouped = BTreeMap::<usize, Vec<&StructureNode>>::new();
         let mut breaks = Vec::new();
-        for anchor in anchors {
-            if anchor.kind == primary_kind {
-                breaks.push(anchor.end);
+        for node in anchors {
+            let range = document.query_range(node);
+            if queried_as(node, primary_kind) {
+                breaks.push(range.end.min(end));
             }
-            grouped.entry(anchor.start).or_default().push(anchor);
+            grouped.entry(range.start).or_default().push(node);
         }
         if grouped.is_empty() {
             static PARAGRAPH_BREAK: OnceLock<Regex> = OnceLock::new();
@@ -882,8 +690,8 @@ impl DocumentQuery {
             let mut primary = None;
             let mut primary_length = 0;
             for (index, anchor) in anchors.iter().enumerate() {
-                if anchor.kind == primary_kind {
-                    let length = crate::text::utf16_len(&anchor.label);
+                if queried_as(anchor, primary_kind) {
+                    let length = crate::text::utf16_len(anchor.label.as_deref().unwrap_or_default());
                     if primary.is_none() || length > primary_length {
                         primary = Some(index);
                         primary_length = length;
@@ -902,7 +710,7 @@ impl DocumentQuery {
                 let depth = primary
                     .as_ref()
                     .filter(|anchor| anchor.kind == NodeKind::Section)
-                    .map_or(0, |anchor| anchor.level.saturating_sub(1));
+                    .map_or(0, |anchor| anchor.level.unwrap_or(1).saturating_sub(1));
                 slices.push(DocumentViewerSlice {
                     start,
                     end: slice_end,
@@ -963,30 +771,26 @@ impl DocumentQuery {
             .collect()
     }
 
-    fn materialize(
+    fn materialize<'a>(
         &self,
-        document: &DocumentStructure,
+        document: &'a DocumentStructure,
         position: &BlockPosition,
         text: &ScalarText<'_>,
-    ) -> MaterializedDocumentBlock {
-        let block = self.block(document, position);
-        MaterializedDocumentBlock {
-            text: crate::text::membership_text_utf16(&text, &block.ranges),
-            block,
-        }
+    ) -> Passage<'a> {
+        let node = &document.nodes[position.node];
+        Passage { text: crate::text::membership_text_utf16(text, &document.query_ranges(node)), node }
     }
 
+    /// The nodes the query serves, in its order (`kind`: those served as it).
     pub fn blocks<'a>(
         &'a self,
         document: &'a DocumentStructure,
         kind: Option<NodeKind>,
-    ) -> impl Iterator<Item = DocumentBlock> + 'a {
+    ) -> impl Iterator<Item = &'a StructureNode> + 'a {
         self.positions(document)
             .iter()
-            .filter(move |position| {
-                kind.is_none_or(|kind| projected_kind(&document.nodes[position.node]) == Some(kind))
-            })
-            .map(|position| self.block(document, position))
+            .map(|position| &document.nodes[position.node])
+            .filter(move |node| kind.is_none_or(|kind| queried_as(node, kind)))
     }
 
     fn position_matches(
@@ -1000,25 +804,15 @@ impl DocumentQuery {
             if node.kind == NodeKind::Prose && node.label.is_some() && node.label == node.anchor {
                 position_label(document, position) == label
             } else {
-                equal_fold(&position_label(document, position), label)
+                node.label.is_some() && equal_fold(position_label(document, position), label)
             };
-        let matches = matches_label
+        matches_label
             || node
                 .aliases
                 .as_deref()
                 .unwrap_or_default()
                 .iter()
-                .any(|alias| equal_fold(alias, label));
-        // Automatic prose numbering must not obscure a paragraph label that
-        // the document actually declares. Keep duplicate declared paragraphs
-        // ambiguous and retain every prose block in the ordinary projection.
-        matches
-            && (position.prose.is_none()
-                || !self.positions(document).iter().any(|candidate| {
-                    candidate.prose.is_none()
-                        && document.nodes[candidate.node].kind == NodeKind::Paragraph
-                        && self.position_matches(document, candidate, label)
-                }))
+                .any(|alias| equal_fold(alias, label))
     }
 
     fn position_resolves(
@@ -1038,7 +832,7 @@ impl DocumentQuery {
                 // another footnote's ID. A known legal label in the requested
                 // kind takes precedence; untyped graph lookup considers all kinds.
                 && !self.positions(document).iter().any(|candidate| {
-                    kind.is_none_or(|kind| projected_kind(&document.nodes[candidate.node]) == Some(kind))
+                    kind.is_none_or(|kind| queried_as(&document.nodes[candidate.node], kind))
                         && self.position_matches(document, candidate, label)
                 }))
     }
@@ -1052,7 +846,7 @@ impl DocumentQuery {
         let mut matches = self
             .positions(document)
             .iter()
-            .filter(|position| kind.is_none_or(|kind| projected_kind(&document.nodes[position.node]) == Some(kind)))
+            .filter(|position| kind.is_none_or(|kind| queried_as(&document.nodes[position.node], kind)))
             .filter(|position| self.position_resolves(document, position, label, kind));
         let found = matches.next()?;
         matches.next().is_none().then_some(found)
@@ -1080,7 +874,7 @@ impl DocumentQuery {
 
     pub fn has_origin(&self, document: &DocumentStructure, origin: Derivation) -> bool {
         document.nodes.iter().any(|node| {
-            projected_kind(node).is_some()
+            projected(node)
                 && (node.kind == NodeKind::Prose || node.label.is_some())
                 && node.source == origin
         })
@@ -1096,8 +890,8 @@ impl DocumentQuery {
         if self
             .positions(document)
             .iter()
-            .filter(|position| projected_kind(&document.nodes[position.node]) == Some(kind))
-            .any(|position| equal_fold(&position_label(document, position), exact))
+            .filter(|position| queried_as(&document.nodes[position.node], kind))
+            .any(|position| equal_fold(position_label(document, position), exact))
         {
             return Cow::Borrowed(exact);
         }
@@ -1107,7 +901,7 @@ impl DocumentQuery {
         }
         self.positions(document)
             .iter()
-            .filter(|position| projected_kind(&document.nodes[position.node]) == Some(kind))
+            .filter(|position| queried_as(&document.nodes[position.node], kind))
             .any(|position| {
                 let node = &document.nodes[position.node];
                 node.anchor
@@ -1124,13 +918,13 @@ impl DocumentQuery {
             .unwrap_or_default()
     }
 
-    fn lookup_label(
+    fn lookup_label<'a>(
         &self,
-        document: &DocumentStructure,
+        document: &'a DocumentStructure,
         kind: NodeKind,
         requested_label: &str,
         context_blocks: usize,
-    ) -> DocumentLookup {
+    ) -> DocumentLookup<'a> {
         let empty = |status| DocumentLookup {
             status,
             requested_label: requested_label.to_owned(),
@@ -1146,7 +940,7 @@ impl DocumentQuery {
         let mut selected = None;
         let mut ambiguous = false;
         for position in self.positions(document) {
-            if projected_kind(&document.nodes[position.node]) != Some(kind) {
+            if !queried_as(&document.nodes[position.node], kind) {
                 continue;
             }
             available.push(position);
@@ -1162,7 +956,7 @@ impl DocumentQuery {
             let matches = available
                 .iter()
                 .filter(|position| self.position_matches(document, position, requested_label))
-                .map(|position| position_label(document, position).into_owned())
+                .map(|position| position_label(document, position).to_owned())
                 .collect::<Vec<_>>();
             return DocumentLookup {
                 status: if matches.is_empty() {
@@ -1183,7 +977,7 @@ impl DocumentQuery {
         DocumentLookup {
             status: DocumentLookupStatus::Found,
             requested_label: requested_label.to_owned(),
-            matches: vec![position_label(document, selected).into_owned()],
+            matches: vec![position_label(document, selected).to_owned()],
             block: Some(self.materialize(document, selected, &text)),
             before: available[order.saturating_sub(context)..order]
                 .iter()
@@ -1196,18 +990,18 @@ impl DocumentQuery {
         }
     }
 
-    pub fn read_range(
+    pub fn read_range<'a>(
         &self,
-        document: &DocumentStructure,
+        document: &'a DocumentStructure,
         kind: NodeKind,
         from: &str,
         to: &str,
         context_blocks: usize,
-    ) -> Option<DocumentRangeLookup> {
+    ) -> Option<DocumentRangeLookup<'a>> {
         let available = self
             .positions(document)
             .iter()
-            .filter(|position| projected_kind(&document.nodes[position.node]) == Some(kind))
+            .filter(|position| queried_as(&document.nodes[position.node], kind))
             .collect::<Vec<_>>();
         let resolve = |locator: &str| {
             let label = self.requested_label(document, kind, locator);
@@ -1246,10 +1040,7 @@ impl DocumentQuery {
         document: &DocumentStructure,
         blocks: &[&'a BlockPosition],
     ) -> Vec<&'a BlockPosition> {
-        let Some(kind) = blocks
-            .first()
-            .and_then(|position| projected_kind(&document.nodes[position.node]))
-        else {
+        let Some(kind) = blocks.first().map(|position| document.nodes[position.node].kind) else {
             return Vec::new();
         };
         // Parallel reporter pages may overlap without owning one another.
@@ -1275,7 +1066,7 @@ impl DocumentQuery {
             .positions(document)
             .iter()
             .filter(|position| {
-                if projected_kind(&document.nodes[position.node]) != Some(kind) {
+                if !queried_as(&document.nodes[position.node], kind) {
                     return false;
                 }
                 let range = document.query_range(&document.nodes[position.node]);
@@ -1316,25 +1107,25 @@ impl DocumentQuery {
             .collect()
     }
 
-    fn materialize_leaf_blocks(
+    fn materialize_leaf_blocks<'a>(
         &self,
-        document: &DocumentStructure,
+        document: &'a DocumentStructure,
         blocks: &[&BlockPosition],
         text: &ScalarText<'_>,
-    ) -> Vec<MaterializedDocumentBlock> {
+    ) -> Vec<Passage<'a>> {
         self.contained_leaf_blocks(document, blocks)
             .into_iter()
             .map(|position| self.materialize(document, position, text))
-            .filter(|unit| !unit.text.is_empty() || unit.block.anchor.is_some())
+            .filter(|unit| !unit.text.is_empty() || unit.node.anchor.is_some())
             .collect()
     }
 
-    pub fn smallest_containing_block(
+    pub fn smallest_containing_block<'a>(
         &self,
-        document: &DocumentStructure,
+        document: &'a DocumentStructure,
         start: usize,
         end: usize,
-    ) -> Option<MaterializedDocumentBlock> {
+    ) -> Option<Passage<'a>> {
         let position = self
             .positions(document)
             .iter()
@@ -1351,7 +1142,7 @@ impl DocumentQuery {
     fn page_map(&self, document: &DocumentStructure) -> Vec<PageSpan> {
         let mut pages = Vec::new();
         for position in self.positions(document).iter().filter(|position| {
-            projected_kind(&document.nodes[position.node]) == Some(NodeKind::Page)
+            document.nodes[position.node].kind == NodeKind::Page
         }) {
             let node = &document.nodes[position.node];
             let range = document.query_range(node);
@@ -1383,12 +1174,12 @@ impl DocumentQuery {
     }
 
     /// Resolve an existing node identity without crossing display-label namespaces.
-    pub fn structure_selection(
+    pub fn structure_selection<'a>(
         &self,
-        document: &DocumentStructure,
+        document: &'a DocumentStructure,
         selector: &GraphScopeSeed,
         context_blocks: usize,
-    ) -> DocumentLookup {
+    ) -> DocumentLookup<'a> {
         let GraphScopeSeed::NodeId(id) = selector else {
             let GraphScopeSeed::Locator(locator) = selector else { unreachable!() };
             return self.structure_block(document, locator, context_blocks);
@@ -1400,16 +1191,16 @@ impl DocumentQuery {
                 requested_label: id.clone(), matches: Vec::new(), block: None,
                 before: Vec::new(), after: Vec::new() };
         };
-        let kind = projected_kind(&document.nodes[selected.node]);
+        let kind = document.nodes[selected.node].kind;
         let available = positions.iter().filter(|position|
-            projected_kind(&document.nodes[position.node]) == kind).collect::<Vec<_>>();
+            queried_as(&document.nodes[position.node], kind)).collect::<Vec<_>>();
         let index = available.iter().position(|position| position.node == selected.node).unwrap();
         let context = context(context_blocks);
         let text = self.text(document);
         DocumentLookup {
             status: DocumentLookupStatus::Found,
             requested_label: id.clone(),
-            matches: vec![position_label(document, selected).into_owned()],
+            matches: vec![position_label(document, selected).to_owned()],
             block: Some(self.materialize(document, selected, &text)),
             before: available[index.saturating_sub(context)..index].iter()
                 .map(|position| self.materialize(document, position, &text)).collect(),
@@ -1418,12 +1209,12 @@ impl DocumentQuery {
         }
     }
 
-    pub fn structure_block(
+    pub fn structure_block<'a>(
         &self,
-        document: &DocumentStructure,
+        document: &'a DocumentStructure,
         locator: &str,
         context_blocks: usize,
-    ) -> DocumentLookup {
+    ) -> DocumentLookup<'a> {
         let direct = js_trim(locator).to_lowercase();
         if direct.starts_with("table:") {
             let kind = if direct.contains("/col:") {
@@ -1446,16 +1237,16 @@ impl DocumentQuery {
         self.lookup_label(document, NodeKind::Section, &direct, context_blocks)
     }
 
-    pub fn graph_scope(
+    pub fn graph_scope<'a>(
         &self,
-        document: &DocumentStructure,
+        document: &'a DocumentStructure,
         graph: &InstrumentCrossReferenceGraph,
         seed: &GraphScopeSeed,
         follow: FollowDirection,
         depth: usize,
         include_descendants: bool,
         include_units: bool,
-    ) -> Option<GraphScope> {
+    ) -> Option<GraphScope<'a>> {
         let seed = match seed {
             GraphScopeSeed::Locator(locator) => self.unique_position(document, js_trim(locator), None)?,
             GraphScopeSeed::NodeId(id) => self.positions(document).iter()
@@ -1464,16 +1255,16 @@ impl DocumentQuery {
         self.graph_scope_position(document, graph, seed, follow, depth, include_descendants, include_units)
     }
 
-    fn graph_scope_position(
+    fn graph_scope_position<'a>(
         &self,
-        document: &DocumentStructure,
+        document: &'a DocumentStructure,
         graph: &InstrumentCrossReferenceGraph,
         seed: &BlockPosition,
         follow: FollowDirection,
         depth: usize,
         include_descendants: bool,
         include_units: bool,
-    ) -> Option<GraphScope> {
+    ) -> Option<GraphScope<'a>> {
         let limit = depth.min(3);
         let initial = if include_descendants {
             self.subtree_positions(document, seed)
@@ -1484,8 +1275,8 @@ impl DocumentQuery {
         // identify exactly one reflected owner, including across repeated labels.
         let endpoint = |label: &str, start: usize, end: usize, target: bool| {
             let mut matches = self.positions(document).iter().filter(|position| {
-                if projected_kind(&document.nodes[position.node]) != Some(NodeKind::Section)
-                    || !equal_fold(&position_label(document, position), label) { return false; }
+                if document.nodes[position.node].kind != NodeKind::Section
+                    || !equal_fold(position_label(document, position), label) { return false; }
                 let node = &document.nodes[position.node];
                 if target {
                     // The graph producer records the source node's range, not its
@@ -1561,9 +1352,7 @@ impl DocumentQuery {
                     let units = include_units
                         .then(|| self.materialize_leaf_blocks(document, &[position], &text));
                     let units = units.filter(|units| {
-                        units.len() != 1
-                            || units[0].block.start != materialized.block.start
-                            || units[0].block.end != materialized.block.end
+                        units.len() != 1 || document.query_range(units[0].node) != document.query_range(materialized.node)
                     });
                     GraphScopeNode {
                         block: materialized,
@@ -1607,7 +1396,7 @@ impl DocumentQuery {
                     }
                     _ => return DocumentAddressResolution::NotFound,
                 };
-                let mut spans = block.block.ranges.clone();
+                let mut spans = document.query_ranges(block.node).into_owned();
                 if follow != FollowDirection::None {
                     let Some(graph) = document
                         .cross_references
@@ -1617,7 +1406,7 @@ impl DocumentQuery {
                         return DocumentAddressResolution::NotAddressable;
                     };
                     let Some(seed) = self.positions(document).iter().find(|position|
-                        block.block.node_id.as_deref() == Some(document.nodes[position.node].id.as_str()))
+                        std::ptr::eq(block.node, &document.nodes[position.node]))
                     else { return DocumentAddressResolution::NotAddressable; };
                     let Some(scope) = self.graph_scope_position(
                         document,
@@ -1630,7 +1419,7 @@ impl DocumentQuery {
                     ) else {
                         return DocumentAddressResolution::NotAddressable;
                     };
-                    spans.extend(scope.nodes.into_iter().flat_map(|node| node.block.block.ranges));
+                    spans.extend(scope.nodes.into_iter().flat_map(|node| document.query_ranges(node.block.node).into_owned()));
                 }
                 DocumentAddressResolution::Found { spans }
             }

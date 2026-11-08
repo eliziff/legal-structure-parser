@@ -1,5 +1,5 @@
 use legal_structure_core::{
-    pair_numbered_footnotes as pair, provider_text_document_structure, utf16_len, DocumentBlock,
+    pair_numbered_footnotes as pair, provider_text_document_structure, utf16_len, StructureNode,
     Derivation, NodeKind, DocumentQuery, DocumentStructure, ProviderTextInput,
     ProviderTextSourceKind, ScalarText,
 };
@@ -89,10 +89,10 @@ impl Document {
         .find(|(_, kind)| self.top_blocks(*kind).next().is_some())
     }
 
-    fn top_blocks(&self, kind: NodeKind) -> impl Iterator<Item = DocumentBlock> + '_ {
+    fn top_blocks(&self, kind: NodeKind) -> impl Iterator<Item = &StructureNode> + '_ {
         self.query
             .blocks(&self.structure, Some(kind))
-            .filter(|block| block.parent_label.is_none())
+            .filter(|node| node.parent_id.is_none())
     }
 }
 
@@ -170,7 +170,7 @@ impl Document {
             py,
             self.primary()
                 .and_then(|(_, kind)| self.top_blocks(kind).next())
-                .map(|block| block.label),
+                .and_then(|node| node.label.clone()),
         )
     }
 
@@ -180,7 +180,7 @@ impl Document {
             py,
             self.primary()
                 .and_then(|(_, kind)| self.top_blocks(kind).last())
-                .map(|block| block.label),
+                .and_then(|node| node.label.clone()),
         )
     }
 
@@ -196,7 +196,8 @@ impl Document {
         let Some(last) = blocks.last() else {
             return 1.0;
         };
-        let value = (last.start - first.start) as f64
+        let start = |node: &StructureNode| self.structure.query_range(node).start;
+        let value = (start(last) - start(first)) as f64
             / utf16_len(self.structure.query_text()).max(1) as f64;
         (value * 10_000.0).round() / 10_000.0
     }
@@ -205,14 +206,15 @@ impl Document {
         let kind = parse_kind(kind)?;
         let coordinates = ScalarText::new(self.structure.query_text());
         self.top_blocks(kind)
-            .map(|block| {
+            .map(|node| {
+                let range = self.structure.query_range(node);
                 Ok((
-                    block.label.clone(),
-                    block.aliases.clone(),
-                    coordinates.scalar_at_utf16(block.start).ok_or_else(|| {
+                    node.label.clone().unwrap_or_default(),
+                    node.aliases.clone().unwrap_or_default(),
+                    coordinates.scalar_at_utf16(range.start).ok_or_else(|| {
                         PyRuntimeError::new_err("document block starts inside a Unicode character")
                     })?,
-                    coordinates.scalar_at_utf16(block.end).ok_or_else(|| {
+                    coordinates.scalar_at_utf16(range.end).ok_or_else(|| {
                         PyRuntimeError::new_err("document block ends inside a Unicode character")
                     })?,
                 ))
@@ -226,10 +228,11 @@ impl Document {
             .primary()
             .map(|(_, kind)| self.top_blocks(kind).collect::<Vec<_>>())
             .unwrap_or_default();
-        blocks.sort_by_key(|block| block.start);
+        blocks.sort_by_key(|node| self.structure.query_range(node).start);
         let mut segments = Vec::with_capacity(blocks.len() * 2 + 1);
         let mut cursor = 0;
-        for block in blocks {
+        for node in blocks {
+            let block = self.structure.query_range(node);
             if block.start > cursor {
                 segments.push((
                     "text".to_owned(),
@@ -239,9 +242,9 @@ impl Document {
                 ));
             }
             segments.push((
-                block.kind.name().to_owned(),
-                Some(block.label.clone()),
-                Some(origin_name(block.origin).to_owned()),
+                node.kind.name().to_owned(),
+                node.label.clone(),
+                Some(origin_name(node.source).to_owned()),
                 text_slice(&text, block.start, block.end)?,
             ));
             cursor = cursor.max(block.end);

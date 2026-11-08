@@ -176,13 +176,13 @@ fn case_edges(case: &Case) -> (Vec<Edge>, u64, u64) {
         require_report_start: case.dataset.eq_ignore_ascii_case("SCC"),
         printed_pages: Vec::new(),
     }).map(|structure| {
-        DocumentQuery::new().anchors(&structure, None)
-            .filter(|anchor| anchor.kind() == NodeKind::Paragraph && anchor.parent_label().is_none())
-            .filter_map(|anchor| {
-                let number = anchor.label().split(|character: char| !character.is_ascii_digit())
+        DocumentQuery::new().blocks(&structure, Some(NodeKind::Paragraph))
+            .filter(|node| node.parent_id.is_none())
+            .filter_map(|node| {
+                let number = node.label.as_deref()?.split(|character: char| !character.is_ascii_digit())
                     .find(|digits| !digits.is_empty())?.parse().ok().filter(|number| *number != 0)?;
-                let (start, end) = anchor.range();
-                Some((number, start, end))
+                let range = structure.query_range(node);
+                Some((number, range.start, range.end))
             }).collect()
     }).unwrap_or_default();
     // Each citation's start in characters and both ends in UTF-16 units, from its byte span, in one walk.

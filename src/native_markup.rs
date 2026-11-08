@@ -2099,6 +2099,8 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
     #[cfg(feature = "courtlistener")]
     if provider.is_courtlistener() {
         courtlistener::finish(&mut structure, rendered.note_references, &rendered.matched_role_starts, printed_notes, &heading_exclusions, &body_exclusions);
+        // (Its passes drop and re-parent nodes: the levels are the parents' as they now stand.)
+        legal_structure_model::write_levels(&mut structure.nodes).ok();
     }
     structure.refresh_revision().expect("Typed document structure is serializable");
     Ok(structure)

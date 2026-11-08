@@ -108,6 +108,12 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
     }
     DocumentStructure::project_scalar_parts(&coordinates, &mut nodes);
     drop(coordinates);
+    // A statute is addressed by its printed labels, each provision under the outermost its label's chain reaches; and
+    // every node's level is written once its parents stand.
+    if evidence.profile == DetectionProfile::Legislation {
+        legal_structure_model::legislation_outline(&mut nodes);
+    }
+    legal_structure_model::write_levels(&mut nodes).ok();
     let mut structure = evidence.structure;
     structure.profile = Some(evidence.profile);
     structure.nodes = nodes;

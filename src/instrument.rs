@@ -494,6 +494,8 @@ pub fn analyze_instrument(
     }
     drop(selected_coordinates);
     drop(text);
+    // (Its tables' rows and cells stand under them: the levels are written over every node.)
+    legal_structure_model::write_levels(&mut structure.nodes).ok();
     if let Some(original) = original_text {
         structure.text = original;
     }

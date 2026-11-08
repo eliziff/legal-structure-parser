@@ -82,7 +82,7 @@ impl DocumentQuery {
         let source = FragmentText::Document(self, document, &text, page_glues_labels);
         let mut ranges = selected.selected.into_iter()
             .take(if first_block_only { 1 } else { usize::MAX })
-            .flat_map(|block| block.block.ranges)
+            .flat_map(|passage| document.query_ranges(passage.node).into_owned())
             .map(|mut range| {
                 if kind == NodeKind::Paragraph {
                     range.start = (range.start + source.paragraph_marker_length(range.start)).min(range.end);
@@ -262,7 +262,7 @@ impl<'a> FragmentText<'a> {
             .iter()
             .filter_map(|node| {
                 // Marker offsets belong to source text, not a separate rendered projection.
-                if projected_kind(node) != Some(NodeKind::Paragraph)
+                if !queried_as(node, NodeKind::Paragraph)
                     || document.query_range(node) != node.range
                 {
                     return None;

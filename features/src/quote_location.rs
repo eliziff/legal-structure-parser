@@ -878,48 +878,45 @@ pub fn document_quote_blocks(
         }
         ancestors
     };
+    let input = |node: &legal_structure_model::StructureNode, kind: QuoteBlockKind, label: String| {
+        let range = document.query_range(node);
+        QuoteBlockInput { node_id: Some(node.id.clone()), ancestor_ids: ancestors(Some(node.id.as_str())), kind, label,
+            start: range.start, end: range.end, ranges: document.query_ranges(node).into_owned() }
+    };
+    // A number the document prints: its marker stands in the text.
+    let printed_number = |node: &legal_structure_model::StructureNode| node.marker_range.is_some_and(|range| range.start < range.end);
     let mut printed = Vec::new();
     if pdf {
-        printed = blocks.iter().filter_map(|block| {
-            let node = nodes.get(block.node_id.as_deref()?)?;
+        printed = blocks.iter().filter_map(|node| {
             // A paragraph's number is a locator only where the PDF prints it.
-            if node.kind != NodeKind::Paragraph || !node.marker_range.is_some_and(|range| range.start < range.end) { return None; }
+            if node.kind != NodeKind::Paragraph || !printed_number(node) { return None; }
             let number = parse_ordinal("paragraph", node.label.as_deref()?)?;
-            Some(QuoteBlockInput { node_id: block.node_id.clone(), ancestor_ids: ancestors(block.node_id.as_deref()),
-                kind: QuoteBlockKind::Paragraph, label: format!("par{number}"), start: block.start, end: block.end,
-                ranges: block.ranges.clone() })
+            Some(input(node, QuoteBlockKind::Paragraph, format!("par{number}")))
         }).collect::<Vec<_>>();
         printed.sort_by_key(|block| (block.start, block.end));
     }
-    let numbered_pages = pdf && blocks.iter().any(|block| block.kind == NodeKind::Page && !block.aliases.is_empty());
-    static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:paras?\.?|par|¶){JS_WHITESPACE_CLASS}*([0-9])")).unwrap());
-    static PAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:pages?|pp?\.?){JS_WHITESPACE_CLASS}*([0-9])")).unwrap());
-    static SECTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:sections?|ss?\.|sec){JS_WHITESPACE_CLASS}*([0-9])")).unwrap());
-    printed.extend(blocks.into_iter().filter_map(|block| {
-        let (kind, prefix) = match block.kind {
-            NodeKind::Paragraph if !pdf => (QuoteBlockKind::Paragraph, &*PARAGRAPH),
-            NodeKind::Page => (QuoteBlockKind::Page, &*PAGE),
-            NodeKind::Section => (QuoteBlockKind::Section, &*SECTION),
+    // A PDF prints its pages' numbers where a page holds the label it prints (`aliases`).
+    fn printed_page(node: &legal_structure_model::StructureNode) -> Option<&String> {
+        node.aliases.as_deref().and_then(<[String]>::first)
+    }
+    let numbered_pages = pdf && blocks.iter().any(|node| node.kind == NodeKind::Page && printed_page(node).is_some());
+    printed.extend(blocks.into_iter().filter_map(|node| {
+        let kind = match node.kind {
+            NodeKind::Paragraph | NodeKind::Prose if !pdf => QuoteBlockKind::Paragraph,
+            NodeKind::Page => QuoteBlockKind::Page,
+            NodeKind::Section => QuoteBlockKind::Section,
             _ => return None,
         };
         // A page is the number it prints, where the PDF prints them; a page printing none is no locator then.
-        let printed_page = kind == QuoteBlockKind::Page && numbered_pages;
-        if printed_page && block.aliases.is_empty() { return None; }
-        let normalized = if printed_page { block.aliases[0].as_str().into() } else { prefix.replace(js_trim(&block.label), "$1") };
-        let mut value = normalized.as_ref();
-        if value.starts_with('[') && value.ends_with(']') { value = &value[1..value.len()-1]; }
-        if kind == QuoteBlockKind::Section && value.strip_prefix("sec")
-            .and_then(|rest| rest.chars().next()).is_some_and(|c| c.is_ascii_uppercase()) {
-            value = &value[3..];
-        }
+        let value = if kind == QuoteBlockKind::Page && numbered_pages { printed_page(node)?.as_str() } else { js_trim(node.label.as_deref()?) };
+        let value = value.strip_prefix('[').and_then(|value| value.strip_suffix(']')).unwrap_or(value);
         let label = match kind {
             QuoteBlockKind::Paragraph => format!("par{value}"),
             QuoteBlockKind::Page if pdf && !numbered_pages => format!("PDF page {value}"),
             QuoteBlockKind::Page => format!("page {value}"),
-            QuoteBlockKind::Section => format!("sec{value}"),
+            QuoteBlockKind::Section => value.to_owned(),
         };
-        Some(QuoteBlockInput { ancestor_ids: ancestors(block.node_id.as_deref()), node_id: block.node_id,
-            kind, label, start: block.start, end: block.end, ranges: block.ranges })
+        Some(input(node, kind, label))
     }));
     printed
 }
