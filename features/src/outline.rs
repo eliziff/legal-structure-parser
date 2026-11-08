@@ -313,10 +313,7 @@ pub fn document_outline(
         .rendered_text
         .as_deref()
         .unwrap_or(&structure.text);
-    let paragraph = legal_structure::case_outline(text)
-        .ok()
-        .and_then(|outline| outline.into_iter().find(|entry| entry.kind == "paragraph"))
-        .map(|entry| entry.start);
+    let paragraph = legal_structure::case_paragraph_start(text);
     if paragraph.is_none() {
         // A judgment's section nodes are a misreading; an enactment's sections are its printed reading's.
         if let Some(page) = entries

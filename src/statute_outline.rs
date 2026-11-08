@@ -3,10 +3,7 @@
 //! its whole subtree, so a caller can lay the statute out or cut one provision out of it.
 
 use crate::analysis::citation_spans;
-use crate::{
-    provider_text_document_structure, EngineError, NodeKind, ProviderTextInput,
-    ProviderTextSourceKind,
-};
+use crate::{EngineError, NodeKind, ProviderTextInput, ProviderTextSourceKind, ScalarText};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -96,7 +93,7 @@ fn plain(text: &str) -> String {
 /// note on its own line before its provision), into its outline. `articles` reads a code whose
 /// provisions are articles (Quebec's).
 pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineEntry>, EngineError> {
-    let provider = provider_text_document_structure(ProviderTextInput::new("", ProviderTextSourceKind::Laws, text))?;
+    let provider = crate::provider_text::provider_text_reading(ProviderTextInput::new("", ProviderTextSourceKind::Laws, text))?;
     // Text run together, a page to a line (a PDF's page text), is read again with its lines
     // recovered where provisions open; the reading that finds more provisions is kept. The
     // recovery only breaks lines, so offsets into the text hold.
@@ -110,14 +107,7 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
         provider
     };
     let chars = text.chars().collect::<Vec<_>>();
-    // Each scalar offset's UTF-16 offset.
-    let mut utf16 = Vec::with_capacity(chars.len() + 1);
-    let mut at = 0;
-    for character in &chars {
-        utf16.push(at);
-        at += character.len_utf16();
-    }
-    utf16.push(at);
+    let coordinates = ScalarText::new(text);
     let slice = |start: usize, end: usize| chars[start.min(chars.len())..end.min(chars.len())].iter().collect::<String>();
     let mut lines = Vec::new();
     let (mut scalar, mut byte) = (0, 0);
@@ -152,6 +142,8 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
     let mut noted = std::collections::HashSet::new();
     for node in structure.nodes.iter().filter(|node| node.kind == NodeKind::Section) {
         let Some(label) = node.label.as_deref().and_then(|label| label.strip_prefix("sec")) else { continue };
+        // (The structure's ranges are UTF-16, the text's lines read in scalars.)
+        let Some(start) = coordinates.scalar_at_utf16(node.range.start) else { continue };
         // A label read twice ("2(a)@2") prints as its first reading.
         let label = label.split('@').collect::<String>();
         let (number, tokens) = label.split_once('(').map_or((label.as_str(), Vec::new()), |(number, rest)| {
@@ -162,13 +154,13 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
             Some(token) => (enumerated_kind(&tokens), format!("({token})")),
         };
         // A section, and a subsection, may carry a marginal note.
-        let marginal = (tokens.is_empty() || kind == "subsection").then(|| note(node.range.start)).flatten()
+        let marginal = (tokens.is_empty() || kind == "subsection").then(|| note(start)).flatten()
             .filter(|(start, _)| noted.insert(*start));
-        let heading_level = entries.iter().filter(|entry| entry.heading && entry.start <= node.range.start)
+        let heading_level = entries.iter().filter(|entry| entry.heading && entry.start <= start)
             .map(|entry| entry.level + 1).last().unwrap_or(0);
         entries.push(Entry {
-            start: marginal.as_ref().map_or(node.range.start, |(start, _)| *start),
-            content: node.range.start, end: chars.len(), kind, level: heading_level + tokens.len(),
+            start: marginal.as_ref().map_or(start, |(start, _)| *start),
+            content: start, end: chars.len(), kind, level: heading_level + tokens.len(),
             label: printed, title: marginal.map(|(_, title)| title), heading: false,
         });
     }
@@ -189,7 +181,7 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
         .collect::<Vec<_>>()
         .join(" ");
     let preamble = (!preamble.is_empty()).then(|| StatuteOutlineEntry { kind: "preamble", level: 0, label: String::new(),
-        title: None, text: preamble, start: 0, end: utf16[first] });
+        title: None, text: preamble, start: 0, end: coordinates.utf16(first) });
     Ok(preamble.into_iter().chain(entries.iter().enumerate().map(|(index, entry)| {
         // The entry's own text runs to the first entry under it.
         let own_end = entries.get(index + 1).filter(|next| next.start < entry.end).map_or(entry.end, |next| next.start);
@@ -202,7 +194,7 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
                 .strip_prefix(entry.label.as_str()))
             .unwrap_or(&own).trim_start_matches('.').trim().to_owned();
         StatuteOutlineEntry { kind: entry.kind, level: entry.level, label: entry.label.clone(), title: entry.title.clone(),
-            text: own, start: utf16[entry.start.min(chars.len())], end: utf16[entry.end.min(chars.len())] }
+            text: own, start: coordinates.utf16(entry.start.min(chars.len())), end: coordinates.utf16(entry.end.min(chars.len())) }
     })).collect())
 }
 

@@ -473,6 +473,25 @@ fn apply_provider_section_evidence(
 }
 
 pub fn provider_text_document_structure(
+    input: ProviderTextInput,
+) -> Result<DocumentStructure, EngineError> {
+    let source_kind = input.source_kind;
+    let mut structure = provider_text_reading(input)?;
+    match source_kind {
+        ProviderTextSourceKind::Cases => {
+            crate::case_outline::add_case_nodes(&mut structure);
+            structure.refresh_revision().expect("Typed document structure is serializable");
+        }
+        ProviderTextSourceKind::Laws => {
+            structure.cross_references = Some(crate::instrument::cross_reference_graph(&structure)?);
+        }
+    }
+    Ok(structure)
+}
+
+/// A provider's text as derive reads it: the provider's own sections and pages and what inference finds, without the
+/// nodes a case's outline adds or a statute's cross-references.
+pub(crate) fn provider_text_reading(
     mut input: ProviderTextInput,
 ) -> Result<DocumentStructure, EngineError> {
     // Scoped keys are user locators; complete maps retain provider labels such as "Schedule 2".
@@ -517,15 +536,7 @@ pub fn provider_text_document_structure(
     {
         apply_provider_section_evidence(&coordinates, &mut inferred, &evidence.nodes, map);
     }
-    let mut structure = crate::derive::derive(evidence, Some(inferred));
-    if input.source_kind == ProviderTextSourceKind::Cases {
-        crate::case_outline::add_case_nodes(&mut structure);
-        structure.refresh_revision().expect("Typed document structure is serializable");
-    }
-    if input.source_kind == ProviderTextSourceKind::Laws {
-        structure.cross_references = Some(crate::instrument::cross_reference_graph(&structure)?);
-    }
-    Ok(structure)
+    Ok(crate::derive::derive(evidence, Some(inferred)))
 }
 
 /// Windows-1252 punctuation a provider's text carries read as Latin-1 control characters ("\u{96}"
