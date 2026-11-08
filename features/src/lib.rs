@@ -37,7 +37,7 @@ pub use quote_location::{
     verbatim_repair, LocatedQuote, QuoteBlockInput, QuoteLocator, QuoteSource, QuoteComparison, QuoteLocation, QuoteToLocate,
 };
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
-pub use printed_statute::{statute_currency, PrintedLine, PrintedStatute, ProvisionPlacement};
+pub use printed_statute::statute_currency;
 #[cfg(feature = "quote-verification")]
 pub use quote_verification::*;
 pub use reading_order::{document_reading_order, ReadingOrderUnit};

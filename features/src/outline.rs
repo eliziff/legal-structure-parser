@@ -3,7 +3,6 @@
 use legal_structure::{
     Derivation, DocumentStructure, NodeKind, PrimaryRole, ScalarText, StructureNode,
 };
-use crate::PrintedStatute;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 
@@ -227,14 +226,11 @@ fn outline_entries(
     entries.into_iter().map(|(_, entry)| entry).collect()
 }
 
-/// The document's own outline: its headings and its top-level sections, in order. A PDF's
-/// numbered sections come from `printed`, the reading of its body as a statute, given only
-/// for legislation, and only where its sections each appear once, in order; a judgment's
+/// The document's own outline: its headings and its top-level sections, in order; a judgment's
 /// numbers are not sections.
 pub fn document_outline(
     structure: &DocumentStructure,
     pdf: bool,
-    printed: Option<&PrintedStatute>,
 ) -> Vec<OutlineEntry> {
     // Exact PDF source identity and established role and level facts select literal
     // projection. Other sources retain their existing markup view rules.
@@ -266,38 +262,6 @@ pub fn document_outline(
         })
         .collect::<Vec<_>>();
     entries.retain(|entry| entry.kind != "heading" || !explicit_headings.contains(&entry.start));
-    if let Some(instrument) = printed {
-        let sections = outline_entries(instrument.structure(), true, false)
-            .into_iter()
-            .filter(|entry| entry.kind == "section")
-            .collect::<Vec<_>>();
-        let number = |title: &str| {
-            title
-                .strip_prefix("s ")
-                .and_then(|rest| rest.split('.').next()?.parse::<u32>().ok())
-        };
-        let ordered = !sections.is_empty() && sections.windows(2).all(|pair| {
-            matches!((number(&pair[0].title), number(&pair[1].title)), (Some(a), Some(b)) if a < b
-                || a == b && pair[0].title < pair[1].title)
-        });
-        if ordered {
-            // A section opens where the PDF paragraph it starts in does.
-            entries.extend(sections.into_iter().filter_map(|entry| {
-                let node =
-                    &structure.nodes[instrument.parts(entry.start, entry.start + 1).next()?.0];
-                Some(OutlineEntry {
-                    start: own_start(node),
-                    level: if literal {
-                        node.level.unwrap_or(0)
-                    } else {
-                        entry.level
-                    },
-                    page_index: node.page_indexes.first().copied(),
-                    ..entry
-                })
-            }));
-        }
-    }
     entries.sort_by_key(|entry| entry.start);
     if literal {
         return entries;
