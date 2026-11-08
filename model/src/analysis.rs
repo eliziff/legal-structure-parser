@@ -36,25 +36,6 @@ pub trait StructureAnalysis: LayoutAnalysis {
         table_cells: &[AuthoritativeTableCell],
     ) -> Result<DocumentStructure, EngineError>;
 
-    /// Each unit's parent, in reading order, by the hierarchy rule the gold and every reader share: from its
-    /// region, its first line's text, its heading level (0 off headings), its body depth (0 where none) and
-    /// whether it starts a document.
-    fn assemble_parents(
-        &self,
-        regions: &[&str],
-        texts: &[String],
-        levels: &[usize],
-        depths: &[usize],
-        starts_document: &[bool],
-    ) -> Vec<Option<usize>>;
-
-    /// Whether the hierarchy orders units of `region` (notes, marginal notes, contents and furniture stand
-    /// outside it).
-    fn hierarchy_ranks(&self, region: &str) -> bool;
-
-    /// The numbering family a unit's text opens with, as the hierarchy rule reads it ("" for none).
-    fn numbering_family(&self, text: &str) -> String;
-
     /// Each paragraph number `document` labels, once, with the indexes of the nodes printing it (a parallel
     /// report's columns), the first in the text first: the paragraph every consumer's pinpoint addresses.
     fn paragraph_printings(&self, document: &DocumentStructure) -> Vec<(usize, Vec<usize>)>;

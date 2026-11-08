@@ -188,14 +188,18 @@ pub(super) fn heading_line(body: &str, set_apart: bool) -> bool {
 /// Sections numbered in the run of the paragraphs, title and text in one block with no markup: "II. The plea of estoppel is
 /// not well founded. The fact is ...". Roman numerals running on from block to block say what they are; each title is its
 /// block's first sentence.
-pub(super) fn enumerated_titles(layer: &mut OpinionLayer) {
+pub(super) fn enumerated_titles(structure: &mut DocumentStructure) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut headings = take(structure, Of::Headings);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     const TITLE_WORDS: usize = 16;
     static OPENING: OnceLock<Regex> = OnceLock::new();
     let opening = OPENING.get_or_init(|| Regex::new(r"^\s*([IVXLC]{1,6})\.\s+\p{Lu}").unwrap());
-    let coordinates = ScalarText::new(&layer.text);
+    let coordinates = ScalarText::new(&structure.text);
     let mut run = Vec::new();
     let mut next = None;
-    for (index, paragraph) in layer.paragraphs.iter().enumerate() {
+    for (index, paragraph) in paragraphs.iter().enumerate() {
         let Some(raw) = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end) else { continue };
         let Some(number) = opening.captures(raw).and_then(|capture| page_number(&capture[1])) else { continue };
         if next.is_none_or(|next| next == number) {
@@ -209,23 +213,31 @@ pub(super) fn enumerated_titles(layer: &mut OpinionLayer) {
         return;
     }
     for (index, length) in run {
-        let paragraph = &mut layer.paragraphs[index];
-        layer.headings.push(read_heading(paragraph.range.start, paragraph.range.start + length, "run-in"));
+        let paragraph = &mut paragraphs[index];
+        headings.push(read_heading(paragraph.range.start, paragraph.range.start + length, "run-in"));
         paragraph.range.start += length;
     }
+})();
+    put(structure, paragraphs);
+    put(structure, headings);
+    result
 }
 
 /// Bracketed lines of one form with no text between them are a list's items: a title has a section under it.
-pub(super) fn list_items(layer: &mut OpinionLayer) {
+pub(super) fn list_items(structure: &mut DocumentStructure) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut headings = take(structure, Of::Headings);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     // An outline numbers with a stop, "I." over "A."; a list with a bracket, "(a)", "d)", "6)".
     static ITEM: OnceLock<Regex> = OnceLock::new();
     let item = ITEM.get_or_init(|| Regex::new(r"^(\(?)([a-z]{1,4}|\d{1,2})\)").unwrap());
     let family = |text: &str| item.captures(text).map(|capture| (!capture[1].is_empty(), capture[2].starts_with(|c: char| c.is_ascii_digit())));
-    let mut listed = vec![false; layer.headings.len()];
-    for at in 1..layer.headings.len() {
-        let (before, heading) = (&layer.headings[at - 1], &layer.headings[at]);
-        let after = layer.paragraphs.partition_point(|paragraph| paragraph.range.start <= before.start);
-        let adjacent = layer.paragraphs.get(after).is_none_or(|paragraph| paragraph.range.start >= heading.range.start);
+    let mut listed = vec![false; headings.len()];
+    for at in 1..headings.len() {
+        let (before, heading) = (&headings[at - 1], &headings[at]);
+        let after = paragraphs.partition_point(|paragraph| paragraph.range.start <= before.start);
+        let adjacent = paragraphs.get(after).is_none_or(|paragraph| paragraph.range.start >= heading.range.start);
         if adjacent && family(&before.text).is_some() && family(&before.text) == family(&heading.display_value.as_deref().unwrap_or("")) {
             listed[at - 1] = true;
             listed[at] = true;
@@ -233,7 +245,7 @@ pub(super) fn list_items(layer: &mut OpinionLayer) {
     }
     let mut index = 0;
     let mut items = Vec::new();
-    layer.headings.retain(|heading| {
+    headings.retain(|heading| {
         index += 1;
         if listed[index - 1] {
             items.push(read_paragraph(heading.range.start, heading.range.end, None));
@@ -241,9 +253,13 @@ pub(super) fn list_items(layer: &mut OpinionLayer) {
         !listed[index - 1]
     });
     if !items.is_empty() {
-        layer.paragraphs.append(&mut items);
-        layer.paragraphs.sort_by_key(|paragraph| paragraph.range.start);
+        paragraphs.append(&mut items);
+        paragraphs.sort_by_key(|paragraph| paragraph.range.start);
     }
+})();
+    put(structure, paragraphs);
+    put(structure, headings);
+    result
 }
 
 /// The title of a list of notes.

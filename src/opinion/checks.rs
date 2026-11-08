@@ -1,18 +1,22 @@
-//! What a finished layer shows is wrong or missing, class by class, for a run over a corpus to report.
+//! What a finished structure shows is wrong or missing, class by class, for a run over a corpus to report.
 
 use super::*;
 
-/// Each failure the layer shows: its class, and the detail to read it by.
-pub fn layer_failures(layer: &OpinionLayer) -> Vec<(&'static str, String)> {
+/// Each failure the structure shows: its class, and the detail to read it by.
+pub fn failures(structure: &DocumentStructure) -> Vec<(&'static str, String)> {
+    let pages: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Pages.holds(node)).cloned().collect();
+    let paragraphs: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Paragraphs.holds(node)).cloned().collect();
+    let notes: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Notes.holds(node)).cloned().collect();
+    let parts: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Parts.holds(node)).cloned().collect();
     let mut failures = Vec::new();
-    let opinion_pages = || layer.pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray"));
+    let opinion_pages = || pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray"));
     if opinion_pages().next().is_none() {
         failures.push(("no pages", String::new()));
     }
-    if layer.paragraphs.is_empty() {
-        failures.push(("no paragraphs", format!("{} chars", layer.text.len())));
+    if paragraphs.is_empty() {
+        failures.push(("no paragraphs", format!("{} chars", structure.text.len())));
     }
-    if layer.outcomes.is_empty() && layer.paragraphs.len() > 3 && layer.document_kind == "court-opinion" {
+    if structure.opinion.as_ref().unwrap().outcomes.is_empty() && paragraphs.len() > 3 && structure.opinion.as_ref().unwrap().document_kind == "court-opinion" {
         failures.push(("no outcome", String::new()));
     }
     let mut series = HashMap::<&str, Vec<&str>>::new();
@@ -21,7 +25,7 @@ pub fn layer_failures(layer: &OpinionLayer) -> Vec<(&'static str, String)> {
     }
     for (name, labels) in &series {
         let printed = name.starts_with("reporter") || name.starts_with("html");
-        if printed && !name.contains('/') && !layer.page_series.iter().any(|known| known.series == *name) {
+        if printed && !name.contains('/') && !structure.opinion.as_ref().unwrap().page_series.iter().any(|known| known.series == *name) {
             failures.push(("numbering without a citation", format!("{name} {:?}", &labels[..labels.len().min(3)])));
         }
         let numbers = labels.iter().filter_map(|label| page_number(label)).collect::<Vec<_>>();
@@ -32,38 +36,38 @@ pub fn layer_failures(layer: &OpinionLayer) -> Vec<(&'static str, String)> {
             failures.push(("pages jump", format!("{name} {:?}", &labels[..labels.len().min(12)])));
         }
     }
-    let uncalled = layer.notes.iter().filter(|note| note.calls.is_empty() && !note.properties.contains_key("called_outside")).count();
+    let uncalled = notes.iter().filter(|note| note.calls.is_empty() && !note.properties.contains_key("called_outside")).count();
     if uncalled > 0 {
-        failures.push(("notes without a call", format!("{uncalled} of {}", layer.notes.len())));
+        failures.push(("notes without a call", format!("{uncalled} of {}", notes.len())));
     }
-    if !layer.unmatched_calls.is_empty() {
-        failures.push(("calls without a note", layer.unmatched_calls.iter().take(8).map(|call| call.label.as_str()).collect::<Vec<_>>().join(" ")));
+    if !structure.opinion.as_ref().unwrap().unmatched_calls.is_empty() {
+        failures.push(("calls without a note", structure.opinion.as_ref().unwrap().unmatched_calls.iter().take(8).map(|call| call.label.as_str()).collect::<Vec<_>>().join(" ")));
     }
-    // An opinion names its own notes: "footnote 7", "note 7, supra". One the layer does not hold was missed.
+    // An opinion names its own notes: "footnote 7", "note 7, supra". One the structure does not hold was missed.
     static NAMED: OnceLock<Regex> = OnceLock::new();
     let named = NAMED.get_or_init(|| Regex::new(r"(?i)\b(?:footnote|fn\.|n\.|note) (\d{1,3}),? (?:supra|infra|above|below)\b|\bsee (?:also )?(?:footnote|note) (\d{1,3})[,.;)]? *(?:$|\p{Lu})").unwrap());
-    let held = layer.notes.iter().filter_map(|note| plain_label(&note.printed_label()).parse::<u32>().ok()).collect::<HashSet<_>>();
-    let unheld = named.captures_iter(&layer.text).filter_map(|capture| capture.get(1).or_else(|| capture.get(2))?.as_str().parse::<u32>().ok()).filter(|number| !held.contains(number)).collect::<HashSet<_>>();
+    let held = notes.iter().filter_map(|note| plain_label(&note.printed_label()).parse::<u32>().ok()).collect::<HashSet<_>>();
+    let unheld = named.captures_iter(&structure.text).filter_map(|capture| capture.get(1).or_else(|| capture.get(2))?.as_str().parse::<u32>().ok()).filter(|number| !held.contains(number)).collect::<HashSet<_>>();
     if !unheld.is_empty() {
         let mut numbers = unheld.into_iter().collect::<Vec<_>>();
         numbers.sort_unstable();
         failures.push(("note named, not held", format!("{:?}", &numbers[..numbers.len().min(8)])));
     }
-    let mut labels = layer.notes.iter().filter_map(|note| note.printed_label().parse::<u32>().ok()).collect::<Vec<_>>();
+    let mut labels = notes.iter().filter_map(|note| note.printed_label().parse::<u32>().ok()).collect::<Vec<_>>();
     labels.sort_unstable();
     // A separate opinion carries on its case's numbering.
-    let separate = layer.parts.first().is_some_and(|part| part.display_value.as_deref().unwrap_or("").contains("concur") || part.display_value.as_deref().unwrap_or("").contains("dissent") || part.display_value.as_deref().unwrap_or("").contains("rehearing"));
+    let separate = parts.first().is_some_and(|part| part.display_value.as_deref().unwrap_or("").contains("concur") || part.display_value.as_deref().unwrap_or("").contains("dissent") || part.display_value.as_deref().unwrap_or("").contains("rehearing"));
     if !separate && labels.first().is_some_and(|first| *first > 1) {
         failures.push(("notes not from 1", format!("{:?}", &labels[..labels.len().min(8)])));
     }
     if labels.windows(2).any(|pair| pair[1] > pair[0] + 1) {
         failures.push(("note numbers skip", format!("{:?}", &labels[..labels.len().min(16)])));
     }
-    let numbers = layer.paragraphs.iter().filter_map(|paragraph| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()?.parse::<u32>().ok()).collect::<Vec<_>>();
+    let numbers = paragraphs.iter().filter_map(|paragraph| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()?.parse::<u32>().ok()).collect::<Vec<_>>();
     // An opinion names its own paragraphs too: "¶ 12, supra", "paragraph 12 above".
     static OWN_PARAGRAPH: OnceLock<Regex> = OnceLock::new();
     let own = OWN_PARAGRAPH.get_or_init(|| Regex::new(r"(?i)(?:¶¶?|\bparagraph) ?(\d{1,4}),? (?:supra|infra|above|below)\b").unwrap());
-    let unheld = own.captures_iter(&layer.text).filter_map(|capture| capture[1].parse::<u32>().ok()).filter(|number| !numbers.contains(number)).collect::<HashSet<_>>();
+    let unheld = own.captures_iter(&structure.text).filter_map(|capture| capture[1].parse::<u32>().ok()).filter(|number| !numbers.contains(number)).collect::<HashSet<_>>();
     if !unheld.is_empty() {
         let mut named = unheld.into_iter().collect::<Vec<_>>();
         named.sort_unstable();
@@ -82,24 +86,28 @@ pub fn layer_failures(layer: &OpinionLayer) -> Vec<(&'static str, String)> {
 
 /// A screen flags a record to read, not an error: each asks a question only reading settles, and a class is worth reading where
 /// it fills up. All cheap enough for every record of a run.
-pub fn layer_screens(layer: &OpinionLayer, record: &OpinionRecord) -> Vec<(&'static str, String)> {
+pub fn screens(structure: &DocumentStructure, record: &OpinionRecord) -> Vec<(&'static str, String)> {
+    let pages: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Pages.holds(node)).cloned().collect();
+    let paragraphs: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Paragraphs.holds(node)).cloned().collect();
+    let notes: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Notes.holds(node)).cloned().collect();
+    let headings: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Headings.holds(node)).cloned().collect();
     const SHORT_TITLE: usize = 60;
     const LONG_PARAGRAPH: usize = 12_000;
     const LONG_NOTE: usize = 8_000;
     const LONG_TITLE: usize = 200;
     let mut found = Vec::new();
-    let coordinates = ScalarText::new(&layer.text);
+    let coordinates = ScalarText::new(&structure.text);
     let quoted = |start: usize, end: usize| coordinates.slice_utf16(start..end).map(|text| squeezed(text).chars().take(120).collect::<String>()).unwrap_or_default();
     let printed = |start: usize, end: usize| coordinates.slice_utf16(start..end).map(trim_js).unwrap_or("");
-    let size = utf16_len(&layer.text);
+    let size = utf16_len(&structure.text);
 
     // Text no structure holds.
-    let mut held = layer.paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end))
-        .chain(layer.headings.iter().map(|heading| (heading.range.start, heading.range.end)))
-        .chain(layer.notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end))))
-        .chain(layer.front.iter().filter_map(|line| line.range).map(|range| (range.start, range.end)))
-        .chain(layer.headnotes.iter().filter_map(|headnote| headnote.range).map(|range| (range.start, range.end)))
-        .chain(layer.tables.iter().map(|table| (table.start, table.end)))
+    let mut held = paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end))
+        .chain(headings.iter().map(|heading| (heading.range.start, heading.range.end)))
+        .chain(notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end))))
+        .chain(structure.opinion.as_ref().unwrap().front.iter().filter_map(|line| line.range).map(|range| (range.start, range.end)))
+        .chain(structure.opinion.as_ref().unwrap().headnotes.iter().filter_map(|headnote| headnote.range).map(|range| (range.start, range.end)))
+        .chain(structure.opinion.as_ref().unwrap().tables.iter().map(|table| (table.start, table.end)))
         .collect::<Vec<_>>();
     held.sort_unstable();
     let (mut reached, mut loose, mut widest) = (0, 0, (0, 0));
@@ -118,16 +126,16 @@ pub fn layer_screens(layer: &OpinionLayer, record: &OpinionRecord) -> Vec<(&'sta
     // Text the reading lost or left dirty.
     static TAGS: OnceLock<Regex> = OnceLock::new();
     let tags = TAGS.get_or_init(|| Regex::new(r"<[^>]*>").unwrap());
-    if let Some((_, source)) = record.renditions.iter().find(|(name, _)| *name == layer.rendition) {
+    if let Some((_, source)) = record.renditions.iter().find(|(name, _)| *name == structure.opinion.as_ref().unwrap().rendition) {
         let words = |text: &str| text.split_whitespace().count();
-        let (ours, theirs) = (words(&layer.text), words(&tags.replace_all(source, " ")));
+        let (ours, theirs) = (words(&structure.text), words(&tags.replace_all(source, " ")));
         if theirs > 300 && ours * 10 < theirs * 7 {
             found.push(("screen: text lost", format!("{ours} words of {theirs}")));
         }
     }
     static DIRT: OnceLock<Regex> = OnceLock::new();
     let dirt = DIRT.get_or_init(|| Regex::new(r"&(?:amp|nbsp|lt|gt|quot|#\d{2,5});|</?[a-z]{1,8}(?: [^>]{0,40})?>|â€|Â |Ã[\x{80}-\x{bf}]|[\x{1}-\x{8}\x{e}-\x{1f}]").unwrap());
-    let marks = dirt.find_iter(&layer.text).take(4).map(|found| found.as_str().to_owned()).collect::<Vec<_>>();
+    let marks = dirt.find_iter(&structure.text).take(4).map(|found| found.as_str().to_owned()).collect::<Vec<_>>();
     if marks.len() >= 4 {
         found.push(("screen: markup or bad bytes in text", marks.join(" ")));
     }
@@ -135,27 +143,27 @@ pub fn layer_screens(layer: &OpinionLayer, record: &OpinionRecord) -> Vec<(&'sta
     // Pages.
     static LEFT: OnceLock<Regex> = OnceLock::new();
     let left = LEFT.get_or_init(|| Regex::new(r"[a-z,;] \*\d{2,5} [a-zA-Z]|\[\*+ ?\d{1,5}\]|\[Page \d{1,5}\]|(?m)^\s*Page \d{1,4} of \d{1,4}\s*$").unwrap());
-    let left_marks = left.find_iter(&layer.text).take(3).map(|found| found.as_str().to_owned()).collect::<Vec<_>>();
+    let left_marks = left.find_iter(&structure.text).take(3).map(|found| found.as_str().to_owned()).collect::<Vec<_>>();
     if left_marks.len() >= 3 {
         found.push(("screen: page marks left in text", left_marks.join(" | ")));
     }
-    let longest_run = layer.pages.iter().filter(|page| !page.properties.contains_key("in_note")).fold(HashMap::<&str, usize>::new(), |mut runs, page| { *runs.entry(&page.series).or_default() += 1; runs }).into_values().max().unwrap_or(0);
+    let longest_run = pages.iter().filter(|page| !page.properties.contains_key("in_note")).fold(HashMap::<&str, usize>::new(), |mut runs, page| { *runs.entry(&page.series).or_default() += 1; runs }).into_values().max().unwrap_or(0);
     if let Some(count) = record.page_count.filter(|count| *count >= 5 && longest_run * 2 < *count as usize) {
         found.push(("screen: far fewer pages than the record counts", format!("{longest_run} of {count}")));
     }
     let printed_report = record.citations.iter().any(|citation| matches!(citation.kind.as_str(), "1" | "2" | "3" | "4" | "5"));
-    if printed_report && size > 12_000 && !layer.pages.iter().any(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("citation")) {
+    if printed_report && size > 12_000 && !pages.iter().any(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("citation")) {
         found.push(("screen: reported opinion, no page marks", format!("{size} long")));
     }
 
     // Paragraphs.
-    if size > 20_000 && layer.paragraphs.len() <= 3 {
-        found.push(("screen: long text, few paragraphs", format!("{} in {size}", layer.paragraphs.len())));
+    if size > 20_000 && paragraphs.len() <= 3 {
+        found.push(("screen: long text, few paragraphs", format!("{} in {size}", paragraphs.len())));
     }
-    if let Some(paragraph) = layer.paragraphs.iter().find(|paragraph| !(paragraph.kind == NodeKind::Quote) && paragraph.range.end - paragraph.range.start > LONG_PARAGRAPH) {
+    if let Some(paragraph) = paragraphs.iter().find(|paragraph| !(paragraph.kind == NodeKind::Quote) && paragraph.range.end - paragraph.range.start > LONG_PARAGRAPH) {
         found.push(("screen: very long paragraph", format!("{}: {}", paragraph.range.end - paragraph.range.start, quoted(paragraph.range.start, paragraph.range.end))));
     }
-    let body = layer.paragraphs.iter().filter(|paragraph| !(paragraph.kind == NodeKind::Quote)).collect::<Vec<_>>();
+    let body = paragraphs.iter().filter(|paragraph| !(paragraph.kind == NodeKind::Quote)).collect::<Vec<_>>();
     let low = body.iter().filter(|paragraph| !paragraph.properties.contains_key("continues") && printed(paragraph.range.start, paragraph.range.end).starts_with(char::is_lowercase)).collect::<Vec<_>>();
     if low.len() >= 8 && low.len() * 6 >= body.len() {
         found.push(("screen: paragraphs open lower case", format!("{} of {}: {}", low.len(), body.len(), quoted(low[0].start, low[0].end))));
@@ -166,24 +174,24 @@ pub fn layer_screens(layer: &OpinionLayer, record: &OpinionRecord) -> Vec<(&'sta
     }
     static MARKED: OnceLock<Regex> = OnceLock::new();
     let marked = MARKED.get_or_init(|| Regex::new(r"(?m)^[ \t]*(?:¶ ?\d{1,4}|\[¶ ?\d{1,4}\.?\]|\{¶ ?\d{1,4}\}) +\p{Lu}").unwrap());
-    let opens = layer.paragraphs.iter().map(|paragraph| paragraph.range.start).collect::<HashSet<_>>();
-    let buried = marked.find_iter(&layer.text).filter(|mark| !opens.contains(&utf16_len(&layer.text[..mark.start()])) && !opens.contains(&utf16_len(&layer.text[..mark.start() + (mark.len() - mark.as_str().trim_start().len())]))).take(3).map(|mark| mark.as_str().trim().to_owned()).collect::<Vec<_>>();
+    let opens = paragraphs.iter().map(|paragraph| paragraph.range.start).collect::<HashSet<_>>();
+    let buried = marked.find_iter(&structure.text).filter(|mark| !opens.contains(&utf16_len(&structure.text[..mark.start()])) && !opens.contains(&utf16_len(&structure.text[..mark.start() + (mark.len() - mark.as_str().trim_start().len())]))).take(3).map(|mark| mark.as_str().trim().to_owned()).collect::<Vec<_>>();
     if buried.len() >= 3 {
         found.push(("screen: paragraph marks no paragraph opens on", buried.join(" | ")));
     }
 
     // Notes.
-    if let Some(note) = layer.notes.iter().find(|note| note.ranges.iter().map(|range| range.end - range.start).sum::<usize>() > LONG_NOTE) {
+    if let Some(note) = notes.iter().find(|note| note.ranges.iter().map(|range| range.end - range.start).sum::<usize>() > LONG_NOTE) {
         found.push(("screen: very long note", format!("note {}: {}", note.printed_label(), quoted(note.range.start, note.range.end))));
     }
-    let in_notes = layer.notes.iter().flat_map(|note| note.ranges.iter()).map(|range| range.end - range.start).sum::<usize>();
+    let in_notes = notes.iter().flat_map(|note| note.ranges.iter()).map(|range| range.end - range.start).sum::<usize>();
     if size > 5_000 && in_notes * 2 > size {
         found.push(("screen: notes hold most of the text", format!("{in_notes} of {size}")));
     }
-    if layer.notes.is_empty() {
+    if notes.is_empty() {
         static CALL: OnceLock<Regex> = OnceLock::new();
         let call = CALL.get_or_init(|| Regex::new(r#"[a-z.,;)”"](\d{1,2})\s+\p{Lu}"#).unwrap());
-        let calls = call.captures_iter(&layer.text).filter_map(|capture| capture[1].parse::<u32>().ok()).collect::<HashSet<_>>();
+        let calls = call.captures_iter(&structure.text).filter_map(|capture| capture[1].parse::<u32>().ok()).collect::<HashSet<_>>();
         if (1..=4).all(|number| calls.contains(&number)) {
             found.push(("screen: calls in the text, no notes", format!("{} numbers", calls.len())));
         }
@@ -191,7 +199,7 @@ pub fn layer_screens(layer: &OpinionLayer, record: &OpinionRecord) -> Vec<(&'sta
     static NEXT: OnceLock<Regex> = OnceLock::new();
     // A closed "2." is more often a list the note quotes.
     let next = NEXT.get_or_init(|| Regex::new(r"(?m)^[ \t]*(\d{1,3}) +\p{Lu}").unwrap());
-    let swallowed = layer.notes.iter().filter(|note| note.ranges.len() == 1).filter_map(|note| {
+    let swallowed = notes.iter().filter(|note| note.ranges.len() == 1).filter_map(|note| {
         let number = note.printed_label().parse::<u32>().ok()?;
         let body = coordinates.slice_utf16(note.range.start..note.range.end)?;
         next.captures_iter(body).skip_while(|capture| capture.get(0).is_some_and(|whole| whole.start() == 0)).any(|capture| capture[1].parse::<u32>().is_ok_and(|inner| inner == number + 1)).then_some(number)
@@ -201,12 +209,12 @@ pub fn layer_screens(layer: &OpinionLayer, record: &OpinionRecord) -> Vec<(&'sta
     }
 
     // Calls that climb past the last note held: the notes after it are missing.
-    if let Some(last) = layer.notes.iter().filter_map(|note| note.printed_label().parse::<u32>().ok()).max() {
+    if let Some(last) = notes.iter().filter_map(|note| note.printed_label().parse::<u32>().ok()).max() {
         static TIGHT: OnceLock<Regex> = OnceLock::new();
         let tight = TIGHT.get_or_init(|| Regex::new(r#"[a-z)”"][.,;]?["”]?(\d{1,3})\s+\p{Lu}"#).unwrap());
-        let outside = |at: usize| !layer.notes.iter().flat_map(|note| note.ranges.iter()).any(|range| range.start <= at && at < range.end);
-        let mut above = tight.captures_iter(&layer.text).filter_map(|capture| Some((capture.get(1)?.start(), capture[1].parse::<u32>().ok()?))).filter(|(_, number)| *number > last && *number <= last + 12)
-            .filter(|(at, _)| outside(utf16_len(&layer.text[..*at]))).map(|(_, number)| number).collect::<Vec<_>>();
+        let outside = |at: usize| !notes.iter().flat_map(|note| note.ranges.iter()).any(|range| range.start <= at && at < range.end);
+        let mut above = tight.captures_iter(&structure.text).filter_map(|capture| Some((capture.get(1)?.start(), capture[1].parse::<u32>().ok()?))).filter(|(_, number)| *number > last && *number <= last + 12)
+            .filter(|(at, _)| outside(utf16_len(&structure.text[..*at]))).map(|(_, number)| number).collect::<Vec<_>>();
         above.sort_unstable();
         above.dedup();
         if above.len() >= 3 && above[..3] == [last + 1, last + 2, last + 3] {
@@ -224,47 +232,47 @@ pub fn layer_screens(layer: &OpinionLayer, record: &OpinionRecord) -> Vec<(&'sta
         }
     }
     // Paragraphs with no pin where the text has pages.
-    let paged = layer.pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray")).count();
-    let unpinned = layer.paragraphs.iter().filter(|paragraph| paragraph.pins.is_empty()).count();
-    if paged >= 2 && unpinned * 5 > layer.paragraphs.len() {
-        found.push(("screen: paragraphs without a pin", format!("{unpinned} of {}", layer.paragraphs.len())));
+    let paged = pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray")).count();
+    let unpinned = paragraphs.iter().filter(|paragraph| paragraph.pins.is_empty()).count();
+    if paged >= 2 && unpinned * 5 > paragraphs.len() {
+        found.push(("screen: paragraphs without a pin", format!("{unpinned} of {}", paragraphs.len())));
     }
 
     // Headings.
     static ROMAN: OnceLock<Regex> = OnceLock::new();
     let roman = ROMAN.get_or_init(|| Regex::new(r"(?m)^[ \t]*(I|II|III|IV|V|VI)\.?(?:[ \t]+\p{Lu}[\p{Lu}\p{Ll} ,'’-]{3,60})?[ \t]*$").unwrap());
-    let titles = layer.headings.iter().map(|heading| (heading.range.start, heading.range.end)).collect::<Vec<_>>();
-    let bare_sections = roman.find_iter(&layer.text).filter(|line| { let at = utf16_len(&layer.text[..line.start() + (line.len() - line.as_str().trim_start().len())]); !titles.iter().any(|(start, end)| *start <= at + 1 && at < *end) }).take(3).map(|line| line.as_str().trim().to_owned()).collect::<Vec<_>>();
+    let titles = headings.iter().map(|heading| (heading.range.start, heading.range.end)).collect::<Vec<_>>();
+    let bare_sections = roman.find_iter(&structure.text).filter(|line| { let at = utf16_len(&structure.text[..line.start() + (line.len() - line.as_str().trim_start().len())]); !titles.iter().any(|(start, end)| *start <= at + 1 && at < *end) }).take(3).map(|line| line.as_str().trim().to_owned()).collect::<Vec<_>>();
     if bare_sections.len() >= 2 {
         found.push(("screen: sections not held as headings", bare_sections.join(" | ")));
     }
-    if let Some(heading) = layer.headings.iter().find(|heading| heading.display_value.as_deref().unwrap_or("").chars().count() > LONG_TITLE || (heading.display_value.as_deref().unwrap_or("").split_whitespace().count() >= 15 && text::ended_sentence(&heading.display_value.as_deref().unwrap_or("")) && heading.grammar.as_deref() != Some("other-rendition"))) {
+    if let Some(heading) = headings.iter().find(|heading| heading.display_value.as_deref().unwrap_or("").chars().count() > LONG_TITLE || (heading.display_value.as_deref().unwrap_or("").split_whitespace().count() >= 15 && text::ended_sentence(&heading.display_value.as_deref().unwrap_or("")) && heading.grammar.as_deref() != Some("other-rendition"))) {
         found.push(("screen: heading reads as a sentence", heading.display_value.as_deref().unwrap_or("").chars().take(120).collect()));
     }
     // "a. Background" is an outline's letter.
     let lettered = |title: &str| { let mut letters = title.chars(); letters.next().is_some() && matches!(letters.next(), Some('.' | ')')) };
-    if let Some(heading) = layer.headings.iter().find(|heading| heading.display_value.as_deref().unwrap_or("").starts_with(char::is_lowercase) && !lettered(&heading.display_value.as_deref().unwrap_or(""))) {
+    if let Some(heading) = headings.iter().find(|heading| heading.display_value.as_deref().unwrap_or("").starts_with(char::is_lowercase) && !lettered(&heading.display_value.as_deref().unwrap_or(""))) {
         found.push(("screen: heading opens lower case", heading.display_value.as_deref().unwrap_or("").chars().take(120).collect()));
     }
-    if layer.headings.len() >= 12 && layer.headings.len() * 2 > layer.paragraphs.len() {
-        found.push(("screen: nearly as many headings as paragraphs", format!("{} and {}", layer.headings.len(), layer.paragraphs.len())));
+    if headings.len() >= 12 && headings.len() * 2 > paragraphs.len() {
+        found.push(("screen: nearly as many headings as paragraphs", format!("{} and {}", headings.len(), paragraphs.len())));
     }
     static LOOSE_TITLE: OnceLock<Regex> = OnceLock::new();
     let loose_title = LOOSE_TITLE.get_or_init(|| Regex::new(r"^(?:[IVX]{1,6}\.?|[A-Z]\.|[A-Z][A-Z ,'’&-]{5,})$").unwrap());
-    let untitled = layer.paragraphs.iter().filter(|paragraph| paragraph.label.is_none() && paragraph.range.end - paragraph.range.start < SHORT_TITLE && loose_title.is_match(printed(paragraph.range.start, paragraph.range.end))).collect::<Vec<_>>();
+    let untitled = paragraphs.iter().filter(|paragraph| paragraph.label.is_none() && paragraph.range.end - paragraph.range.start < SHORT_TITLE && loose_title.is_match(printed(paragraph.range.start, paragraph.range.end))).collect::<Vec<_>>();
     if untitled.len() >= 2 {
         found.push(("screen: title left as a paragraph", untitled.iter().take(3).map(|paragraph| printed(paragraph.range.start, paragraph.range.end).to_owned()).collect::<Vec<_>>().join(" | ")));
     }
 
     // Headnotes.
-    if layer.headnotes.is_empty() {
+    if structure.opinion.as_ref().unwrap().headnotes.is_empty() {
         if let Some((name, _)) = record.cluster.iter().find(|(name, value)| matches!(name.as_str(), "syllabus" | "headnotes" | "summary") && value.trim().len() > 40) {
-            found.push(("screen: the cluster has a headnote, the layer none", name.clone()));
+            found.push(("screen: the cluster has a headnote, the structure none", name.clone()));
         }
         static TITLE: OnceLock<Regex> = OnceLock::new();
         let title = TITLE.get_or_init(|| Regex::new(r"(?m)^[ \t]*(?:SYLLABUS|Syllabus|HEADNOTES?|Headnotes?|SYNOPSIS|Synopsis)[ \t.:]*$").unwrap());
-        if title.is_match(&layer.text) {
-            found.push(("screen: a headnote title, the layer none", String::new()));
+        if title.is_match(&structure.text) {
+            found.push(("screen: a headnote title, the structure none", String::new()));
         }
     }
     found

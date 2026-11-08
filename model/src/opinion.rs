@@ -3,6 +3,7 @@
 //! the structure's text. The structure's nodes hold its pages, paragraphs, notes, headings and parts.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use crate::ScalarRange;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -47,9 +48,34 @@ pub struct OpinionReading {
     /// Renditions of this record that hold another opinion's text, and were not read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub other_opinion: Vec<String>,
-    /// The parse's own measures and self-checks, for the census: no reading of the opinion.
-    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
-    pub census: serde_json::Value,
+    /// Other renditions' page marks against these pages, by how the page was found: at its place, a page off, further.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub page_witness: BTreeMap<String, [usize; 3]>,
+    /// Notes another text of the case prints, against this reading's before they were supplied: held and called, held with
+    /// no call, not held.
+    #[serde(default)]
+    pub note_witness: [usize; 3],
+    /// Titles another rendition marks as headings: held here as headings, in this text but no heading, not in this text.
+    #[serde(default)]
+    pub heading_witness: [usize; 3],
+    /// Paragraphs other renditions open, against ours: opened alike, inside a paragraph of ours, words not in our text; and
+    /// paragraphs of ours opening where the others run on. Only with `witness`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub paragraph_witness: BTreeMap<String, [usize; 4]>,
+    /// A few of those run together and those split apart, by their opening words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paragraphs_run_on: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paragraphs_split: Vec<String>,
+    /// What other renditions offer against the finished reading, by structure: offered, not held. Only with `witness`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub union_test: BTreeMap<String, [usize; 2]>,
+    /// A few of those not held, to read: "page 412", "text the words it opens on".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub union_samples: Vec<String>,
+    /// The titles other renditions mark that no heading here holds, each as its words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub titles_not_held: Vec<String>,
 }
 
 /// One headnote, syllabus point or summary paragraph. Its place is in the text where the opinion carries it; the

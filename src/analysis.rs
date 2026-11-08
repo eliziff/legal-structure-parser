@@ -48,9 +48,6 @@ impl LayoutAnalysis for EngineAnalysis {
         crate::layout_cues::heading_text_plausible(text)
     }
 
-    fn styled_heading_text_plausible(&self, text: &str) -> bool {
-        crate::layout_cues::styled_heading_text_plausible(text)
-    }
     fn has_citation_cue(&self, text: &str) -> bool {
         cues::layout_has_citation_cue(text)
     }
@@ -59,24 +56,12 @@ impl LayoutAnalysis for EngineAnalysis {
         cues::layout_has_citation_signal(text)
     }
 
-    fn is_citation_continuation(&self, text: &str) -> bool {
-        cues::layout_is_citation_continuation(text)
-    }
-
     fn is_citation_shaped_tail(&self, text: &str) -> bool {
         cues::is_citation_shaped_tail(text)
     }
 
-    fn is_counter_noun(&self, word: &str) -> bool {
-        cues::is_counter_noun(word)
-    }
-
     fn crossref_short_form(&self, text: &str, byte_start: usize) -> String {
         cues::crossref_short_form(text, byte_start)
-    }
-
-    fn reporter_abbreviation_regex(&self, abbreviation: &str) -> String {
-        cues::reporter_abbreviation_regex(abbreviation)
     }
 
     fn pair_footnotes(
@@ -172,25 +157,6 @@ impl StructureAnalysis for EngineAnalysis {
         table_cells: &[AuthoritativeTableCell],
     ) -> Result<DocumentStructure, EngineError> {
         crate::analyze_docx(document_id, paragraphs, table_cells)
-    }
-
-    fn assemble_parents(
-        &self,
-        regions: &[&str],
-        texts: &[String],
-        levels: &[usize],
-        depths: &[usize],
-        starts_document: &[bool],
-    ) -> Vec<Option<usize>> {
-        crate::hierarchy::assemble(regions, texts, levels, depths, starts_document)
-    }
-
-    fn hierarchy_ranks(&self, region: &str) -> bool {
-        crate::hierarchy::ranked(region)
-    }
-
-    fn numbering_family(&self, text: &str) -> String {
-        crate::hierarchy::numbering(text, None)
     }
 
     fn paragraph_printings(&self, document: &DocumentStructure) -> Vec<(usize, Vec<usize>)> {

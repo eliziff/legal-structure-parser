@@ -59,39 +59,43 @@ pub(super) fn classed_front(structure: &DocumentStructure, coordinates: &ScalarT
 /// The blocks ahead of the opinion's first sentence are its head: a court, a docket, counsel, a date, a title. A block reads as
 /// a sentence if it is long, or its words run lower-case; a line that says what it is keeps that role, and a court or a party
 /// named in running words is the opinion speaking.
-pub(super) fn head_lines(layer: &mut OpinionLayer) {
+pub(super) fn head_lines(structure: &mut DocumentStructure) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut headings = take(structure, Of::Headings);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     const SENTENCE_WORDS: usize = 14;
     // How far down a byline can stand and still close a head.
     const HEAD_BLOCKS: usize = 14;
     const HEAD_WORDS: usize = 300;
-    let coordinates = ScalarText::new(&layer.text);
+    let coordinates = ScalarText::new(&structure.text);
     static TITLE: OnceLock<Regex> = OnceLock::new();
     let title = TITLE.get_or_init(|| Regex::new(r"(?i)^(?:entry )?(?:opinion|memorandum|order)\b.{0,30}$").unwrap());
     static NOTICE: OnceLock<Regex> = OnceLock::new();
     let notice = NOTICE.get_or_init(|| Regex::new(r"(?i)^(?:(?:this (?:opinion|decision|order)|the slip opinion|notice:?)\b.*\b(?:revision|precedent|publication|published|version|binding)\b|published by\b)").unwrap());
     let section = |heading: &StructureNode| enumerator_end(&heading.display_value.as_deref().unwrap_or("")).is_some() || title_line(&heading.display_value.as_deref().unwrap_or("")) || heading.display_value.as_deref().unwrap_or("").starts_with(|c: char| c.is_lowercase());
-    let first_heading = layer.headings.iter().filter(|heading| section(heading) && !title.is_match(&heading.display_value.as_deref().unwrap_or(""))).map(|heading| heading.range.start).min().unwrap_or(usize::MAX);
+    let first_heading = headings.iter().filter(|heading| section(heading) && !title.is_match(&heading.display_value.as_deref().unwrap_or(""))).map(|heading| heading.range.start).min().unwrap_or(usize::MAX);
     static FOR_PARTY: OnceLock<Regex> = OnceLock::new();
     let for_party = FOR_PARTY.get_or_init(|| Regex::new(r"(?i)\bfor (?:the )?[\p{L}-]+(?: [\p{L}-]+){0,3}[.,]?$").unwrap());
     // A byline near the top closes the head, whatever stands above it: a court's summary, counsel run into one block.
     let mut above = 0;
-    let byline = layer.paragraphs.iter().take(HEAD_BLOCKS).position(|paragraph| {
+    let byline = paragraphs.iter().take(HEAD_BLOCKS).position(|paragraph| {
         let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(squeezed).unwrap_or_default();
         above += printed.split_whitespace().count();
         let lower = printed.to_lowercase();
         (printed.len() <= 60 || lower.contains("delivered the opinion")) && front_role(&printed) == Some("author") && !lower.contains("concur") && !lower.contains("dissent")
-    }).filter(|at| *at > 0 && above <= HEAD_WORDS && layer.paragraphs[..*at].iter().all(|paragraph| {
+    }).filter(|at| *at > 0 && above <= HEAD_WORDS && paragraphs[..*at].iter().all(|paragraph| {
         let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map_or("", trim_js);
         paragraph.label.is_none() && !printed.starts_with("We ") && !printed.starts_with("I ")
     }));
     let mut lines = Vec::new();
-    for (index, paragraph) in layer.paragraphs.iter().enumerate().take_while(|(_, paragraph)| paragraph.label.is_none() && (!(paragraph.kind == NodeKind::Quote) || layer.rendition == "plain_text.txt") && paragraph.range.start < first_heading) {
+    for (index, paragraph) in paragraphs.iter().enumerate().take_while(|(_, paragraph)| paragraph.label.is_none() && (!(paragraph.kind == NodeKind::Quote) || structure.opinion.as_mut().unwrap().rendition == "plain_text.txt") && paragraph.range.start < first_heading) {
         let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(squeezed).unwrap_or_default();
         if byline.is_some_and(|at| index <= at) {
             lines.push(FrontLine { role: front_role(&printed).unwrap_or("cover").to_owned(), text: printed, range: Some(ScalarRange { start: paragraph.range.start, end: paragraph.range.end }) });
             continue;
         }
-        let next = layer.paragraphs.get(index + 1).and_then(|next| coordinates.slice_utf16(next.start..next.end)).map_or("", trim_js);
+        let next = paragraphs.get(index + 1).and_then(|next| coordinates.slice_utf16(next.start..next.end)).map_or("", trim_js);
         if next.starts_with(char::is_lowercase) {
             break;
         }
@@ -106,22 +110,31 @@ pub(super) fn head_lines(layer: &mut OpinionLayer) {
         lines.push(FrontLine { role: role.unwrap_or("cover").to_owned(), text: printed, range: Some(ScalarRange { start: paragraph.range.start, end: paragraph.range.end }) });
     }
     // A record of nothing else has no head: those lines are its text.
-    if lines.len() < layer.paragraphs.len() {
-        layer.paragraphs.drain(..lines.len());
+    if lines.len() < paragraphs.len() {
+        paragraphs.drain(..lines.len());
         let none_taken = lines.is_empty();
-        let head_end = layer.paragraphs.first().map_or(0, |first| first.start);
-        layer.front.extend(lines);
-        let (head, headings): (Vec<_>, Vec<_>) = std::mem::take(&mut layer.headings).into_iter().partition(|heading| heading.range.start < head_end && !section(heading) && !title.is_match(&heading.display_value.as_deref().unwrap_or("")) && (!none_taken || front_role(&heading.display_value.as_deref().unwrap_or("")).is_some() || heading.display_value.as_deref().unwrap_or("").contains(|c: char| c.is_ascii_digit())));
-        layer.headings = headings;
-        layer.front.extend(head.into_iter().map(|heading| FrontLine {
+        let head_end = paragraphs.first().map_or(0, |first| first.start);
+        structure.opinion.as_mut().unwrap().front.extend(lines);
+        let (head, headings): (Vec<_>, Vec<_>) = std::mem::take(&mut headings).into_iter().partition(|heading| heading.range.start < head_end && !section(heading) && !title.is_match(&heading.display_value.as_deref().unwrap_or("")) && (!none_taken || front_role(&heading.display_value.as_deref().unwrap_or("")).is_some() || heading.display_value.as_deref().unwrap_or("").contains(|c: char| c.is_ascii_digit())));
+        headings = headings;
+        structure.opinion.as_mut().unwrap().front.extend(head.into_iter().map(|heading| FrontLine {
             role: front_role(&heading.display_value.as_deref().unwrap_or("")).unwrap_or("cover").to_owned(), range: Some(ScalarRange { start: heading.range.start, end: heading.range.end }), text: heading.display_value.as_deref().unwrap_or(""),
         }));
     }
+})();
+    put(structure, paragraphs);
+    put(structure, headings);
+    result
 }
 
 /// What the reporter added among the paragraphs: "NOTE.—", "Held:", a bracketed statement of the case over the opinion;
 /// and the opinion's last words, its disposition and signing.
-pub(super) fn reporter_matter(layer: &mut OpinionLayer) {
+pub(super) fn reporter_matter(structure: &mut DocumentStructure) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut notes = take(structure, Of::Notes);
+    let mut headings = take(structure, Of::Headings);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     static NOTE: OnceLock<Regex> = OnceLock::new();
     static HELD: OnceLock<Regex> = OnceLock::new();
     static SIGNED: OnceLock<Regex> = OnceLock::new();
@@ -141,22 +154,22 @@ pub(super) fn reporter_matter(layer: &mut OpinionLayer) {
     let papers = PAPERS.get_or_init(|| Regex::new(r"(?i)^(?:the following (?:papers|e-?filed documents)|papers (?:considered|numbered|read))").unwrap());
     // What a court says of an opinion's standing, at either end of it: elsewhere the words are a citation's.
     let status = STATUS.get_or_init(|| Regex::new(r"(?im)^.*(?-u:\b)(?:not (?:designated )?for (?:official )?publication|not to be published|do not publish|unpublished (?:opinion|decision|disposition|order)|non-?precedential|subject to (?:formal )?revision|certified for (?:partial )?publication|not recommended for (?:full[- ]text )?publication).*$").unwrap());
-    let boundary = |mut at: usize| { while !layer.text.is_char_boundary(at) { at -= 1; } at };
-    let (head, foot) = (boundary(3000.min(layer.text.len())), boundary(layer.text.len().saturating_sub(1500)).max(boundary(3000.min(layer.text.len()))));
-    let at_ends = status.find_iter(&layer.text[..head]).map(|found| (found.start(), found.as_str()))
-        .chain(status.find_iter(&layer.text[foot..]).map(|found| (foot + found.start(), found.as_str())));
-    let standing = at_ends.filter(|found| found.1.len() <= 200).map(|found| (utf16_len(&layer.text[..found.0]), found.1)).collect::<Vec<_>>();
+    let boundary = |mut at: usize| { while !structure.text.is_char_boundary(at) { at -= 1; } at };
+    let (head, foot) = (boundary(3000.min(structure.text.len())), boundary(structure.text.len().saturating_sub(1500)).max(boundary(3000.min(structure.text.len()))));
+    let at_ends = status.find_iter(&structure.text[..head]).map(|found| (found.start(), found.as_str()))
+        .chain(status.find_iter(&structure.text[foot..]).map(|found| (foot + found.start(), found.as_str())));
+    let standing = at_ends.filter(|found| found.1.len() <= 200).map(|found| (utf16_len(&structure.text[..found.0]), found.1)).collect::<Vec<_>>();
     let standing = standing.into_iter().map(|(start, line)| {
         let lead = line.len() - line.trim_start().len();
         let words = line.trim();
         let start = start + utf16_len(&line[..lead]);
         FrontLine { role: "publication".to_owned(), text: squeezed(words), range: Some(ScalarRange { start, end: start + utf16_len(words) }) }
     }).collect::<Vec<_>>();
-    layer.front.extend(standing);
-    let coordinates = ScalarText::new(&layer.text);
-    let count = layer.paragraphs.len();
+    structure.opinion.as_mut().unwrap().front.extend(standing);
+    let coordinates = ScalarText::new(&structure.text);
+    let count = paragraphs.len();
     let mut kept = Vec::with_capacity(count);
-    for (index, paragraph) in std::mem::take(&mut layer.paragraphs).into_iter().enumerate() {
+    for (index, paragraph) in std::mem::take(&mut paragraphs).into_iter().enumerate() {
         let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(squeezed).unwrap_or_default();
         let range = Some(ScalarRange { start: paragraph.range.start, end: paragraph.range.end });
         if index + 8 >= count && printed.len() <= 120 {
@@ -168,7 +181,7 @@ pub(super) fn reporter_matter(layer: &mut OpinionLayer) {
                 None
             };
             if let Some(role) = role {
-                layer.front.push(FrontLine { role: role.to_owned(), text: printed.clone(), range });
+                structure.opinion.as_mut().unwrap().front.push(FrontLine { role: role.to_owned(), text: printed.clone(), range });
                 // A numbered paragraph is the opinion's, whatever it says; so is a record's only text.
                 if paragraph.label.is_none() && !kept.is_empty() {
                     continue;
@@ -176,58 +189,63 @@ pub(super) fn reporter_matter(layer: &mut OpinionLayer) {
             }
         }
         if printed.len() <= 80 && front_role(&printed) == Some("author") {
-            layer.front.push(FrontLine { role: "author".to_owned(), text: printed.clone(), range });
+            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: "author".to_owned(), text: printed.clone(), range });
         }
         // An Appellate Division memorandum opens on its disposition; an Attorney General's opinion on its digest.
         if index < 2 && printed.starts_with("Memorandum.") {
-            layer.front.push(FrontLine { role: "disposition".to_owned(), text: printed.clone(), range });
+            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: "disposition".to_owned(), text: printed.clone(), range });
         }
         if index < 2 && printed.starts_with("OPINION") && printed.contains("AG —") {
-            layer.headnotes.push(headnote_of("summary", printed.clone(), range));
+            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("summary", printed.clone(), range));
         }
         if note.is_match(&printed) {
-            layer.headnotes.push(headnote_of("note", printed, range));
+            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("note", printed, range));
             continue;
         }
         if index + 8 >= count && printed.len() <= 240 && afterward.is_match(&printed) {
-            layer.headnotes.push(headnote_of("history", printed, range));
+            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("history", printed, range));
             continue;
         }
         if index == 0 && printed.len() > 60 && printed.starts_with('[') && printed.ends_with(']') {
-            layer.headnotes.push(headnote_of("summary", printed, range));
+            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("summary", printed, range));
             continue;
         }
         if topic.is_match(&printed) {
-            layer.headnotes.push(headnote_of("digest", printed, range));
+            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("digest", printed, range));
             continue;
         }
         if held.is_match(&printed) {
-            layer.headnotes.push(headnote_of("held", printed, range));
+            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("held", printed, range));
         } else if papers.is_match(&printed) {
-            layer.headnotes.push(headnote_of("papers", printed, range));
+            structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("papers", printed, range));
         }
         kept.push(paragraph);
     }
-    layer.paragraphs = kept;
-    let (editorial, notes): (Vec<_>, Vec<_>) = std::mem::take(&mut layer.notes).into_iter().partition(|called| {
+    paragraphs = kept;
+    let (editorial, notes): (Vec<_>, Vec<_>) = std::mem::take(&mut notes).into_iter().partition(|called| {
         called.references.is_empty() && !called.called_outside && coordinates.slice_utf16(called.start..called.end).is_some_and(|body| note.is_match(trim_js(body)))
     });
-    layer.notes = notes;
+    notes = notes;
     for called in editorial {
         let printed = coordinates.slice_utf16(called.start..called.end).map(squeezed).unwrap_or_default();
-        layer.headnotes.push(headnote_of("note", printed, Some(ScalarRange { start: called.start, end: called.end })));
+        structure.opinion.as_mut().unwrap().headnotes.push(headnote_of("note", printed, Some(ScalarRange { start: called.start, end: called.end })));
     }
     // Capitals past the last text are an index's subjects, no heading.
-    let last_text = layer.paragraphs.iter().map(|paragraph| paragraph.range.end).max().unwrap_or(0);
-    let (trailing, headings): (Vec<_>, Vec<_>) = std::mem::take(&mut layer.headings).into_iter().partition(|heading| {
+    let last_text = paragraphs.iter().map(|paragraph| paragraph.range.end).max().unwrap_or(0);
+    let (trailing, headings): (Vec<_>, Vec<_>) = std::mem::take(&mut headings).into_iter().partition(|heading| {
         heading.range.start >= last_text && !heading.display_value.as_deref().unwrap_or("").chars().any(char::is_lowercase) && !section_keyword(&heading.display_value.as_deref().unwrap_or("")) && !notes_title(&heading.display_value.as_deref().unwrap_or(""))
             && !["OPINION", "REHEARING", "APPENDIX"].iter().any(|word| heading.display_value.as_deref().unwrap_or("").contains(word))
     });
-    layer.headings = headings;
-    layer.headnotes.extend(trailing.into_iter().map(|heading| {
+    headings = headings;
+    structure.opinion.as_mut().unwrap().headnotes.extend(trailing.into_iter().map(|heading| {
         let range = Some(ScalarRange { start: heading.range.start, end: heading.range.end });
         headnote_of("topics", heading.display_value.as_deref().unwrap_or(""), range)
     }));
+})();
+    put(structure, paragraphs);
+    put(structure, notes);
+    put(structure, headings);
+    result
 }
 
 /// A text's sentences, as ranges of bytes. A stop ends one before a capital or the end, unless it closes an abbreviation
@@ -328,31 +346,37 @@ pub(super) fn name_dates(front: &mut [FrontLine]) {
 
 /// A cover's summary over a text: what a board's decision prints between "Decided by Board" and the charge, and what an
 /// Office of Legal Counsel opinion prints over its memorandum.
-pub(super) fn cover_matter(layer: &mut OpinionLayer) {
+pub(super) fn cover_matter(structure: &mut DocumentStructure) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     static BOARD: OnceLock<Regex> = OnceLock::new();
     static CHARGE: OnceLock<Regex> = OnceLock::new();
     static MEMORANDUM: OnceLock<Regex> = OnceLock::new();
-    if layer.rendition != "plain_text.txt" {
+    if structure.opinion.as_mut().unwrap().rendition != "plain_text.txt" {
         return;
     }
-    let units = |byte: usize| utf16_len(&layer.text[..byte]);
-    let board = BOARD.get_or_init(|| Regex::new(r"(?m)^[ \t]*Decided by Board\b.*$").unwrap()).find(&layer.text).map(|found| found.end());
+    let units = |byte: usize| utf16_len(&structure.text[..byte]);
+    let board = BOARD.get_or_init(|| Regex::new(r"(?m)^[ \t]*Decided by Board\b.*$").unwrap()).find(&structure.text).map(|found| found.end());
     let from_board = board.and_then(|from| {
-        let until = CHARGE.get_or_init(|| Regex::new(r"(?m)^[ \t]*(?:CHARGE|Charge|ORDER|ON BEHALF OF)\b").unwrap()).find(&layer.text[from..])?;
+        let until = CHARGE.get_or_init(|| Regex::new(r"(?m)^[ \t]*(?:CHARGE|Charge|ORDER|ON BEHALF OF)\b").unwrap()).find(&structure.text[from..])?;
         Some((units(from), units(from + until.start()), "syllabus"))
     });
-    let window = layer.text.len() * 3 / 20;
-    let memorandum = MEMORANDUM.get_or_init(|| Regex::new(r"(?m)^[ \t]*(?:MEMORANDUM OPINION FOR|MEMORANDUM FOR|Dear )").unwrap()).find(&layer.text)
+    let window = structure.text.len() * 3 / 20;
+    let memorandum = MEMORANDUM.get_or_init(|| Regex::new(r"(?m)^[ \t]*(?:MEMORANDUM OPINION FOR|MEMORANDUM FOR|Dear )").unwrap()).find(&structure.text)
         .filter(|found| found.start() <= window).map(|found| (0, units(found.start()), "summary"));
     let Some((from, until, kind)) = from_board.or(memorandum) else { return };
-    let coordinates = ScalarText::new(&layer.text);
-    let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut layer.paragraphs).into_iter().partition(|paragraph| from <= paragraph.range.start && paragraph.range.start < until);
-    layer.paragraphs = rest;
+    let coordinates = ScalarText::new(&structure.text);
+    let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut paragraphs).into_iter().partition(|paragraph| from <= paragraph.range.start && paragraph.range.start < until);
+    paragraphs = rest;
     let entries = taken.into_iter().map(|paragraph| {
         let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(squeezed).unwrap_or_default();
         headnote_of(kind, printed, Some(ScalarRange { start: paragraph.range.start, end: paragraph.range.end }))
     }).collect::<Vec<_>>();
-    layer.headnotes.extend(entries);
+    structure.opinion.as_mut().unwrap().headnotes.extend(entries);
+})();
+    put(structure, paragraphs);
+    result
 }
 
 /// The topic index New Mexico's texts end on: "Topic Index for ...", a code and its subject to the line.
@@ -379,34 +403,42 @@ pub(super) fn embedded_topics(markup: &str) -> Vec<OpinionHeadnote> {
 }
 
 /// A syllabus or headnotes the source does not mark: the paragraphs under a heading of that name.
-pub(super) fn divisions_of_headnotes(layer: &mut OpinionLayer) {
+pub(super) fn divisions_of_headnotes(structure: &mut DocumentStructure) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut headings = take(structure, Of::Headings);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     static NAME: OnceLock<Regex> = OnceLock::new();
     let name = NAME.get_or_init(|| Regex::new(r"(?i)^(?:syllabus(?: by the court)?|headnotes?|digest|note|synopsis)\.?$").unwrap());
-    let coordinates = ScalarText::new(&layer.text);
-    for at in 0..layer.headings.len() {
-        let heading = &layer.headings[at];
+    let coordinates = ScalarText::new(&structure.text);
+    for at in 0..headings.len() {
+        let heading = &headings[at];
         let Some(printed) = coordinates.slice_utf16(heading.range.start..heading.range.end) else { continue };
         if !name.is_match(trim_js(printed)) { continue; }
         let title = trim_js(printed).to_lowercase();
         let kind = if title.starts_with("note") { "note" } else if title.starts_with("synopsis") { "summary" } else { "syllabus" };
-        let until = layer.headings.iter().map(|other| other.start).filter(|start| *start > heading.range.end).min().unwrap_or(usize::MAX);
+        let until = headings.iter().map(|other| other.start).filter(|start| *start > heading.range.end).min().unwrap_or(usize::MAX);
         let start = heading.range.end;
         static OPENS: OnceLock<Regex> = OnceLock::new();
         static AUTHOR: OnceLock<Regex> = OnceLock::new();
         let opens = OPENS.get_or_init(|| Regex::new(r"(?i)^(?:per curiam\b|the opinion of the court|appeal from\b|this is an?\b|this (?:matter|case|appeal|cause)\b|on appeal\b)").unwrap());
         let author = AUTHOR.get_or_init(|| Regex::new(r"^\p{Lu}{2,}[\p{L}'’. -]{0,30}, (?:C\. ?)?J\.?[.:]").unwrap());
         // ... and a reader of the opinion below it must not lose the opinion.
-        let until = layer.paragraphs.iter().filter(|paragraph| paragraph.range.start > start && paragraph.range.start < until).find(|paragraph| {
+        let until = paragraphs.iter().filter(|paragraph| paragraph.range.start > start && paragraph.range.start < until).find(|paragraph| {
             let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
             opens.is_match(printed) || author.is_match(printed) || crate::judgment::author_line(printed)
         }).map_or(until, |paragraph| paragraph.range.start);
-        let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut layer.paragraphs).into_iter().partition(|paragraph| paragraph.range.start >= start && paragraph.range.start < until);
-        layer.paragraphs = rest;
-        layer.headnotes.extend(taken.into_iter().map(|paragraph| {
+        let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut paragraphs).into_iter().partition(|paragraph| paragraph.range.start >= start && paragraph.range.start < until);
+        paragraphs = rest;
+        structure.opinion.as_mut().unwrap().headnotes.extend(taken.into_iter().map(|paragraph| {
             let printed = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(squeezed).unwrap_or_default();
             headnote_of(kind, printed, Some(ScalarRange { start: paragraph.range.start, end: paragraph.range.end }))
         }));
     }
+})();
+    put(structure, paragraphs);
+    put(structure, headings);
+    result
 }
 
 /// Whether a rendition sets such a title alone, on a line or in a tag of its own: most do not, and reading one is dear.
@@ -444,11 +476,14 @@ pub(super) fn titled_digest(text: &str) -> Option<(&'static str, String)> {
 }
 
 /// Bracketed headnote numbers opening a paragraph, which no count of paragraphs took: Lawbox's "[1, 2]".
-pub(super) fn printed_headnote_marks(layer: &mut OpinionLayer) {
+pub(super) fn printed_headnote_marks(structure: &mut DocumentStructure) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     static MARK: OnceLock<Regex> = OnceLock::new();
     let mark = MARK.get_or_init(|| Regex::new(r"^\[(\d{1,3}(?:\s*[-–,]\s*\d{1,3})*)\]").unwrap());
-    let coordinates = ScalarText::new(&layer.text);
-    let marks = layer.paragraphs.iter().filter(|paragraph| paragraph.label.is_none()).filter_map(|paragraph| {
+    let coordinates = ScalarText::new(&structure.text);
+    let marks = paragraphs.iter().filter(|paragraph| paragraph.label.is_none()).filter_map(|paragraph| {
         let raw = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end)?;
         let printed = raw.trim_start_matches(javascript_whitespace);
         let found = mark.find(printed)?;
@@ -456,12 +491,18 @@ pub(super) fn printed_headnote_marks(layer: &mut OpinionLayer) {
         Some(HeadnoteMark { numbers: headnote_numbers(found.as_str())?, start, end: start + utf16_len(found.as_str()), page: None })
     }).collect::<Vec<_>>();
     if marks.len() >= 2 {
-        layer.headnote_marks.extend(marks);
+        structure.opinion.as_mut().unwrap().headnote_marks.extend(marks);
     }
+})();
+    put(structure, paragraphs);
+    result
 }
 
 /// What the record's own words show is not here: another judge's writing, the facts it stands on, an image, a later ruling.
-pub(super) fn record_gaps(layer: &OpinionLayer) -> Vec<RecordGap> {
+pub(super) fn record_gaps(structure: &DocumentStructure) -> Vec<RecordGap> {
+    let paragraphs: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Paragraphs.holds(node)).cloned().collect();
+    let headings: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Headings.holds(node)).cloned().collect();
+    let parts: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Parts.holds(node)).cloned().collect();
     static CHECKS: OnceLock<[(Regex, &'static str); 4]> = OnceLock::new();
     static SEPARATE: OnceLock<Regex> = OnceLock::new();
     let checks = CHECKS.get_or_init(|| [
@@ -473,17 +514,17 @@ pub(super) fn record_gaps(layer: &OpinionLayer) -> Vec<RecordGap> {
     let separate = SEPARATE.get_or_init(|| Regex::new(r"(?i)(?-u:\b)(?:dissents?|concurs?),? with (?:written )?(?:opinion|writing)(?-u:\b)|(?-u:\b)(?:dissenting|concurring) opinion (?:to follow|filed)(?-u:\b)|(?-u:\b)filed a (?:dissenting|concurring) opinion(?-u:\b)").unwrap());
     let mut gaps = Vec::new();
     for (pattern, kind) in checks.iter() {
-        if let Some(found) = pattern.find(&layer.text) {
+        if let Some(found) = pattern.find(&structure.text) {
             gaps.push(RecordGap { kind: (*kind).to_owned(), evidence: found.as_str().to_owned() });
         }
     }
-    let separately_here = layer.parts.iter().any(|part| matches!(part.display_value.as_deref().unwrap_or(""), "dissent" | "concurrence") || part.display_value.as_deref().unwrap_or("").contains("dissent") || part.display_value.as_deref().unwrap_or("").contains("concurr"));
-    if let Some(found) = separate.find(&layer.text).filter(|_| !separately_here) {
+    let separately_here = parts.iter().any(|part| matches!(part.display_value.as_deref().unwrap_or(""), "dissent" | "concurrence") || part.display_value.as_deref().unwrap_or("").contains("dissent") || part.display_value.as_deref().unwrap_or("").contains("concurr"));
+    if let Some(found) = separate.find(&structure.text).filter(|_| !separately_here) {
         gaps.push(RecordGap { kind: "separate-opinion-not-here".to_owned(), evidence: found.as_str().to_owned() });
     }
     // Text that opens on a second section has lost its first.
-    let opening = layer.paragraphs.iter().map(|paragraph| paragraph.range.start).min().unwrap_or(usize::MAX);
-    if let Some(first) = layer.headings.first().filter(|heading| heading.range.start < opening.saturating_add(40) && matches!(heading.display_value.as_deref().unwrap_or("").trim_end_matches('.'), "II" | "B" | "2")) {
+    let opening = paragraphs.iter().map(|paragraph| paragraph.range.start).min().unwrap_or(usize::MAX);
+    if let Some(first) = headings.first().filter(|heading| heading.range.start < opening.saturating_add(40) && matches!(heading.display_value.as_deref().unwrap_or("").trim_end_matches('.'), "II" | "B" | "2")) {
         gaps.push(RecordGap { kind: "opens-midway".to_owned(), evidence: first.text.clone() });
     }
     gaps

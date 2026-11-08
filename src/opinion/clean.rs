@@ -4,17 +4,17 @@ use super::*;
 
 /// Takes the page marks and the page furniture out of the text and moves every range to match. A word a mark split is
 /// joined: where its fragments are not words of this text on their own, or the whole word is.
-pub(super) fn excise(layer: &mut OpinionLayer) {
+pub(super) fn excise(structure: &mut DocumentStructure, furniture: Vec<ScalarRange>, printed_elsewhere: &mut [(bool, Vec<(u32, usize)>)]) {
     struct Cut { start: usize, end: usize, keep: &'static str }
-    let coordinates = ScalarText::new(&layer.text);
-    let end = utf16_len(&layer.text);
-    let lowered = layer.text.to_lowercase();
+    let coordinates = ScalarText::new(&structure.text);
+    let end = utf16_len(&structure.text);
+    let lowered = structure.text.to_lowercase();
     let mut counts = HashMap::<&str, usize>::new();
     for word in lowered.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty()) {
         *counts.entry(word).or_default() += 1;
     }
     let mut cuts = Vec::new();
-    for mark in layer.pages.iter().filter(|page| page.grammar.as_deref() != Some("furniture")).filter_map(|page| page.marker_range) {
+    for mark in nodes(structure, NodeKind::Page).filter(|page| page.grammar.as_deref() != Some("furniture")).filter_map(|page| page.marker_range) {
         let before = (0..4).find_map(|short| coordinates.slice_utf16(mark.start.saturating_sub(40 - short)..mark.start)).unwrap_or("");
         let after = (0..4).find_map(|short| coordinates.slice_utf16(mark.end..(mark.end + 40 - short).min(end))).unwrap_or("");
         let left = before.trim_end_matches(javascript_whitespace);
@@ -42,8 +42,8 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
     let compound = |left: &str| matches!(left, "self" | "non" | "pre" | "co" | "anti" | "quasi" | "cross" | "ex" | "well" | "full" | "long" | "short" | "post" | "multi" | "semi" | "sub" | "over" | "under" | "third" | "first" | "second");
     let mut repairs = Vec::<(usize, usize, &'static str)>::new();
     // A word a line's end broke: "pro-\nvided" is whole, "self-\ninsured" keeps its hyphen.
-    if layer.rendition == "plain_text.txt" {
-        for capture in BROKEN.get_or_init(|| Regex::new(r"(\p{Ll}{2,})-[ \t]*\r?\n[ \t\u{c}]*(\p{Ll}{2,})").unwrap()).captures_iter(&layer.text) {
+    if reading(structure).rendition == "plain_text.txt" {
+        for capture in BROKEN.get_or_init(|| Regex::new(r"(\p{Ll}{2,})-[ \t]*\r?\n[ \t\u{c}]*(\p{Ll}{2,})").unwrap()).captures_iter(&structure.text) {
             let (left, right) = (capture.get(1).unwrap(), capture.get(2).unwrap());
             let (last, first) = (left.as_str().to_lowercase(), right.as_str());
             if !compound(&last) && (counts.contains_key(format!("{last}{first}").as_str()) || !(known(&last) && known(first))) {
@@ -52,9 +52,9 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
         }
     }
     // The same left in a reporter's line: "exac-tions", where the text has "exactions".
-    for (hyphen, _) in layer.text.match_indices('-') {
-        let left = layer.text[..hyphen].rsplit(|c: char| !c.is_alphabetic()).next().unwrap_or("");
-        let right = layer.text[hyphen + 1..].split(|c: char| !c.is_alphabetic()).next().unwrap_or("");
+    for (hyphen, _) in structure.text.match_indices('-') {
+        let left = structure.text[..hyphen].rsplit(|c: char| !c.is_alphabetic()).next().unwrap_or("");
+        let right = structure.text[hyphen + 1..].split(|c: char| !c.is_alphabetic()).next().unwrap_or("");
         if left.len() < 2 || right.len() < 2 || !right.chars().all(char::is_lowercase) {
             continue;
         }
@@ -64,16 +64,16 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
         }
     }
     // A small word run into the name after it: "andCooley".
-    for capture in GLUED.get_or_init(|| Regex::new(r"(?-u:\b)(?:and|the|of|in|to|by|for|with|that|at|on|from|or)(\p{Lu}\p{Ll}{2,})").unwrap()).captures_iter(&layer.text) {
+    for capture in GLUED.get_or_init(|| Regex::new(r"(?-u:\b)(?:and|the|of|in|to|by|for|with|that|at|on|from|or)(\p{Lu}\p{Ll}{2,})").unwrap()).captures_iter(&structure.text) {
         let at = capture.get(1).unwrap().start();
         repairs.push((at, at, " "));
     }
     // A scanner's black square, and a document's own tags carried as text.
-    for found in NOISE.get_or_init(|| Regex::new(r"■|\[EDITORS?['’]? ?NOTE:[^\]]*\]|(?m)^[ \t]*(?:</?[a-zA-Z][^>\n]{0,60}>|class=\w+>)[ \t]*$").unwrap()).find_iter(&layer.text) {
+    for found in NOISE.get_or_init(|| Regex::new(r"■|\[EDITORS?['’]? ?NOTE:[^\]]*\]|(?m)^[ \t]*(?:</?[a-zA-Z][^>\n]{0,60}>|class=\w+>)[ \t]*$").unwrap()).find_iter(&structure.text) {
         repairs.push((found.start(), found.end(), ""));
     }
     repairs.sort_unstable();
-    let mut units = Units::new(&layer.text);
+    let mut units = Units::new(&structure.text);
     let mut reached = 0;
     for (start, end, keep) in repairs {
         if start < reached {
@@ -81,17 +81,16 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
         }
         reached = end;
         let unit = units.at(start);
-        cuts.push(Cut { start: unit, end: unit + utf16_len(&layer.text[start..end]), keep });
+        cuts.push(Cut { start: unit, end: unit + utf16_len(&structure.text[start..end]), keep });
     }
     // A note's call is out of the words too, its place kept: "defendant7 s" reads "defendant s", the note still called there.
-    if layer.rendition != "plain_text.txt" {
-        for call in layer.notes.iter().flat_map(|note| note.calls.iter()).map(|call| (call.start, call.end)).chain(layer.unmatched_calls.iter().map(|call| (call.start, call.end))) {
+    if reading(structure).rendition != "plain_text.txt" {
+        for call in nodes(structure, NodeKind::Footnote).flat_map(|note| note.calls.iter()).map(|call| (call.start, call.end)).chain(reading(structure).unmatched_calls.iter().map(|call| (call.start, call.end))) {
             if call.1 > call.0 && call.1 - call.0 <= 8 {
                 cuts.push(Cut { start: call.0, end: call.1, keep: "" });
             }
         }
     }
-    let furniture = std::mem::take(&mut layer.cuts);
     cuts.extend(furniture.iter().map(|range| Cut { start: range.start, end: range.end, keep: "" }));
     let printed = furniture.iter().map(|range| (range.start, coordinates.slice_utf16(range.start..range.end).map(squeezed).unwrap_or_default())).collect::<Vec<_>>();
     if cuts.is_empty() {
@@ -126,48 +125,39 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
         if offset >= cut.end { (offset as isize - lost[previous]) as usize } else { (cut.start as isize - before) as usize + (offset - cut.start).min(cut.keep.len()) }
     };
     let span = |range: &mut ScalarRange| { range.start = moved(range.start); range.end = moved(range.end); };
-    for page in &mut layer.pages {
-        (page.range.start, page.range.end) = (moved(page.range.start), moved(page.range.end));
-        page.marker_range = None;
+    for node in &mut structure.nodes {
+        (node.range.start, node.range.end) = (moved(node.range.start), moved(node.range.end));
+        node.ranges.iter_mut().chain(node.calls.iter_mut()).for_each(span);
+        if node.kind == NodeKind::Page {
+            node.marker_range = None;
+        }
     }
-    for block in &mut layer.blocks {
-        block.start = moved(block.start);
-    }
-    for (_, numbers) in &mut layer.printed_elsewhere {
+    for (_, numbers) in printed_elsewhere.iter_mut() {
         numbers.iter_mut().for_each(|number| number.1 = moved(number.1));
     }
-    for paragraph in &mut layer.paragraphs {
-        (paragraph.range.start, paragraph.range.end) = (moved(paragraph.range.start), moved(paragraph.range.end));
+    let opinion = opinion_mut(structure);
+    for block in &mut opinion.blocks {
+        block.start = moved(block.start);
     }
-    for note in &mut layer.notes {
-        (note.range.start, note.range.end) = (moved(note.range.start), moved(note.range.end));
-        note.ranges.iter_mut().chain(note.calls.iter_mut()).for_each(span);
-    }
-    for heading in &mut layer.headings {
-        (heading.range.start, heading.range.end) = (moved(heading.range.start), moved(heading.range.end));
-    }
-    for headnote in &mut layer.headnotes {
+    for headnote in &mut opinion.headnotes {
         if let Some(range) = &mut headnote.range { span(range); }
     }
-    for mark in &mut layer.headnote_marks {
+    for mark in &mut opinion.headnote_marks {
         (mark.start, mark.end) = (moved(mark.start), moved(mark.end));
     }
-    for part in &mut layer.parts {
-        (part.range.start, part.range.end) = (moved(part.range.start), moved(part.range.end));
-    }
-    for line in &mut layer.front {
+    for line in &mut opinion.front {
         if let Some(range) = &mut line.range { span(range); }
     }
-    for call in &mut layer.unmatched_calls {
+    for call in &mut opinion.unmatched_calls {
         (call.start, call.end) = (moved(call.start), moved(call.end));
     }
-    for table in &mut layer.tables {
+    for table in &mut opinion.tables {
         (table.start, table.end) = (moved(table.start), moved(table.end));
     }
-    layer.furniture = printed.into_iter().map(|(at, text)| FurnitureLine { text, at: moved(at) }).collect();
-    let mut text = String::with_capacity(layer.text.len());
+    opinion.furniture = printed.into_iter().map(|(at, text)| FurnitureLine { text, at: moved(at) }).collect();
+    let mut text = String::with_capacity(structure.text.len());
     let (mut unit, mut index) = (0, 0);
-    for c in layer.text.chars() {
+    for c in structure.text.chars() {
         while index < merged.len() && unit >= merged[index].end {
             // What goes in where nothing comes out.
             if merged[index].start == merged[index].end { text.push_str(merged[index].keep); }
@@ -179,5 +169,5 @@ pub(super) fn excise(layer: &mut OpinionLayer) {
         }
         unit += c.len_utf16();
     }
-    layer.text = text;
+    structure.text = text;
 }

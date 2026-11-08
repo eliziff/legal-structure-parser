@@ -1,4 +1,4 @@
-//! A court opinion's structure as a lawyer queries it, one flat layer over all its stored versions: its pages by
+//! A court opinion's structure as a lawyer queries it, read once over all its stored versions: its pages by
 //! reporter, paragraphs, notes and their calls, headings, headnotes and the marks that key them, its parts and front
 //! matter, every place a UTF-16 range of `text`.
 //!
@@ -17,13 +17,10 @@ mod notes;
 mod pages;
 mod paragraphs;
 mod readings;
-mod structure;
 mod text;
 
-pub use checks::{quote_miss, receipt_miss};
-use checks::{layer_failures, layer_screens};
+pub use checks::{failures, quote_miss, receipt_miss, screens};
 pub use pages::{citers_numbering, citers_page};
-pub use structure::opinion_structure;
 use clean::*;
 use headings::*;
 use matter::*;
@@ -123,73 +120,16 @@ pub(crate) fn read_note(label: impl std::fmt::Display, start: usize, end: usize,
     note.calls = calls;
     note
 }
-#[derive(Debug, Serialize)]
-pub(crate) struct OpinionLayer {
-    pub id: String,
-    pub rendition: String,
-    pub text: String,
-    pub pages: Vec<StructureNode>,
-    pub paragraphs: Vec<StructureNode>,
-    pub blocks: Vec<OpinionBlock>,
-    pub notes: Vec<StructureNode>,
-    pub headings: Vec<StructureNode>,
-    pub headnotes: Vec<OpinionHeadnote>,
-    pub headnote_marks: Vec<HeadnoteMark>,
-    pub parts: Vec<StructureNode>,
-    pub front: Vec<FrontLine>,
-    pub furniture: Vec<FurnitureLine>,
-    pub unmatched_calls: Vec<UnmatchedCall>,
-    pub tables: Vec<OpinionTable>,
-    pub defined_terms: Vec<DefinedTerm>,
-    pub quotes: Vec<OpinionQuote>,
-    pub instruments: Vec<OpinionInstrument>,
-    pub record_gaps: Vec<RecordGap>,
-    pub citations: Vec<OpinionCitation>,
-    pub page_series: Vec<PageSeries>,
-    /// What the court did: `affirmed`, `reversed`, `remanded`, `vacated`, `dismissed`, `denied`, `granted`, `modified`.
-    pub outcomes: Vec<String>,
-    /// `court-opinion` or `attorney-general-opinion`, as the text reads, whatever the record's type says.
-    pub document_kind: String,
-    /// Other renditions' page marks against this layer's pages, by how the page was found: at its place, a page off, further.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub page_witness: BTreeMap<String, [usize; 3]>,
-    /// Notes another text of the case prints, against this reading's before they were supplied: held and called, held with no call,
-    /// not held.
-    pub note_witness: [usize; 3],
-    /// Titles another rendition marks as headings: held here as headings, in this text but no heading, not in this text.
-    pub heading_witness: [usize; 3],
-    /// Paragraphs other renditions open, against ours: opened alike, inside a paragraph of ours, words not in our text; and
-    /// paragraphs of ours opening where the others run on. Only with `witness`.
-    pub paragraph_witness: BTreeMap<String, [usize; 4]>,
-    /// A few of those run together and those split apart, by their opening words.
-    pub paragraphs_run_on: Vec<String>,
-    pub paragraphs_split: Vec<String>,
-    /// What other renditions offer against the finished layer, by structure: offered, not held. Only with `witness`.
-    pub union_test: BTreeMap<String, [usize; 2]>,
-    /// A few of those not held, to read: "page 412", "text the words it opens on".
-    pub union_samples: Vec<String>,
-    /// The titles not held, each as its words.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub titles_not_held: Vec<String>,
-    /// The other renditions' marked titles, each as its words, until this reading's own headings are titled.
-    #[serde(skip)]
+/// What one pass leaves for later ones beside the structure: the titles other renditions mark, the blocks they print placed by
+/// their words in this text, the openings of blocks they set as quotations, each one's paragraph numbers where their words
+/// fall in this text, and what is yet to leave the text.
+#[derive(Default)]
+pub(crate) struct Pending {
     marked_titles: HashSet<String>,
-    #[serde(skip)]
     elsewhere: Vec<Elsewhere>,
-    /// The opening words of blocks another rendition sets as quotations.
-    #[serde(skip)]
     quoted_elsewhere: HashSet<String>,
-    /// Each other rendition's paragraph numbers, each where its words fall in our text.
-    #[serde(skip)]
     printed_elsewhere: Vec<(bool, Vec<(u32, usize)>)>,
-    /// What is yet to leave the text.
-    #[serde(skip)]
     cuts: Vec<ScalarRange>,
-    /// Renditions of this record that hold another opinion's text, and were not read.
-    pub other_opinion: Vec<String>,
-    /// The authorities the read rendition links.
-    #[serde(skip)]
-    cited: Vec<CitedAuthority>,
 }
 
 fn structure_of(id: &str, plain: &str, markup: &str) -> Option<DocumentStructure> {
@@ -269,67 +209,95 @@ fn same_opinion(ours: &str, theirs: &str) -> bool {
     theirs.is_empty() || ours.is_empty() || theirs.iter().filter(|place| held.contains(place)).count() * SHARE >= ours.len().min(theirs.len())
 }
 
-impl OpinionLayer {
-    /// The stretches of the text no paragraph, heading, note, headnote or line of the front holds.
-    pub(crate) fn unheld_stretches(&self) -> Vec<(usize, usize)> {
-        let mut held = self.paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end))
-            .chain(self.headings.iter().map(|heading| (heading.range.start, heading.range.end)))
-            .chain(self.notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end))))
-            .chain(self.headnotes.iter().filter_map(|headnote| headnote.range).map(|range| (range.start, range.end)))
-            .chain(self.front.iter().filter_map(|line| line.range).map(|range| (range.start, range.end)))
-            .collect::<Vec<_>>();
-        held.sort_unstable();
-        let whole = utf16_len(&self.text);
-        let mut cursor = 0;
-        let mut stretches = Vec::new();
-        for (start, end) in held.into_iter().chain([(whole, whole)]) {
-            if start > cursor {
-                stretches.push((cursor, start));
-            }
-            cursor = cursor.max(end);
+/// The stretches of the text no paragraph, heading, note, headnote or line of the front holds.
+pub(crate) fn unheld_stretches(structure: &DocumentStructure) -> Vec<(usize, usize)> {
+    let mut held = paragraphs(structure).map(|paragraph| (paragraph.range.start, paragraph.range.end))
+        .chain(nodes(structure, NodeKind::Heading).map(|heading| (heading.range.start, heading.range.end)))
+        .chain(nodes(structure, NodeKind::Footnote).flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end))))
+        .chain(reading(structure).headnotes.iter().filter_map(|headnote| headnote.range).map(|range| (range.start, range.end)))
+        .chain(reading(structure).front.iter().filter_map(|line| line.range).map(|range| (range.start, range.end)))
+        .collect::<Vec<_>>();
+    held.sort_unstable();
+    let whole = utf16_len(&structure.text);
+    let mut cursor = 0;
+    let mut stretches = Vec::new();
+    for (start, end) in held.into_iter().chain([(whole, whole)]) {
+        if start > cursor {
+            stretches.push((cursor, start));
         }
-        stretches
+        cursor = cursor.max(end);
     }
+    stretches
+}
 
-    /// What is left in the text of two faults of the source: letters in the shifted font, and runs of a pleading's line numbers
-    /// (five or more lines in a row opening on numbers that climb by one).
-    pub fn source_faults_left(&self) -> (usize, usize) {
-        static LEAD: OnceLock<Regex> = OnceLock::new();
-        let lead = LEAD.get_or_init(|| Regex::new(r"^\s{0,8}(\d{1,2})(?:\s|$)").unwrap());
-        const RUN: usize = 5;
-        let (mut margins, mut run, mut last) = (0, 0, 0);
-        for line in self.text.lines().filter(|line| !line.trim().is_empty()) {
-            let number = lead.captures(line).and_then(|capture| capture[1].parse::<u32>().ok());
-            run = if number.is_some_and(|number| number == last + 1) { run + 1 } else { 1 };
-            if run == RUN { margins += RUN; } else if run > RUN { margins += 1; }
-            last = number.unwrap_or(0);
+/// What is left in the text of two faults of the source: letters in the shifted font, and runs of a pleading's line numbers
+/// (five or more lines in a row opening on numbers that climb by one).
+pub fn source_faults_left(structure: &DocumentStructure) -> (usize, usize) {
+    static LEAD: OnceLock<Regex> = OnceLock::new();
+    let lead = LEAD.get_or_init(|| Regex::new(r"^\s{0,8}(\d{1,2})(?:\s|$)").unwrap());
+    const RUN: usize = 5;
+    let (mut margins, mut run, mut last) = (0, 0, 0);
+    for line in structure.text.lines().filter(|line| !line.trim().is_empty()) {
+        let number = lead.captures(line).and_then(|capture| capture[1].parse::<u32>().ok());
+        run = if number.is_some_and(|number| number == last + 1) { run + 1 } else { 1 };
+        if run == RUN { margins += RUN; } else if run > RUN { margins += 1; }
+        last = number.unwrap_or(0);
+    }
+    (structure.text.matches('\u{3}').count(), margins)
+}
+
+/// Lines inside notes that open on a paragraph's own mark: a note has run on through the opinion.
+pub fn marks_in_notes(structure: &DocumentStructure) -> usize {
+    let coordinates = ScalarText::new(&structure.text);
+    nodes(structure, NodeKind::Footnote).flat_map(|note| note.ranges.iter()).filter_map(|range| coordinates.slice_utf16(range.start..range.end))
+        .map(|body| body.lines().skip(1).filter(|line| text::says_paragraph(line.trim_start())).count()).sum()
+}
+
+/// How much of the text (spaces aside) nothing holds, and how the longest such stretch opens.
+pub fn unheld_text(structure: &DocumentStructure) -> (usize, String) {
+    let coordinates = ScalarText::new(&structure.text);
+    let (mut total, mut longest) = (0, (0, String::new()));
+    for (start, end) in unheld_stretches(structure) {
+        let printed = coordinates.slice_utf16(start..end).map_or("", trim_js);
+        let size = printed.chars().filter(|c| !c.is_whitespace()).count();
+        total += size;
+        if size > longest.0 {
+            longest = (size, printed.chars().take(80).collect());
         }
-        (self.text.matches('\u{3}').count(), margins)
     }
+    (total, longest.1)
+}
+/// A kind of node a pass works on: its pages, its paragraphs (quotations set apart among them), its notes, headings or parts.
+#[derive(Clone, Copy)]
+pub(crate) enum Of { Pages, Paragraphs, Notes, Headings, Parts }
 
-    /// Lines inside notes that open on a paragraph's own mark: a note has run on through the opinion.
-    pub fn marks_in_notes(&self) -> usize {
-        let coordinates = ScalarText::new(&self.text);
-        self.notes.iter().flat_map(|note| note.ranges.iter()).filter_map(|range| coordinates.slice_utf16(range.start..range.end))
-            .map(|body| body.lines().skip(1).filter(|line| text::says_paragraph(line.trim_start())).count()).sum()
-    }
-
-    /// How much of the text (spaces aside) nothing holds, and how the longest such stretch opens.
-    pub fn unheld_text(&self) -> (usize, String) {
-        let coordinates = ScalarText::new(&self.text);
-        let (mut total, mut longest) = (0, (0, String::new()));
-        for (start, end) in self.unheld_stretches() {
-            let printed = coordinates.slice_utf16(start..end).map_or("", trim_js);
-            let size = printed.chars().filter(|c| !c.is_whitespace()).count();
-            total += size;
-            if size > longest.0 {
-                longest = (size, printed.chars().take(80).collect());
-            }
+impl Of {
+    fn holds(self, node: &StructureNode) -> bool {
+        match self {
+            Of::Pages => node.kind == NodeKind::Page,
+            Of::Paragraphs => matches!(node.kind, NodeKind::Paragraph | NodeKind::Quote),
+            Of::Notes => node.kind == NodeKind::Footnote,
+            Of::Headings => node.kind == NodeKind::Heading,
+            Of::Parts => node.kind == NodeKind::Section,
         }
-        (total, longest.1)
     }
 }
 
+/// The nodes of a kind, taken out of the structure in their order for a pass to work on; it puts them back (`put`).
+pub(crate) fn take(structure: &mut DocumentStructure, of: Of) -> Vec<StructureNode> {
+    let (taken, kept) = std::mem::take(&mut structure.nodes).into_iter().partition(|node| of.holds(node));
+    structure.nodes = kept;
+    taken
+}
+
+pub(crate) fn put(structure: &mut DocumentStructure, nodes: Vec<StructureNode>) {
+    structure.nodes.extend(nodes);
+}
+
+/// The opinion's readings, as the parse writes them.
+pub(crate) fn opinion_mut(structure: &mut DocumentStructure) -> &mut OpinionReading {
+    structure.opinion.get_or_insert_with(Default::default)
+}
 /// The structure's nodes of a kind the opinion parse wrote, in the text's order.
 pub fn nodes(structure: &DocumentStructure, kind: NodeKind) -> impl Iterator<Item = &StructureNode> {
     structure.nodes.iter().filter(move |node| node.kind == kind && node.origin_id == ORIGIN)
@@ -378,33 +346,36 @@ fn set_as_text(markup: &str) -> bool {
     markup.contains("<pre") && !markup.contains("<p>") && !markup.contains("<p ") && !markup.contains("<div class=\"num\"")
 }
 
-pub(crate) fn opinion_layer(record: &OpinionRecord) -> OpinionLayer {
+/// A record read whole, as the structure the product serves: the parts, notes, pages, paragraphs and headings are its nodes,
+/// in the text's order; the opinion's other readings are its `opinion`.
+pub fn opinion_structure(record: &OpinionRecord, url: Option<String>) -> DocumentStructure {
     let rendition = |name: &str| record.renditions.iter().find(|(file, _)| file == name).map(|(_, text)| text.as_str());
     let plain = rendition("plain_text.txt").unwrap_or("");
     let chosen = MARKUP.iter().copied().find(|name| rendition(name).is_some_and(|markup| !markup.trim().is_empty() && !set_as_text(markup)));
-    let mut layer = match chosen.and_then(|name| Some((name, structure_of(&record.id, plain, rendition(name)?)?))) {
-        Some((name, structure)) => {
-            let mut layer = from_structure(record, name, &structure);
-            layer.cited = structure.cited_authorities.clone();
-            leaves_to_pages(&mut layer, record);
+    let mut pending = Pending::default();
+    let mut structure = match chosen.and_then(|name| Some((name, structure_of(&record.id, plain, rendition(name)?)?))) {
+        Some((name, markup)) => {
+            let mut structure = from_structure(record, name, &markup, &mut pending);
+            structure.cited_authorities = markup.cited_authorities.clone();
+            leaves_to_pages(&mut structure, record);
             for other in MARKUP.iter().copied().filter(|other| *other != name) {
-                if let Some(markup) = rendition(other).filter(|markup| !set_as_text(markup)) {
+                if let Some(text) = rendition(other).filter(|markup| !set_as_text(markup)) {
                     // The same text, by CourtListener's own derivation.
                     if name == "html_with_citations.html" && other == "xml_harvard.xml" {
                         continue;
                     }
-                    if let Some(structure) = structure_of(&record.id, plain, markup) {
-                        if !same_opinion(&layer.text, structure.query_text()) {
-                            layer.other_opinion.push(other.to_owned());
+                    if let Some(other_structure) = structure_of(&record.id, plain, text) {
+                        if !same_opinion(&structure.text, other_structure.query_text()) {
+                            opinion_mut(&mut structure).other_opinion.push(other.to_owned());
                             continue;
                         }
-                        supply_from(&mut layer, other, &structure, record.witness);
-                        supply_notes(&mut layer, &structure);
-                        supply_head(&mut layer, &structure);
+                        supply_from(&mut structure, &mut pending, other, &other_structure, record.witness);
+                        supply_notes(&mut structure, &other_structure);
+                        supply_head(&mut structure, &other_structure);
                     }
                 }
             }
-            layer
+            structure
         }
         None => {
             let (name, text) = if plain.trim().is_empty() {
@@ -414,20 +385,42 @@ pub(crate) fn opinion_layer(record: &OpinionRecord) -> OpinionLayer {
             } else {
                 ("plain_text.txt", text::unshifted(plain))
             };
-            from_text(record, name, text)
+            from_text(record, name, text, &mut pending)
         }
     };
-    if layer.rendition != "plain_text.txt" && !plain.trim().is_empty() {
-        supply_plain_pages(&mut layer, &text::unshifted(plain), record.page_count);
+    if reading(&structure).rendition != "plain_text.txt" && !plain.trim().is_empty() {
+        supply_plain_pages(&mut structure, &text::unshifted(plain), record.page_count);
     }
-    complete(layer, record, plain)
+    complete(&mut structure, &mut pending, record, plain);
+    // Each node its id by kind and place, all of them in the text's order.
+    let mut counts = HashMap::<NodeKind, usize>::new();
+    for node in structure.nodes.iter_mut().filter(|node| node.id.is_empty()) {
+        let count = counts.entry(node.kind).or_default();
+        *count += 1;
+        node.id = format!("opinion-{}-{count}", node.kind.name());
+    }
+    structure.nodes.sort_by_key(|node| (node.range.start, std::cmp::Reverse(node.range.end)));
+    structure.url = url;
+    structure.text_sha256 = format!("{:x}", sha2::Sha256::digest(structure.text.as_bytes()));
+    structure.refresh_revision().expect("Typed document structure is serializable");
+    structure
 }
 
-/// Where another rendition prints a page at a place in this text, what does this layer say there? At that page's own start in any
+/// The structure the parse writes into: the reading text, the record's id, the rendition read, and the nodes as first read.
+fn opinion_document(record: &OpinionRecord, rendition: &str, text: String, nodes: Vec<StructureNode>) -> DocumentStructure {
+    let mut structure = DocumentStructure::from_projected_parts(
+        record.id.clone(), "courtlistener".to_owned(), None, Some("cases".to_owned()), Some(crate::DetectionProfile::CaseLossy), text,
+        String::new(), None, crate::Scope::complete(), vec![crate::Origin { id: ORIGIN.to_owned() }], nodes, Vec::new(), Vec::new(),
+    );
+    structure.opinion = Some(Box::new(OpinionReading { rendition: rendition.to_owned(), ..OpinionReading::default() }));
+    structure
+}
+
+/// Where another rendition prints a page at a place in this text, what does this structure say there? At that page's own start in any
 /// of its numberings, within `tolerance`, it agrees; otherwise the nearest numbering answers, by how many pages it is off.
-fn witness_pages(layer: &mut OpinionLayer, marks: &[(u32, usize)], tolerance: usize) {
-    let mut numberings = HashMap::<&str, Vec<(usize, u32, &'static str)>>::new();
-    for page in layer.pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray")) {
+fn witness_pages(structure: &mut DocumentStructure, marks: &[(u32, usize)], tolerance: usize) {
+    let mut numberings = HashMap::<&str, Vec<(usize, u32, &str)>>::new();
+    for page in structure.nodes.iter().filter(|page| page.kind == NodeKind::Page).filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray")) {
         if let Some(number) = page_number(&page.printed_label()) {
             numberings.entry(page.series.as_str()).or_default().push((page.range.start, number, page.grammar.as_deref().unwrap_or("")));
         }
@@ -446,7 +439,7 @@ fn witness_pages(layer: &mut OpinionLayer, marks: &[(u32, usize)], tolerance: us
         verdicts.extend(verdict);
     }
     for (source, verdict) in verdicts {
-        layer.page_witness.entry(source.to_owned()).or_default()[verdict] += 1;
+        structure.opinion.as_mut().unwrap().page_witness.entry(source.to_owned()).or_default()[verdict] += 1;
     }
 }
 
@@ -467,21 +460,25 @@ fn section_title(title: &str) -> bool {
 }
 
 /// A paragraph of ours that opens on a title another rendition marks has that title at its head, or is that title.
-fn take_marked_titles(layer: &mut OpinionLayer) {
-    if layer.marked_titles.is_empty() {
+fn take_marked_titles(structure: &mut DocumentStructure, pending: &mut Pending) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut headings = take(structure, Of::Headings);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
+    if pending.marked_titles.is_empty() {
         return;
     }
-    let coordinates = ScalarText::new(&layer.text);
+    let coordinates = ScalarText::new(&structure.text);
     let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
-    let ours = layer.headings.iter().filter_map(|heading| coordinates.slice_utf16(heading.range.start..heading.range.end)).map(|text| bare_title(&key(text))).collect::<HashSet<_>>();
+    let ours = headings.iter().filter_map(|heading| coordinates.slice_utf16(heading.range.start..heading.range.end)).map(|text| bare_title(&key(text))).collect::<HashSet<_>>();
     let mut wanted = HashMap::<String, Vec<Vec<String>>>::new();
-    for title in layer.marked_titles.iter().filter(|title| section_title(title)).map(|title| bare_title(title)).filter(|title| title.len() > 3 && !ours.contains(title)) {
+    for title in pending.marked_titles.iter().filter(|title| section_title(title)).map(|title| bare_title(title)).filter(|title| title.len() > 3 && !ours.contains(title)) {
         let words = title.split(' ').map(str::to_owned).collect::<Vec<_>>();
         wanted.entry(words[0].clone()).or_default().push(words);
     }
     let mut taken = Vec::new();
-    let mut kept = Vec::with_capacity(layer.paragraphs.len());
-    for mut paragraph in std::mem::take(&mut layer.paragraphs) {
+    let mut kept = Vec::with_capacity(paragraphs.len());
+    for mut paragraph in std::mem::take(&mut paragraphs) {
         let raw = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).unwrap_or("");
         let words = word_starts(raw);
         let title = words.first().and_then(|first| wanted.get(&first.0)).and_then(|titles| {
@@ -499,27 +496,37 @@ fn take_marked_titles(layer: &mut OpinionLayer) {
             kept.push(paragraph);
         }
     }
-    layer.paragraphs = kept;
-    layer.headings.append(&mut taken);
+    paragraphs = kept;
+    headings.append(&mut taken);
+})();
+    put(structure, paragraphs);
+    put(structure, headings);
+    result
 }
 
 /// The titles other renditions mark, against the headings this reading came to. A case's name and a list of notes are no section's
 /// title. A title compares by its words alone, without a page mark at its head or a note's call at its tail, and may stand in two
 /// headings here, "IV." over "Conclusion". Of those not held, the words that stand in this text are titles missed.
-fn witness_headings(layer: &mut OpinionLayer) {
+fn witness_headings(structure: &mut DocumentStructure, pending: &mut Pending) {
+    let mut headings = take(structure, Of::Headings);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
     // A title's paragraph or outline number stays off it here: a rendition may print the mark inside what it marks.
     let unnumbered = |title: String| title.split(' ').skip_while(|word| !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_digit())).collect::<Vec<_>>().join(" ");
-    let keys = layer.headings.iter().map(|heading| key(&heading.display_value.as_deref().unwrap_or(""))).collect::<Vec<_>>();
+    let keys = headings.iter().map(|heading| key(&heading.display_value.as_deref().unwrap_or(""))).collect::<Vec<_>>();
     let mut ours = keys.iter().map(|title| unnumbered(bare_title(title))).collect::<HashSet<_>>();
     ours.extend(keys.windows(2).map(|pair| unnumbered(bare_title(&format!("{} {}", pair[0], pair[1])))));
-    let wanted = layer.marked_titles.iter().filter(|title| section_title(title)).map(|title| unnumbered(bare_title(title))).collect::<HashSet<_>>();
+    let wanted = pending.marked_titles.iter().filter(|title| section_title(title)).map(|title| unnumbered(bare_title(title))).collect::<HashSet<_>>();
     let mut unheld = wanted.iter().filter(|title| !ours.contains(*title)).collect::<Vec<_>>();
     // In the order of their words, so that one record reads alike on every run.
     unheld.sort_unstable();
-    let text = if unheld.is_empty() { String::new() } else { format!(" {} ", key(&layer.text)) };
-    layer.titles_not_held = unheld.iter().filter(|title| text.contains(&format!(" {title} "))).map(|title| (*title).clone()).collect();
-    layer.heading_witness = [wanted.len() - unheld.len(), layer.titles_not_held.len(), unheld.len() - layer.titles_not_held.len()];
+    let text = if unheld.is_empty() { String::new() } else { format!(" {} ", key(&structure.text)) };
+    structure.opinion.as_mut().unwrap().titles_not_held = unheld.iter().filter(|title| text.contains(&format!(" {title} "))).map(|title| (*title).clone()).collect();
+    structure.opinion.as_mut().unwrap().heading_witness = [wanted.len() - unheld.len(), structure.opinion.as_mut().unwrap().titles_not_held.len(), unheld.len() - structure.opinion.as_mut().unwrap().titles_not_held.len()];
+})();
+    put(structure, headings);
+    result
 }
 
 /// Marks found by their words keep their order: one out of it found the words somewhere else, a caption restated.
@@ -532,9 +539,12 @@ fn in_their_order(places: Vec<Option<usize>>) -> Vec<Option<usize>> {
 /// Marks whose words this text lacks stand by their numbers: ahead of the text if nothing comes before them, as head matter's
 /// do, else reckoned by number between the pages either side. A mark that joins no run of the numbering, like the "*Page 1"
 /// some renditions close on, is held as a stray: printed, and no page of the run.
-fn place_by_number(layer: &mut OpinionLayer, series: &str, labels: Vec<String>) {
-    let held = |layer: &OpinionLayer| layer.pages.iter().filter(|page| page.series == series).filter_map(|page| Some((page_number(&page.printed_label())?, page.range.start))).collect::<Vec<_>>();
-    let mut known = held(layer).into_iter().map(|page| page.0).collect::<HashSet<_>>();
+fn place_by_number(structure: &mut DocumentStructure, series: &str, labels: Vec<String>) {
+    let mut pages = take(structure, Of::Pages);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
+    let held = |pages: &[StructureNode]| pages.iter().filter(|page| page.series == series).filter_map(|page| Some((page_number(&page.printed_label())?, page.range.start))).collect::<Vec<_>>();
+    let mut known = held(&pages).into_iter().map(|page| page.0).collect::<HashSet<_>>();
     let open = known.is_empty();
     let mut numbered = labels.into_iter().filter_map(|label| Some((page_number(&label)?, label))).collect::<Vec<_>>();
     numbered.sort_by_key(|mark| mark.0);
@@ -546,13 +556,13 @@ fn place_by_number(layer: &mut OpinionLayer, series: &str, labels: Vec<String>) 
             joined.insert(mark.0);
         }
     }
-    let pages = held(layer);
-    let text_end = utf16_len(&layer.text);
-    let word_places = word_starts(&layer.text).into_iter().map(|word| word.1).collect::<Vec<_>>();
+    let pages = held(&pages);
+    let text_end = utf16_len(&structure.text);
+    let word_places = word_starts(&structure.text).into_iter().map(|word| word.1).collect::<Vec<_>>();
     for (number, label) in numbered {
         let past_the_last = !pages.is_empty() && pages.iter().all(|page| page.0 < number);
         if !joined.contains(&number) || past_the_last {
-            layer.pages.push(read_page(label, series.to_owned(), text_end, text_end, None, "stray"));
+            pages.push(read_page(label, series.to_owned(), text_end, text_end, None, "stray"));
             continue;
         }
         let lowest = joined.iter().copied().min().unwrap_or(number);
@@ -564,20 +574,26 @@ fn place_by_number(layer: &mut OpinionLayer, series: &str, labels: Vec<String>) 
             let reckoned = low.1 + high_start.saturating_sub(low.1) * (number - low.0) as usize / (high_number - low.0) as usize;
             word_places.get(word_places.partition_point(|place| *place < reckoned)).copied().unwrap_or(reckoned)
         });
-        layer.pages.push(read_page(label, series.to_owned(), start, 0, None, "reckoned"));
+        pages.push(read_page(label, series.to_owned(), start, 0, None, "reckoned"));
     }
+})();
+    put(structure, pages);
+    result
 }
 
 /// The numbering a plain text prints on its pages, where the markup chosen has lost it: each page placed in our text by the
 /// words it opens on.
-fn supply_plain_pages(layer: &mut OpinionLayer, plain: &str, page_count: Option<u32>) {
+fn supply_plain_pages(structure: &mut DocumentStructure, plain: &str, page_count: Option<u32>) {
+    let mut pages = take(structure, Of::Pages);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     const SHINGLE: usize = 5;
     let pages = text::read(plain, page_count).pages.into_iter().filter(|page| page.series != "sheet").collect::<Vec<_>>();
-    if pages.is_empty() || layer.pages.iter().any(|page| pages.iter().any(|ours| ours.series == page.series)) {
+    if pages.is_empty() || pages.iter().any(|page| pages.iter().any(|ours| ours.series == page.series)) {
         return;
     }
     let shingle = |window: &[(String, usize)]| window.iter().map(|word| word.0.as_str()).collect::<Vec<_>>().join(" ");
-    let words = word_starts(&layer.text);
+    let words = word_starts(&structure.text);
     let mut index = HashMap::<String, Option<usize>>::new();
     for (at, window) in words.windows(SHINGLE).enumerate() {
         index.entry(shingle(window)).and_modify(|place| *place = None).or_insert(Some(at));
@@ -591,47 +607,49 @@ fn supply_plain_pages(layer: &mut OpinionLayer, plain: &str, page_count: Option<
     let mut unplaced = HashMap::<String, Vec<String>>::new();
     for (page, place) in pages.into_iter().zip(places) {
         match place {
-            Some(place) => layer.pages.push(read_page(page.printed_label(), page.series.clone(), words[place].1, 0, None, "other-rendition")),
+            Some(place) => pages.push(read_page(page.printed_label(), page.series.clone(), words[place].1, 0, None, "other-rendition")),
             None => unplaced.entry(page.series.clone()).or_default().push(page.printed_label().to_owned()),
         }
     }
     for (series, labels) in unplaced {
-        place_by_number(layer, &series, labels);
+        { put(structure, std::mem::take(&mut pages)); let result = place_by_number(structure, &series, labels); pages = take(structure, Of::Pages); result };
     }
+})();
+    put(structure, pages);
+    result
 }
 
 /// What every reading of a record goes through alike.
-fn complete(mut layer: OpinionLayer, record: &OpinionRecord, plain: &str) -> OpinionLayer {
+fn complete(structure: &mut DocumentStructure, pending: &mut Pending, record: &OpinionRecord, plain: &str) {
     let rendition = |name: &str| record.renditions.iter().find(|(file, _)| file == name).map(|(_, text)| text.as_str());
-    printed_page_marks(&mut layer, &record.citations);
-    flat_notes(&mut layer);
-    from_cluster(&mut layer, record);
-    split_note_lists(&mut layer);
-    answer_calls(&mut layer);
-    excise(&mut layer);
-    layer.citations = record.citations.clone();
-    if layer.headnotes.is_empty() {
+    printed_page_marks(structure, &record.citations);
+    flat_notes(structure);
+    from_cluster(structure, record);
+    split_note_lists(structure);
+    answer_calls(structure);
+    excise(structure, std::mem::take(&mut pending.cuts), &mut pending.printed_elsewhere);
+    opinion_mut(structure).citations = record.citations.clone();
+    if opinion_mut(structure).headnotes.is_empty() {
         let found = record.renditions.iter().filter(|(_, text)| names_a_digest(text)).find_map(|(name, text)| {
             let read = if name.ends_with(".txt") { text::unshifted(text) } else { structure_of(&record.id, "", text)?.query_text().to_owned() };
             titled_digest(&read)
         });
-        layer.headnotes.extend(found.map(|(kind, body)| headnote_of(kind, body, None)));
+        opinion_mut(structure).headnotes.extend(found.map(|(kind, body)| headnote_of(kind, body, None)));
     }
     // Lawbox alone may hold the case's own citation.
-    if !layer.front.iter().any(|line| line.role == "citation") {
+    if !opinion_mut(structure).front.iter().any(|line| line.role == "citation") {
         static OWN: OnceLock<Regex> = OnceLock::new();
         let own = OWN.get_or_init(|| Regex::new(r"<center><b>([^<]{5,60}\(\d{4}\))</b></center>").unwrap());
         if let Some(capture) = rendition("html_lawbox.html").and_then(|markup| own.captures(markup)) {
-            layer.front.push(FrontLine { role: "citation".to_owned(), text: squeezed(&capture[1]), range: None });
+            opinion_mut(structure).front.push(FrontLine { role: "citation".to_owned(), text: squeezed(&capture[1]), range: None });
         }
     }
-    layer.headnotes.extend(topic_index(plain));
-    layer.headnotes.extend(rendition("html_columbia.html").map(embedded_topics).unwrap_or_default());
-    if layer.parts.is_empty() {
-        layer.parts.push(read_part(record.opinion_type.clone().unwrap_or_else(|| "opinion".to_owned()), record.author.clone(), 0, utf16_len(&layer.text)));
+    opinion_mut(structure).headnotes.extend(topic_index(plain));
+    opinion_mut(structure).headnotes.extend(rendition("html_columbia.html").map(embedded_topics).unwrap_or_default());
+    if !structure.nodes.iter().any(|node| node.kind == NodeKind::Section) {
+        structure.nodes.push(read_part(record.opinion_type.clone().unwrap_or_else(|| "opinion".to_owned()), record.author.clone(), 0, utf16_len(&structure.text)));
     }
-    finish(&mut layer, &record);
-    layer
+    finish(structure, pending, record);
 }
 
 /// A text's UTF-16 offsets for byte offsets asked for in rising order, each step counting only what lies between.
@@ -722,11 +740,11 @@ fn whole_paragraphs(id: &str, value: &str) -> Vec<String> {
 
 /// What the case's record says over its opinions: the headnotes and syllabus, one entry a point, and the front matter;
 /// the head matter gives what the record's own fields do not.
-fn from_cluster(layer: &mut OpinionLayer, record: &OpinionRecord) {
+fn from_cluster(structure: &mut DocumentStructure, record: &OpinionRecord) {
     let field = |name: &str| record.cluster.iter().find(|(field, _)| field == name).map(|(_, value)| value.as_str());
     for kind in ["syllabus", "headnotes", "summary", "arguments", "history", "posture", "procedural_history", "cross_reference", "correction"] {
         if let Some(value) = field(kind) {
-            layer.headnotes.extend(field_paragraphs(&record.id, value).into_iter().map(|text| headnote_of(kind, text, None)));
+            structure.opinion.as_mut().unwrap().headnotes.extend(field_paragraphs(&record.id, value).into_iter().map(|text| headnote_of(kind, text, None)));
         }
     }
     for (name, role) in [("case_name", "case_name"), ("case_name_full", "case_name_full"), ("case_name_short", "case_name_short"), ("date_filed", "date_filed"),
@@ -737,13 +755,13 @@ fn from_cluster(layer: &mut OpinionLayer, record: &OpinionRecord) {
         ("date_terminated", "date_terminated"), ("scdb_votes_majority", "votes_majority"), ("scdb_votes_minority", "votes_minority"),
         ("citation_count", "cited_by")] {
         if let Some(value) = field(name) {
-            layer.front.push(FrontLine { role: role.to_owned(), text: squeezed(value), range: None });
+            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: role.to_owned(), text: squeezed(value), range: None });
         }
     }
     let Some(structure) = field("headmatter").and_then(|matter| structure_of(&record.id, "", matter)) else { return };
-    supply_notes(layer, &structure);
+    supply_notes(structure, &structure);
     let coordinates = ScalarText::new(structure.query_text());
-    let had = layer.headnotes.iter().map(|headnote| headnote.kind.clone()).collect::<HashSet<_>>();
+    let had = structure.opinion.as_mut().unwrap().headnotes.iter().map(|headnote| headnote.kind.clone()).collect::<HashSet<_>>();
     let elements = &structure.markup_elements;
     for node in &structure.nodes {
         let range = structure.query_range(node);
@@ -753,25 +771,21 @@ fn from_cluster(layer: &mut OpinionLayer, record: &OpinionRecord) {
         }
         if node.role == Some(PrimaryRole::Headnote) {
             let kind = headnote_kind(&structure, node);
-            if !had.contains(&kind) { layer.headnotes.push(headnote_of(&kind, printed, None)); }
+            if !had.contains(&kind) { structure.opinion.as_mut().unwrap().headnotes.push(headnote_of(&kind, printed, None)); }
         } else if let Some(role) = node.role.and_then(front_name).filter(|role| !matches!(*role, "judges" | "counsel")) {
-            layer.front.push(FrontLine { role: role.to_owned(), text: printed, range: None });
+            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: role.to_owned(), text: printed, range: None });
         }
     }
     for element in elements.iter().filter(|element| element.tag == "citation") {
         if let Some(printed) = coordinates.slice_utf16(element.range.start..element.range.end).map(squeezed).filter(|text| !text.is_empty()) {
-            layer.front.push(FrontLine { role: "citation".to_owned(), text: printed, range: None });
+            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: "citation".to_owned(), text: printed, range: None });
         }
     }
 }
 
-fn from_text(record: &OpinionRecord, name: &str, text: String) -> OpinionLayer {
+fn from_text(record: &OpinionRecord, name: &str, text: String, pending: &mut Pending) -> DocumentStructure {
     let reading = text::read(&text, record.page_count);
-    OpinionLayer {
-        id: record.id.clone(), rendition: name.to_owned(), text, pages: reading.pages, paragraphs: reading.paragraphs, notes: reading.notes,
-        headings: reading.headings, headnotes: Vec::new(), headnote_marks: Vec::new(), parts: Vec::new(), front: reading.front,
-        furniture: Vec::new(), unmatched_calls: Vec::new(), tables: reading.tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks: Vec::new(), page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), quoted_elsewhere: HashSet::new(), printed_elsewhere: Vec::new(), other_opinion: Vec::new(), cuts: reading.furniture, cited: Vec::new(),
-    }
+    { let mut document = opinion_document(record, name, text, reading.pages.into_iter().chain(reading.paragraphs).chain(reading.notes).chain(reading.headings).collect()); let opinion = opinion_mut(&mut document); opinion.front = reading.front; opinion.tables = reading.tables; pending.cuts = reading.furniture; document }
 }
 
 fn front_name(role: PrimaryRole) -> Option<&'static str> {
@@ -806,7 +820,7 @@ fn headnote_kind(structure: &DocumentStructure, node: &StructureNode) -> String 
     "headnotes".to_owned()
 }
 
-fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStructure) -> OpinionLayer {
+fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStructure, pending: &mut Pending) -> DocumentStructure {
     let text = structure.query_text();
     let coordinates = ScalarText::new(text);
     let span = |range: ScalarRange| coordinates.slice_utf16(range.start..range.end).map(trim_js).unwrap_or("");
@@ -1022,10 +1036,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
         };
         Some(HeadnoteMark { numbers, start: element.range.start, end: element.range.end, page: None })
     }).collect();
-    OpinionLayer {
-        id: record.id.clone(), rendition: name.to_owned(), text: text.to_owned(), pages, paragraphs, notes, headings, headnotes,
-        headnote_marks: marks, parts, front, furniture: Vec::new(), unmatched_calls, tables, defined_terms: Vec::new(), quotes: Vec::new(), instruments: Vec::new(), record_gaps: Vec::new(), citations: Vec::new(), page_series: Vec::new(), outcomes: Vec::new(), document_kind: String::new(), blocks, page_witness: BTreeMap::new(), note_witness: [0; 3], heading_witness: [0; 3], paragraph_witness: BTreeMap::new(), paragraphs_run_on: Vec::new(), paragraphs_split: Vec::new(), union_test: BTreeMap::new(), union_samples: Vec::new(), titles_not_held: Vec::new(), marked_titles: HashSet::new(), elsewhere: Vec::new(), quoted_elsewhere: HashSet::new(), printed_elsewhere: Vec::new(), other_opinion: Vec::new(), cuts, cited: Vec::new(),
-    }
+    { let mut document = opinion_document(record, name, text.to_owned(), pages.into_iter().chain(paragraphs).chain(notes).chain(headings).chain(parts).collect()); let opinion = opinion_mut(&mut document); opinion.headnotes = headnotes; opinion.headnote_marks = marks; opinion.front = front; opinion.unmatched_calls = unmatched_calls; opinion.tables = tables; opinion.blocks = blocks; pending.cuts = cuts; document }
 }
 
 /// Where the `count`th word of a text starts.
@@ -1124,11 +1135,11 @@ fn opening_words(text: &str) -> Option<String> {
 #[derive(Clone, Debug, Default)]
 struct Elsewhere { name: String, openings: HashSet<String>, places: Vec<String>, pages: Vec<String>, numbers: Vec<String>, notes: Vec<String>, headnotes: Vec<String> }
 
-fn note_paragraphs_elsewhere(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure) {
+fn note_paragraphs_elsewhere(structure: &mut DocumentStructure, pending: &mut Pending, name: &str, other: &DocumentStructure) {
     let coordinates = ScalarText::new(other.query_text());
     let printed = |node: &StructureNode| { let range = other.query_range(node); coordinates.slice_utf16(range.start..range.end) };
     let paragraphs = || other.nodes.iter().filter(|node| node.kind == NodeKind::Paragraph);
-    layer.elsewhere.push(Elsewhere {
+    pending.elsewhere.push(Elsewhere {
         name: name.to_owned(),
         openings: paragraphs().filter_map(printed).filter_map(opening_words).collect(),
         places: places(other.query_text()),
@@ -1139,16 +1150,20 @@ fn note_paragraphs_elsewhere(layer: &mut OpinionLayer, name: &str, other: &Docum
     });
 }
 
-/// Item by item, what another rendition offers against the finished layer. Text counts as not held only in a run of words none
+/// Item by item, what another rendition offers against the finished structure. Text counts as not held only in a run of words none
 /// of which stand in ours: a scanner's slips break a run long before that.
-fn witness_union(layer: &mut OpinionLayer, text: &HashSet<String>) {
+fn witness_union(structure: &mut DocumentStructure, pending: &mut Pending, text: &HashSet<String>) {
+    let mut pages = take(structure, Of::Pages);
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     const TEXT_RUN: usize = 40;
-    let held_pages = layer.pages.iter().filter(|page| page.grammar.as_deref() != Some("stray")).map(|page| page.printed_label()).collect::<HashSet<_>>();
-    let held_numbers = layer.paragraphs.iter().filter_map(|paragraph| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()).collect::<HashSet<_>>();
-    let summaries = layer.headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
+    let held_pages = pages.iter().filter(|page| page.grammar.as_deref() != Some("stray")).map(|page| page.printed_label()).collect::<HashSet<_>>();
+    let held_numbers = paragraphs.iter().filter_map(|paragraph| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()).collect::<HashSet<_>>();
+    let summaries = structure.opinion.as_mut().unwrap().headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
     let mut tally = BTreeMap::<&'static str, [usize; 2]>::new();
     let mut samples = Vec::new();
-    for other in &layer.elsewhere {
+    for other in &pending.elsewhere {
         let mut count = |what: &'static str, label: &str, held: bool| {
             let entry = tally.entry(what).or_default();
             entry[0] += 1;
@@ -1177,18 +1192,25 @@ fn witness_union(layer: &mut OpinionLayer, text: &HashSet<String>) {
         words[0] += other.places.len();
         words[1] += lost;
     }
-    layer.union_test = tally.into_iter().map(|(name, counts)| (name.to_owned(), counts)).collect();
-    layer.union_samples = samples;
+    structure.opinion.as_mut().unwrap().union_test = tally.into_iter().map(|(name, counts)| (name.to_owned(), counts)).collect();
+    structure.opinion.as_mut().unwrap().union_samples = samples;
+})();
+    put(structure, pages);
+    put(structure, paragraphs);
+    result
 }
 
 /// Each other rendition that sets paragraphs at all against ours. One with under half our count has lost its breaks and says
 /// nothing of ours.
-fn witness_paragraphs(layer: &mut OpinionLayer) {
-    let coordinates = ScalarText::new(&layer.text);
-    let ours = layer.paragraphs.iter().filter_map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end)).filter_map(opening_words).collect::<HashSet<_>>();
-    let text = places(&layer.text).into_iter().collect::<HashSet<_>>();
-    witness_union(layer, &text);
-    for other in std::mem::take(&mut layer.elsewhere) {
+fn witness_paragraphs(structure: &mut DocumentStructure, pending: &mut Pending) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
+    let coordinates = ScalarText::new(&structure.text);
+    let ours = paragraphs.iter().filter_map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end)).filter_map(opening_words).collect::<HashSet<_>>();
+    let text = places(&structure.text).into_iter().collect::<HashSet<_>>();
+    { put(structure, std::mem::take(&mut paragraphs)); let result = witness_union(structure, pending, &text); paragraphs = take(structure, Of::Paragraphs); result };
+    for other in std::mem::take(&mut pending.elsewhere) {
         let (name, openings) = (other.name, other.openings);
         if openings.len() * 2 < ours.len() {
             continue;
@@ -1197,27 +1219,35 @@ fn witness_paragraphs(layer: &mut OpinionLayer) {
         let mut run_on = openings.iter().filter(|opening| !ours.contains(*opening) && text.contains(*opening)).cloned().collect::<Vec<_>>();
         let mut split = ours.iter().filter(|opening| !openings.contains(*opening) && words.contains(*opening)).cloned().collect::<Vec<_>>();
         let alike = openings.iter().filter(|opening| ours.contains(*opening)).count();
-        layer.paragraph_witness.insert(name, [alike, run_on.len(), openings.len() - alike - run_on.len(), split.len()]);
+        structure.opinion.as_mut().unwrap().paragraph_witness.insert(name, [alike, run_on.len(), openings.len() - alike - run_on.len(), split.len()]);
         run_on.sort_unstable();
         split.sort_unstable();
-        layer.paragraphs_run_on.extend(run_on.into_iter().take(SHOWN));
-        layer.paragraphs_split.extend(split.into_iter().take(SHOWN));
+        structure.opinion.as_mut().unwrap().paragraphs_run_on.extend(run_on.into_iter().take(SHOWN));
+        structure.opinion.as_mut().unwrap().paragraphs_split.extend(split.into_iter().take(SHOWN));
     }
+})();
+    put(structure, paragraphs);
+    result
 }
 
-fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, witness: bool) {
+fn supply_from(structure: &mut DocumentStructure, pending: &mut Pending, name: &str, other: &DocumentStructure, witness: bool) {
+    let mut pages = take(structure, Of::Pages);
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut headings = take(structure, Of::Headings);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     {
         let coordinates = ScalarText::new(other.query_text());
-        layer.quoted_elsewhere.extend(other.nodes.iter().filter(|node| node.kind == NodeKind::Quote || node.markup_tag.as_deref().is_some_and(|tag| matches!(tag, "blockquote" | "excerpt")))
+        pending.quoted_elsewhere.extend(other.nodes.iter().filter(|node| node.kind == NodeKind::Quote || node.markup_tag.as_deref().is_some_and(|tag| matches!(tag, "blockquote" | "excerpt")))
             .filter_map(|node| { let range = other.query_range(node); coordinates.slice_utf16(range.start..range.end) }).filter_map(opening_words));
     }
     if witness {
-        note_paragraphs_elsewhere(layer, name, other);
+        { put(structure, std::mem::take(&mut pages)); put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut headings)); let result = note_paragraphs_elsewhere(structure, pending, name, other); pages = take(structure, Of::Pages); paragraphs = take(structure, Of::Paragraphs); headings = take(structure, Of::Headings); result };
     }
     const SHINGLE: usize = 5;
     // How far apart, in UTF-16 units, two renditions may set one page's mark.
     const SAME_PLACE: usize = 300;
-    let have = layer.pages.iter().map(|page| (page.printed_label().to_owned(), page.range.start)).collect::<HashMap<_, _>>();
+    let have = pages.iter().map(|page| (page.printed_label().to_owned(), page.range.start)).collect::<HashMap<_, _>>();
     // One rendition may carry several numberings, a reporter's and a vendor's, each by its page scheme. The one most like ours is
     // compared with ours; each other stands as its own, a parallel printing.
     let mut schemes = BTreeMap::<String, Vec<(String, usize)>>::new();
@@ -1226,14 +1256,14 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
     }
     let closest = schemes.iter().max_by_key(|(_, marks)| (marks.iter().filter(|(label, _)| have.contains_key(label)).count(), marks.len())).map(|(scheme, _)| scheme.clone());
     let marks = closest.as_ref().and_then(|scheme| schemes.remove(scheme)).unwrap_or_default();
-    let held_series = layer.pages.iter().map(|page| page.series.clone()).collect::<HashSet<_>>();
+    let held_series = pages.iter().map(|page| page.series.clone()).collect::<HashSet<_>>();
     schemes.retain(|scheme, _| !held_series.contains(scheme));
     let counted = block_marks(name, other, &ScalarText::new(other.query_text()));
     let (named, numbers) = if counts_its_blocks(other) || !counted.is_empty() { (false, Vec::new()) } else { printed_numbers(other) };
-    let blocks = if layer.blocks.is_empty() { counted } else { Vec::new() };
+    let blocks = if structure.opinion.as_mut().unwrap().blocks.is_empty() { counted } else { Vec::new() };
     // Marks all ours add nothing, and reading where they fall costs a whole index of the text.
     if witness || marks.iter().any(|(label, _)| !have.contains_key(label)) || !numbers.is_empty() || !blocks.is_empty() || !schemes.is_empty() {
-        let words = word_starts(&layer.text);
+        let words = word_starts(&structure.text);
         let theirs = word_starts(other.query_text());
         let shingle = |window: &[(String, usize)]| window.iter().map(|word| word.0.as_str()).collect::<Vec<_>>().join(" ");
         let mut index = HashMap::<String, Option<usize>>::new();
@@ -1255,30 +1285,30 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
         let agreeing = placed.iter().filter(|(ours, theirs)| ours.abs_diff(*theirs) <= SAME_PLACE).count();
         let shared = agreeing * 2 >= placed.len() && (agreeing >= 2 || common.len() * 2 >= marks.len());
         let missing = marks.iter().filter(|(label, _)| !shared || !have.contains_key(label)).cloned().collect::<Vec<_>>();
-        let series = if shared || layer.pages.is_empty() { layer.pages.first().map_or("reporter-1".to_owned(), |page| page.series.clone()) } else { name.trim_end_matches(".html").to_owned() };
+        let series = if shared || pages.is_empty() { pages.first().map_or("reporter-1".to_owned(), |page| page.series.clone()) } else { name.trim_end_matches(".html").to_owned() };
         let places = in_their_order(missing.iter().map(|mark| place_of(mark.1)).collect());
         let mut unplaced = Vec::new();
         for ((label, _), place) in missing.into_iter().zip(places) {
             match place {
-                Some(place) => layer.pages.push(read_page(label, series.clone(), words[place].1, 0, None, "other-rendition")),
+                Some(place) => pages.push(read_page(label, series.clone(), words[place].1, 0, None, "other-rendition")),
                 None => unplaced.push(label),
             }
         }
-        place_by_number(layer, &series, unplaced);
+        { put(structure, std::mem::take(&mut pages)); put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut headings)); let result = place_by_number(structure, &series, unplaced); pages = take(structure, Of::Pages); paragraphs = take(structure, Of::Paragraphs); headings = take(structure, Of::Headings); result };
         for (scheme, group) in std::mem::take(&mut schemes) {
             let mut unplaced = Vec::new();
             for ((label, _), place) in group.iter().cloned().zip(in_their_order(group.iter().map(|mark| place_of(mark.1)).collect())) {
                 match place {
-                    Some(place) => layer.pages.push(read_page(label, scheme.clone(), words[place].1, 0, None, "other-rendition")),
+                    Some(place) => pages.push(read_page(label, scheme.clone(), words[place].1, 0, None, "other-rendition")),
                     None => unplaced.push(label),
                 }
             }
-            place_by_number(layer, &scheme, unplaced);
+            { put(structure, std::mem::take(&mut pages)); put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut headings)); let result = place_by_number(structure, &scheme, unplaced); pages = take(structure, Of::Pages); paragraphs = take(structure, Of::Paragraphs); headings = take(structure, Of::Headings); result };
         }
         if witness && shared {
             let ordered = in_their_order(marks.iter().map(|mark| place_of(mark.1)).collect());
             let found = marks.iter().zip(ordered).filter_map(|((label, _), place)| Some((page_number(label)?, words[place?].1))).collect::<Vec<_>>();
-            witness_pages(layer, &found, SAME_PLACE);
+            { put(structure, std::mem::take(&mut pages)); put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut headings)); let result = witness_pages(structure, &found, SAME_PLACE); pages = take(structure, Of::Pages); paragraphs = take(structure, Of::Paragraphs); headings = take(structure, Of::Headings); result };
         }
         // Counters another rendition sets, each where its words fall; one whose words we lack, between its neighbours.
         // Scanned texts differ word by word: the nearest words the two share fix the place, after the counter or before it.
@@ -1294,7 +1324,7 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
             })
         }).filter(|place| *place < words.len());
         let placed = in_their_order(blocks.iter().map(|block| place_near(block.1)).collect()).into_iter().map(|place| place.map(|place| words[place].1)).collect::<Vec<_>>();
-        let whole = utf16_len(&layer.text);
+        let whole = utf16_len(&structure.text);
         for (index, (label, _)) in blocks.iter().enumerate() {
             let (start, source) = match placed[index] {
                 Some(start) => (start, "other-rendition"),
@@ -1304,11 +1334,11 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
                     (before.1 + (after.1.saturating_sub(before.1)) * (index - before.0) / (after.0 - before.0).max(1), "reckoned")
                 }
             };
-            layer.blocks.push(OpinionBlock { label: label.clone(), start, source: source.to_owned(), pins: Vec::new() });
+            structure.opinion.as_mut().unwrap().blocks.push(OpinionBlock { label: label.clone(), start, source: source.to_owned(), pins: Vec::new() });
         }
         let printed = numbers.iter().filter_map(|(number, start)| Some((*number, words[place_near(*start)?].1))).collect::<Vec<_>>();
         if !printed.is_empty() {
-            layer.printed_elsewhere.push((named, printed));
+            pending.printed_elsewhere.push((named, printed));
         }
     }
     let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
@@ -1321,22 +1351,27 @@ fn supply_from(layer: &mut OpinionLayer, name: &str, other: &DocumentStructure, 
         return;
     }
     let wanted = wanted.into_iter().filter_map(|range| coordinates.slice_utf16(range.start..range.end).map(key)).filter(|text| !text.is_empty()).collect::<HashSet<_>>();
-    layer.marked_titles.extend(wanted.iter().cloned());
-    let mine = ScalarText::new(&layer.text);
-    let promoted = layer.paragraphs.iter().enumerate().filter(|(_, paragraph)| paragraph.label.is_none())
+    pending.marked_titles.extend(wanted.iter().cloned());
+    let mine = ScalarText::new(&structure.text);
+    let promoted = paragraphs.iter().enumerate().filter(|(_, paragraph)| paragraph.label.is_none())
         .filter(|(_, paragraph)| mine.slice_utf16(paragraph.range.start..paragraph.range.end).is_some_and(|text| wanted.contains(&key(text))))
         .map(|(index, _)| index).collect::<Vec<_>>();
     for index in promoted.into_iter().rev() {
-        let paragraph = layer.paragraphs.remove(index);
-        layer.headings.push(read_heading(paragraph.range.start, paragraph.range.end, "other-rendition"));
+        let paragraph = paragraphs.remove(index);
+        headings.push(read_heading(paragraph.range.start, paragraph.range.end, "other-rendition"));
     }
+})();
+    put(structure, pages);
+    put(structure, paragraphs);
+    put(structure, headings);
+    result
 }
 
 /// Head lines and headnotes this rendition lacks and another prints: a role or a kind of headnote none of ours fills.
-fn supply_head(layer: &mut OpinionLayer, other: &DocumentStructure) {
+fn supply_head(structure: &mut DocumentStructure, other: &DocumentStructure) {
     let coordinates = ScalarText::new(other.query_text());
-    let roles = layer.front.iter().map(|line| line.role.clone()).collect::<HashSet<_>>();
-    let kinds = layer.headnotes.iter().map(|headnote| headnote.kind.clone()).collect::<HashSet<_>>();
+    let roles = structure.opinion.as_mut().unwrap().front.iter().map(|line| line.role.clone()).collect::<HashSet<_>>();
+    let kinds = structure.opinion.as_mut().unwrap().headnotes.iter().map(|headnote| headnote.kind.clone()).collect::<HashSet<_>>();
     for node in other.nodes.iter().filter(|node| node.role == Some(PrimaryRole::Headnote) || node.role.and_then(front_name).is_some_and(|role| !roles.contains(role))) {
         let range = other.query_range(node);
         let printed = coordinates.slice_utf16(range.start..range.end).map(squeezed).unwrap_or_default();
@@ -1346,95 +1381,126 @@ fn supply_head(layer: &mut OpinionLayer, other: &DocumentStructure) {
         if node.role == Some(PrimaryRole::Headnote) {
             let kind = headnote_kind(other, node);
             // A kind ours fills may still say more: a union keeps every headnote it does not already hold.
-            let known = opening_words(&printed).is_some_and(|opening| layer.headnotes.iter().any(|headnote| places(&headnote.text).contains(&opening)));
+            let known = opening_words(&printed).is_some_and(|opening| structure.opinion.as_mut().unwrap().headnotes.iter().any(|headnote| places(&headnote.text).contains(&opening)));
             if !kinds.contains(&kind) || !known {
-                layer.headnotes.push(headnote_of(&kind, printed, None));
+                structure.opinion.as_mut().unwrap().headnotes.push(headnote_of(&kind, printed, None));
             }
         } else if let Some(role) = node.role.and_then(front_name).filter(|role| !roles.contains(*role)) {
-            layer.front.push(FrontLine { role: role.to_owned(), text: printed, range: None });
+            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: role.to_owned(), text: printed, range: None });
         }
     }
 }
 
 /// What the readings leave to do, in order: each step needs the ones before it.
 /// A block one rendition sets as a quotation is one in the union, whichever text is read.
-fn quotes_from_elsewhere(layer: &mut OpinionLayer) {
-    if layer.quoted_elsewhere.is_empty() {
+fn quotes_from_elsewhere(structure: &mut DocumentStructure, pending: &mut Pending) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
+    if pending.quoted_elsewhere.is_empty() {
         return;
     }
-    let coordinates = ScalarText::new(&layer.text);
-    let quoted = layer.paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).and_then(opening_words).is_some_and(|opening| layer.quoted_elsewhere.contains(&opening))).collect::<Vec<_>>();
-    for (paragraph, quoted) in layer.paragraphs.iter_mut().zip(quoted) {
+    let coordinates = ScalarText::new(&structure.text);
+    let quoted = paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).and_then(opening_words).is_some_and(|opening| pending.quoted_elsewhere.contains(&opening))).collect::<Vec<_>>();
+    for (paragraph, quoted) in paragraphs.iter_mut().zip(quoted) {
         (paragraph.kind == NodeKind::Quote) |= quoted;
     }
+})();
+    put(structure, paragraphs);
+    result
 }
 
 /// A note found late, by answering its call, can still stand among the paragraphs: its words belong to the note.
-fn notes_out_of_the_body(layer: &mut OpinionLayer) {
+fn notes_out_of_the_body(structure: &mut DocumentStructure) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut notes = take(structure, Of::Notes);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     /// How much of a paragraph must lie in notes for it to be theirs, in fifths.
     const MOSTLY: usize = 4;
-    let mut ranges = layer.notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
+    let mut ranges = notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
     ranges.sort_by_key(|range| range.start);
-    layer.paragraphs.retain(|paragraph| {
+    paragraphs.retain(|paragraph| {
         let first = ranges.partition_point(|range| range.end <= paragraph.range.start);
         let held = ranges[first..].iter().take_while(|range| range.start < paragraph.range.end).map(|range| range.end.min(paragraph.range.end).saturating_sub(range.start.max(paragraph.range.start))).sum::<usize>();
         held * 5 < (paragraph.range.end - paragraph.range.start) * MOSTLY
     });
+})();
+    put(structure, paragraphs);
+    put(structure, notes);
+    result
 }
 
 /// Another rendition's marks set ahead of the opinion's first words, "*508" in a heading our text does not hold, were estimated at
 /// its start and named no page. The one just below the first mark placed is the page the opinion opens on; any before it, strays.
-fn opening_from_other_renditions(layer: &mut OpinionLayer) {
-    let from_elsewhere = layer.pages.iter().filter(|page| page.grammar.as_deref() == Some("other-rendition")).map(|page| page.series.clone()).collect::<HashSet<_>>();
+fn opening_from_other_renditions(structure: &mut DocumentStructure) {
+    let mut pages = take(structure, Of::Pages);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
+    let from_elsewhere = pages.iter().filter(|page| page.grammar.as_deref() == Some("other-rendition")).map(|page| page.series.clone()).collect::<HashSet<_>>();
     for series in from_elsewhere {
-        let first_placed = layer.pages.iter().filter(|page| page.series == series && page.grammar.as_deref() == Some("other-rendition")).min_by_key(|page| page.range.start).and_then(|page| page_number(&page.printed_label()));
+        let first_placed = pages.iter().filter(|page| page.series == series && page.grammar.as_deref() == Some("other-rendition")).min_by_key(|page| page.range.start).and_then(|page| page_number(&page.printed_label()));
         let Some(first_placed) = first_placed else { continue };
-        let ahead = layer.pages.iter().enumerate().filter(|(_, page)| page.series == series && page.grammar.as_deref() == Some("reckoned") && page.range.start == 0).filter_map(|(at, page)| Some((at, page_number(&page.printed_label())?))).collect::<Vec<_>>();
+        let ahead = pages.iter().enumerate().filter(|(_, page)| page.series == series && page.grammar.as_deref() == Some("reckoned") && page.range.start == 0).filter_map(|(at, page)| Some((at, page_number(&page.printed_label())?))).collect::<Vec<_>>();
         let opening = ahead.iter().filter(|mark| mark.1 + 1 == first_placed).map(|mark| mark.0).next();
         for (at, _) in &ahead {
-            layer.pages[*at].grammar = Some((if Some(*at) == opening { "opening" } else { "stray" }).to_owned());
+            pages[*at].grammar = Some((if Some(*at) == opening { "opening" } else { "stray" }).to_owned());
         }
     }
+})();
+    put(structure, pages);
+    result
 }
 
-fn finish(layer: &mut OpinionLayer, record: &OpinionRecord) {
-    opening_from_other_renditions(layer);
-    quotes_from_elsewhere(layer);
-    flag_pages_in_notes(layer);
-    page_series(layer, record);
-    close_pages(layer);
-    tidy_paragraphs(layer);
-    label_notes(layer);
-    enumerated_titles(layer);
-    take_marked_titles(layer);
-    title_headings(layer);
-    list_items(layer);
-    sift_headings(layer);
-    witness_headings(layer);
-    witness_paragraphs(layer);
-    divisions_of_headnotes(layer);
-    head_lines(layer);
-    reporter_matter(layer);
-    cover_matter(layer);
-    read_the_text(layer);
-    notes_out_of_the_body(layer);
-    place_on_pages(layer);
+fn finish(structure: &mut DocumentStructure, pending: &mut Pending, record: &OpinionRecord) {
+    opening_from_other_renditions(structure);
+    quotes_from_elsewhere(structure, pending);
+    flag_pages_in_notes(structure);
+    page_series(structure, record);
+    close_pages(structure);
+    tidy_paragraphs(structure, pending);
+    label_notes(structure);
+    enumerated_titles(structure);
+    take_marked_titles(structure, pending);
+    title_headings(structure);
+    list_items(structure);
+    sift_headings(structure);
+    witness_headings(structure, pending);
+    witness_paragraphs(structure, pending);
+    divisions_of_headnotes(structure);
+    head_lines(structure);
+    reporter_matter(structure);
+    cover_matter(structure);
+    read_the_text(structure);
+    notes_out_of_the_body(structure);
+    place_on_pages(structure);
 }
 
 /// Marks placed from other renditions fall in notes too, and a note's page says nothing of the opinion's.
-fn flag_pages_in_notes(layer: &mut OpinionLayer) {
-    let mut ranges = layer.notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
+fn flag_pages_in_notes(structure: &mut DocumentStructure) {
+    let mut pages = take(structure, Of::Pages);
+    let mut notes = take(structure, Of::Notes);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
+    let mut ranges = notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
     ranges.sort_by_key(|note| note.range.start);
-    for page in &mut layer.pages {
+    for page in &mut pages {
         { let in_note = page.properties.contains_key("in_note") || ranges[..ranges.partition_point(|note| note.range.start <= page.range.start)].last().is_some_and(|note| page.range.start < note.range.end); if in_note { page.properties.insert("in_note".to_owned(), String::new()); } else { page.properties.remove("in_note"); } }
     }
+})();
+    put(structure, pages);
+    put(structure, notes);
+    result
 }
 
 /// An opinion-only rendition marks the case's first page where the opinion opens, past the marks another carried through the
 /// head: 739, 740, 738, 741. Lower than all before it and the run going straight on after it, it heads the text.
-fn opening_page_first(layer: &mut OpinionLayer) {
+fn opening_page_first(structure: &mut DocumentStructure) {
+    let mut pages = take(structure, Of::Pages);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     let mut lowered = false;
-    let series = layer.pages.iter().enumerate().filter(|(_, page)| !page.properties.contains_key("in_note") && page.series.starts_with("reporter")).fold(BTreeMap::<&str, Vec<(usize, u32)>>::new(), |mut all, (index, page)| {
+    let series = pages.iter().enumerate().filter(|(_, page)| !page.properties.contains_key("in_note") && page.series.starts_with("reporter")).fold(BTreeMap::<&str, Vec<(usize, u32)>>::new(), |mut all, (index, page)| {
         if let Some(number) = page_number(&page.printed_label()) { all.entry(&page.series).or_default().push((index, number)); }
         all
     }).into_values().collect::<Vec<_>>();
@@ -1448,82 +1514,111 @@ fn opening_page_first(layer: &mut OpinionLayer) {
         }
     }
     for index in opening {
-        layer.pages[index].range.start = 0;
+        pages[index].range.start = 0;
         lowered = true;
     }
     if lowered {
-        layer.pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.printed_label())).cmp(&(&right.series, right.range.start, page_number(right.printed_label()))));
+        pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.printed_label())).cmp(&(&right.series, right.range.start, page_number(right.printed_label()))));
     }
+})();
+    put(structure, pages);
+    result
 }
 
 /// Each numbering's pages in the text's order, each running to the next.
-fn close_pages(layer: &mut OpinionLayer) {
-    let text_end = utf16_len(&layer.text);
-    layer.pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.printed_label())).cmp(&(&right.series, right.range.start, page_number(right.printed_label()))));
+fn close_pages(structure: &mut DocumentStructure) {
+    let mut pages = take(structure, Of::Pages);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
+    let text_end = utf16_len(&structure.text);
+    pages.sort_by(|left, right| (&left.series, left.range.start, page_number(left.printed_label())).cmp(&(&right.series, right.range.start, page_number(right.printed_label()))));
     // A plain text can print a page's number twice, at its head and its foot: one page.
-    if layer.rendition == "plain_text.txt" {
-        layer.pages.dedup_by(|later, kept| {
+    if structure.opinion.as_mut().unwrap().rendition == "plain_text.txt" {
+        pages.dedup_by(|later, kept| {
             let same = later.series == kept.series && later.label == kept.label;
             if same { kept.range.end = kept.range.end.max(later.range.end); }
             same
         });
     }
-    opening_page_first(layer);
+    { put(structure, std::mem::take(&mut pages)); let result = opening_page_first(structure); pages = take(structure, Of::Pages); result };
     // A page opened twice is one page; a moved block's page is its block's alone and leaves the opinion's page as it was.
     let mut opened = HashSet::new();
-    let pages = std::mem::take(&mut layer.pages);
-    layer.pages = pages.into_iter().filter(|page| page.properties.contains_key("in_note") || !page.series.starts_with("reporter") || page.grammar.as_deref() == Some("stray") || page.grammar.as_deref() == Some("moved") || opened.insert((page.series.clone(), page.printed_label().to_owned()))).collect();
-    let count = layer.pages.len();
+    let pages = std::mem::take(&mut pages);
+    pages = pages.into_iter().filter(|page| page.properties.contains_key("in_note") || !page.series.starts_with("reporter") || page.grammar.as_deref() == Some("stray") || page.grammar.as_deref() == Some("moved") || opened.insert((page.series.clone(), page.printed_label().to_owned()))).collect();
+    let count = pages.len();
     for index in 0..count {
-        if layer.pages[index].range.end == 0 || matches!(layer.pages[index].source(), "other-rendition" | "reckoned") {
-            let next = layer.pages[index + 1..].iter().find(|page| page.series == layer.pages[index].series).map_or(text_end, |page| page.range.start);
-            layer.pages[index].range.end = next;
+        if pages[index].range.end == 0 || matches!(pages[index].source(), "other-rendition" | "reckoned") {
+            let next = pages[index + 1..].iter().find(|page| page.series == pages[index].series).map_or(text_end, |page| page.range.start);
+            pages[index].range.end = next;
         }
     }
     // What other renditions added cuts the page before it.
     for index in 1..count {
-        if layer.pages[index].series == layer.pages[index - 1].series && layer.pages[index - 1].range.end > layer.pages[index].range.start {
-            layer.pages[index - 1].range.end = layer.pages[index].range.start;
+        if pages[index].series == pages[index - 1].series && pages[index - 1].range.end > pages[index].range.start {
+            pages[index - 1].range.end = pages[index].range.start;
         }
     }
+})();
+    put(structure, pages);
+    result
 }
 
-fn tidy_paragraphs(layer: &mut OpinionLayer) {
-    let note_ranges = layer.notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
-    settle(&mut layer.paragraphs, &layer.headings, &note_ranges);
-    rejoin_paragraphs(layer);
-    drop_empty_paragraphs(layer);
-    hold_leftovers(layer);
-    number_paragraphs(layer);
-    speakers(layer);
-    separate_parts(layer);
-    printed_headnote_marks(layer);
+fn tidy_paragraphs(structure: &mut DocumentStructure, pending: &mut Pending) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut notes = take(structure, Of::Notes);
+    let mut headings = take(structure, Of::Headings);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
+    let note_ranges = notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
+    settle(&mut paragraphs, &headings, &note_ranges);
+    { put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut notes)); put(structure, std::mem::take(&mut headings)); let result = rejoin_paragraphs(structure); paragraphs = take(structure, Of::Paragraphs); notes = take(structure, Of::Notes); headings = take(structure, Of::Headings); result };
+    { put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut notes)); put(structure, std::mem::take(&mut headings)); let result = drop_empty_paragraphs(structure); paragraphs = take(structure, Of::Paragraphs); notes = take(structure, Of::Notes); headings = take(structure, Of::Headings); result };
+    { put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut notes)); put(structure, std::mem::take(&mut headings)); let result = hold_leftovers(structure); paragraphs = take(structure, Of::Paragraphs); notes = take(structure, Of::Notes); headings = take(structure, Of::Headings); result };
+    { put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut notes)); put(structure, std::mem::take(&mut headings)); let result = number_paragraphs(structure, pending); paragraphs = take(structure, Of::Paragraphs); notes = take(structure, Of::Notes); headings = take(structure, Of::Headings); result };
+    { put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut notes)); put(structure, std::mem::take(&mut headings)); let result = speakers(structure); paragraphs = take(structure, Of::Paragraphs); notes = take(structure, Of::Notes); headings = take(structure, Of::Headings); result };
+    { put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut notes)); put(structure, std::mem::take(&mut headings)); let result = separate_parts(structure); paragraphs = take(structure, Of::Paragraphs); notes = take(structure, Of::Notes); headings = take(structure, Of::Headings); result };
+    { put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut notes)); put(structure, std::mem::take(&mut headings)); let result = printed_headnote_marks(structure); paragraphs = take(structure, Of::Paragraphs); notes = take(structure, Of::Notes); headings = take(structure, Of::Headings); result };
+})();
+    put(structure, paragraphs);
+    put(structure, notes);
+    put(structure, headings);
+    result
 }
 
-fn label_notes(layer: &mut OpinionLayer) {
-    share_note_calls(layer);
+fn label_notes(structure: &mut DocumentStructure) {
+    let mut notes = take(structure, Of::Notes);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
+    { put(structure, std::mem::take(&mut notes)); let result = share_note_calls(structure); notes = take(structure, Of::Notes); result };
     // Notes a source left unlabelled and unnumbered are numbered as they stand.
-    if layer.notes.iter().all(|note| note.printed_label().is_empty()) {
-        for (index, note) in layer.notes.iter_mut().enumerate() {
+    if notes.iter().all(|note| note.printed_label().is_empty()) {
+        for (index, note) in notes.iter_mut().enumerate() {
             note.printed_label() = Some(format!("fn{}", (index + 1).to_string()));
         }
     }
-    let mut answered = layer.notes.iter().flat_map(|note| note.calls.iter().copied()).collect::<Vec<_>>();
+    let mut answered = notes.iter().flat_map(|note| note.calls.iter().copied()).collect::<Vec<_>>();
     answered.sort_by_key(|known| known.start);
-    layer.unmatched_calls.retain(|call| {
+    structure.opinion.as_mut().unwrap().unmatched_calls.retain(|call| {
         answered[..answered.partition_point(|known| known.start < call.end)].last().is_none_or(|known| known.end <= call.start)
     });
+})();
+    put(structure, notes);
+    result
 }
 
 /// Each heading's words and level: a family of enumerators keeps its level, a new one goes under the last.
-fn title_headings(layer: &mut OpinionLayer) {
-    let mut calls = layer.notes.iter().flat_map(|note| note.calls.iter().copied()).collect::<Vec<_>>();
+fn title_headings(structure: &mut DocumentStructure) {
+    let mut notes = take(structure, Of::Notes);
+    let mut headings = take(structure, Of::Headings);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
+    let mut calls = notes.iter().flat_map(|note| note.calls.iter().copied()).collect::<Vec<_>>();
     calls.sort_by_key(|call| call.start);
-    let coordinates = ScalarText::new(&layer.text);
-    layer.headings.sort_by_key(|heading| heading.range.start);
+    let coordinates = ScalarText::new(&structure.text);
+    headings.sort_by_key(|heading| heading.range.start);
     let mut ladder = Vec::<String>::new();
     let mut letter = None;
-    for heading in &mut layer.headings {
+    for heading in &mut headings {
         // A note's call on a title is no word of it.
         let within = &calls[calls.partition_point(|call| call.start <= heading.range.start)..];
         let words_end = within.iter().take_while(|call| call.start < heading.range.end).find(|call| call.end + 1 >= heading.range.end).map_or(heading.range.end, |call| call.start);
@@ -1544,105 +1639,141 @@ fn title_headings(layer: &mut OpinionLayer) {
             ladder.len()
         };
     }
+})();
+    put(structure, notes);
+    put(structure, headings);
+    result
 }
 
 /// A heading's words decide last: a mark, a rule, a list's title or a contents line is none.
-fn sift_headings(layer: &mut OpinionLayer) {
-    for heading in std::mem::take(&mut layer.headings) {
+fn sift_headings(structure: &mut DocumentStructure) {
+    let mut headings = take(structure, Of::Headings);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
+    for heading in std::mem::take(&mut headings) {
         let range = Some(ScalarRange { start: heading.range.start, end: heading.range.end });
         if !heading.display_value.as_deref().unwrap_or("").chars().any(char::is_alphanumeric) {
             continue;
         }
         if text::contents_line(&heading.display_value.as_deref().unwrap_or("")) {
-            layer.front.push(FrontLine { role: "contents".to_owned(), text: heading.display_value.as_deref().unwrap_or(""), range });
+            structure.opinion.as_mut().unwrap().front.push(FrontLine { role: "contents".to_owned(), text: heading.display_value.as_deref().unwrap_or(""), range });
         } else if let Some(numbers) = heading.display_value.as_deref().unwrap_or("").starts_with('[').then(|| headnote_numbers(&heading.display_value.as_deref().unwrap_or(""))).flatten() {
-            layer.headnote_marks.push(HeadnoteMark { numbers, start: heading.range.start, end: heading.range.end, page: None });
+            structure.opinion.as_mut().unwrap().headnote_marks.push(HeadnoteMark { numbers, start: heading.range.start, end: heading.range.end, page: None });
         } else {
-            layer.headings.push(heading);
+            headings.push(heading);
         }
     }
+})();
+    put(structure, headings);
+    result
 }
 
 /// What is read from the finished text and paragraphs.
-fn read_the_text(layer: &mut OpinionLayer) {
-    let searched = layer.paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end))
-        .chain(layer.notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end)))).collect::<Vec<_>>();
-    layer.defined_terms = defined_terms(&layer.text, &searched);
-    layer.quotes = quotations(&layer.text, &layer.paragraphs);
-    layer.instruments = instruments(&layer.text, &layer.paragraphs);
-    layer.record_gaps = record_gaps(layer);
-    layer.document_kind = document_kind(&layer.text).to_owned();
+fn read_the_text(structure: &mut DocumentStructure) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut notes = take(structure, Of::Notes);
+    let mut headings = take(structure, Of::Headings);
+    let mut parts = take(structure, Of::Parts);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
+    let searched = paragraphs.iter().map(|paragraph| (paragraph.range.start, paragraph.range.end))
+        .chain(notes.iter().flat_map(|note| note.ranges.iter().map(|range| (range.start, range.end)))).collect::<Vec<_>>();
+    structure.opinion.as_mut().unwrap().defined_terms = defined_terms(&structure.text, &searched);
+    structure.opinion.as_mut().unwrap().quotes = quotations(&structure.text, &paragraphs);
+    structure.opinion.as_mut().unwrap().instruments = instruments(&structure.text, &paragraphs);
+    structure.opinion.as_mut().unwrap().record_gaps = { put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut notes)); put(structure, std::mem::take(&mut headings)); put(structure, std::mem::take(&mut parts)); let result = record_gaps(structure); paragraphs = take(structure, Of::Paragraphs); notes = take(structure, Of::Notes); headings = take(structure, Of::Headings); parts = take(structure, Of::Parts); result };
+    structure.opinion.as_mut().unwrap().document_kind = document_kind(&structure.text).to_owned();
     // Blocks past the last paragraph, or lines of the foot, may carry the order the paragraphs do not.
-    let last_text = layer.paragraphs.iter().map(|paragraph| paragraph.range.start).max().unwrap_or(0);
-    let closing = layer.headings.iter().map(|heading| ScalarRange { start: heading.range.start, end: heading.range.end })
-        .chain(layer.headnotes.iter().filter(|headnote| headnote.kind == "topics").filter_map(|headnote| headnote.range))
-        .chain(layer.front.iter().filter_map(|line| line.range))
+    let last_text = paragraphs.iter().map(|paragraph| paragraph.range.start).max().unwrap_or(0);
+    let closing = headings.iter().map(|heading| ScalarRange { start: heading.range.start, end: heading.range.end })
+        .chain(structure.opinion.as_mut().unwrap().headnotes.iter().filter(|headnote| headnote.kind == "topics").filter_map(|headnote| headnote.range))
+        .chain(structure.opinion.as_mut().unwrap().front.iter().filter_map(|line| line.range))
         .filter(|range| range.start >= last_text)
         // A slip's head may print its disposition: "AFFIRMED."
-        .chain(layer.front.iter().filter(|line| line.role == "cover").filter_map(|line| line.range)).collect::<Vec<_>>();
-    let (lines, outcomes) = dispositions(&layer.text, &layer.paragraphs, &layer.parts, &closing);
-    layer.front.extend(lines);
-    layer.outcomes = outcomes;
-    name_dates(&mut layer.front);
+        .chain(structure.opinion.as_mut().unwrap().front.iter().filter(|line| line.role == "cover").filter_map(|line| line.range)).collect::<Vec<_>>();
+    let (lines, outcomes) = dispositions(&structure.text, &paragraphs, &parts, &closing);
+    structure.opinion.as_mut().unwrap().front.extend(lines);
+    structure.opinion.as_mut().unwrap().outcomes = outcomes;
+    name_dates(&mut structure.opinion.as_mut().unwrap().front);
+})();
+    put(structure, paragraphs);
+    put(structure, notes);
+    put(structure, headings);
+    put(structure, parts);
+    result
 }
 
 /// How near the next page a note's call may stand, in UTF-16 units (a line and a half), before its note's page is in doubt.
 const CALL_AT_FOOT: usize = 120;
 
 /// The lead numbering's page of everything found, its pins in every numbering, and each paragraph's part.
-fn place_on_pages(layer: &mut OpinionLayer) {
+fn place_on_pages(structure: &mut DocumentStructure) {
+    let mut pages = take(structure, Of::Pages);
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut notes = take(structure, Of::Notes);
+    let mut headings = take(structure, Of::Headings);
+    let mut parts = take(structure, Of::Parts);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     let of_the_opinion = |page: &&StructureNode| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray");
     let mut counts = HashMap::<&str, usize>::new();
-    for page in layer.pages.iter().filter(of_the_opinion) {
+    for page in pages.iter().filter(of_the_opinion) {
         *counts.entry(page.series.as_str()).or_default() += 1;
     }
     let lead = counts.iter().max_by_key(|(series, count)| (series.starts_with("reporter"), **count, std::cmp::Reverse(**series))).map(|(series, _)| *series);
-    let lead_pages = layer.pages.iter().filter(of_the_opinion).filter(|page| Some(page.series.as_str()) == lead).map(|page| (page.range.start, page.printed_label().to_owned())).collect::<Vec<_>>();
+    let lead_pages = pages.iter().filter(of_the_opinion).filter(|page| Some(page.series.as_str()) == lead).map(|page| (page.range.start, page.printed_label().to_owned())).collect::<Vec<_>>();
     let page_at = |offset: usize| lead_pages.partition_point(|page| page.0 <= offset).checked_sub(1).map(|at| lead_pages[at].1.clone());
     // Each page under the names a pin cites it by: "*702", and "226 La. 702" where its numbering is a printing's.
-    for page in &mut layer.pages {
+    for page in &mut pages {
         let mut aliases = vec![format!("*{}", page.printed_label())];
-        aliases.extend(layer.page_series.iter().filter(|series| series.series == page.series).map(|series| format!("{} {}", series.reporter, page.printed_label())));
+        aliases.extend(structure.opinion.as_mut().unwrap().page_series.iter().filter(|series| series.series == page.series).map(|series| format!("{} {}", series.reporter, page.printed_label())));
         page.aliases = Some(aliases);
     }
-    for (index, part) in layer.parts.iter_mut().enumerate() {
+    for (index, part) in parts.iter_mut().enumerate() {
         part.id = format!("opinion-part-{}", index + 1);
     }
-    let table = pin_table(&layer.pages, &layer.page_series);
-    for block in &mut layer.blocks {
+    let table = pin_table(&pages, &structure.opinion.as_mut().unwrap().page_series);
+    for block in &mut structure.opinion.as_mut().unwrap().blocks {
         block.pins = pins_of(&table, block.start, block.start + 1);
     }
-    for heading in &mut layer.headings {
+    for heading in &mut headings {
         heading.pins = pins_of(&table, heading.range.start, heading.range.end);
     }
-    for paragraph in &mut layer.paragraphs {
+    for paragraph in &mut paragraphs {
         paragraph.pins = pins_of(&table, paragraph.range.start, paragraph.range.end);
-        paragraph.parent_id = layer.parts.iter().find(|part| part.range.start <= paragraph.range.start && paragraph.range.start < part.range.end).map(|part| part.id.clone());
+        paragraph.parent_id = parts.iter().find(|part| part.range.start <= paragraph.range.start && paragraph.range.start < part.range.end).map(|part| part.id.clone());
     }
     // A note's page is its call's: the notes of a text set at its end are still on the page that calls them. But a call on a
     // page's last line can have its note set on the next page, or run on to it; a source that marks where notes run on (Harvard)
     // says so, and one that marks no page inside any note cannot: there a call that close to the next page names no page.
-    let marks_run_ons = layer.pages.iter().any(|page| page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray"));
+    let marks_run_ons = pages.iter().any(|page| page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray"));
     let next_turn = |offset: usize| lead_pages.get(lead_pages.partition_point(|page| page.0 <= offset)).map(|page| page.0);
-    for note in &mut layer.notes {
+    for note in &mut notes {
         let call = note.calls.first().map_or(note.range.start, |call| call.start);
         let at_foot = !marks_run_ons && note.calls.first().is_some() && next_turn(call).is_some_and(|turn| turn - call <= CALL_AT_FOOT);
         note.page = if at_foot { None } else { page_at(call) };
         note.pins = if at_foot { Vec::new() } else { pins_of(&table, call, call + 1) };
     }
-    for mark in &mut layer.headnote_marks {
+    for mark in &mut structure.opinion.as_mut().unwrap().headnote_marks {
         mark.page = page_at(mark.start);
     }
-    for call in &mut layer.unmatched_calls {
+    for call in &mut structure.opinion.as_mut().unwrap().unmatched_calls {
         call.page = page_at(call.start);
     }
-    for table in &mut layer.tables {
+    for table in &mut structure.opinion.as_mut().unwrap().tables {
         table.page = page_at(table.start);
     }
-    for term in &mut layer.defined_terms {
+    for term in &mut structure.opinion.as_mut().unwrap().defined_terms {
         term.page = page_at(term.start);
     }
-    for quote in &mut layer.quotes {
+    for quote in &mut structure.opinion.as_mut().unwrap().quotes {
         quote.page = page_at(quote.start);
     }
+})();
+    put(structure, pages);
+    put(structure, paragraphs);
+    put(structure, notes);
+    put(structure, headings);
+    put(structure, parts);
+    result
 }

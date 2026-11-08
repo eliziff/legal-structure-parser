@@ -18,7 +18,10 @@ pub(super) fn note_label_of(structure: &DocumentStructure, coordinates: &ScalarT
 /// judge's or counsel's note sits ahead of the opinion. One is the same note if a note of ours shares most of its words,
 /// whatever a scanner did to the rest; else it is new, and its words join the end of the reading text. Either way a note of
 /// ours with no call takes the other's, placed by the words before it.
-pub(super) fn supply_notes(layer: &mut OpinionLayer, other: &DocumentStructure) {
+pub(super) fn supply_notes(structure: &mut DocumentStructure, other: &DocumentStructure) {
+    let mut notes = take(structure, Of::Notes);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     const SHINGLE: usize = 4;
     if other.notes.is_empty() {
         return;
@@ -26,12 +29,12 @@ pub(super) fn supply_notes(layer: &mut OpinionLayer, other: &DocumentStructure) 
     let words_of = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<HashSet<_>>();
     let coordinates = ScalarText::new(other.query_text());
     let held = {
-        let ours = ScalarText::new(&layer.text);
-        layer.notes.iter().map(|note| {
+        let ours = ScalarText::new(&structure.text);
+        notes.iter().map(|note| {
             note.ranges.iter().filter_map(|range| ours.slice_utf16(range.start..range.end)).map(words_of).fold(HashSet::new(), |mut all, part| { all.extend(part); all })
         }).collect::<Vec<_>>()
     };
-    let ours = word_starts(&layer.text);
+    let ours = word_starts(&structure.text);
     let mut ending = HashMap::<String, Option<usize>>::new();
     for (at, window) in ours.windows(SHINGLE).enumerate() {
         let shingle = window.iter().map(|word| word.0.as_str()).collect::<Vec<_>>().join(" ");
@@ -55,21 +58,24 @@ pub(super) fn supply_notes(layer: &mut OpinionLayer, other: &DocumentStructure) 
         }
         let calls = note.calls.iter().filter_map(|call| placed(call.range)).collect::<Vec<_>>();
         if let Some(same) = held.iter().position(|ours| words.iter().filter(|word| ours.contains(*word)).count() * 2 > words.len()) {
-            layer.note_witness[usize::from(layer.notes[same].calls.is_empty())] += 1;
-            if layer.notes[same].calls.is_empty() {
-                layer.notes[same].properties.contains_key("called_outside") = calls.is_empty() && !note.calls.is_empty();
-                layer.notes[same].calls = calls;
+            structure.opinion.as_mut().unwrap().note_witness[usize::from(notes[same].calls.is_empty())] += 1;
+            if notes[same].calls.is_empty() {
+                notes[same].properties.contains_key("called_outside") = calls.is_empty() && !note.calls.is_empty();
+                notes[same].calls = calls;
             }
             continue;
         }
-        layer.note_witness[2] += 1;
-        layer.text.push('\n');
-        let start = utf16_len(&layer.text);
-        layer.text.push_str(body);
+        structure.opinion.as_mut().unwrap().note_witness[2] += 1;
+        structure.text.push('\n');
+        let start = utf16_len(&structure.text);
+        structure.text.push_str(body);
         let range = ScalarRange { start, end: start + utf16_len(body) };
         let called_outside = calls.is_empty() && !note.calls.is_empty();
-        layer.notes.push({ let mut note = read_note(label, start, range.end, vec![range], calls); if called_outside { note.properties.insert("called_outside".to_owned(), String::new()); } note });
+        notes.push({ let mut note = read_note(label, start, range.end, vec![range], calls); if called_outside { note.properties.insert("called_outside".to_owned(), String::new()); } note });
     }
+})();
+    put(structure, notes);
+    result
 }
 
 /// Words that open on a reporter's abbreviation: "F.Supp. at 843", "A.2d 12", "O.S.2021".
@@ -216,18 +222,22 @@ pub(super) fn unmatched_calls(structure: &DocumentStructure, coordinates: &Scala
 
 /// Calls the source left unlinked find their notes by label, in order; and where no note answers, the numbered paragraphs
 /// past the last call that run through their labels are the notes, set as text.
-pub(super) fn answer_calls(layer: &mut OpinionLayer) {
+pub(super) fn answer_calls(structure: &mut DocumentStructure) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut notes = take(structure, Of::Notes);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     static OPENING: OnceLock<Regex> = OnceLock::new();
-    let mut calls = std::mem::take(&mut layer.unmatched_calls);
+    let mut calls = std::mem::take(&mut structure.opinion.as_mut().unwrap().unmatched_calls);
     calls.sort_by_key(|call| call.start);
-    for note in layer.notes.iter_mut().filter(|note| note.calls.is_empty()) {
+    for note in notes.iter_mut().filter(|note| note.calls.is_empty()) {
         if let Some(at) = calls.iter().position(|call| plain_label(&call.label) == plain_label(&note.printed_label())) {
             let call = calls.remove(at);
             note.calls.push(ScalarRange { start: call.start, end: call.end });
         }
     }
     calls.retain(|call| {
-        let Some(note) = layer.notes.iter_mut().find(|note| plain_label(&note.printed_label()) == plain_label(&call.label)) else { return true };
+        let Some(note) = notes.iter_mut().find(|note| plain_label(&note.printed_label()) == plain_label(&call.label)) else { return true };
         note.calls.push(ScalarRange { start: call.start, end: call.end });
         false
     });
@@ -235,28 +245,28 @@ pub(super) fn answer_calls(layer: &mut OpinionLayer) {
     wanted.sort_unstable();
     wanted.dedup();
     // A note list's own markers open their paragraphs: the last call is the last in the text's run.
-    let opens = |call: &&UnmatchedCall| layer.paragraphs.binary_search_by_key(&call.start, |paragraph| paragraph.range.start).is_ok();
+    let opens = |call: &&UnmatchedCall| paragraphs.binary_search_by_key(&call.start, |paragraph| paragraph.range.start).is_ok();
     let mut last_call = calls.iter().filter(|call| !opens(call)).map(|call| call.end).max().unwrap_or(0);
     // A list under a notes title needs no call at all.
     static TITLE: OnceLock<Regex> = OnceLock::new();
-    let title = TITLE.get_or_init(|| Regex::new(r"(?mi)^[ \t]*(?:(?:foot|end)?notes?|escolios?)[ \t]*:?[ \t]*$").unwrap()).find_iter(&layer.text).last();
-    let titled = title.is_some() && layer.notes.is_empty();
-    if let Some(title) = title.filter(|_| layer.notes.is_empty()) {
-        last_call = utf16_len(&layer.text[..title.end()]);
+    let title = TITLE.get_or_init(|| Regex::new(r"(?mi)^[ \t]*(?:(?:foot|end)?notes?|escolios?)[ \t]*:?[ \t]*$").unwrap()).find_iter(&structure.text).last();
+    let titled = title.is_some() && notes.is_empty();
+    if let Some(title) = title.filter(|_| notes.is_empty()) {
+        last_call = utf16_len(&structure.text[..title.end()]);
         if wanted.is_empty() {
             wanted = (1..1000).collect();
         }
     }
     if !wanted.is_empty() {
         let opening = OPENING.get_or_init(|| Regex::new(r"^[\[(]{0,2}(\d{1,3})[\])\.]{0,2}(?:\s|\p{Lu})").unwrap());
-        let coordinates = ScalarText::new(&layer.text);
+        let coordinates = ScalarText::new(&structure.text);
         let mut found = Vec::new();
         let printed_of = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js);
         // A list of notes stands last, and a list in the opinion may print its numbers first: "(3) Was the conduct ...". Read from
         // the tail back, each note is the last paragraph that prints its number.
         let mut chosen = HashMap::new();
         let mut ceiling = u32::MAX;
-        for paragraph in layer.paragraphs.iter().rev().take_while(|paragraph| paragraph.range.start >= last_call) {
+        for paragraph in paragraphs.iter().rev().take_while(|paragraph| paragraph.range.start >= last_call) {
             let number = printed_of(paragraph).and_then(|printed| opening.captures(printed)).and_then(|capture| capture[1].parse::<u32>().ok());
             if let Some(number) = number.filter(|number| *number < ceiling && wanted.contains(number)) {
                 chosen.insert(paragraph.range.start, number);
@@ -267,7 +277,7 @@ pub(super) fn answer_calls(layer: &mut OpinionLayer) {
         // the last note of no list is the opinion, a number having opened a paragraph of it. A paragraph's own mark ends any note.
         let mut under = None;
         let mut closed = false;
-        for paragraph in layer.paragraphs.iter().filter(|paragraph| paragraph.range.start >= last_call) {
+        for paragraph in paragraphs.iter().filter(|paragraph| paragraph.range.start >= last_call) {
             let Some(printed) = printed_of(paragraph) else { continue };
             if let Some(number) = chosen.get(&paragraph.range.start) {
                 if let (Some(last), Some(end)) = (found.last_mut(), under.take()) {
@@ -290,34 +300,41 @@ pub(super) fn answer_calls(layer: &mut OpinionLayer) {
             for (number, start, end) in found {
                 let label = number.to_string();
                 let references = calls.iter().filter(|call| plain_label(&call.label) == label).map(|call| ScalarRange { start: call.start, end: call.end }).collect();
-                layer.notes.push(read_note(label, start, end, vec![ScalarRange { start, end }], references));
+                notes.push(read_note(label, start, end, vec![ScalarRange { start, end }], references));
             }
-            let answered = layer.notes.iter().map(|note| plain_label(&note.printed_label())).collect::<HashSet<_>>();
+            let answered = notes.iter().map(|note| plain_label(&note.printed_label())).collect::<HashSet<_>>();
             calls.retain(|call| !answered.contains(plain_label(&call.label)));
-            layer.notes.sort_by_key(|note| note.range.start);
+            notes.sort_by_key(|note| note.range.start);
         }
     }
-    layer.unmatched_calls = calls;
+    structure.opinion.as_mut().unwrap().unmatched_calls = calls;
+})();
+    put(structure, paragraphs);
+    put(structure, notes);
+    result
 }
 
 /// Notes set flat in the text, each under its own "Footnote 1:" or "[Note 1]", with the calls that name them ("[FN1]",
 /// "[Note 1]"). A source's one note round all of them gives way to them.
-pub(super) fn flat_notes(layer: &mut OpinionLayer) {
+pub(super) fn flat_notes(structure: &mut DocumentStructure) {
+    let mut notes = take(structure, Of::Notes);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     static LABEL: OnceLock<Regex> = OnceLock::new();
     static CALL: OnceLock<Regex> = OnceLock::new();
     let label = LABEL.get_or_init(|| Regex::new(r"(?m)^[ \t]*(?:(?:Footnote|FN) ?(\d{1,3}|\*+)(?: ?[:.]|[ \t]+\p{Lu}|[ \t]*$)|\[(?:Note|FN) ?(\d{1,3})\])").unwrap());
-    let opened = label.captures_iter(&layer.text).filter_map(|capture| {
+    let opened = label.captures_iter(&structure.text).filter_map(|capture| {
         let whole = capture.get(0)?;
         Some((whole.start(), whole.end(), capture.get(1).or_else(|| capture.get(2))?.as_str().to_owned()))
     }).collect::<Vec<_>>();
     if opened.is_empty() {
         return;
     }
-    let mut units = Units::new(&layer.text);
-    let calls = CALL.get_or_init(|| Regex::new(r"\[(?:FN ?|fn\.? ?|Note )(\d{1,3})\]").unwrap()).captures_iter(&layer.text)
+    let mut units = Units::new(&structure.text);
+    let calls = CALL.get_or_init(|| Regex::new(r"\[(?:FN ?|fn\.? ?|Note )(\d{1,3})\]").unwrap()).captures_iter(&structure.text)
         .filter(|capture| !opened.iter().any(|open| open.0 <= capture.get(0).unwrap().start() && capture.get(0).unwrap().start() < open.1))
         .map(|capture| { let whole = capture.get(0).unwrap(); (capture[1].to_owned(), units.at(whole.start()), utf16_len(whole.as_str())) }).collect::<Vec<_>>();
-    let mut units = Units::new(&layer.text);
+    let mut units = Units::new(&structure.text);
     let starts = opened.iter().map(|open| units.at(open.1)).collect::<Vec<_>>();
     // A note set flat ends with its own paragraph, ahead of the next note or not: the opinion goes on below it. A plain text's
     // lines wrap, so its paragraphs end at a blank line; a paragraph's own mark ends one anywhere.
@@ -325,36 +342,42 @@ pub(super) fn flat_notes(layer: &mut OpinionLayer) {
     static BROKEN: OnceLock<Regex> = OnceLock::new();
     let past = PAST.get_or_init(|| Regex::new(r"\n[ \t]*\n|\n[ \t]*[\[{(]?¶").unwrap());
     let broken = BROKEN.get_or_init(|| Regex::new(r"\n").unwrap());
-    let closes = if layer.rendition == "plain_text.txt" { past } else { broken };
-    let mut units = Units::new(&layer.text);
+    let closes = if structure.opinion.as_mut().unwrap().rendition == "plain_text.txt" { past } else { broken };
+    let mut units = Units::new(&structure.text);
     let stops = opened.iter().enumerate().map(|(index, open)| {
-        let limit = opened.get(index + 1).map_or(layer.text.len(), |next| next.0);
-        let body = &layer.text[open.1..limit];
+        let limit = opened.get(index + 1).map_or(structure.text.len(), |next| next.0);
+        let body = &structure.text[open.1..limit];
         let lead = body.len() - body.trim_start().len();
         units.at(closes.find(&body[lead..]).map_or(limit, |close| open.1 + lead + close.start()))
     }).collect::<Vec<_>>();
     let found = opened.iter().enumerate().map(|(index, (_, _, number))| (number.clone(), starts[index], stops[index])).collect::<Vec<_>>();
     for (number, start, stop) in found {
-        if layer.notes.iter().any(|note| note.printed_label() == number && note.range.start <= start && start < note.range.end) {
+        if notes.iter().any(|note| note.printed_label() == number && note.range.start <= start && start < note.range.end) {
             continue;
         }
-        layer.notes.retain(|note| !(note.range.start <= start && start < note.range.end));
+        notes.retain(|note| !(note.range.start <= start && start < note.range.end));
         let references = calls.iter().filter(|call| call.0 == number).map(|call| ScalarRange { start: call.1, end: call.1 + call.2 }).collect();
-        layer.notes.push(read_note(number, start, stop, vec![ScalarRange { start, end: stop }], references));
+        notes.push(read_note(number, start, stop, vec![ScalarRange { start, end: stop }], references));
     }
-    layer.notes.sort_by_key(|note| note.range.start);
+    notes.sort_by_key(|note| note.range.start);
+})();
+    put(structure, notes);
+    result
 }
 
 /// A note whose body runs on through the next notes' numbers, "... 110. Id. 111. See note 86 supra.": a source's list of notes set
 /// as one block. Numbers climbing by ones from the note's own, after a finished sentence, are each a note if the text calls them.
-pub(super) fn split_note_lists(layer: &mut OpinionLayer) {
+pub(super) fn split_note_lists(structure: &mut DocumentStructure) {
+    let mut notes = take(structure, Of::Notes);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     const LEAST_RUN: usize = 2;
     static NUMBER: OnceLock<Regex> = OnceLock::new();
     let number = NUMBER.get_or_init(|| Regex::new(r"(?-u:\b)(\d{1,3})\. +\p{Lu}").unwrap());
-    let coordinates = ScalarText::new(&layer.text);
-    let called = layer.unmatched_calls.iter().filter_map(|call| plain_label(&call.label).parse::<u32>().ok()).collect::<HashSet<_>>();
+    let coordinates = ScalarText::new(&structure.text);
+    let called = structure.opinion.as_mut().unwrap().unmatched_calls.iter().filter_map(|call| plain_label(&call.label).parse::<u32>().ok()).collect::<HashSet<_>>();
     let mut added = Vec::new();
-    for note in layer.notes.iter_mut().filter(|note| note.ranges.len() == 1) {
+    for note in notes.iter_mut().filter(|note| note.ranges.len() == 1) {
         let Ok(mut next) = note.printed_label().parse::<u32>().map(|label| label + 1) else { continue };
         let range = note.ranges[0];
         let Some(body) = coordinates.slice_utf16(range.start..range.end) else { continue };
@@ -380,21 +403,28 @@ pub(super) fn split_note_lists(layer: &mut OpinionLayer) {
         }
     }
     if !added.is_empty() {
-        layer.notes.append(&mut added);
-        layer.notes.sort_by_key(|note| note.range.start);
+        notes.append(&mut added);
+        notes.sort_by_key(|note| note.range.start);
     }
+})();
+    put(structure, notes);
+    result
 }
 
 /// Notes of one label more than once (each opinion's own series) share their calls in order; a note with none takes a
 /// bracketed number in the text, where the source left it as words.
-pub(super) fn share_note_calls(layer: &mut OpinionLayer) {
+pub(super) fn share_note_calls(structure: &mut DocumentStructure) {
+    let mut paragraphs = take(structure, Of::Paragraphs);
+    let mut notes = take(structure, Of::Notes);
+    #[allow(clippy::redundant_closure_call)]
+    let result = (|| -> () {
     static CALL: OnceLock<Regex> = OnceLock::new();
     let mut by_label = HashMap::<String, Vec<usize>>::new();
-    for (index, note) in layer.notes.iter().enumerate() {
+    for (index, note) in notes.iter().enumerate() {
         by_label.entry(note.printed_label().clone()).or_default().push(index);
     }
     for indices in by_label.values().filter(|indices| indices.len() > 1) {
-        let mut calls = indices.iter().flat_map(|&index| layer.notes[index].calls.iter().copied()).collect::<Vec<_>>();
+        let mut calls = indices.iter().flat_map(|&index| notes[index].calls.iter().copied()).collect::<Vec<_>>();
         calls.sort_by_key(|call| call.start);
         // One call found twice, by the engine and through another rendition's copy of its note, a unit or two apart, is one call.
         calls.dedup_by(|later, kept| later.start <= kept.end + 2);
@@ -402,28 +432,28 @@ pub(super) fn share_note_calls(layer: &mut OpinionLayer) {
             // In the text's order each opinion's series follows the last; a note left over, another rendition's copy set at the
             // end, has no call of its own and takes none.
             let mut order = indices.clone();
-            order.sort_by_key(|&index| layer.notes[index].range.start);
+            order.sort_by_key(|&index| notes[index].range.start);
             for (position, &index) in order.iter().enumerate() {
-                layer.notes[index].calls = calls.get(position).copied().into_iter().collect();
+                notes[index].calls = calls.get(position).copied().into_iter().collect();
             }
         }
     }
-    if !layer.notes.iter().any(|note| note.calls.is_empty() && note.printed_label().bytes().all(|byte| byte.is_ascii_digit())) {
+    if !notes.iter().any(|note| note.calls.is_empty() && note.printed_label().bytes().all(|byte| byte.is_ascii_digit())) {
         return;
     }
-    let mut units = Units::new(&layer.text);
+    let mut units = Units::new(&structure.text);
     let mut printed = HashMap::<String, Vec<ScalarRange>>::new();
     let call = CALL.get_or_init(|| Regex::new(r"\[(\d{1,3})\]").unwrap());
-    for capture in call.captures_iter(&layer.text) {
+    for capture in call.captures_iter(&structure.text) {
         let whole = capture.get(0).unwrap();
         let unit = units.at(whole.start());
-        let opening = layer.paragraphs.iter().any(|paragraph| paragraph.range.start == unit);
-        if !opening && !layer.notes.iter().any(|note| note.ranges.iter().any(|range| range.start <= unit && unit < range.end)) {
+        let opening = paragraphs.iter().any(|paragraph| paragraph.range.start == unit);
+        if !opening && !notes.iter().any(|note| note.ranges.iter().any(|range| range.start <= unit && unit < range.end)) {
             printed.entry(capture[1].to_owned()).or_default().push(ScalarRange { start: unit, end: unit + utf16_len(whole.as_str()) });
         }
     }
-    let used = layer.notes.iter().flat_map(|note| note.calls.iter().map(|call| call.start)).collect::<HashSet<_>>();
-    for note in layer.notes.iter_mut().filter(|note| note.calls.is_empty()) {
+    let used = notes.iter().flat_map(|note| note.calls.iter().map(|call| call.start)).collect::<HashSet<_>>();
+    for note in notes.iter_mut().filter(|note| note.calls.is_empty()) {
         if let Some(calls) = printed.get_mut(&note.printed_label()) {
             calls.retain(|call| !used.contains(&call.start));
             if !calls.is_empty() {
@@ -431,4 +461,8 @@ pub(super) fn share_note_calls(layer: &mut OpinionLayer) {
             }
         }
     }
+})();
+    put(structure, paragraphs);
+    put(structure, notes);
+    result
 }
