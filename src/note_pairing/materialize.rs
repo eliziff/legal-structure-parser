@@ -162,18 +162,12 @@ pub(super) fn materialize(
         let body_start = start_of_body + after.chars().count()
             - after.trim_start_matches(|character: char| character.is_whitespace() || ".)],:;-".contains(character)).chars().count();
         let display = pair.label.note_id();
-        let unmaterialized = |diagnostics: &mut Vec<Diagnostic>| {
-            let mut diagnostic = Diagnostic::info("note_pair_unmaterialized", format!("Note '{display}' could not be placed."), Some(label_line.page_index));
-            diagnostic.details.insert("pair_id".to_owned(), json!(pair.pair_id));
-            diagnostics.push(diagnostic);
-        };
         // Placed in the reader's text: the label, the calls, and each body line (the label's from where the body opens).
         let label_range = place(&label_line.id, pair.label.start, pair.label.end).filter(|range| range.start < range.end);
         let calls = pair.refs.iter().map(|reference| place(&lines[reference.line].id, reference.start, reference.end)
             .filter(|range| range.start < range.end)).collect::<Option<Vec<_>>>();
         let whole = body_lines.iter().any(|line| place(&line.id, 0, line.text.chars().count()).is_some_and(|range| range.start < range.end));
         let (Some(label_range), Some(calls), true) = (label_range, calls, whole && (!pair.refs.is_empty() || support.supports_label_only())) else {
-            unmaterialized(&mut diagnostics);
             continue;
         };
         let ranges: Vec<ScalarRange> = body_lines.iter()

@@ -22,7 +22,6 @@ pub trait LayoutAnalysis: Sync {
     fn has_citation_cue(&self, text: &str) -> bool;
     fn has_citation_signal(&self, text: &str) -> bool;
     fn is_citation_shaped_tail(&self, text: &str) -> bool;
-    fn crossref_short_form(&self, text: &str, byte_start: usize) -> String;
 
     /// Restores the labels recognition misread from the runs they stand in: note labels whose
     /// leading digits it dropped, from the note chain, and paragraph and item numbers.

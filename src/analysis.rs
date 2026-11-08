@@ -60,11 +60,6 @@ impl LayoutAnalysis for EngineAnalysis {
         cues::is_citation_shaped_tail(text)
     }
 
-    fn crossref_short_form(&self, text: &str, byte_start: usize) -> String {
-        cues::crossref_short_form(text, byte_start)
-    }
-
-
     fn repair_label_dropouts(&self, pages: &mut [Page]) {
         crate::numbering_repair::repair_label_dropouts(pages);
         crate::numbering_repair::repair_paragraph_numbers(pages);
