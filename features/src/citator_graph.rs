@@ -15,7 +15,7 @@
 use crate::a2aj::{Document, Language, Source, StoreRow};
 use legal_structure::{
     caselaw_citation_lookup_key, classify_citator_excerpt, pair_numbered_footnotes, provider_text_document_structure,
-    DocumentKind, DocumentQuery, ProviderTextInput, ProviderTextSourceKind,
+    NodeKind, DocumentQuery, ProviderTextInput, ProviderTextSourceKind,
 };
 use legal_citations::{Authority, Citation, Form, Options, PinpointKind};
 use regex::Regex;
@@ -177,7 +177,7 @@ fn case_edges(case: &Case) -> (Vec<Edge>, u64, u64) {
         printed_pages: Vec::new(),
     }).map(|structure| {
         DocumentQuery::new().anchors(&structure, None)
-            .filter(|anchor| anchor.kind() == DocumentKind::Paragraph && anchor.parent_label().is_none())
+            .filter(|anchor| anchor.kind() == NodeKind::Paragraph && anchor.parent_label().is_none())
             .filter_map(|anchor| {
                 let number = anchor.label().split(|character: char| !character.is_ascii_digit())
                     .find(|digits| !digits.is_empty())?.parse().ok().filter(|number| *number != 0)?;

@@ -1,18 +1,6 @@
 use serde::ser::{SerializeStruct, Serializer};
-use legal_structure_model::Derivation;
+use legal_structure_model::{Derivation, NodeKind};
 use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DocumentKind {
-    Paragraph,
-    Page,
-    Section,
-    Footnote,
-    Table,
-    Row,
-    Cell,
-}
 
 #[derive(Clone, Copy, Default)]
 pub(crate) enum BlockFieldOrder {
@@ -29,7 +17,7 @@ pub struct DocumentBlock {
     pub ranges: Vec<legal_structure_model::ScalarRange>,
     #[serde(default, rename = "printedLabel")]
     pub printed_label: bool,
-    pub kind: DocumentKind,
+    pub kind: NodeKind,
     pub label: String,
     pub start: usize,
     pub end: usize,
@@ -49,7 +37,7 @@ pub struct DocumentBlock {
 
 impl DocumentBlock {
     pub(crate) fn new(
-        kind: DocumentKind,
+        kind: NodeKind,
         label: impl Into<String>,
         start: usize,
         end: usize,

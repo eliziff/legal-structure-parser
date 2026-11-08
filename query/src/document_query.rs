@@ -2,7 +2,7 @@ use legal_locator::{literal_page_marker, normalize_section_locator};
 use crate::{
     public_structure_label,
     text::{equal_fold, trim_javascript_whitespace as js_trim, JS_WHITESPACE_CLASS as JS_WS},
-    AuthoritativeTableCell, Derivation, DetectionProfile, DocumentBlock, DocumentKind,
+    AuthoritativeTableCell, Derivation, DetectionProfile, DocumentBlock,
     DocumentStructure, InstrumentCrossReferenceGraph,
     InstrumentCrossReferenceStatus, NodeKind, ScalarRange, ScalarText, StructureNode,
 };
@@ -231,21 +231,15 @@ fn projection_order(profile: Option<DetectionProfile>) -> ProjectionOrder {
     }
 }
 
-fn projected_kind(node: &StructureNode) -> Option<DocumentKind> {
-    Some(match node.kind {
-        NodeKind::Paragraph | NodeKind::Prose => DocumentKind::Paragraph,
-        NodeKind::Page => DocumentKind::Page,
-        NodeKind::Section => DocumentKind::Section,
-        NodeKind::Footnote => DocumentKind::Footnote,
-        NodeKind::Table => DocumentKind::Table,
-        NodeKind::Row => DocumentKind::Row,
-        NodeKind::Cell => DocumentKind::Cell,
-        NodeKind::Heading
-        | NodeKind::Endnote
-        | NodeKind::List
-        | NodeKind::ListItem
-        | NodeKind::Quote => return None,
-    })
+/// The kind of block a node is queried as: its own, a prose passage's a paragraph's; a heading, an endnote, a list, its
+/// item and a quotation are none.
+fn projected_kind(node: &StructureNode) -> Option<NodeKind> {
+    match node.kind {
+        NodeKind::Prose => Some(NodeKind::Paragraph),
+        NodeKind::Paragraph | NodeKind::Page | NodeKind::Section | NodeKind::Footnote | NodeKind::Table | NodeKind::Row
+        | NodeKind::Cell => Some(node.kind),
+        NodeKind::Heading | NodeKind::Endnote | NodeKind::List | NodeKind::ListItem | NodeKind::Quote => None,
+    }
 }
 
 fn position_label<'a>(document: &'a DocumentStructure, position: &BlockPosition) -> Cow<'a, str> {
@@ -379,7 +373,7 @@ pub struct DocumentAnchor<'a> {
     printed_label: bool,
     ranges: Vec<ScalarRange>,
     level: usize,
-    kind: DocumentKind,
+    kind: NodeKind,
     label: Cow<'a, str>,
     start: usize,
     end: usize,
@@ -396,7 +390,7 @@ pub struct DocumentAnchor<'a> {
 }
 
 impl DocumentAnchor<'_> {
-    pub fn kind(&self) -> DocumentKind { self.kind }
+    pub fn kind(&self) -> NodeKind { self.kind }
     pub fn label(&self) -> &str { &self.label }
     /// Its range in the document's text, in characters.
     pub fn range(&self) -> (usize, usize) { (self.start, self.end) }
@@ -822,7 +816,7 @@ impl DocumentQuery {
     pub fn viewer<'a>(
         &'a self,
         document: &'a DocumentStructure,
-        primary_kind: DocumentKind,
+        primary_kind: NodeKind,
         limit: usize,
     ) -> DocumentViewer<'a> {
         let full_text = document.query_text();
@@ -842,7 +836,7 @@ impl DocumentQuery {
             .anchors(document, Some(end))
             .filter(|anchor| {
                 anchor.start < end
-                    && (anchor.kind == DocumentKind::Page || anchor.kind == primary_kind)
+                    && (anchor.kind == NodeKind::Page || anchor.kind == primary_kind)
             })
             .collect::<Vec<_>>();
         let mut grouped = BTreeMap::<usize, Vec<_>>::new();
@@ -896,7 +890,7 @@ impl DocumentQuery {
             if primary.is_none() {
                 primary = anchors
                     .iter()
-                    .position(|anchor| anchor.kind == DocumentKind::Page);
+                    .position(|anchor| anchor.kind == NodeKind::Page);
             }
             let primary = primary.map(|index| anchors.remove(index));
             let slice_end = starts[index + 1];
@@ -904,7 +898,7 @@ impl DocumentQuery {
             if !slice_text.is_empty() || primary.is_some() || !anchors.is_empty() {
                 let depth = primary
                     .as_ref()
-                    .filter(|anchor| anchor.kind == DocumentKind::Section)
+                    .filter(|anchor| anchor.kind == NodeKind::Section)
                     .map_or(0, |anchor| anchor.level.saturating_sub(1));
                 slices.push(DocumentViewerSlice {
                     start,
@@ -982,7 +976,7 @@ impl DocumentQuery {
     pub fn blocks<'a>(
         &'a self,
         document: &'a DocumentStructure,
-        kind: Option<DocumentKind>,
+        kind: Option<NodeKind>,
     ) -> impl Iterator<Item = DocumentBlock> + 'a {
         self.positions(document)
             .iter()
@@ -1029,7 +1023,7 @@ impl DocumentQuery {
         document: &DocumentStructure,
         position: &BlockPosition,
         label: &str,
-        kind: Option<DocumentKind>,
+        kind: Option<NodeKind>,
     ) -> bool {
         self.position_matches(document, position, label)
             || (document.nodes[position.node]
@@ -1050,7 +1044,7 @@ impl DocumentQuery {
         &'a self,
         document: &DocumentStructure,
         label: &str,
-        kind: Option<DocumentKind>,
+        kind: Option<NodeKind>,
     ) -> Option<&'a BlockPosition> {
         let mut matches = self
             .positions(document)
@@ -1092,7 +1086,7 @@ impl DocumentQuery {
     fn requested_label<'a>(
         &self,
         document: &DocumentStructure,
-        kind: DocumentKind,
+        kind: NodeKind,
         locator: &'a str,
     ) -> Cow<'a, str> {
         let exact = js_trim(locator);
@@ -1130,7 +1124,7 @@ impl DocumentQuery {
     fn lookup_label(
         &self,
         document: &DocumentStructure,
-        kind: DocumentKind,
+        kind: NodeKind,
         requested_label: &str,
         context_blocks: usize,
     ) -> DocumentLookup {
@@ -1202,7 +1196,7 @@ impl DocumentQuery {
     pub fn read_range(
         &self,
         document: &DocumentStructure,
-        kind: DocumentKind,
+        kind: NodeKind,
         from: &str,
         to: &str,
         context_blocks: usize,
@@ -1256,7 +1250,7 @@ impl DocumentQuery {
             return Vec::new();
         };
         // Parallel reporter pages may overlap without owning one another.
-        if kind == DocumentKind::Page {
+        if kind == NodeKind::Page {
             return blocks.to_vec();
         }
         let mut ranges = blocks
@@ -1293,7 +1287,7 @@ impl DocumentQuery {
                 })
             })
             .collect::<Vec<_>>();
-        if kind != DocumentKind::Section || contained.len() <= 1 {
+        if kind != NodeKind::Section || contained.len() <= 1 {
             return contained;
         }
         // Range membership determines eligibility; only source parent edges
@@ -1354,7 +1348,7 @@ impl DocumentQuery {
     fn page_map(&self, document: &DocumentStructure) -> Vec<PageSpan> {
         let mut pages = Vec::new();
         for position in self.positions(document).iter().filter(|position| {
-            projected_kind(&document.nodes[position.node]) == Some(DocumentKind::Page)
+            projected_kind(&document.nodes[position.node]) == Some(NodeKind::Page)
         }) {
             let node = &document.nodes[position.node];
             let range = document.query_range(node);
@@ -1444,23 +1438,23 @@ impl DocumentQuery {
         let direct = js_trim(locator).to_lowercase();
         if direct.starts_with("table:") {
             let kind = if direct.contains("/col:") {
-                DocumentKind::Cell
+                NodeKind::Cell
             } else if direct.contains("/row:") {
-                DocumentKind::Row
+                NodeKind::Row
             } else {
-                DocumentKind::Table
+                NodeKind::Table
             };
             return self.lookup_label(document, kind, &direct, context_blocks);
         }
-        let normalized = normalize_document_locator(DocumentKind::Section, locator);
+        let normalized = normalize_document_locator(NodeKind::Section, locator);
         if !normalized.is_empty() {
             let found =
-                self.lookup_label(document, DocumentKind::Section, &normalized, context_blocks);
+                self.lookup_label(document, NodeKind::Section, &normalized, context_blocks);
             if !matches!(found.status, DocumentLookupStatus::NotFound) {
                 return found;
             }
         }
-        self.lookup_label(document, DocumentKind::Section, &direct, context_blocks)
+        self.lookup_label(document, NodeKind::Section, &direct, context_blocks)
     }
 
     pub fn graph_scope(
@@ -1501,7 +1495,7 @@ impl DocumentQuery {
         // identify exactly one reflected owner, including across repeated labels.
         let endpoint = |label: &str, start: usize, end: usize, target: bool| {
             let mut matches = self.positions(document).iter().filter(|position| {
-                if projected_kind(&document.nodes[position.node]) != Some(DocumentKind::Section)
+                if projected_kind(&document.nodes[position.node]) != Some(NodeKind::Section)
                     || !equal_fold(&position_label(document, position), label) { return false; }
                 let node = &document.nodes[position.node];
                 if target {
@@ -1655,7 +1649,7 @@ impl DocumentQuery {
     }
 }
 
-pub fn normalize_document_locator(kind: DocumentKind, locator: &str) -> String {
+pub fn normalize_document_locator(kind: NodeKind, locator: &str) -> String {
     static FOOTNOTE: OnceLock<Regex> = OnceLock::new();
     static PARAGRAPH: OnceLock<Regex> = OnceLock::new();
     static PAGE: OnceLock<Regex> = OnceLock::new();
@@ -1664,7 +1658,7 @@ pub fn normalize_document_locator(kind: DocumentKind, locator: &str) -> String {
         format!("{prefix}{}", capture[1].parse::<usize>().unwrap_or(0))
     };
     match kind {
-        DocumentKind::Footnote => {
+        NodeKind::Footnote => {
             return regex_parts(
                 &[
                     r"(?iu)^(?:fn|footnotes?|notes?)?(?:",
@@ -1676,7 +1670,7 @@ pub fn normalize_document_locator(kind: DocumentKind, locator: &str) -> String {
             .captures(value)
             .map_or_else(String::new, |capture| numbered(&capture, "fn"))
         }
-        DocumentKind::Paragraph => {
+        NodeKind::Paragraph => {
             return regex_parts(
                 &[
                     r"(?iu)^(?:\[",
@@ -1692,12 +1686,12 @@ pub fn normalize_document_locator(kind: DocumentKind, locator: &str) -> String {
             .captures(value)
             .map_or_else(String::new, |capture| numbered(&capture, "par"))
         }
-        DocumentKind::Page => {
+        NodeKind::Page => {
             return regex_parts(&[r"(?iu)^(?:pages?|pp?\.)?", JS_WS, r"*(\d{1,4})$"], &PAGE)
                 .captures(value)
                 .map_or_else(String::new, |capture| numbered(&capture, "page"))
         }
-        DocumentKind::Section => return normalize_section_locator(locator),
+        NodeKind::Section => return normalize_section_locator(locator),
         _ => return String::new(),
     }
 }

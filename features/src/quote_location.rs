@@ -865,7 +865,6 @@ pub fn document_quote_blocks(
     provisions: Option<Vec<QuoteBlockInput>>,
 ) -> Vec<QuoteBlockInput> {
     let pdf = source != QuoteSource::Text;
-    use legal_document_query::DocumentKind;
     use legal_structure::parse_ordinal;
     use legal_structure_model::NodeKind;
     let blocks = query.blocks(document, None).collect::<Vec<_>>();
@@ -896,15 +895,15 @@ pub fn document_quote_blocks(
     }
     let statute = provisions.is_some();
     printed.extend(provisions.unwrap_or_default());
-    let numbered_pages = pdf && blocks.iter().any(|block| block.kind == DocumentKind::Page && !block.aliases.is_empty());
+    let numbered_pages = pdf && blocks.iter().any(|block| block.kind == NodeKind::Page && !block.aliases.is_empty());
     static PARAGRAPH: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:paras?\.?|par|¶){JS_WHITESPACE_CLASS}*([0-9])")).unwrap());
     static PAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:pages?|pp?\.?){JS_WHITESPACE_CLASS}*([0-9])")).unwrap());
     static SECTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:sections?|ss?\.|sec){JS_WHITESPACE_CLASS}*([0-9])")).unwrap());
     printed.extend(blocks.into_iter().filter_map(|block| {
         let (kind, prefix) = match block.kind {
-            DocumentKind::Paragraph if !pdf => (QuoteBlockKind::Paragraph, &*PARAGRAPH),
-            DocumentKind::Page => (QuoteBlockKind::Page, &*PAGE),
-            DocumentKind::Section if !statute => (QuoteBlockKind::Section, &*SECTION),
+            NodeKind::Paragraph if !pdf => (QuoteBlockKind::Paragraph, &*PARAGRAPH),
+            NodeKind::Page => (QuoteBlockKind::Page, &*PAGE),
+            NodeKind::Section if !statute => (QuoteBlockKind::Section, &*SECTION),
             _ => return None,
         };
         // A page is the number it prints, where the PDF prints them; a page printing none is no locator then.

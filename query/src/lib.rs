@@ -5,7 +5,7 @@
 mod document_block;
 mod document_query;
 
-pub use document_block::{DocumentBlock, DocumentKind};
+pub use document_block::DocumentBlock;
 pub use document_query::*;
 
 use legal_structure_model::document::public_structure_label;

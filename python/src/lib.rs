@@ -1,6 +1,6 @@
 use legal_structure_core::{
     pair_numbered_footnotes as pair, provider_text_document_structure, utf16_len, DocumentBlock,
-    Derivation, DocumentKind, DocumentQuery, DocumentStructure, ProviderTextInput,
+    Derivation, NodeKind, DocumentQuery, DocumentStructure, ProviderTextInput,
     ProviderTextSourceKind, ScalarText,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -56,15 +56,10 @@ fn origin_name(origin: Derivation) -> &'static str {
     }
 }
 
-fn parse_kind(value: &str) -> PyResult<DocumentKind> {
-    match value {
-        "paragraph" => Ok(DocumentKind::Paragraph),
-        "page" => Ok(DocumentKind::Page),
-        "section" => Ok(DocumentKind::Section),
-        _ => Err(PyValueError::new_err(
-            "kind must be paragraph, page, or section",
-        )),
-    }
+fn parse_kind(value: &str) -> PyResult<NodeKind> {
+    NodeKind::named(value)
+        .filter(|kind| matches!(kind, NodeKind::Paragraph | NodeKind::Page | NodeKind::Section))
+        .ok_or_else(|| PyValueError::new_err("kind must be paragraph, page, or section"))
 }
 
 fn text_slice(text: &ScalarText<'_>, start: usize, end: usize) -> PyResult<String> {
@@ -101,17 +96,17 @@ struct Document {
 }
 
 impl Document {
-    fn primary(&self) -> Option<(&'static str, DocumentKind)> {
+    fn primary(&self) -> Option<(&'static str, NodeKind)> {
         [
-            ("paragraphs", DocumentKind::Paragraph),
-            ("pages", DocumentKind::Page),
-            ("sections", DocumentKind::Section),
+            ("paragraphs", NodeKind::Paragraph),
+            ("pages", NodeKind::Page),
+            ("sections", NodeKind::Section),
         ]
         .into_iter()
         .find(|(_, kind)| self.top_blocks(*kind).next().is_some())
     }
 
-    fn top_blocks(&self, kind: DocumentKind) -> impl Iterator<Item = DocumentBlock> + '_ {
+    fn top_blocks(&self, kind: NodeKind) -> impl Iterator<Item = DocumentBlock> + '_ {
         self.query
             .blocks(&self.structure, Some(kind))
             .filter(|block| block.parent_label.is_none())
@@ -260,14 +255,8 @@ impl Document {
                     text_slice(&text, cursor, block.start)?,
                 ));
             }
-            let kind = match block.kind {
-                DocumentKind::Paragraph => "paragraph",
-                DocumentKind::Page => "page",
-                DocumentKind::Section => "section",
-                _ => unreachable!("primary blocks are paragraphs, pages, or sections"),
-            };
             segments.push((
-                kind.to_owned(),
+                block.kind.name().to_owned(),
                 Some(block.label.clone()),
                 Some(origin_name(block.origin).to_owned()),
                 text_slice(&text, block.start, block.end)?,

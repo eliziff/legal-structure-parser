@@ -29,6 +29,16 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
+    pub const ALL: [Self; 13] = [
+        Self::Paragraph, Self::Page, Self::Section, Self::Heading, Self::Footnote, Self::Endnote, Self::Prose, Self::List,
+        Self::ListItem, Self::Quote, Self::Table, Self::Row, Self::Cell,
+    ];
+
+    /// The kind `name` names: `name`'s inverse.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.name() == name)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Paragraph => "paragraph",

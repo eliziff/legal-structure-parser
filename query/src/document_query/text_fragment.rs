@@ -52,7 +52,7 @@ impl DocumentQuery {
     pub fn range_fragment_plan(
         &self,
         document: &DocumentStructure,
-        kind: DocumentKind,
+        kind: NodeKind,
         start: &str,
         end: &str,
         pdf: bool,
@@ -68,7 +68,7 @@ impl DocumentQuery {
             // A citation's paragraph is the one printed with its number, never one the structure counted where it
             // read no numbers: the 38th block of prose is not paragraph 38.
             let node = &document.nodes[position.node];
-            (kind != DocumentKind::Paragraph || node.marker_range.is_some_and(|range| range.start < range.end))
+            (kind != NodeKind::Paragraph || node.marker_range.is_some_and(|range| range.start < range.end))
                 .then_some(position)
         };
         let first = resolve(start)?;
@@ -84,7 +84,7 @@ impl DocumentQuery {
             .take(if first_block_only { 1 } else { usize::MAX })
             .flat_map(|block| block.block.ranges)
             .map(|mut range| {
-                if kind == DocumentKind::Paragraph {
+                if kind == NodeKind::Paragraph {
                     range.start = (range.start + source.paragraph_marker_length(range.start)).min(range.end);
                 }
                 range
@@ -262,7 +262,7 @@ impl<'a> FragmentText<'a> {
             .iter()
             .filter_map(|node| {
                 // Marker offsets belong to source text, not a separate rendered projection.
-                if projected_kind(node) != Some(DocumentKind::Paragraph)
+                if projected_kind(node) != Some(NodeKind::Paragraph)
                     || document.query_range(node) != node.range
                 {
                     return None;
