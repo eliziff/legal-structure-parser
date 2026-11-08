@@ -2361,7 +2361,7 @@ fn native_markup_evidence(
                     start: scalar(range.start)?,
                     end: scalar(range.end)?,
                 },
-                applies_to: vec!["paragraph".to_owned(), "heading".to_owned()],
+                applies_to: vec![EvidenceKind::Paragraph, EvidenceKind::Heading],
             })
         })
         .collect::<Result<Vec<_>, EngineError>>()?;
@@ -2373,7 +2373,7 @@ fn native_markup_evidence(
                         start: scalar(element.range.start)?,
                         end: scalar(element.range.end)?,
                     },
-                    applies_to: vec!["heading".to_owned()],
+                    applies_to: vec![EvidenceKind::Heading],
                 });
             }
         }
@@ -2386,7 +2386,7 @@ fn native_markup_evidence(
                     start: 0,
                     end: scalar_end,
                 },
-                applies_to: vec!["heading".to_owned()],
+                applies_to: vec![EvidenceKind::Heading],
             });
         }
     }

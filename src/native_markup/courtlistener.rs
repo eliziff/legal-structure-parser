@@ -3357,10 +3357,10 @@ pub(super) fn inference_exclusions(evidence: &DocumentInput) -> (Vec<ScalarRange
             start: coordinates.utf16(exclusion.range.start),
             end: coordinates.utf16(exclusion.range.end),
         };
-        if exclusion.applies_to.iter().any(|kind| kind == "heading") {
+        if exclusion.applies_to.contains(&crate::EvidenceKind::Heading) {
             headings.push(range);
         }
-        if exclusion.applies_to.iter().any(|kind| kind == "paragraph") {
+        if exclusion.applies_to.contains(&crate::EvidenceKind::Paragraph) {
             body.push(range);
         }
     }

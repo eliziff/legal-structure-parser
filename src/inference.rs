@@ -174,7 +174,7 @@ pub(super) fn inferred_blocks(evidence: &DocumentInput, text: &ScalarText<'_>) -
             let mut exclusions = evidence
                 .exclusions
                 .iter()
-                .filter(|value| value.applies_to.iter().any(|name| name == "paragraph"))
+                .filter(|value| value.applies_to.contains(&crate::EvidenceKind::Paragraph))
                 .map(|value| value.range)
                 .collect::<Vec<_>>();
             exclusions.extend(layout.exclusions.iter().chain(&layout.gutter).copied());

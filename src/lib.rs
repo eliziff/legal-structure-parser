@@ -124,7 +124,7 @@ struct NativeClaim {
 
 struct Exclusion {
     range: ScalarRange,
-    applies_to: Vec<String>,
+    applies_to: Vec<EvidenceKind>,
 }
 
 pub(crate) struct DocumentInput {
@@ -192,7 +192,7 @@ impl DocumentInput {
         for value in self
             .exclusions
             .iter()
-            .filter(|value| value.applies_to.iter().any(|name| name == kind.name()))
+            .filter(|value| value.applies_to.contains(&kind))
         {
             if value.range.start <= range.start && range.start < value.range.end {
                 return None;

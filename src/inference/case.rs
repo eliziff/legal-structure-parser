@@ -752,7 +752,7 @@ pub(super) fn detect_case_prose(
         ScalarRange { start: text.scalar(line.byte_start + lead), end: text.scalar(line.byte_end) }
     };
     let mut excluded = evidence.exclusions.iter().filter(|item|
-        item.applies_to.iter().any(|kind| kind == "paragraph" || kind == "prose"))
+        item.applies_to.iter().any(|kind| matches!(kind, crate::EvidenceKind::Paragraph | crate::EvidenceKind::Prose)))
         .map(|item| item.range)
         .chain(layout.exclusions.iter().copied())
         .chain(layout.note_ranges.iter().copied())
