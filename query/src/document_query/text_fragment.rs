@@ -108,7 +108,7 @@ impl DocumentQuery {
             }
             // The member's words, from the first its printed label leaves.
             let mut selection = trimmed_selection(source, quote_index,
-                PhraseSpan { start: range.start, end: range.end, first_word, last_word }, false);
+                PhraseSpan { start: range.start, end: range.end, first_word, last_word });
             // A page that prints the number against the word after it leaves no word boundary before that word
             // ("57An application"): the passage starts at the next.
             let first = selection.desired.first_word;
@@ -359,7 +359,7 @@ fn markdown_label_length(value: &str) -> usize {
 /// A printed label at the start of `value`, markdown's bold number ("**78** The Minister", a federal act's as A2AJ
 /// holds it; a page prints the number plain) counted in every mode: measured 2026-10-18, a bare "78" left in a
 /// passage became a range's start and painted a history note.
-fn leading_label_length_with_mode(value: &str, _markdown: bool) -> usize {
+fn printed_label_length(value: &str) -> usize {
     leading_label_length(value).max(markdown_label_length(value))
 }
 
@@ -379,39 +379,34 @@ fn word_at_or_before(text: FragmentText<'_>, offset: usize, from: usize) -> Opti
         .find(|index| words[*index].start < offset)
 }
 
-fn adjust_span_edges_with_options(
-    text: FragmentText<'_>,
-    original: PhraseSpan,
-    trim_leading: bool,
-    markdown_labels: bool,
-) -> PhraseSpan {
+/// A span's edges past what a page prints around a passage's words: its printed labels before, a range of paragraph
+/// numbers after.
+fn adjust_span_edges(text: FragmentText<'_>, original: PhraseSpan) -> PhraseSpan {
     static TRAILING_ARTIFACT: OnceLock<Regex> = OnceLock::new();
     static LEADING_ATTACHED_ORDER: OnceLock<Regex> = OnceLock::new();
     static LEADING_NUMBERED_ITEM: OnceLock<Regex> = OnceLock::new();
     let mut start = original.start;
     let mut end = original.end;
-    if trim_leading {
-        let value = text.slice(start, end);
-        let leading = [
-            js_regex(
-                r"(?u)^(\[\s*\d{1,4}\s*\])AND\s+CONSIDERING\b",
-                &LEADING_ATTACHED_ORDER,
-            ),
-            js_regex(r"(?u)^(\d{1,4}\s+[–—]\s+)\p{Lu}", &LEADING_NUMBERED_ITEM),
-        ]
-        .into_iter()
-        .find_map(|pattern| pattern.captures(value))
-        .and_then(|captures| captures.get(1));
-        if let Some(leading) = leading {
-            start += utf16_len(leading.as_str());
+    let value = text.slice(start, end);
+    let leading = [
+        js_regex(
+            r"(?u)^(\[\s*\d{1,4}\s*\])AND\s+CONSIDERING\b",
+            &LEADING_ATTACHED_ORDER,
+        ),
+        js_regex(r"(?u)^(\d{1,4}\s+[–—]\s+)\p{Lu}", &LEADING_NUMBERED_ITEM),
+    ]
+    .into_iter()
+    .find_map(|pattern| pattern.captures(value))
+    .and_then(|captures| captures.get(1));
+    if let Some(leading) = leading {
+        start += utf16_len(leading.as_str());
+    }
+    loop {
+        let length = printed_label_length(text.slice(start, end));
+        if length == 0 {
+            break;
         }
-        loop {
-            let length = leading_label_length_with_mode(text.slice(start, end), markdown_labels);
-            if length == 0 {
-                break;
-            }
-            start += length;
-        }
+        start += length;
     }
     loop {
         let Some(artifact) = js_regex(
@@ -1361,7 +1356,6 @@ fn line_start_furniture_last_word(
     document: FragmentText<'_>,
     piece_first_word: usize,
     piece_last_word: usize,
-    markdown_labels: bool,
 ) -> Option<usize> {
     let words = document.tokens();
     let before = document.slice(0, words[piece_first_word].start);
@@ -1376,7 +1370,7 @@ fn line_start_furniture_last_word(
         .chars()
         .take_while(|character| matches!(character, ' ' | '\t'))
         .count();
-    let marker_length = leading_label_length_with_mode(&line[indent..], markdown_labels)
+    let marker_length = printed_label_length(&line[indent..])
         .max(document.paragraph_marker_length(line_start + indent));
     if marker_length == 0 {
         return None;
@@ -1945,15 +1939,12 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
     fn trim_leading_furniture(&mut self, span: PhraseSpan) -> Option<PhraseSpan> {
         static BILINGUAL: OnceLock<Regex> = OnceLock::new();
         let source = self.replay.document.slice(span.start, span.end);
-        let marker_length = leading_label_length_with_mode(source, self.split_html_source_blocks)
+        let marker_length = printed_label_length(source)
             .max(self.replay.document.paragraph_marker_length(span.start))
             .max(if self.split_html_source_blocks {
-                let markdown = markdown_label_length(source);
                 js_regex(r"(?u)^\(?\s*[^)]*(?:»|Â»)[^)]*\)\s*", &BILINGUAL)
                     .find(source)
-                    .map_or(markdown, |found| {
-                        markdown.max(utf16_len(&source[..found.end()]))
-                    })
+                    .map_or(0, |found| utf16_len(&source[..found.end()]))
             } else {
                 0
             });
@@ -2169,12 +2160,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         let words = self.replay.document.tokens();
         let first = self.line_first_word(word);
         let last = self.line_last_word(word);
-        let marker_last = line_start_furniture_last_word(
-            self.replay.document,
-            first,
-            last,
-            self.split_html_source_blocks,
-        );
+        let marker_last = line_start_furniture_last_word(self.replay.document, first, last);
         let line = self
             .replay
             .document
@@ -3436,7 +3422,7 @@ fn build_fragment_plan(
             complete = false;
             continue;
         };
-        let mut selection = trimmed_selection(block, quote_index, selected, split_html_source_blocks);
+        let mut selection = trimmed_selection(block, quote_index, selected);
         let Some(desired) = locate_document_quote(block, document, selection.desired) else {
             complete = false;
             continue;
@@ -3450,9 +3436,8 @@ fn build_fragment_plan(
 
 /// `selected` of `text` without its printed label ("[85]", "(a)") or trailing citation artifact, which a publisher
 /// may set apart from the words: quotations and passages a locator names are painted from their first word.
-fn trimmed_selection(text: FragmentText<'_>, quote_index: usize, selected: PhraseSpan, markdown_labels: bool)
-    -> FragmentSelection {
-    let desired = adjust_span_edges_with_options(text, selected, true, markdown_labels);
+fn trimmed_selection(text: FragmentText<'_>, quote_index: usize, selected: PhraseSpan) -> FragmentSelection {
+    let desired = adjust_span_edges(text, selected);
     FragmentSelection { quote_index, desired,
         clamp_leading: desired.start > selected.start,
         clamp_trailing: desired.end < selected.end }
