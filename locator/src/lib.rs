@@ -146,3 +146,166 @@ pub fn note_label(raw: &str) -> String {
     label.parse::<usize>().map_or(label, |number| number.to_string())
 }
 
+/// The words a label of any kind may open on, as a reader collapses labels: "s. 5(2)", "paras 12", "fn 3".
+fn label_words() -> &'static Regex {
+    static WORDS: OnceLock<Regex> = OnceLock::new();
+    WORDS.get_or_init(|| {
+        Regex::new(r"(?iu)^(?:sections?|secs?|ss?|s|paragraphs?|paras?|par|pages?|pp?|footnotes?|notes?|nn?|fn)\.?[\s._=-]*").unwrap()
+    })
+}
+
+fn is_dash(character: char) -> bool {
+    matches!(character, '\u{2013}' | '\u{2014}' | '-')
+}
+
+/// A provision's label as collapsing reads it: its root ("5", "A1", "33.1") and its parts ("(2)", "(a)").
+#[derive(Clone, PartialEq)]
+struct Provision {
+    root: String,
+    parts: Vec<String>,
+}
+
+impl Provision {
+    fn read(label: &str) -> Option<Self> {
+        static PROVISION: OnceLock<Regex> = OnceLock::new();
+        static PART: OnceLock<Regex> = OnceLock::new();
+        let label = label_words().replace(label, "");
+        let found = PROVISION.get_or_init(|| Regex::new(r"^([A-Za-z]?\d+(?:\.\d+)*)((?:\([^()\[\]]{1,12}\))*)$").unwrap()).captures(&label)?;
+        let parts = PART.get_or_init(|| Regex::new(r"\([^()\[\]]{1,12}\)").unwrap())
+            .find_iter(&found[2]).map(|part| part.as_str().to_owned()).collect();
+        Some(Self { root: found[1].to_owned(), parts })
+    }
+
+    fn text(&self) -> String {
+        [self.root.clone()].into_iter().chain(self.parts.iter().cloned()).collect()
+    }
+
+    /// Whether `child` is a part of this provision: the same root, its parts beginning with these.
+    fn holds(&self, child: &Self) -> bool {
+        self.root == child.root && self.parts.len() < child.parts.len() && self.parts.iter().zip(&child.parts).all(|(own, theirs)| own == theirs)
+    }
+
+    /// Whether `next` is the part after this one at the same depth: "(2)" after "(1)", "(b)" after "(a)", "(1.1)" after "(1)".
+    fn precedes(&self, next: &Self) -> bool {
+        let depth = self.parts.len();
+        if depth == 0 || depth != next.parts.len() || self.parts[..depth - 1] != next.parts[..depth - 1] {
+            return false;
+        }
+        let (a, b) = (&self.parts[depth - 1][1..self.parts[depth - 1].len() - 1], &next.parts[depth - 1][1..next.parts[depth - 1].len() - 1]);
+        let dotted = |value: &str| !value.is_empty() && value.split('.').all(|piece| !piece.is_empty() && piece.bytes().all(|byte| byte.is_ascii_digit()));
+        if dotted(a) && dotted(b) {
+            let from = a.split('.').map(|piece| piece.parse::<f64>().unwrap_or(f64::NAN)).collect::<Vec<_>>();
+            let to = b.split('.').map(|piece| piece.parse::<f64>().unwrap_or(f64::NAN)).collect::<Vec<_>>();
+            return b == format!("{a}.1") || to.len() <= from.len() && to[..to.len() - 1] == from[..to.len() - 1]
+                && to[to.len() - 1] == from[to.len() - 1] + 1.0;
+        }
+        let letter = |value: &str| value.len() == 1 && value.bytes().all(|byte| byte.is_ascii_lowercase());
+        letter(a) && letter(b) && b.as_bytes()[0] == a.as_bytes()[0] + 1
+    }
+}
+
+/// Provisions written as one span: their shared parts once, then the first's and the last's own ("5(2)(a)–(c)").
+fn provision_span(labels: &[String]) -> Option<String> {
+    let parsed = labels.iter().map(|label| Provision::read(label)).collect::<Option<Vec<_>>>()?;
+    let mut unique: Vec<Provision> = Vec::new();
+    for provision in parsed {
+        if let Some(known) = unique.iter_mut().find(|known| known.text() == provision.text()) { *known = provision; } else { unique.push(provision); }
+    }
+    let minimal = unique.iter().enumerate().filter(|(at, value)| !unique.iter().enumerate().any(|(other, holder)| other != *at && holder.holds(value)))
+        .map(|(_, value)| value.clone()).collect::<Vec<_>>();
+    if minimal.len() == 1 {
+        return Some(minimal[0].text());
+    }
+    let paths = minimal.iter().map(|value| [value.root.clone()].into_iter().chain(value.parts.iter().cloned()).collect::<Vec<_>>()).collect::<Vec<_>>();
+    let mut shared = 0;
+    while paths.iter().all(|path| path.len() > shared + 1) && paths.iter().all(|path| path[shared] == paths[0][shared]) {
+        shared += 1;
+    }
+    (shared > 0).then(|| format!("{}{}\u{2013}{}", paths[0][..shared].concat(), paths[0][shared..].concat(), paths[paths.len() - 1][shared..].concat()))
+}
+
+fn provisions(labels: &[String]) -> Option<Vec<String>> {
+    let mut unique: Vec<String> = Vec::new();
+    for label in labels {
+        if !unique.contains(label) { unique.push(label.clone()); }
+    }
+    let ends = |label: &str| label.split(is_dash).map(str::to_owned).collect::<Vec<_>>();
+    if unique.len() == 1 && unique[0].contains(is_dash) {
+        let endpoints = ends(&unique[0]).iter().map(|end| Provision::read(end)).collect::<Option<Vec<_>>>()?;
+        let texts = endpoints.iter().map(Provision::text).collect::<Vec<_>>();
+        return Some(vec![provision_span(&texts).unwrap_or_else(|| texts.join("\u{2013}"))]);
+    }
+    let values = unique.iter().flat_map(|label| ends(label)).map(|end| Provision::read(&end)).collect::<Option<Vec<_>>>()?;
+    if unique.iter().any(|label| label.contains(is_dash)) {
+        let parents = unique.iter().filter(|label| !label.contains(is_dash)).filter_map(|label| Provision::read(label)).collect::<Vec<_>>();
+        return Some(unique.iter().filter(|label| !parents.iter().any(|parent| ends(label).iter().all(|end| Provision::read(end).is_some_and(|end| parent.holds(&end)))))
+            .flat_map(|label| provisions(std::slice::from_ref(label)).unwrap_or_default()).collect());
+    }
+    let minimal = values.iter().enumerate().filter(|(at, value)| !values.iter().enumerate().any(|(other, holder)| other != *at && holder.holds(value)))
+        .map(|(_, value)| value.clone()).collect::<Vec<_>>();
+    let mut groups: Vec<(String, Vec<Provision>)> = Vec::new();
+    for value in minimal {
+        match groups.iter_mut().find(|(root, _)| *root == value.root) {
+            Some((_, group)) => group.push(value),
+            None => groups.push((value.root.clone(), vec![value])),
+        }
+    }
+    let mut spans = Vec::new();
+    for (_, group) in groups {
+        let mut index = 0;
+        while index < group.len() {
+            let first = &group[index];
+            let mut last = first;
+            while index + 1 < group.len() && last.precedes(&group[index + 1]) {
+                index += 1;
+                last = &group[index];
+            }
+            spans.push(if first == last { first.text() } else { provision_span(&[first.text(), last.text()])? });
+            index += 1;
+        }
+    }
+    Some(spans)
+}
+
+/// Numbered labels as runs: "12", "13", "14", "20" are "12–14", "20".
+fn numbered_runs(labels: &[String]) -> Option<Vec<String>> {
+    let mut values = Vec::new();
+    for label in labels {
+        let value = label_words().replace(label, "").trim().to_owned();
+        if !value.is_empty() && value.len() <= 6 && value.bytes().all(|byte| byte.is_ascii_digit()) {
+            let number = value.parse::<u64>().ok()?;
+            if !values.contains(&number) { values.push(number); }
+        } else {
+            return None;
+        }
+    }
+    values.sort_unstable();
+    let mut runs = Vec::new();
+    let mut index = 0;
+    while index < values.len() {
+        let start = values[index];
+        let mut end = start;
+        while values.get(index + 1) == Some(&(end + 1)) {
+            index += 1;
+            end = values[index];
+        }
+        runs.push(if start == end { start.to_string() } else { format!("{start}\u{2013}{end}") });
+        index += 1;
+    }
+    Some(runs)
+}
+
+/// A reader's labels of one kind written as few as they can be: paragraphs, pages and notes as runs of numbers,
+/// provisions as their spans with what a span or a holder already covers left out. None where a label is not of the
+/// kind's shape, or the kind has no such form.
+pub fn collapse_labels(labels: &[String], kind: &str) -> Option<Vec<String>> {
+    if labels.is_empty() {
+        return None;
+    }
+    match kind {
+        "paragraph" | "page" | "footnote" => numbered_runs(labels),
+        "section" => provisions(labels),
+        _ => None,
+    }
+}
+
