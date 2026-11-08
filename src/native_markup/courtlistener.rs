@@ -349,7 +349,7 @@ pub(super) fn supplement_courtlistener_declared_note_references(
                 .filter_map(|node| {
                     Some((
                         node.markup_start?,
-                        (Kind::Footnote, node.range.start, node.range.end),
+                        (EvidenceKind::Footnote, node.range.start, node.range.end),
                     ))
                 })
                 .collect::<HashMap<_, _>>();
@@ -1563,7 +1563,7 @@ pub(super) fn courtlistener_declared_note_marker(
     elements: &[MarkupElement],
     index: usize,
     text: &ScalarText,
-    owners: &HashMap<usize, (Kind, usize, usize)>,
+    owners: &HashMap<usize, (EvidenceKind, usize, usize)>,
 ) -> Option<(PendingBlock, ScalarRange)> {
     let note = &elements[index];
     let superscript = elements[index + 1..]
@@ -1582,7 +1582,7 @@ pub(super) fn courtlistener_declared_note_marker(
                 if courtlistener_ldml_note(element)
                     || owners
                         .get(&element.markup_start)
-                        .is_some_and(|(kind, _, _)| *kind == Kind::Footnote)
+                        .is_some_and(|(kind, _, _)| *kind == EvidenceKind::Footnote)
                 {
                     return false;
                 }
@@ -1640,7 +1640,7 @@ pub(super) fn courtlistener_declared_note_marker(
             (courtlistener_ldml_note(element)
                 || owners
                     .get(&element.markup_start)
-                    .is_some_and(|(kind, _, _)| *kind == Kind::Footnote))
+                    .is_some_and(|(kind, _, _)| *kind == EvidenceKind::Footnote))
                 && element.range.start < marker_range.end
                 && marker_range.start < element.range.end
         })
@@ -1669,7 +1669,7 @@ pub(super) fn courtlistener_declared_blocks(
                 .is_some_and(|classes| classes.split_ascii_whitespace().any(|value| value == name))
         };
         if courtlistener_ldml_note(element) && matched_role_starts.contains(&element.markup_start) {
-            Some(Kind::Footnote)
+            Some(EvidenceKind::Footnote)
         } else if (element.tag.eq_ignore_ascii_case("div")
             && (class("ldml-opinion") || class("ldml-section")))
             || (element.tag.eq_ignore_ascii_case("span") && class("ldml-appendix"))
@@ -1692,7 +1692,7 @@ pub(super) fn courtlistener_declared_blocks(
                     | "syllabus"
             ) && matched_role_starts.contains(&element.markup_start))
         {
-            Some(Kind::Section)
+            Some(EvidenceKind::Section)
         } else if (element.tag.eq_ignore_ascii_case("section") && class("ldml-heading"))
             || (element.tag == "p"
                 && element
@@ -1701,7 +1701,7 @@ pub(super) fn courtlistener_declared_blocks(
                     .is_some_and(|role| role == "header")
                 && matched_role_starts.contains(&element.markup_start))
         {
-            Some(Kind::Heading)
+            Some(EvidenceKind::Heading)
         } else {
             None
         }
@@ -1714,7 +1714,7 @@ pub(super) fn courtlistener_declared_blocks(
     }
     let note_text = elements
         .iter()
-        .any(|element| declared_role(element) == Some(Kind::Footnote))
+        .any(|element| declared_role(element) == Some(EvidenceKind::Footnote))
         .then(|| ScalarText::new(text));
     let mut owners = existing
         .iter()
@@ -1731,12 +1731,12 @@ pub(super) fn courtlistener_declared_blocks(
                 owner.tag.eq_ignore_ascii_case("dl")
                     && owners
                         .get(&owner.markup_start)
-                        .is_some_and(|&(kind, _, _)| kind == Kind::List)
+                        .is_some_and(|&(kind, _, _)| kind == EvidenceKind::List)
             });
         let kind = if let Some(kind) = declared_role(element) {
             kind
         } else if list || item {
-            Kind::List
+            EvidenceKind::List
         } else {
             continue;
         };
@@ -1750,7 +1750,7 @@ pub(super) fn courtlistener_declared_blocks(
             if owners
                 .get(&ancestor.markup_start)
                 .is_some_and(|&(kind, start, end)| {
-                    kind != Kind::Page && start <= element.range.start && end >= element.range.end
+                    kind != EvidenceKind::Page && start <= element.range.start && end >= element.range.end
                 })
             {
                 parent_label = Some(format!("native-markup-{}", ancestor.markup_start));
@@ -1764,7 +1764,7 @@ pub(super) fn courtlistener_declared_blocks(
             .map(|(name, value)| (name.to_ascii_lowercase(), value.clone()))
             .collect::<BTreeMap<_, _>>();
         let anchor = attributes.get("id").filter(|id| !id.is_empty()).cloned();
-        let note = (kind == Kind::Footnote)
+        let note = (kind == EvidenceKind::Footnote)
             .then(|| {
                 courtlistener_declared_note_marker(elements, index, note_text.as_ref()?, &owners)
             })
@@ -1773,7 +1773,7 @@ pub(super) fn courtlistener_declared_blocks(
         let (label, aliases) = note.map_or_else(
             || {
                 (
-                    if kind == Kind::Footnote {
+                    if kind == EvidenceKind::Footnote {
                         String::new()
                     } else {
                         anchor.clone().unwrap_or_default()
@@ -1823,7 +1823,7 @@ pub(super) fn courtlistener_printed_note_blocks(
     }
     let existing_notes = existing
         .iter()
-        .filter(|block| block.kind == Kind::Footnote)
+        .filter(|block| block.kind == EvidenceKind::Footnote)
         .map(|block| ScalarRange {
             start: block.start,
             end: block.end,
@@ -2009,7 +2009,7 @@ pub(super) fn courtlistener_printed_note_blocks(
                         attributes: element.attributes.clone(),
                         note_marker: Some(marker_range),
                     },
-                    kind: Kind::Footnote,
+                    kind: EvidenceKind::Footnote,
                     label: identity.label,
                     start: marker_range.end,
                     end,
@@ -2222,7 +2222,7 @@ pub(super) fn courtlistener_uncontained_note_blocks(
             })
             || existing.iter().any(|block| {
                 block.metadata.start == Some(note.markup_start)
-                    || block.kind == Kind::Footnote
+                    || block.kind == EvidenceKind::Footnote
                         && block.start < paragraph.range.end
                         && paragraph.range.start < block.end
             })
@@ -2416,7 +2416,7 @@ pub(super) fn courtlistener_uncontained_note_blocks(
                         attributes: note.attributes.clone(),
                         note_marker: Some(marker),
                     },
-                    kind: Kind::Footnote,
+                    kind: EvidenceKind::Footnote,
                     label: identity.label,
                     start: marker.end,
                     end: paragraph.range.end,
@@ -2442,7 +2442,7 @@ pub(super) fn courtlistener_uncontained_note_blocks(
         if anchors.get(name.as_str()).copied().flatten() != Some(note_index)
             || existing.iter().any(|block| {
                 block.metadata.start == Some(note.markup_start)
-                    || block.kind == Kind::Footnote
+                    || block.kind == EvidenceKind::Footnote
                         && block.start <= note.range.start
                         && note.range.end <= block.end
             })
@@ -2602,7 +2602,7 @@ pub(super) fn courtlistener_uncontained_note_blocks(
                     end: marker_start + utf16_len(label),
                 }),
             },
-            kind: Kind::Footnote,
+            kind: EvidenceKind::Footnote,
             label: identity.label,
             start,
             end: start + utf16_len(body),
@@ -3490,7 +3490,7 @@ pub(super) fn evidence(
         // Declared roles use the existing rendered source ranges. Creating
         // them while rendering would add breaks to previously retained text.
         for block in rendered_blocks.iter_mut() {
-            if block.kind == Kind::Prose
+            if block.kind == EvidenceKind::Prose
                 && block.metadata.start.is_some_and(|start| {
                     matched_role_starts.contains(&start)
                         && elements
@@ -3507,7 +3507,7 @@ pub(super) fn evidence(
                 })
             {
                 // Preserve this claim's identity, anchor, printed text and children.
-                block.kind = Kind::Heading;
+                block.kind = EvidenceKind::Heading;
             }
         }
         let declared = courtlistener_declared_blocks(
@@ -3524,7 +3524,7 @@ pub(super) fn evidence(
     let numbered_note_markers = courtlistener_numbered_note_markers(elements, matched_role_starts, text);
     let sibling_note_markers = courtlistener_sibling_note_markers(elements, text);
     for block in rendered_blocks.iter_mut() {
-        if block.kind == Kind::Footnote {
+        if block.kind == EvidenceKind::Footnote {
             if let Some((label, aliases, marker)) = block
                 .metadata
                 .start
@@ -3561,7 +3561,7 @@ pub(super) fn evidence(
 pub(super) fn sibling_note_labels(elements: &[MarkupElement], text: &str, rendered_blocks: &mut [RawBlock]) {
     let sibling_note_markers = courtlistener_sibling_note_markers(elements, text);
     for block in rendered_blocks.iter_mut() {
-        if block.kind == Kind::Footnote {
+        if block.kind == EvidenceKind::Footnote {
             if let Some((label, _)) = block
                 .metadata
                 .start

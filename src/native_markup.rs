@@ -144,37 +144,6 @@ pub struct NativeMarkupInput {
     scope: NativeMarkupScope,
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum Kind {
-    Paragraph,
-    Prose,
-    Page,
-    Section,
-    Heading,
-    Footnote,
-    List,
-    Table,
-    Row,
-    Cell,
-}
-
-impl Kind {
-    fn evidence(self) -> EvidenceKind {
-        match self {
-            Self::Paragraph => EvidenceKind::Paragraph,
-            Self::Prose => EvidenceKind::Prose,
-            Self::Page => EvidenceKind::Page,
-            Self::Section => EvidenceKind::Section,
-            Self::Heading => EvidenceKind::Heading,
-            Self::Footnote => EvidenceKind::Footnote,
-            Self::List => EvidenceKind::List,
-            Self::Table => EvidenceKind::Table,
-            Self::Row => EvidenceKind::Row,
-            Self::Cell => EvidenceKind::Cell,
-        }
-    }
-}
-
 #[derive(Clone, Default)]
 struct MarkupMetadata {
     start: Option<usize>,
@@ -185,7 +154,7 @@ struct MarkupMetadata {
 struct PendingBlock {
     metadata: MarkupMetadata,
     tag: String,
-    kind: Kind,
+    kind: EvidenceKind,
     label: String,
     start: usize,
     anchor: Option<String>,
@@ -199,7 +168,7 @@ struct PendingBlock {
 
 struct RawBlock {
     metadata: MarkupMetadata,
-    kind: Kind,
+    kind: EvidenceKind,
     label: String,
     start: usize,
     end: usize,
@@ -483,7 +452,7 @@ fn page_identity(
     Some(PendingBlock {
         metadata: MarkupMetadata::default(),
         tag: String::new(),
-        kind: Kind::Page,
+        kind: EvidenceKind::Page,
         label,
         start: 0,
         anchor,
@@ -545,7 +514,7 @@ fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<Pend
         return Some(PendingBlock {
             metadata: MarkupMetadata::default(),
             tag: String::new(),
-            kind: Kind::Footnote,
+            kind: EvidenceKind::Footnote,
             label: format!("fn{}", number.parse::<u32>().ok()?),
             start: 0,
             anchor,
@@ -577,7 +546,7 @@ fn footnote_identity(raw: &str, id: &str, anchor: Option<String>) -> Option<Pend
     Some(PendingBlock {
         metadata: MarkupMetadata::default(),
         tag: String::new(),
-        kind: Kind::Footnote,
+        kind: EvidenceKind::Footnote,
         label: if symbol
             .as_bytes()
             .get(..2)
@@ -652,7 +621,7 @@ fn native_identity(
                 footnote_identity(&raw, &id, anchor.clone()).unwrap_or_else(|| PendingBlock {
                     metadata: MarkupMetadata::default(),
                     tag: String::new(),
-                    kind: Kind::Footnote,
+                    kind: EvidenceKind::Footnote,
                     label: String::new(),
                     start: 0,
                     anchor,
@@ -708,7 +677,7 @@ fn native_identity(
         return Some(PendingBlock {
             metadata: MarkupMetadata::default(),
             tag: String::new(),
-            kind: Kind::Paragraph,
+            kind: EvidenceKind::Paragraph,
             label: format!("par{}", paragraph.parse::<u32>().ok()?),
             start: 0,
             anchor,
@@ -722,42 +691,42 @@ fn native_identity(
     }
     // Source positions identify unanchored structure without inventing browser IDs.
     let source_kind = match tag {
-        "p" | "blockquote" | "author" | "judges" | "attorneys" => Some(Kind::Prose),
+        "p" | "blockquote" | "author" | "judges" | "attorneys" => Some(EvidenceKind::Prose),
         // CAP's own front-matter blocks, each with its source id, and any block its data-type names as one.
         "syllabus" | "summary" | "parties" | "docketnumber" | "decisiondate" | "otherdate" | "court" | "history"
         | "disposition" | "seealso" | "correction" | "arguments"
             if !id.is_empty() =>
         {
-            Some(Kind::Prose)
+            Some(EvidenceKind::Prose)
         }
         #[cfg(feature = "courtlistener")]
         _ if !matches!(tag, "opinion" | "headnotes" | "casebody") && cap_front_matter(attribute(attributes, "data-type")).is_some_and(|field| field != "headnotes") => {
-            Some(Kind::Prose)
+            Some(EvidenceKind::Prose)
         }
-        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "heading" | "h" => Some(Kind::Heading),
-        "opinion" | "headnotes" | "casebody" => Some(Kind::Section),
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "heading" | "h" => Some(EvidenceKind::Heading),
+        "opinion" | "headnotes" | "casebody" => Some(EvidenceKind::Section),
         "div"
             if attribute(attributes, "class")
                 .split_ascii_whitespace()
                 .any(|class| class == "co_headtext") =>
         {
-            Some(Kind::Heading)
+            Some(EvidenceKind::Heading)
         }
         "div"
             if attribute(attributes, "class")
                 .split_ascii_whitespace()
                 .any(|class| class == "co_paragraph") =>
         {
-            Some(Kind::Prose)
+            Some(EvidenceKind::Prose)
         }
         "div"
             if attribute(attributes, "class")
                 .split_ascii_whitespace()
                 .any(|class| matches!(class, "co_opinionBlock" | "co_section")) =>
         {
-            Some(Kind::Section)
+            Some(EvidenceKind::Section)
         }
-        "div" if id == "headmatter" => Some(Kind::Section),
+        "div" if id == "headmatter" => Some(EvidenceKind::Section),
         "article" | "section" | "div"
             if ["opinion", "casebody", "head-matter"].iter().any(|class| {
                 attribute(attributes, "class")
@@ -765,12 +734,12 @@ fn native_identity(
                     .any(|value| value == *class)
             }) =>
         {
-            Some(Kind::Section)
+            Some(EvidenceKind::Section)
         }
-        "ul" | "ol" | "li" => Some(Kind::List),
-        "table" => Some(Kind::Table),
-        "tr" => Some(Kind::Row),
-        "td" | "th" => Some(Kind::Cell),
+        "ul" | "ol" | "li" => Some(EvidenceKind::List),
+        "table" => Some(EvidenceKind::Table),
+        "tr" => Some(EvidenceKind::Row),
+        "td" | "th" => Some(EvidenceKind::Cell),
         _ => None,
     };
     if let Some(kind) = source_kind.filter(|_| provider.is_courtlistener())
@@ -804,7 +773,7 @@ fn native_identity(
             return Some(PendingBlock {
                 metadata: MarkupMetadata::default(),
                 tag: String::new(),
-                kind: Kind::Section,
+                kind: EvidenceKind::Section,
                 label: format!("sec{section}"),
                 start: 0,
                 anchor,
@@ -826,7 +795,7 @@ fn native_identity(
         .map(|capture| PendingBlock {
             metadata: MarkupMetadata::default(),
             tag: String::new(),
-            kind: Kind::Section,
+            kind: EvidenceKind::Section,
             label: format!("sec{}", &capture[1]),
             start: 0,
             anchor,
@@ -1104,7 +1073,7 @@ fn observe_footnote_marker(open: &mut [PendingBlock], text: &str, seen: &mut Has
     let Some(note) = open
         .iter_mut()
         .rev()
-        .find(|entry| entry.kind == Kind::Footnote)
+        .find(|entry| entry.kind == EvidenceKind::Footnote)
     else {
         return;
     };
@@ -1436,7 +1405,7 @@ fn render_markup_in_context<'a>(
                                 attributes: element.attributes.clone(),
                                 note_marker: None,
                             },
-                            kind: Kind::Section,
+                            kind: EvidenceKind::Section,
                             label: anchor.clone().unwrap_or_default(),
                             start: element.range.start,
                             end: position,
@@ -1474,7 +1443,7 @@ fn render_markup_in_context<'a>(
                 for pending in open.drain(index..stop).rev() {
                     if position > pending.start
                         || (provider.is_courtlistener()
-                            && pending.kind != Kind::Page)
+                            && pending.kind != EvidenceKind::Page)
                     {
                         blocks.push(RawBlock {
                             metadata: pending.metadata,
@@ -1605,7 +1574,7 @@ fn render_markup_in_context<'a>(
             && contains_ascii_word(attribute(&attributes, "class"), "star-pagination", false)
             && identity
                 .as_ref()
-                .is_none_or(|value| value.kind != Kind::Page)
+                .is_none_or(|value| value.kind != EvidenceKind::Page)
         {
             let (citation_index, page_scheme) = page_citation_identity(&attributes);
             text_page = Some(TextPage {
@@ -1626,7 +1595,7 @@ fn render_markup_in_context<'a>(
         }
         if identity
             .as_ref()
-            .is_some_and(|value| value.kind == Kind::Page)
+            .is_some_and(|value| value.kind == EvidenceKind::Page)
         {
             let identity = identity.take().unwrap();
             if !identity.inline {
@@ -1647,7 +1616,7 @@ fn render_markup_in_context<'a>(
                 ),
                 scope: None,
             });
-        } else if let Some(mut identity) = identity.filter(|value| value.kind != Kind::Page) {
+        } else if let Some(mut identity) = identity.filter(|value| value.kind != EvidenceKind::Page) {
             append_break(&mut text, &mut position);
             identity.tag = tag.clone();
             identity.start = position;
@@ -1656,9 +1625,9 @@ fn render_markup_in_context<'a>(
                 .rev()
                 .find(|entry| {
                     if provider.is_courtlistener() {
-                        entry.kind != Kind::Page
-                    } else if matches!(identity.kind, Kind::Prose | Kind::Heading) {
-                        matches!(entry.kind, Kind::Prose | Kind::Footnote | Kind::Section)
+                        entry.kind != EvidenceKind::Page
+                    } else if matches!(identity.kind, EvidenceKind::Prose | EvidenceKind::Heading) {
+                        matches!(entry.kind, EvidenceKind::Prose | EvidenceKind::Footnote | EvidenceKind::Section)
                     } else {
                         entry.kind == identity.kind
                     }
@@ -1671,7 +1640,7 @@ fn render_markup_in_context<'a>(
                 });
             if self_closing
                 && provider.is_courtlistener()
-                && identity.kind != Kind::Page
+                && identity.kind != EvidenceKind::Page
             {
                 blocks.push(RawBlock {
                     metadata: identity.metadata,
@@ -1992,7 +1961,7 @@ fn render_markup_in_context<'a>(
     }
     for pending in open {
         if raw_end > pending.start
-            || (provider.is_courtlistener() && pending.kind != Kind::Page)
+            || (provider.is_courtlistener() && pending.kind != EvidenceKind::Page)
         {
             blocks.push(RawBlock {
                 metadata: pending.metadata,
@@ -2009,7 +1978,7 @@ fn render_markup_in_context<'a>(
     }
     let note_ends = blocks
         .iter()
-        .filter(|block| block.kind == Kind::Footnote)
+        .filter(|block| block.kind == EvidenceKind::Footnote)
         .filter_map(|block| Some((block.metadata.start?, block.end)))
         .collect::<HashMap<_, _>>();
     let page_ends = {
@@ -2082,7 +2051,7 @@ fn render_markup_in_context<'a>(
             });
             blocks.push(RawBlock {
                 metadata: page.metadata,
-                kind: Kind::Page,
+                kind: EvidenceKind::Page,
                 label: page.label,
                 start: page.start,
                 end,
@@ -2099,7 +2068,7 @@ fn render_markup_in_context<'a>(
     let normalized_utf16 = normalized_coordinates.utf16_len();
     for block in blocks.iter_mut().chain(&mut recovered_body_blocks) {
         // Empty source structure remains a point in the trimmed document.
-        if provider.is_courtlistener() && block.kind != Kind::Page {
+        if provider.is_courtlistener() && block.kind != EvidenceKind::Page {
             block.start = block.start.clamp(leading_trim, raw_end);
             block.end = block.end.clamp(block.start, raw_end);
         }
@@ -2356,7 +2325,7 @@ fn native_markup_evidence(
     let text_utf16 = coordinates.utf16_len();
     let native_kinds = rendered_blocks
         .iter()
-        .map(|block| block.kind.evidence())
+        .map(|block| block.kind)
         .collect::<HashSet<_>>();
     let mut claims = Vec::with_capacity(rendered_blocks.len());
     let mut markup_tags = HashMap::with_capacity(rendered_blocks.len());
@@ -2371,7 +2340,7 @@ fn native_markup_evidence(
         let claim_end = raw.end.min(text_utf16);
         claims.push(NativeClaim {
             id,
-            kind: raw.kind.evidence(),
+            kind: raw.kind,
             label: (!raw.label.is_empty()).then_some(raw.label),
             aliases: raw.aliases,
             range: ScalarRange {
