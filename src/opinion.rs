@@ -408,10 +408,10 @@ pub fn opinion_structure(record: &OpinionRecord, url: Option<String>) -> Documen
 
 /// The structure the parse writes into: the reading text, the record's id, the rendition read, and the nodes as first read.
 fn opinion_document(record: &OpinionRecord, rendition: &str, text: String, nodes: Vec<StructureNode>) -> DocumentStructure {
-    let mut structure = DocumentStructure::from_projected_parts(
-        record.id.clone(), "courtlistener".to_owned(), None, Some("cases".to_owned()), Some(crate::DetectionProfile::CaseLossy), text,
-        String::new(), None, crate::Scope::complete(), vec![crate::Origin { id: ORIGIN.to_owned() }], nodes, Vec::new(),
-    );
+    let mut structure = DocumentStructure::new(record.id.clone(), "courtlistener", text, ORIGIN);
+    structure.doc_type = Some("cases".to_owned());
+    structure.profile = Some(crate::DetectionProfile::CaseLossy);
+    structure.nodes = nodes;
     structure.opinion = Some(Box::new(OpinionReading { rendition: rendition.to_owned(), ..OpinionReading::default() }));
     structure
 }

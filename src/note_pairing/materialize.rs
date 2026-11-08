@@ -202,7 +202,6 @@ pub(super) fn materialize(
         node.calls = calls;
         node.label = Some(format!("fn{display}"));
         node.series = pair.restart_sequence.to_string();
-        node.grammar = Some("region:note".to_owned());
         if !pair.provenance.is_empty() {
             node.properties.insert("provenance".to_owned(), pair.provenance.clone());
         }

@@ -537,63 +537,6 @@ impl DocumentStructure {
         }
     }
 
-    /// A structure of nodes and diagnostics read in scalars, put in UTF-16, its revision taken.
-    pub fn from_scalar_parts(
-        document_id: String,
-        provider: String,
-        text: String,
-        text_sha256: String,
-        source_sha256: Option<String>,
-        scope: Scope,
-        origins: Vec<Origin>,
-        mut nodes: Vec<StructureNode>,
-        mut diagnostics: Vec<StructureDiagnostic>,
-    ) -> Self {
-        Self::project_scalar_parts(&ScalarText::new(&text), &mut nodes, &mut diagnostics);
-        let mut structure = Self {
-            text_sha256,
-            source_sha256,
-            scope,
-            origins,
-            nodes,
-            diagnostics,
-            ..Self::new(document_id, provider, text, "")
-        };
-        structure.refresh_revision().expect("Typed document structure is serializable");
-        structure
-    }
-
-    /// A structure of nodes and diagnostics already in UTF-16, its revision taken.
-    pub fn from_projected_parts(
-        document_id: String,
-        provider: String,
-        url: Option<String>,
-        doc_type: Option<String>,
-        profile: Option<DetectionProfile>,
-        text: String,
-        text_sha256: String,
-        source_sha256: Option<String>,
-        scope: Scope,
-        origins: Vec<Origin>,
-        nodes: Vec<StructureNode>,
-        diagnostics: Vec<StructureDiagnostic>,
-    ) -> Self {
-        let mut structure = Self {
-            url,
-            doc_type,
-            profile,
-            text_sha256,
-            source_sha256,
-            scope,
-            origins,
-            nodes,
-            diagnostics,
-            ..Self::new(document_id, provider, text, "")
-        };
-        structure.refresh_revision().expect("Typed document structure is serializable");
-        structure
-    }
-
     /// Identity of the complete queryable representation, excluding the prior digest itself: the
     /// digest of the structure's JSON without its revision, its last member standing where the
     /// revision stood (as serde_json's value tree, keeping order, removes a key). The structure is
