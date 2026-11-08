@@ -188,11 +188,9 @@ pub(super) fn heading_line(body: &str, set_apart: bool) -> bool {
 /// Sections numbered in the run of the paragraphs, title and text in one block with no markup: "II. The plea of estoppel is
 /// not well founded. The fact is ...". Roman numerals running on from block to block say what they are; each title is its
 /// block's first sentence.
-pub(super) fn enumerated_titles(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
-    let mut headings = take(structure, Of::Headings);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+pub(super) fn enumerated_titles(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
+    let mut headings = &mut kinds.headings;
     const TITLE_WORDS: usize = 16;
     static OPENING: OnceLock<Regex> = OnceLock::new();
     let opening = OPENING.get_or_init(|| Regex::new(r"^\s*([IVXLC]{1,6})\.\s+\p{Lu}").unwrap());
@@ -217,16 +215,12 @@ pub(super) fn enumerated_titles(structure: &mut DocumentStructure) {
         headings.push(read_heading(paragraph.range.start, paragraph.range.start + length, "run-in"));
         paragraph.range.start += length;
     }
-})();
-    put(structure, paragraphs);
-    put(structure, headings);
-    result
 }
 
 /// Bracketed lines of one form with no text between them are a list's items: a title has a section under it.
-pub(super) fn list_items(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
-    let mut headings = take(structure, Of::Headings);
+pub(super) fn list_items(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
+    let mut headings = &mut kinds.headings;
 
     // An outline numbers with a stop, "I." over "A."; a list with a bracket, "(a)", "d)", "6)".
     static ITEM: OnceLock<Regex> = OnceLock::new();
@@ -255,8 +249,6 @@ pub(super) fn list_items(structure: &mut DocumentStructure) {
         paragraphs.append(&mut items);
         paragraphs.sort_by_key(|paragraph| paragraph.range.start);
     }
-    put(structure, paragraphs);
-    put(structure, headings);
 }
 
 /// The title of a list of notes.

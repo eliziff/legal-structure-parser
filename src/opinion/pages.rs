@@ -128,10 +128,8 @@ const PAGE_TEXT: usize = 400;
 /// A volume's leaves count its front matter, and so stand a constant ahead of its printed pages: "b620-3" and `pgmap="620"`
 /// on page 580 of 78 N.M. The head matter's first block is on the case's first page, which its citation names; with no head
 /// matter the opinion's first leaf stands for it, the pages reckoned and said to be. With no printed citation they stay leaves.
-pub(super) fn leaves_to_pages(structure: &mut DocumentStructure, record: &OpinionRecord) {
-    let mut pages = take(structure, Of::Pages);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+pub(super) fn leaves_to_pages(structure: &mut DocumentStructure, kinds: &mut Kinds, record: &OpinionRecord) {
+    let mut pages = &mut kinds.pages;
     static BLOCK: OnceLock<Regex> = OnceLock::new();
     let leaves = pages.iter().enumerate().filter(|(_, page)| page.grammar.as_deref() == Some("pgmap")).filter_map(|(at, page)| Some((at, page_number(&page.printed_label())?))).collect::<Vec<_>>();
     let Some(first) = leaves.iter().map(|leaf| leaf.1).min() else { return };
@@ -159,17 +157,14 @@ pub(super) fn leaves_to_pages(structure: &mut DocumentStructure, record: &Opinio
             pages[at].grammar = Some(("reckoned").to_owned());
         }
     }
-})();
-    put(structure, pages);
-    result
 }
 
 /// Page numbers printed in the text, each form its own numbering: "{**18 Misc 3d at 418}" the official reporter's,
 /// "[*5]" a slip opinion's, "[original page 5]" the source's, and in a text whose source gives none "*517", "**18",
 /// "*Page 169". A framed form says what it is; bare stars must run, and a bare "(642)" or "[522]" run from the first pages
 /// of one of the case's printed citations.
-pub(super) fn printed_page_marks(structure: &mut DocumentStructure, citations: &[OpinionCitation]) {
-    let mut pages = take(structure, Of::Pages);
+pub(super) fn printed_page_marks(structure: &mut DocumentStructure, kinds: &mut Kinds, citations: &[OpinionCitation]) {
+    let mut pages = &mut kinds.pages;
 
     static MARK: OnceLock<Regex> = OnceLock::new();
     let held = pages.iter().filter_map(|page| page.series.strip_prefix("reporter-")?.parse::<usize>().ok()).collect::<HashSet<_>>();
@@ -239,7 +234,6 @@ pub(super) fn printed_page_marks(structure: &mut DocumentStructure, citations: &
         }
     }
     pages.extend(printed_pages);
-    put(structure, pages);
 }
 
 /// Head matter Harvard sets ahead of the opinion, wherever the book printed it: counsel printed on the case's last page, dates,
@@ -299,8 +293,8 @@ fn own_count(series: &str) -> bool {
 
 /// A numbering climbs. Marks of one source's numbering that run apart from its longest run, "364 365 366 697 367", are a
 /// second printing if one of the case's citations opens there; otherwise strays, as a rendition's closing "*Page 264" is.
-fn separate_printings(structure: &mut DocumentStructure) {
-    let mut pages = take(structure, Of::Pages);
+fn separate_printings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut pages = &mut kinds.pages;
 
     const STEP: u32 = 3;
     let names = pages.iter().map(|page| page.series.clone()).filter(|series| !own_count(series) && !series.ends_with("-b")).collect::<HashSet<_>>();
@@ -342,7 +336,6 @@ fn separate_printings(structure: &mut DocumentStructure) {
             pages[at].grammar = Some(("stray").to_owned());
         }
     }
-    put(structure, pages);
 }
 
 /// The most text a reporter's page holds, in UTF-16 units.
@@ -354,8 +347,8 @@ const BOOK_MARGIN: u32 = 30;
 /// Which printing each numbering is. A numbering that names its reporter (a Lexis page scheme) is that citation; any
 /// other is the citation that opens nearest below its first page, Lexis's and Westlaw's star numbers aside, which count
 /// from 1. Pages before the first mark open on that citation's page. Without the table, the head's own citation lines.
-pub(super) fn page_series(structure: &mut DocumentStructure, record: &OpinionRecord) {
-    let mut pages = take(structure, Of::Pages);
+pub(super) fn page_series(structure: &mut DocumentStructure, kinds: &mut Kinds, record: &OpinionRecord) {
+    let mut pages = &mut kinds.pages;
 
     static OWN: OnceLock<Regex> = OnceLock::new();
     if structure.opinion.as_ref().unwrap().citations.is_empty() {
@@ -365,7 +358,7 @@ pub(super) fn page_series(structure: &mut DocumentStructure, record: &OpinionRec
             Some(OpinionCitation { volume: capture[1].to_owned(), reporter: capture[2].to_owned(), page: capture[3].to_owned(), kind: String::new() })
         }).collect();
     }
-    put(structure, std::mem::take(&mut pages)); separate_printings(structure); pages = take(structure, Of::Pages);
+    separate_printings(structure, kinds); pages = &mut kinds.pages;
     // Harvard files a case under the book it scanned, "law.free.cap.us.476/426.12567.json", and its marks are that book's unless
     // another citation fits them far better: "nys.138/212" holds the marks of 78 Misc. 264 from 266.
     static SCANNED: OnceLock<Regex> = OnceLock::new();
@@ -521,7 +514,6 @@ pub(super) fn page_series(structure: &mut DocumentStructure, record: &OpinionRec
     named.sort_by(|left, right| left.series.cmp(&right.series));
     pages.extend(opening);
     structure.opinion.as_mut().unwrap().page_series = named;
-    put(structure, pages);
 }
 
 /// How far past the last citing pin, in UTF-16 units, a passage still takes that page or the next.

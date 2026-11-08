@@ -4,7 +4,7 @@ use super::*;
 
 /// Takes the page marks and the page furniture out of the text and moves every range to match. A word a mark split is
 /// joined: where its fragments are not words of this text on their own, or the whole word is.
-pub(super) fn excise(structure: &mut DocumentStructure, furniture: Vec<ScalarRange>, printed_elsewhere: &mut [(bool, Vec<(u32, usize)>)]) {
+pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furniture: Vec<ScalarRange>, printed_elsewhere: &mut [(bool, Vec<(u32, usize)>)]) {
     struct Cut { start: usize, end: usize, keep: &'static str }
     let coordinates = ScalarText::new(&structure.text);
     let end = utf16_len(&structure.text);
@@ -14,7 +14,7 @@ pub(super) fn excise(structure: &mut DocumentStructure, furniture: Vec<ScalarRan
         *counts.entry(word).or_default() += 1;
     }
     let mut cuts = Vec::new();
-    for mark in nodes(structure, NodeKind::Page).filter(|page| page.grammar.as_deref() != Some("furniture")).filter_map(|page| page.marker_range) {
+    for mark in kinds.pages.iter().filter(|page| page.grammar.as_deref() != Some("furniture")).filter_map(|page| page.marker_range) {
         let before = (0..4).find_map(|short| coordinates.slice_utf16(mark.start.saturating_sub(40 - short)..mark.start)).unwrap_or("");
         let after = (0..4).find_map(|short| coordinates.slice_utf16(mark.end..(mark.end + 40 - short).min(end))).unwrap_or("");
         let left = before.trim_end_matches(javascript_whitespace);
@@ -85,7 +85,7 @@ pub(super) fn excise(structure: &mut DocumentStructure, furniture: Vec<ScalarRan
     }
     // A note's call is out of the words too, its place kept: "defendant7 s" reads "defendant s", the note still called there.
     if reading(structure).rendition != "plain_text.txt" {
-        for call in nodes(structure, NodeKind::Footnote).flat_map(|note| note.calls.iter()).map(|call| (call.start, call.end)).chain(reading(structure).unmatched_calls.iter().map(|call| (call.start, call.end))) {
+        for call in kinds.notes.iter().flat_map(|note| note.calls.iter()).map(|call| (call.start, call.end)).chain(reading(structure).unmatched_calls.iter().map(|call| (call.start, call.end))) {
             if call.1 > call.0 && call.1 - call.0 <= 8 {
                 cuts.push(Cut { start: call.0, end: call.1, keep: "" });
             }
@@ -125,7 +125,7 @@ pub(super) fn excise(structure: &mut DocumentStructure, furniture: Vec<ScalarRan
         if offset >= cut.end { (offset as isize - lost[previous]) as usize } else { (cut.start as isize - before) as usize + (offset - cut.start).min(cut.keep.len()) }
     };
     let span = |range: &mut ScalarRange| { range.start = moved(range.start); range.end = moved(range.end); };
-    for node in &mut structure.nodes {
+    for node in structure.nodes.iter_mut().chain(kinds.all_mut()) {
         (node.range.start, node.range.end) = (moved(node.range.start), moved(node.range.end));
         node.ranges.iter_mut().chain(node.calls.iter_mut()).for_each(span);
         if node.kind == NodeKind::Page {

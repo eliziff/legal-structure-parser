@@ -57,11 +57,11 @@ pub(super) fn settle(paragraphs: &mut Vec<StructureNode>, headings: &[StructureN
 }
 
 /// Paragraph numbers the text prints but the markup does not mark ("¶ 12", "{12}", "[12]", "12.").
-pub(super) fn number_paragraphs(structure: &mut DocumentStructure, pending: &mut Pending) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
+pub(super) fn number_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
+    let mut paragraphs = &mut kinds.paragraphs;
 
-    put(structure, std::mem::take(&mut paragraphs)); join_block_counters(structure); paragraphs = take(structure, Of::Paragraphs);
-    put(structure, std::mem::take(&mut paragraphs)); numbers_off_titles(structure); paragraphs = take(structure, Of::Paragraphs);
+    join_block_counters(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    numbers_off_titles(structure, kinds); paragraphs = &mut kinds.paragraphs;
     let coordinates = ScalarText::new(&structure.text);
     // A quotation's numbers are the quotation's.
     let openings = paragraphs.iter().enumerate().filter(|(_, paragraph)| !(paragraph.kind == NodeKind::Quote)).filter_map(|(index, paragraph)| {
@@ -84,29 +84,26 @@ pub(super) fn number_paragraphs(structure: &mut DocumentStructure, pending: &mut
     for (index, label) in asked {
         paragraphs[index].label = Some(format!("par{}", label));
     }
-    put(structure, std::mem::take(&mut paragraphs)); split_numbered_blocks(structure); paragraphs = take(structure, Of::Paragraphs);
-    put(structure, std::mem::take(&mut paragraphs)); fill_skipped_numbers(structure); paragraphs = take(structure, Of::Paragraphs);
-    put(structure, std::mem::take(&mut paragraphs)); pilcrow_read_as_one(structure); paragraphs = take(structure, Of::Paragraphs);
-    put(structure, std::mem::take(&mut paragraphs)); fill_skipped_numbers(structure); paragraphs = take(structure, Of::Paragraphs);
-    put(structure, std::mem::take(&mut paragraphs)); misread_numbers(structure); paragraphs = take(structure, Of::Paragraphs);
-    put(structure, std::mem::take(&mut paragraphs)); carry_title_numbers(structure); paragraphs = take(structure, Of::Paragraphs);
-    put(structure, std::mem::take(&mut paragraphs)); walk_scanned_numbers(structure); paragraphs = take(structure, Of::Paragraphs);
-    put(structure, std::mem::take(&mut paragraphs)); numbers_from_elsewhere(structure, pending); paragraphs = take(structure, Of::Paragraphs);
-    put(structure, std::mem::take(&mut paragraphs)); fill_skipped_numbers(structure); paragraphs = take(structure, Of::Paragraphs);
-    put(structure, std::mem::take(&mut paragraphs)); closing_numbers(structure); paragraphs = take(structure, Of::Paragraphs);
-    put(structure, std::mem::take(&mut paragraphs)); list_labels(structure); paragraphs = take(structure, Of::Paragraphs);
-    put(structure, paragraphs);
+    split_numbered_blocks(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    fill_skipped_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    pilcrow_read_as_one(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    fill_skipped_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    misread_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    carry_title_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    walk_scanned_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    numbers_from_elsewhere(structure, kinds, pending); paragraphs = &mut kinds.paragraphs;
+    fill_skipped_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    closing_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    list_labels(structure, kinds); paragraphs = &mut kinds.paragraphs;
 }
 
 /// The lines past the last numbered paragraph that went out of the paragraphs as the opinion's foot, "[¶ 16.] GILBERTSON, Chief
 /// Justice, concurs.": a line that prints the number due is that paragraph, whatever else it says.
-fn closing_numbers(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
-    let mut notes = take(structure, Of::Notes);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+fn closing_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
+    let mut notes = &mut kinds.notes;
     const LEAST: usize = 3;
-    if { put(structure, std::mem::take(&mut paragraphs)); put(structure, std::mem::take(&mut notes)); let result = numbers_held(structure); paragraphs = take(structure, Of::Paragraphs); notes = take(structure, Of::Notes); result } < LEAST {
+    if numbers_held(paragraphs) < LEAST {
         return;
     }
     let Some((from, mut due)) = paragraphs.iter().rev().find_map(|paragraph| Some((paragraph.range.end, paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()?.parse::<u32>().ok()? + 1))) else { return };
@@ -128,19 +125,13 @@ fn closing_numbers(structure: &mut DocumentStructure) {
         paragraphs.append(&mut found);
         paragraphs.sort_by_key(|paragraph| paragraph.range.start);
     }
-})();
-    put(structure, paragraphs);
-    put(structure, notes);
-    result
 }
 
 /// Text nothing holds is the opinion's: paragraphs by the blank lines of a plain text, by the lines of markup. What the headnotes
 /// already hold stays out. Ahead of the first paragraph only running prose counts: a reader can find its first paragraph late,
 /// and a caption's lines are no prose.
-pub(super) fn hold_leftovers(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+pub(super) fn hold_leftovers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
     const WORDS: usize = 4;
     const PROSE_WORDS: usize = 15;
     let Some(first) = paragraphs.iter().map(|paragraph| paragraph.range.start).min() else { return };
@@ -150,7 +141,7 @@ pub(super) fn hold_leftovers(structure: &mut DocumentStructure) {
     let coordinates = ScalarText::new(&structure.text);
     let summaries = structure.opinion.as_ref().unwrap().headnotes.iter().flat_map(|headnote| places(&headnote.text)).collect::<HashSet<_>>();
     let mut found = Vec::new();
-    for (start, end) in unheld_stretches(structure) {
+    for (start, end) in unheld_stretches(structure, kinds.paragraphs.iter().chain(&kinds.headings).chain(&kinds.notes)) {
         let Some(raw) = coordinates.slice_utf16(start..end) else { continue };
         let cuts = if plain { blank.find_iter(raw).map(|cut| (cut.start(), cut.end())).collect::<Vec<_>>() } else { raw.match_indices('\n').map(|(at, _)| (at, at + 1)).collect() };
         let mut from = 0;
@@ -170,21 +161,17 @@ pub(super) fn hold_leftovers(structure: &mut DocumentStructure) {
         paragraphs.append(&mut found);
         paragraphs.sort_by_key(|paragraph| paragraph.range.start);
     }
-})();
-    put(structure, paragraphs);
-    result
 }
 
 /// How many of the paragraphs carry a number.
-fn numbers_held(structure: &DocumentStructure) -> usize {
-    let paragraphs: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Paragraphs.holds(node)).cloned().collect();
+fn numbers_held(paragraphs: &[StructureNode]) -> usize {
     paragraphs.iter().filter(|paragraph| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref().is_some_and(|number| number.parse::<u32>().is_ok())).count()
 }
 
 /// A better reading replaces a worse one. A number of ours that stands between its new neighbours may stay: the reading can
 /// have passed over its paragraph. One out of its order was a misreading: "[110]" where the opinion prints "[¶ 10]".
-fn take_numbers(structure: &mut DocumentStructure, mut taken: Vec<(usize, u32)>) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
+fn take_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds, mut taken: Vec<(usize, u32)>) {
+    let mut paragraphs = &mut kinds.paragraphs;
     taken.sort_unstable();
     for index in 0..paragraphs.len() {
         let at = taken.partition_point(|entry| entry.0 < index);
@@ -200,13 +187,12 @@ fn take_numbers(structure: &mut DocumentStructure, mut taken: Vec<(usize, u32)>)
     for (index, number) in taken {
         paragraphs[index].label = Some(format!("par{}", number.to_string()));
     }
-    put(structure, paragraphs);
 }
 
 /// An opinion numbered throughout under a scanner: "[11] [T2] [13] [14]" is 1, 2, 3, 4. Walked from 1, each paragraph tried for
 /// the one number due. A count that climbs by ones over most of the opinion is no accident, however its marks were read.
-fn walk_scanned_numbers(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
+fn walk_scanned_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
 
     const LEAST: usize = 4;
     /// How many marks in a row the walk may find past reading.
@@ -229,16 +215,15 @@ fn walk_scanned_numbers(structure: &mut DocumentStructure) {
             due = number + 1;
         }
     }
-    if taken.len() >= LEAST && taken.len() * 2 >= open && taken.len() > { put(structure, std::mem::take(&mut paragraphs)); let result = numbers_held(structure); paragraphs = take(structure, Of::Paragraphs); result } {
-        put(structure, std::mem::take(&mut paragraphs)); take_numbers(structure, taken); paragraphs = take(structure, Of::Paragraphs);
+    if taken.len() >= LEAST && taken.len() * 2 >= open && taken.len() > numbers_held(paragraphs) {
+        take_numbers(structure, kinds, taken); paragraphs = &mut kinds.paragraphs;
     }
-    put(structure, paragraphs);
 }
 
 /// Numbers another rendition prints where ours lost them, from the rendition that prints the most, each on the paragraph its
 /// words open. A rendition whose words mostly fall in no paragraph of ours is reading something else, its notes as like as not.
-fn numbers_from_elsewhere(structure: &mut DocumentStructure, pending: &mut Pending) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
+fn numbers_from_elsewhere(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
+    let mut paragraphs = &mut kinds.paragraphs;
 
     const LEAST: usize = 3;
     const REACH: usize = 40;
@@ -255,19 +240,18 @@ fn numbers_from_elsewhere(structure: &mut DocumentStructure, pending: &mut Pendi
     }).max_by_key(|(_, taken)| taken.len()).unwrap_or_default();
     let (named, best) = best;
     // Fewer than ours is still the better reading where they run in order: ours may hold every mark, half of them misread.
-    put(structure, std::mem::take(&mut paragraphs));
-    let held = numbers_held(structure);
-    paragraphs = take(structure, Of::Paragraphs);
+    
+    let held = numbers_held(&kinds.paragraphs);
+    paragraphs = &mut kinds.paragraphs;
     if best.len() >= LEAST && (best.len() > held || named && best.len() * 2 >= held && best.windows(2).all(|pair| pair[0].1 < pair[1].1)) {
-        put(structure, std::mem::take(&mut paragraphs)); take_numbers(structure, best); paragraphs = take(structure, Of::Paragraphs);
+        take_numbers(structure, kinds, best); paragraphs = &mut kinds.paragraphs;
     }
-    put(structure, paragraphs);
 }
 
 /// Every paragraph that opens on a list's label keeps it, numbered run or not.
-fn list_labels(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
-    let mut notes = take(structure, Of::Notes);
+fn list_labels(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
+    let mut notes = &mut kinds.notes;
 
     static LABEL: OnceLock<Regex> = OnceLock::new();
     // A block's counter may stand ahead of the label: "6\n(A) verify the wages".
@@ -286,13 +270,11 @@ fn list_labels(structure: &mut DocumentStructure) {
     for (note, items) in notes.iter_mut().zip(lists) {
         note.properties.insert("items".to_owned(), items.join("\n"));
     }
-    put(structure, paragraphs);
-    put(structure, notes);
 }
 
 /// A block's counter split from its words, a paragraph of "57" alone: it opens the paragraph after it.
-fn join_block_counters(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
+fn join_block_counters(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
 
     let bare = {
         let coordinates = ScalarText::new(&structure.text);
@@ -304,17 +286,14 @@ fn join_block_counters(structure: &mut DocumentStructure) {
             paragraphs[index].range.start = counter.range.start;
         }
     }
-    put(structure, paragraphs);
 }
 
 /// A title under a paragraph's mark, "¶ 30 Conclusion": the mark stands apart as a paragraph until the numbers are read. A
 /// numbered sentence whose number the paragraphs either side leave open, "6. Robert Poe is the Chairman.", is no title at all;
 /// an outline's "3. The Order Was Proper." sits among paragraphs numbered in their own right.
-fn numbers_off_titles(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
-    let mut headings = take(structure, Of::Headings);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+fn numbers_off_titles(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
+    let mut headings = &mut kinds.headings;
     let coordinates = ScalarText::new(&structure.text);
     let opening = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
     let plain_numbers = paragraphs.iter().filter_map(|paragraph| text::paragraph_marker(opening(paragraph)).filter(|(_, family)| *family == 4).map(|(number, _)| number)).collect::<HashSet<_>>();
@@ -346,19 +325,13 @@ fn numbers_off_titles(structure: &mut DocumentStructure) {
         paragraphs.append(&mut stubs);
         paragraphs.sort_by_key(|paragraph| paragraph.range.start);
     }
-})();
-    put(structure, paragraphs);
-    put(structure, headings);
-    result
 }
 
 /// A scanner's "1" for "¶" fuses with the number: "15, 116, 118, 119" is 15, 16, 18, 19. Taken only where the number
 /// without its first digit fits the one before, and the next fits it, as printed or fused alike. A printed "¶ 17" is no such
 /// thing: a separate opinion may open at it.
-fn pilcrow_read_as_one(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+fn pilcrow_read_as_one(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
     let printed = {
         let coordinates = ScalarText::new(&structure.text);
         paragraphs.iter().map(|paragraph| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map_or(false, |opening| trim_js(opening).trim_start_matches(['[', '{']).starts_with('¶'))).collect::<Vec<_>>()
@@ -375,14 +348,11 @@ fn pilcrow_read_as_one(structure: &mut DocumentStructure) {
         }
         last = fits.unwrap_or(number);
     }
-})();
-    put(structure, paragraphs);
-    result
 }
 
 /// A number left alone by the title it stood on belongs to the text under the title, unless that has its own.
-fn carry_title_numbers(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
+fn carry_title_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
 
     let coordinates = ScalarText::new(&structure.text);
     let bare = paragraphs.iter().enumerate().filter(|(_, paragraph)| paragraph.label.is_some()).filter(|(_, paragraph)| {
@@ -395,15 +365,12 @@ fn carry_title_numbers(structure: &mut DocumentStructure) {
             paragraphs[index].label = number.map(|number| format!("par{number}"));
         }
     }
-    put(structure, paragraphs);
 }
 
 /// In an opinion that numbers its paragraphs a number its neighbours contradict was misread: "1, 2, 8, 4" is 3, and "1, 3, 2, 4" two
 /// marks swapped. The neighbours say so only where they run by ones either side.
-fn misread_numbers(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+fn misread_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
     let mut numbered = paragraphs.iter().enumerate().filter_map(|(index, paragraph)| Some((index, paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()?.parse::<u32>().ok()?))).collect::<Vec<_>>();
     if numbered.len() * 2 < paragraphs.len() {
         return;
@@ -420,17 +387,12 @@ fn misread_numbers(structure: &mut DocumentStructure) {
             paragraphs[numbered[at + 1].0].label = Some(format!("par{}", (before + 2).to_string()));
         }
     }
-})();
-    put(structure, paragraphs);
-    result
 }
 
 /// Where a number due next stands in a block's course after a finished sentence, "... complaints. ¶21 On appeal", a new
 /// paragraph opens. It is due while the numbered paragraphs that follow have not printed it.
-fn split_numbered_blocks(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+fn split_numbered_blocks(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
     let number_of = |paragraph: &StructureNode| paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref().and_then(|number| number.parse::<u32>().ok());
     if paragraphs.iter().filter(|paragraph| number_of(paragraph).is_some()).count() < 3 {
         return;
@@ -445,7 +407,7 @@ fn split_numbered_blocks(structure: &mut DocumentStructure) {
     let mut kept = Vec::with_capacity(paragraphs.len());
     // Numbers that open past 1 leave 1 due: it may stand on the author's line, "GILBERTSON, Chief Justice [¶1.] Scotty".
     let mut due = paragraphs.iter().find_map(number_of).filter(|first| *first > 1).map(|_| 1);
-    for (index, mut paragraph) in std::mem::take(&mut paragraphs).into_iter().enumerate() {
+    for (index, mut paragraph) in std::mem::take(paragraphs).into_iter().enumerate() {
         due = number_of(&paragraph).map(|number| number + 1).or(due);
         while let Some(number) = due.filter(|number| !(paragraph.kind == NodeKind::Quote) && upcoming[index].is_none_or(|next| *number < next)) {
             let Some(raw) = coordinates.slice_utf16(paragraph.range.start..paragraph.range.end) else { break };
@@ -460,10 +422,7 @@ fn split_numbered_blocks(structure: &mut DocumentStructure) {
         }
         kept.push(paragraph);
     }
-    paragraphs = kept;
-})();
-    put(structure, paragraphs);
-    result
+    *paragraphs = kept;
 }
 
 /// An author's line run into the block it heads is no longer than this.
@@ -503,8 +462,8 @@ fn scanned_number(opening: &str, low: u32, high: u32) -> Option<u32> {
 }
 
 /// A number the reader passed over inside a run: "1, 2, 4" where the paragraph between them opens "3.".
-pub(super) fn fill_skipped_numbers(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
+pub(super) fn fill_skipped_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
 
     let coordinates = ScalarText::new(&structure.text);
     let numbered = paragraphs.iter().enumerate().filter_map(|(index, paragraph)| Some((index, paragraph.label.as_deref().and_then(|label| label.strip_prefix("par")).as_deref()?.parse::<u32>().ok()?))).collect::<Vec<_>>();
@@ -550,7 +509,6 @@ pub(super) fn fill_skipped_numbers(structure: &mut DocumentStructure) {
     for (index, number) in filled {
         paragraphs[index].label = Some(format!("par{}", number.to_string()));
     }
-    put(structure, paragraphs);
 }
 
 /// Runs of paragraphs that open "(a)", "(b)" or "(1)", "(2)": their labels as printed, to be cited as such.
@@ -581,10 +539,10 @@ pub(super) fn lettered_paragraphs(openings: &[(usize, &str)], numbered: &HashMap
 
 /// Short lines set in a sentence's course are the margin's: an old report's catchwords, read into the column. The
 /// sentence then rejoins over them, as it does over a page's turn.
-pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
-    let notes = take(structure, Of::Notes);
-    let headings = take(structure, Of::Headings);
+pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
+    let mut notes = &mut kinds.notes;
+    let mut headings = &mut kinds.headings;
 
     let coordinates = ScalarText::new(&structure.text);
     let printed = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
@@ -604,7 +562,7 @@ pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure) {
     titles.sort_unstable();
     let mut note_starts = notes.iter().flat_map(|note| note.ranges.iter().map(|range| range.start)).collect::<Vec<_>>();
     note_starts.sort_unstable();
-    for mut paragraph in std::mem::take(&mut paragraphs) {
+    for mut paragraph in std::mem::take(paragraphs) {
         if let Some(last) = kept.last_mut() {
             let between = |marks: &[usize]| marks.get(marks.partition_point(|mark| *mark < last.range.end)).is_some_and(|mark| *mark < paragraph.range.start);
             if !between(&titles) && (last.kind == NodeKind::Quote) == (paragraph.kind == NodeKind::Quote) && paragraph.label.is_none() && !text::ended_sentence(printed(last)) && printed(&paragraph).starts_with(char::is_lowercase) {
@@ -617,28 +575,24 @@ pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure) {
         }
         kept.push(paragraph);
     }
-    paragraphs = kept;
-    put(structure, paragraphs);
-    put(structure, notes);
-    put(structure, headings);
+    *paragraphs = kept;
 }
 
 /// Paragraphs that hold no words: a rule, or a page mark's whole block once it has gone.
-pub(super) fn drop_empty_paragraphs(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
+pub(super) fn drop_empty_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
 
     let coordinates = ScalarText::new(&structure.text);
     let spoken = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).is_some_and(|text| text.chars().any(|c| c.is_alphanumeric() || c == '*'));
-    let kept = std::mem::take(&mut paragraphs).into_iter().filter(|paragraph| spoken(paragraph)).collect();
-    paragraphs = kept;
-    put(structure, paragraphs);
+    let kept = std::mem::take(paragraphs).into_iter().filter(|paragraph| spoken(paragraph)).collect();
+    *paragraphs = kept;
 }
 
 /// Who speaks each paragraph of an exchange. "Q." and "A." count only where a record has several of each, since "A." is
 /// also an outline's letter.
-pub(super) fn speakers(structure: &mut DocumentStructure) {
-    let mut paragraphs = take(structure, Of::Paragraphs);
-    let mut headings = take(structure, Of::Headings);
+pub(super) fn speakers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
+    let mut headings = &mut kinds.headings;
 
     static LABEL: OnceLock<Regex> = OnceLock::new();
     let label = LABEL.get_or_init(|| Regex::new(r"^(Q\.|A\.|THE COURT:|The Court:|THE WITNESS:|The Witness:|M(?:R|S|RS)\.\s+\p{Lu}[\p{Lu}'’-]+:)\s").unwrap());
@@ -649,9 +603,9 @@ pub(super) fn speakers(structure: &mut DocumentStructure) {
     }).collect::<Vec<_>>();
     let questions = found.iter().filter(|(_, speaker)| speaker == "Q.").count();
     if questions >= 2 {
-        let (answers, kept_headings): (Vec<_>, Vec<_>) = std::mem::take(&mut headings).into_iter()
+        let (answers, kept_headings): (Vec<_>, Vec<_>) = std::mem::take(headings).into_iter()
             .partition(|heading| coordinates.slice_utf16(heading.range.start..heading.range.end).map(trim_js).is_some_and(|printed| printed.starts_with("A. ") || printed.starts_with("Q. ")));
-        headings = kept_headings;
+        *headings = kept_headings;
         paragraphs.extend(answers.into_iter().map(|heading| { let mut paragraph = read_paragraph(heading.range.start, heading.range.end, None); paragraph.properties.insert("speaker".to_owned(), "A.".to_owned()); paragraph }));
     }
     for (index, speaker) in found {
@@ -660,17 +614,13 @@ pub(super) fn speakers(structure: &mut DocumentStructure) {
         }
     }
     paragraphs.sort_by_key(|paragraph| paragraph.range.start);
-    put(structure, paragraphs);
-    put(structure, headings);
 }
 
 /// A concurrence or dissent that opens inside a flat body, on a line of its own: "SMITH, J., dissenting.".
-pub(super) fn separate_parts(structure: &mut DocumentStructure) {
-    let paragraphs = take(structure, Of::Paragraphs);
-    let headings = take(structure, Of::Headings);
-    let mut parts = take(structure, Of::Parts);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+pub(super) fn separate_parts(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
+    let mut headings = &mut kinds.headings;
+    let mut parts = &mut kinds.parts;
     /// A writing's opening line, its joiners named, runs no longer than this.
     const LINE_LONG: usize = 460;
     /// How much of a line's text the opening's tests read.
@@ -774,7 +724,7 @@ pub(super) fn separate_parts(structure: &mut DocumentStructure) {
     // of a record the same word is its title.
     static RULING: OnceLock<Regex> = OnceLock::new();
     let ruling = RULING.get_or_init(|| Regex::new(r"(?i)^(?:(?:amended |final |supplemental )?order(?: of (?:the )?court)?|(?:final )?judgment|decree|attachment\b.{0,40})\.?$").unwrap());
-    for heading in &headings {
+    for heading in headings.iter() {
         let printed = coordinates.slice_utf16(heading.range.start..heading.range.end).map(trim_js).unwrap_or("");
         if heading.range.start > 0 && stacked.is_match(printed) {
             let kind = if printed.to_lowercase().starts_with("appendix") { "appendix" } else { "rehearing" };
@@ -816,9 +766,4 @@ pub(super) fn separate_parts(structure: &mut DocumentStructure) {
             part.display_value = Some(kind.clone());
         }
     }
-})();
-    put(structure, paragraphs);
-    put(structure, headings);
-    put(structure, parts);
-    result
 }

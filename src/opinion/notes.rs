@@ -16,10 +16,8 @@ pub(super) fn note_label_of(coordinates: &ScalarText, note: &StructureNode) -> (
 /// judge's or counsel's note sits ahead of the opinion. One is the same note if a note of ours shares most of its words,
 /// whatever a scanner did to the rest; else it is new, and its words join the end of the reading text. Either way a note of
 /// ours with no call takes the other's, placed by the words before it.
-pub(super) fn supply_notes(structure: &mut DocumentStructure, other: &DocumentStructure) {
-    let mut notes = take(structure, Of::Notes);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds, other: &DocumentStructure) {
+    let mut notes = &mut kinds.notes;
     const SHINGLE: usize = 4;
     if !other.nodes.iter().any(|node| node.kind == NodeKind::Footnote) {
         return;
@@ -73,9 +71,6 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, other: &DocumentSt
         let called_outside = calls.is_empty() && !note.calls.is_empty();
         notes.push({ let mut note = read_note(label, start, range.end, vec![range], calls); if called_outside { note.properties.insert("called_outside".to_owned(), String::new()); } note });
     }
-})();
-    put(structure, notes);
-    result
 }
 
 /// Words that open on a reporter's abbreviation: "F.Supp. at 843", "A.2d 12", "O.S.2021".
@@ -222,11 +217,9 @@ pub(super) fn unmatched_calls(structure: &DocumentStructure, coordinates: &Scala
 
 /// Calls the source left unlinked find their notes by label, in order; and where no note answers, the numbered paragraphs
 /// past the last call that run through their labels are the notes, set as text.
-pub(super) fn answer_calls(structure: &mut DocumentStructure) {
-    let paragraphs = take(structure, Of::Paragraphs);
-    let mut notes = take(structure, Of::Notes);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+pub(super) fn answer_calls(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
+    let mut notes = &mut kinds.notes;
     static OPENING: OnceLock<Regex> = OnceLock::new();
     let mut calls = std::mem::take(&mut structure.opinion.as_mut().unwrap().unmatched_calls);
     calls.sort_by_key(|call| call.start);
@@ -308,18 +301,12 @@ pub(super) fn answer_calls(structure: &mut DocumentStructure) {
         }
     }
     structure.opinion.as_mut().unwrap().unmatched_calls = calls;
-})();
-    put(structure, paragraphs);
-    put(structure, notes);
-    result
 }
 
 /// Notes set flat in the text, each under its own "Footnote 1:" or "[Note 1]", with the calls that name them ("[FN1]",
 /// "[Note 1]"). A source's one note round all of them gives way to them.
-pub(super) fn flat_notes(structure: &mut DocumentStructure) {
-    let mut notes = take(structure, Of::Notes);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+pub(super) fn flat_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut notes = &mut kinds.notes;
     static LABEL: OnceLock<Regex> = OnceLock::new();
     static CALL: OnceLock<Regex> = OnceLock::new();
     let label = LABEL.get_or_init(|| Regex::new(r"(?m)^[ \t]*(?:(?:Footnote|FN) ?(\d{1,3}|\*+)(?: ?[:.]|[ \t]+\p{Lu}|[ \t]*$)|\[(?:Note|FN) ?(\d{1,3})\])").unwrap());
@@ -360,15 +347,12 @@ pub(super) fn flat_notes(structure: &mut DocumentStructure) {
         notes.push(read_note(number, start, stop, vec![ScalarRange { start, end: stop }], references));
     }
     notes.sort_by_key(|note| note.range.start);
-})();
-    put(structure, notes);
-    result
 }
 
 /// A note whose body runs on through the next notes' numbers, "... 110. Id. 111. See note 86 supra.": a source's list of notes set
 /// as one block. Numbers climbing by ones from the note's own, after a finished sentence, are each a note if the text calls them.
-pub(super) fn split_note_lists(structure: &mut DocumentStructure) {
-    let mut notes = take(structure, Of::Notes);
+pub(super) fn split_note_lists(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut notes = &mut kinds.notes;
 
     const LEAST_RUN: usize = 2;
     static NUMBER: OnceLock<Regex> = OnceLock::new();
@@ -405,16 +389,13 @@ pub(super) fn split_note_lists(structure: &mut DocumentStructure) {
         notes.append(&mut added);
         notes.sort_by_key(|note| note.range.start);
     }
-    put(structure, notes);
 }
 
 /// Notes of one label more than once (each opinion's own series) share their calls in order; a note with none takes a
 /// bracketed number in the text, where the source left it as words.
-pub(super) fn share_note_calls(structure: &mut DocumentStructure) {
-    let paragraphs = take(structure, Of::Paragraphs);
-    let mut notes = take(structure, Of::Notes);
-    #[allow(clippy::redundant_closure_call)]
-    let result = (|| -> () {
+pub(super) fn share_note_calls(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+    let mut paragraphs = &mut kinds.paragraphs;
+    let mut notes = &mut kinds.notes;
     static CALL: OnceLock<Regex> = OnceLock::new();
     let mut by_label = HashMap::<String, Vec<usize>>::new();
     for (index, note) in notes.iter().enumerate() {
@@ -458,8 +439,4 @@ pub(super) fn share_note_calls(structure: &mut DocumentStructure) {
             }
         }
     }
-})();
-    put(structure, paragraphs);
-    put(structure, notes);
-    result
 }

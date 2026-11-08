@@ -4,10 +4,10 @@ use super::*;
 
 /// Each failure the structure shows: its class, and the detail to read it by.
 pub fn parse_failures(structure: &DocumentStructure) -> Vec<(&'static str, String)> {
-    let pages: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Pages.holds(node)).cloned().collect();
-    let paragraphs: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Paragraphs.holds(node)).cloned().collect();
-    let notes: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Notes.holds(node)).cloned().collect();
-    let parts: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Parts.holds(node)).cloned().collect();
+    let pages: Vec<&StructureNode> = nodes(structure, NodeKind::Page).collect();
+    let paragraphs: Vec<&StructureNode> = super::paragraphs(structure).collect();
+    let notes: Vec<&StructureNode> = nodes(structure, NodeKind::Footnote).collect();
+    let parts: Vec<&StructureNode> = nodes(structure, NodeKind::Section).collect();
     let mut failures = Vec::new();
     let opinion_pages = || pages.iter().filter(|page| !page.properties.contains_key("in_note") && page.grammar.as_deref() != Some("stray"));
     if opinion_pages().next().is_none() {
@@ -87,10 +87,10 @@ pub fn parse_failures(structure: &DocumentStructure) -> Vec<(&'static str, Strin
 /// A screen flags a record to read, not an error: each asks a question only reading settles, and a class is worth reading where
 /// it fills up. All cheap enough for every record of a run.
 pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> Vec<(&'static str, String)> {
-    let pages: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Pages.holds(node)).cloned().collect();
-    let paragraphs: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Paragraphs.holds(node)).cloned().collect();
-    let notes: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Notes.holds(node)).cloned().collect();
-    let headings: Vec<StructureNode> = structure.nodes.iter().filter(|node| Of::Headings.holds(node)).cloned().collect();
+    let pages: Vec<&StructureNode> = nodes(structure, NodeKind::Page).collect();
+    let paragraphs: Vec<&StructureNode> = super::paragraphs(structure).collect();
+    let notes: Vec<&StructureNode> = nodes(structure, NodeKind::Footnote).collect();
+    let headings: Vec<&StructureNode> = nodes(structure, NodeKind::Heading).collect();
     const SHORT_TITLE: usize = 60;
     const LONG_PARAGRAPH: usize = 12_000;
     const LONG_NOTE: usize = 8_000;
