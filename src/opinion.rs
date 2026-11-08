@@ -369,8 +369,7 @@ pub fn opinion_structure(record: &OpinionRecord, url: Option<String>) -> Documen
     let mut pending = Pending::default();
     let (mut structure, mut kinds) = match chosen.and_then(|name| Some((name, structure_of(&record.id, plain, rendition(name)?)?))) {
         Some((name, markup)) => {
-            let (mut structure, mut kinds) = from_structure(record, name, &markup, &mut pending);
-            structure.cited_authorities = markup.cited_authorities.clone();
+            let (mut structure, mut kinds) = from_structure(record, name, markup, &mut pending);
             leaves_to_pages(&mut kinds, record);
             for other in MARKUP.iter().copied().filter(|other| *other != name) {
                 if let Some(text) = rendition(other).filter(|markup| !set_as_text(markup)) {
@@ -807,17 +806,28 @@ fn headnote_kind(structure: &DocumentStructure, node: &StructureNode) -> String 
     "headnotes".to_owned()
 }
 
-fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStructure, pending: &mut Pending) -> (DocumentStructure, Kinds) {
+/// A markup node the parse reads on as one of its own: its identity and what only the markup holds (its tag, its place in the
+/// markup and its attributes) kept, the rest as the parse reads it (`read`).
+fn adopt(markup: &StructureNode, read: StructureNode) -> StructureNode {
+    StructureNode { id: markup.id.clone(), markup_tag: markup.markup_tag.clone(), markup_start: markup.markup_start,
+        markup_attributes: markup.markup_attributes.clone(), ..read }
+}
+
+/// The opinion read on from its markup's structure (`native_markup`'s CourtListener reader): the parse continues that
+/// structure, its text, markup and authorities; the markup's pages, paragraphs, headings, notes and parts are the parse's,
+/// each read as the opinion's rules read it, and what the markup reads that the opinion does not stays out of its nodes.
+fn from_structure(record: &OpinionRecord, name: &str, markup: DocumentStructure, pending: &mut Pending) -> (DocumentStructure, Kinds) {
+    let structure = &markup;
     let text = structure.query_text();
     let coordinates = ScalarText::new(text);
     let span = |range: ScalarRange| coordinates.slice_utf16(range.start..range.end).map(trim_js).unwrap_or("");
     let mut pages = structure.nodes.iter().filter(|node| node.kind == NodeKind::Page).map(|node| {
         let range = structure.query_range(node);
-        read_page(node.label.as_deref().unwrap_or("").to_owned(), {
+        adopt(node, read_page(node.label.as_deref().unwrap_or("").to_owned(), {
                 let label = node.label.as_deref().unwrap_or("");
                 let series = if page_source(node) == "printed" && series_of(node) == "reporter" { "slip".to_owned() } else { series_of(node) };
                 label_run(label).map_or_else(|| series.clone(), |run| format!("{series}/{run}"))
-            }, range.start, range.end, node.marker_range, page_source(node))
+            }, range.start, range.end, node.marker_range, page_source(node)))
     }).collect::<Vec<_>>();
     let footnotes = structure.nodes.iter().filter(|node| node.kind == NodeKind::Footnote).collect::<Vec<_>>();
     let body = |note: &StructureNode| if note.ranges.is_empty() { vec![note.range] } else { note.ranges.clone() };
@@ -873,7 +883,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
             front.push(FrontLine { role: "caption".to_owned(), text: squeezed(printed), range: Some(range) });
             continue;
         }
-        headings.push(read_heading(range.start, range.end, "engine"));
+        headings.push(adopt(node, read_heading(range.start, range.end, "engine")));
     }
 
     let counted = counts_its_blocks(structure);
@@ -924,7 +934,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
                 }
             }
         }
-        paragraphs.push({ let mut paragraph = read_paragraph(range.start, range.end, (node.kind == NodeKind::Paragraph && !counted).then(|| node.label.clone()).flatten()); paragraph.kind = if node.kind == NodeKind::Quote || node.markup_tag.as_deref().is_some_and(|tag| matches!(tag, "blockquote" | "excerpt")) { NodeKind::Quote } else { NodeKind::Paragraph }; paragraph });
+        paragraphs.push({ let mut paragraph = adopt(node, read_paragraph(range.start, range.end, (node.kind == NodeKind::Paragraph && !counted).then(|| node.label.clone()).flatten())); paragraph.kind = if node.kind == NodeKind::Quote || node.markup_tag.as_deref().is_some_and(|tag| matches!(tag, "blockquote" | "excerpt")) { NodeKind::Quote } else { NodeKind::Paragraph }; paragraph });
     }
     let first_block = paragraphs.iter().map(|paragraph: &StructureNode| paragraph.range.start).min().unwrap_or(0);
     let tables = data_tables(structure, first_block);
@@ -984,7 +994,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
         if let Some(first) = ranges.first_mut() {
             first.start = (first.start + echo).min(first.end);
         }
-        read_note(label, (note.range.start + echo).min(note.range.end), note.range.end, ranges, note.calls.clone())
+        adopt(note, read_note(label, (note.range.start + echo).min(note.range.end), note.range.end, ranges, note.calls.clone()))
     }).collect::<Vec<_>>();
     let mut notes = join_citation_fragments(notes, &coordinates);
 
@@ -1010,7 +1020,7 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
             .or_else(|| record.opinion_type.clone()).unwrap_or_else(|| "opinion".to_owned());
         let author = front.iter().find(|line| line.role == "author" && line.range.is_some_and(|line| range.start <= line.start && line.end <= range.end))
             .map(|line| line.text.clone());
-        read_part(kind, author, range.start, range.end)
+        adopt(node, read_part(kind, author, range.start, range.end))
     }).collect::<Vec<_>>();
 
     let mut headnotes = headnotes;
@@ -1025,7 +1035,17 @@ fn from_structure(record: &OpinionRecord, name: &str, structure: &DocumentStruct
         };
         Some(HeadnoteMark { numbers, start: element.range.start, end: element.range.end })
     }).collect();
-    { let (document, mut kinds) = opinion_document(record, name, text.to_owned(), Kinds { pages, paragraphs, notes, headings, parts, tables, ..Kinds::default() }); let opinion = &mut kinds.opinion; opinion.headnotes = headnotes; opinion.headnote_marks = marks; opinion.front = front; opinion.unmatched_calls = unmatched_calls; opinion.blocks = blocks; pending.cuts = cuts; (document, kinds) }
+    pending.cuts = cuts;
+    let mut kinds = Kinds { pages, paragraphs, notes, headings, parts, tables, ..Kinds::default() };
+    let opinion = &mut kinds.opinion;
+    (opinion.headnotes, opinion.headnote_marks, opinion.front, opinion.unmatched_calls, opinion.blocks) = (headnotes, marks, front, unmatched_calls, blocks);
+    opinion.rendition = name.to_owned();
+    // The markup's structure is the opinion's: its nodes are those the parse read, its reading the opinion's.
+    let mut document = markup;
+    document.nodes = Vec::new();
+    document.profile = Some(crate::DetectionProfile::CaseLossy);
+    document.origins.push(legal_structure_model::Origin { id: ORIGIN.to_owned() });
+    (document, kinds)
 }
 
 /// Where the `count`th word of a text starts.
