@@ -3,7 +3,7 @@ use crate::{
         InstrumentContentsEntry, InstrumentContentsOutline, InstrumentContentsReading,
         InstrumentContentsRefusal,
     },
-    javascript_whitespace,
+    javascript_whitespace, provision_mark,
     text::{normalize_javascript_whitespace, ScalarText},
 };
 use regex::Regex;
@@ -255,8 +255,9 @@ fn instrument_contents_region(
     }
 
     let mut entries = Vec::new();
-    let mut by_label: HashMap<String, usize> = HashMap::new();
-    let mut container: Option<String> = None;
+    // Each entry read so far by its place (its kind's mark and label, as a node's fragment names it): its depth and label.
+    let mut by_place: HashMap<String, (usize, String)> = HashMap::new();
+    let mut container: Option<(String, String)> = None;
     let mut previous_page = 0;
     let mut pageless = 0;
     let mut pageless_from = 0;
@@ -294,63 +295,44 @@ fn instrument_contents_region(
             break;
         }
 
-        let (label, display, depth, parent_label, is_container) = match &head.kind {
+        let (kind, label, display, depth, parent, is_container) = match &head.kind {
             InstrumentContentsHeadKind::Container { word, value } => {
                 let number = value
                     .parse::<u32>()
                     .ok()
                     .or_else(|| legal_structure_model::layout::roman_value(&value.to_ascii_uppercase()));
                 let Some(number) = number else { continue };
-                let lower = word.to_ascii_lowercase();
-                let prefix = match lower.as_str() {
-                    "article" => "art",
+                let kind = match word.to_ascii_lowercase().as_str() {
+                    "article" => "article",
                     "part" => "part",
-                    _ => "div",
+                    _ => "division",
                 };
-                (
-                    format!("{prefix}{number}"),
-                    format!("{} {value}", word.to_ascii_uppercase()),
-                    0,
-                    None,
-                    true,
-                )
+                (kind, number.to_string(), format!("{} {value}", word.to_ascii_uppercase()), 0, None, true)
             }
             InstrumentContentsHeadKind::Schedule { word, value } => {
-                let prefix = match word.to_ascii_lowercase().as_str() {
-                    "schedule" => "sched",
-                    "exhibit" => "exh",
+                let kind = match word.to_ascii_lowercase().as_str() {
+                    "schedule" => "schedule",
+                    "exhibit" => "exhibit",
                     "annex" => "annex",
-                    _ => "app",
+                    _ => "appendix",
                 };
-                (
-                    format!("{prefix}{}", value.to_ascii_lowercase()),
-                    format!("{} {value}", word.to_ascii_uppercase()),
-                    0,
-                    None,
-                    true,
-                )
+                (kind, value.to_ascii_lowercase(), format!("{} {value}", word.to_ascii_uppercase()), 0, None, true)
             }
             InstrumentContentsHeadKind::Section { number } => {
                 let numbered_parent = number.rfind('.').and_then(|dot| {
-                    let parent = format!("sec{}", &number[..dot]);
-                    by_label
-                        .get(&parent)
-                        .copied()
-                        .map(|depth| (parent, depth + 1))
+                    let parent = &number[..dot];
+                    by_place
+                        .get(&format!("{}{parent}", provision_mark(Some("section"))))
+                        .map(|(depth, _)| (parent.to_owned(), depth + 1))
                 });
                 let (parent, depth) = numbered_parent
                     .map(|(parent, depth)| (Some(parent), depth))
-                    .unwrap_or_else(|| (container.clone(), usize::from(container.is_some())));
-                (
-                    format!("sec{number}"),
-                    format!("Section {number}"),
-                    depth,
-                    parent,
-                    false,
-                )
+                    .unwrap_or_else(|| (container.as_ref().map(|(_, label)| label.clone()), usize::from(container.is_some())));
+                ("section", number.clone(), format!("Section {number}"), depth, parent, false)
             }
         };
-        if by_label.contains_key(&label) {
+        let place = format!("{}{label}", provision_mark(Some(kind)));
+        if by_place.contains_key(&place) {
             break;
         }
         if page.is_none() {
@@ -367,7 +349,7 @@ fn instrument_contents_region(
             previous_page = page.unwrap();
         }
         if is_container {
-            container = Some(label.clone());
+            container = Some((place.clone(), label.clone()));
         }
         let heading_source = page.map_or(unit.as_str(), |_| &unit[..page_match_start]);
         let heading = heading_source
@@ -382,14 +364,15 @@ fn instrument_contents_region(
             .to_owned();
         let entry = InstrumentContentsEntry {
             label: label.clone(),
+            locator_kind: kind.to_owned(),
             display,
             heading,
             depth,
-            parent_label,
+            parent_label: parent,
             page,
             contents_line_start: from_utf16 + head.start_utf16,
         };
-        by_label.insert(label, depth);
+        by_place.insert(place, (depth, label));
         entries.push(entry);
         last_head = Some(index);
     }

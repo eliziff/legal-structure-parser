@@ -223,21 +223,47 @@ impl StructureNode {
         }
     }
 
-    /// The node's place as a link names it, its kind's mark before its label: "par12", "page702", "fn3".
+    /// The node's place as a link names it, its kind's mark before its label: "par12", "page702", "fn3", a provision's
+    /// by its locator's kind ("sec5(2)", "part2", "schedb").
     pub fn fragment(&self) -> Option<String> {
         let mark = match self.kind {
             NodeKind::Page => "page",
             NodeKind::Paragraph | NodeKind::Quote | NodeKind::Prose => "par",
             NodeKind::Footnote | NodeKind::Endnote => "fn",
+            NodeKind::Section => provision_mark(self.locator_kind.as_deref()),
             _ => "",
         };
         self.label.as_deref().map(|label| format!("{mark}{label}"))
+    }
+
+    /// The names a reader's own references give the node: its label and each of its aliases, a provision's under its
+    /// kind's mark ("sec5(2)", "part2"), as its parents and its claims name it.
+    pub fn places(&self) -> impl Iterator<Item = String> + '_ {
+        let mark = if self.kind == NodeKind::Section { provision_mark(self.locator_kind.as_deref()) } else { "" };
+        self.label.iter().chain(self.aliases.iter().flatten()).map(move |name| format!("{mark}{name}"))
     }
 
     /// Whether the node prints its label where it stands: its marker holds text ("[12]" before a paragraph), not a
     /// number its reader inferred.
     pub fn prints_label(&self) -> bool {
         self.marker_range.is_some_and(|range| range.start < range.end)
+    }
+}
+
+/// The mark a provision's place carries in a link, by its locator's kind: "sec" for a section, "art", "part", "div",
+/// "sched", "exh", "annex" and "app" for an article, part, division, schedule, exhibit, annex and appendix; a clause the
+/// grammar reads by its number alone, or a provision of no kind, carries none.
+pub fn provision_mark(kind: Option<&str>) -> &'static str {
+    match kind {
+        Some("section" | "subsection") => "sec",
+        Some("article") => "art",
+        Some("part") => "part",
+        Some("division") => "div",
+        Some("schedule") => "sched",
+        Some("exhibit") => "exh",
+        Some("annex") => "annex",
+        Some("appendix") => "app",
+        _ => "",
     }
 }
 

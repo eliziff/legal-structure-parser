@@ -20,21 +20,20 @@ pub struct OutlineEntry {
     page_index: Option<usize>,
 }
 
-/// A section label as a reader cites it: "sec33.1" is "s 33.1", "part2" "Part 2".
-fn section_title(label: &str) -> String {
-    for (prefix, name) in [
-        ("sec", "s "),
-        ("part", "Part "),
-        ("sched", "Schedule "),
-        ("art", "Art "),
-        ("ann", "Annex "),
-        ("app", "Appendix "),
-    ] {
-        if let Some(rest) = label.strip_prefix(prefix).filter(|rest| !rest.is_empty()) {
-            return format!("{name}{rest}");
-        }
-    }
-    label.to_owned()
+/// A provision as a reader cites it, by its kind and label: section 33.1 is "s 33.1", part 2 "Part 2"; a kind a reader
+/// names no other way by its place ("div2").
+fn section_title(node: &StructureNode) -> String {
+    let label = node.label.as_deref().unwrap_or_default();
+    let name = match node.locator_kind.as_deref() {
+        Some("section" | "subsection") => "s ",
+        Some("part") => "Part ",
+        Some("schedule") => "Schedule ",
+        Some("article") => "Art ",
+        Some("annex") => "Annex ",
+        Some("appendix") => "Appendix ",
+        _ => return node.fragment().unwrap_or_default(),
+    };
+    if label.is_empty() { node.fragment().unwrap_or_default() } else { format!("{name}{label}") }
 }
 
 fn own_start(node: &StructureNode) -> usize {
@@ -167,7 +166,7 @@ fn outline_entries(
                     Some(OutlineEntry {
                         kind: "section",
                         level: 0,
-                        title: section_title(&label),
+                        title: section_title(node),
                         start,
                         page_index,
                     })

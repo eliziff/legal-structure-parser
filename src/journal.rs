@@ -99,11 +99,8 @@ fn title(value: &str) -> (Option<String>, Vec<String>) {
         }
     }
     let label = numbered.map(|(label, _)| label.to_owned());
-    let mut aliases = label.iter().cloned().collect::<Vec<_>>();
     let normalized = normalized.trim();
-    if !normalized.is_empty() {
-        aliases.push(format!("sectitle:{normalized}"));
-    }
+    let aliases = (!normalized.is_empty()).then(|| format!("sectitle:{normalized}")).into_iter().collect();
     (label, aliases)
 }
 
@@ -368,18 +365,17 @@ pub fn journal_document_structure(
     }
 
     for (index, title) in titles.iter().enumerate() {
-        claims.push(claim(
+        let mut section = claim(
             NodeKind::Section,
-            title.label.as_ref().map_or_else(
-                || format!("secTitle{}", index + 1),
-                |label| format!("sec{label}"),
-            ),
+            title.label.clone().unwrap_or_else(|| format!("Title{}", index + 1)),
             ScalarRange {
                 start: title.start,
                 end: titles.get(index + 1).map_or(offset, |value| value.start),
             },
             title.aliases.clone(),
-        ));
+        );
+        section.locator_kind = Some("section".to_owned());
+        claims.push(section);
     }
     let mut used_pairs = HashSet::new();
     for (pair, note, region) in notes {

@@ -39,13 +39,12 @@ pub(super) fn detect_journal(text: &ScalarText<'_>) -> Vec<StructureNode> {
                     );
                 let mut block = crate::labelled_node(
                     NodeKind::Section,
-                    format!("sec{}", &capture[1]),
+                    capture[1].to_owned(),
                     text.utf16_of_byte(line.byte_start + whole.start()),
                     0,
                 );
-                block.aliases = Some(std::iter::once(capture[1].to_owned())
-                    .chain((!alias.is_empty()).then(|| format!("sectitle:{alias}")))
-                    .collect());
+                block.locator_kind = Some("section".to_owned());
+                block.aliases = (!alias.is_empty()).then(|| vec![format!("sectitle:{alias}")]);
                 block
             })
             .collect(),

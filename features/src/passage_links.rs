@@ -2,7 +2,7 @@
 //! with the text fragments the planner gives the passage's block and quotations. These are the links Beaver's
 //! legalSourceLinks.ts makes (buildLegalSourcePinpoint, citedPassageLink, and A2AJ Law Web's).
 
-use legal_structure::{canlii_case_url, canlii_law_url, NodeKind, DocumentQuery, DocumentStructure, TextFragmentPlan};
+use legal_structure::{canlii_case_url, canlii_law_url, provision_mark, NodeKind, DocumentQuery, DocumentStructure, TextFragmentPlan};
 use legal_document_query::{source_text_fragment_plan, TextFragmentPage};
 use regex::Regex;
 use std::sync::OnceLock;
@@ -96,7 +96,7 @@ pub fn source_link(query: &DocumentQuery, structure: &DocumentStructure, request
             "paragraph" => Some(("paragraph", format!("par{label}"))),
             "section" => {
                 let provision = label.split('(').next().unwrap_or(label).trim();
-                (!provision.is_empty()).then(|| ("section", format!("sec{provision}")))
+                (!provision.is_empty()).then(|| ("section", format!("{}{provision}", provision_mark(Some("section")))))
             }
             _ => None,
         });

@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InstrumentContentsEntry {
+    /// The entry's label as the provision it names holds it ("5.2", "4", "b"), and that provision's kind ("section",
+    /// "part", "schedule", ...).
     pub label: String,
+    pub locator_kind: String,
     pub display: String,
     pub heading: String,
     pub depth: usize,

@@ -681,7 +681,7 @@ fn native_identity(
             .get_or_init(|| Regex::new(r"^\d{1,8}(?:[.-]\d{1,8}){0,3}(?:\([^)]+\))*$").unwrap())
             .is_match(&section)
         {
-            return Some(markup_node(NodeKind::Section, format!("sec{section}"), anchor));
+            return Some(provision_node(section.to_string(), anchor));
         }
     }
     static SECTION_ID: OnceLock<Regex> = OnceLock::new();
@@ -690,7 +690,14 @@ fn native_identity(
             Regex::new(r"(?i)^sec(\d{1,8}(?:[.-]\d{1,8}){0,3}(?:\([^)]+\))*)$").unwrap()
         })
         .captures(id)
-        .map(|capture| markup_node(NodeKind::Section, format!("sec{}", &capture[1]), anchor))
+        .map(|capture| provision_node(capture[1].to_owned(), anchor))
+}
+
+/// A section the markup's element numbers ("s5", "sec5(2)"): labelled as numbered, its kind a section's.
+fn provision_node(label: String, anchor: Option<String>) -> StructureNode {
+    let mut node = markup_node(NodeKind::Section, label, anchor);
+    node.locator_kind = Some("section".to_owned());
+    node
 }
 
 fn citation_page_alias(citation: &str, label: &str) -> String {

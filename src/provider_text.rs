@@ -1,5 +1,5 @@
 use crate::{
-    locator::normalize_section_locator, text::equal_fold, utf16_len,
+    locator::{section_locator, SectionLocator}, text::equal_fold, utf16_len,
     Derivation, DetectionProfile, Evidence, DocumentStructure, EngineError,
     NodeKind, ScalarRange, ScalarText, Scope, ScopeKind, StructureNode,
 };
@@ -137,10 +137,11 @@ fn ordered_sections(map: &ProviderSectionMap) -> Result<Vec<(&str, &str)>, Engin
         .collect())
 }
 
-/// A node the provider's own data gives the text.
+/// A node the provider's own data gives the text; a section the provider's map labels.
 fn provided(id: String, kind: NodeKind, label: String, range: ScalarRange) -> StructureNode {
     let mut node = StructureNode::new(id, kind, range, ORIGIN, Derivation::Native, None);
     node.label = Some(label);
+    node.locator_kind = (kind == NodeKind::Section).then(|| "section".to_owned());
     node
 }
 
@@ -165,7 +166,7 @@ fn provider_source(mut text: String, entries: &[(&str, &str)]) -> (String, Vec<S
         claims.push(provided(
             format!("native-{:06}", claims.len() + 1),
             NodeKind::Section,
-            format!("sec{}", label.trim()),
+            label.trim().to_owned(),
             ScalarRange { start, end: offset },
         ));
     }
@@ -239,7 +240,7 @@ fn provider_claims(coordinates: &ScalarText<'_>, map: &ProviderSectionMap) -> Ve
         claims.push(provided(
             format!("native-{:06}", claims.len() + 1),
             NodeKind::Section,
-            format!("sec{label}"),
+            label.to_owned(),
             ScalarRange {
                 start: coordinates.utf16_of_byte(start),
                 end: coordinates.utf16_of_byte(start + value.len()),
@@ -322,9 +323,10 @@ fn apply_provider_section_evidence(
     let native_top_sections = native_claims
         .iter()
         .filter(|claim| claim.kind == NodeKind::Section && claim.parent_id.is_none())
-        .flat_map(|claim| claim.label.iter().chain(claim.aliases.iter().flatten()))
-        .map(|label| label.to_lowercase())
+        .flat_map(StructureNode::places)
+        .map(|place| place.to_lowercase())
         .collect::<HashSet<_>>();
+    let section = |label: &str| format!("{}{label}", crate::provision_mark(Some("section"))).to_lowercase();
     let selected_sections = map
         .iter()
         .filter(|(label, provider_text)| {
@@ -333,7 +335,7 @@ fn apply_provider_section_evidence(
                 && counts.get(&label.to_lowercase()) == Some(&1)
                 && !provider_text.trim().is_empty()
                 && !provider_text.trim().eq_ignore_ascii_case("[blank]")
-                && !native_top_sections.contains(&format!("sec{label}").to_lowercase())
+                && !native_top_sections.contains(&section(label))
         })
         .collect::<Vec<_>>();
     let tokens = (!selected_sections.is_empty())
@@ -349,8 +351,8 @@ fn apply_provider_section_evidence(
         .enumerate()
         .filter(|(_, block)| block.kind == NodeKind::Section && block.parent_id.is_none())
     {
-        for label in block.label.iter().chain(block.aliases.iter().flatten()) {
-            let candidates = top_sections.entry(label.to_lowercase()).or_default();
+        for place in block.places() {
+            let candidates = top_sections.entry(place.to_lowercase()).or_default();
             if candidates.last() != Some(&index) {
                 candidates.push(index);
             }
@@ -403,9 +405,7 @@ fn apply_provider_section_evidence(
                         (body_start, body_end, body_utf16_start, body_utf16_end)
                     })
             });
-        let provider_label = format!("sec{label}");
-        let key = provider_label.to_lowercase();
-        let candidates = top_sections.get(&key).map(Vec::as_slice).unwrap_or(&[]);
+        let candidates = top_sections.get(&section(label)).map(Vec::as_slice).unwrap_or(&[]);
         if candidates.len() == 1 {
             let index = candidates[0];
             if spans[0].1 < blocks[index].range.start
@@ -436,10 +436,11 @@ fn apply_provider_section_evidence(
             });
             let mut block = crate::labelled_node(
                 NodeKind::Section,
-                provider_label,
+                label.to_owned(),
                 start,
                 body_utf16_end,
             );
+            block.locator_kind = Some("section".to_owned());
             block.source = Derivation::Native;
             block.origin_id = ORIGIN.into();
             blocks.push(block);
@@ -476,11 +477,12 @@ pub(crate) fn provider_text_reading(
     if input.excerpt_of.is_some() {
         if let Some(map) = &mut input.section_map {
             for (label, _) in map {
-                let normalized = normalize_section_locator(label);
-                *label = normalized
-                    .strip_prefix("sec")
-                    .unwrap_or(&normalized)
-                    .to_owned();
+                *label = match section_locator(label) {
+                    Some(SectionLocator::Section(section)) => section,
+                    // (A title stands as the locator's place did, its section's mark taken off.)
+                    Some(SectionLocator::Title(title)) => format!("title:{title}"),
+                    None => String::new(),
+                };
             }
         }
     }

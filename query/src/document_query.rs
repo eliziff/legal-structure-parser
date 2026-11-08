@@ -5,7 +5,7 @@ use crate::{
     DocumentStructure, InstrumentCrossReferenceGraph,
     InstrumentCrossReferenceStatus, NodeKind, ScalarRange, ScalarText, StructureNode,
 };
-use legal_structure_model::InstrumentCrossReferenceEdge;
+use legal_structure_model::{provision_mark, InstrumentCrossReferenceEdge};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -245,6 +245,16 @@ pub(crate) fn queried_as(node: &StructureNode, kind: NodeKind) -> bool {
 /// A served node's label as the document prints it (none for prose).
 fn position_label<'a>(document: &'a DocumentStructure, position: &BlockPosition) -> &'a str {
     document.nodes[position.node].label.as_deref().unwrap_or_default()
+}
+
+/// Whether a locator names a node by its label: a provision by its place, its kind's mark and its label ("sec5(2)",
+/// "part2", as a citation's locator reads: `normalize_section_locator`), any other node by its label.
+fn labelled(node: &StructureNode, label: &str) -> bool {
+    if node.kind == NodeKind::Section {
+        node.fragment().is_some_and(|place| equal_fold(&place, label))
+    } else {
+        node.label.as_deref().is_some_and(|own| equal_fold(own, label))
+    }
 }
 
 fn projected_positions(document: &DocumentStructure) -> Vec<BlockPosition> {
@@ -692,7 +702,9 @@ impl DocumentQuery {
             let mut primary_length = 0;
             for (index, anchor) in anchors.iter().enumerate() {
                 if queried_as(anchor, primary_kind) {
-                    let length = crate::text::utf16_len(anchor.label.as_deref().unwrap_or_default());
+                    // (A provision's by its place, its kind's mark and label: a part's over the section opening it.)
+                    let named = if anchor.kind == NodeKind::Section { anchor.fragment() } else { anchor.label.clone() };
+                    let length = crate::text::utf16_len(named.as_deref().unwrap_or_default());
                     if primary.is_none() || length > primary_length {
                         primary = Some(index);
                         primary_length = length;
@@ -800,15 +812,17 @@ impl DocumentQuery {
             if node.kind == NodeKind::Prose && node.label.is_some() && node.label == node.anchor {
                 position_label(document, position) == label
             } else {
-                node.label.is_some() && equal_fold(position_label(document, position), label)
+                labelled(node, label)
             };
+        // (A provision's alias names it as its label does, under its kind's mark, or as it is: "section 5(2)".)
+        let mark = if node.kind == NodeKind::Section { provision_mark(node.locator_kind.as_deref()) } else { "" };
         matches_label
             || node
                 .aliases
                 .as_deref()
                 .unwrap_or_default()
                 .iter()
-                .any(|alias| equal_fold(alias, label))
+                .any(|alias| equal_fold(alias, label) || !mark.is_empty() && equal_fold(&format!("{mark}{alias}"), label))
     }
 
     fn position_resolves(
@@ -887,7 +901,7 @@ impl DocumentQuery {
             .positions(document)
             .iter()
             .filter(|position| queried_as(&document.nodes[position.node], kind))
-            .any(|position| equal_fold(position_label(document, position), exact))
+            .any(|position| labelled(&document.nodes[position.node], exact))
         {
             return Cow::Borrowed(exact);
         }

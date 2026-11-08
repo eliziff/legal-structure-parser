@@ -1,7 +1,8 @@
 use super::*;
 
 /// The structure from a reader's evidence: its own nodes, with what inference finds (or the blocks it was given in
-/// place of inference), each node's parent resolved from the label (or id) it names. The reader takes
+/// place of inference), each node's parent resolved from the place (or id) it names: a node's label or alias, a
+/// provision's under its kind's mark (`StructureNode::places`). The reader takes
 /// its revision once it has set all it adds.
 pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNode>>) -> DocumentStructure {
     #[cfg(feature = "structure-inference")]
@@ -15,12 +16,7 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
         .then(|| {
             nodes
                 .iter()
-                .flat_map(|node| {
-                    node.label
-                        .iter()
-                        .chain(node.aliases.iter().flatten())
-                        .map(|label| (node.kind, label.to_ascii_lowercase()))
-                })
+                .flat_map(|node| node.places().map(|place| (node.kind, place.to_ascii_lowercase())))
                 .collect::<HashSet<_>>()
         })
         .unwrap_or_default();
@@ -33,8 +29,9 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
         if block.content_start.is_some_and(|at| {
             block.kind != NodeKind::Section || at < block.range.start || at > block.range.end
         }) || (!native_labels.is_empty()
-            && block.label.as_ref().is_some_and(|label| {
-                native_labels.contains(&(block.kind, label.to_ascii_lowercase()))
+            && block.label.is_some()
+            && block.places().next().is_some_and(|place| {
+                native_labels.contains(&(block.kind, place.to_ascii_lowercase()))
             }))
         {
             continue;
@@ -58,8 +55,8 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
             .collect::<HashMap<_, _>>();
         let mut labels = HashMap::<String, Vec<usize>>::with_capacity(nodes.len());
         for (position, node) in nodes.iter().enumerate() {
-            for label in node.label.iter().chain(node.aliases.iter().flatten()) {
-                let candidates = labels.entry(label.to_ascii_lowercase()).or_default();
+            for place in node.places() {
+                let candidates = labels.entry(place.to_ascii_lowercase()).or_default();
                 if candidates.last() != Some(&position) {
                     candidates.push(position);
                 }

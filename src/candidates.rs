@@ -14,7 +14,7 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
         .map(|(index, point)| {
             point.parent_id.as_ref().and_then(|parent| {
                 points[..index].iter().rposition(|candidate| {
-                    candidate.label.as_ref() == Some(parent)
+                    candidate.fragment().as_ref() == Some(parent)
                         && candidate.range.start <= point.range.start
                         && point.range.start < candidate.range.end
                 })
@@ -33,7 +33,7 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
         .filter(|index| {
             parent_indexes[*index].is_none()
                 && direct
-                && !points[*index].label.as_deref().is_some_and(|label| ["art", "part", "div"].iter().any(|word| label.starts_with(word)))
+                && !matches!(points[*index].locator_kind.as_deref(), Some("article" | "part" | "division"))
                 && counted.contains(&points[*index].range.start)
         })
         .collect::<HashSet<_>>();
@@ -72,6 +72,7 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
             },
             label,
             grammar_value,
+            locator_kind: point.locator_kind.clone(),
             parent_candidate_id: parent_indexes[index]
                 .map(|parent| format!("grammar-point-{parent:06}")),
             level,

@@ -361,22 +361,17 @@ pub(super) fn find_provision_references(
         .collect()
 }
 
-fn reference_node_kind(label: &str) -> &'static str {
-    if label.starts_with("art") {
-        "article"
-    } else if label.starts_with("part") {
-        "part"
-    } else if label.starts_with("div") {
-        "division"
-    } else if ["sched", "exh", "annex", "app"]
-        .iter()
-        .any(|prefix| label.starts_with(prefix))
-    {
-        "schedule"
-    } else if label.contains('(') {
-        "subsection"
-    } else {
-        "section"
+/// What a provision is to the references naming it, by its kind as its grammar read it: an article, a part, a division,
+/// a schedule (an exhibit, an annex and an appendix are schedules), else a section, a subsection where its label is a
+/// part of one ("5(2)").
+fn reference_node_kind(node: &crate::StructureNode) -> &'static str {
+    match node.locator_kind.as_deref() {
+        Some("article") => "article",
+        Some("part") => "part",
+        Some("division") => "division",
+        Some("schedule" | "exhibit" | "annex" | "appendix") => "schedule",
+        _ if node.label.as_deref().is_some_and(|label| label.contains('(')) => "subsection",
+        _ => "section",
     }
 }
 
@@ -388,32 +383,23 @@ pub(super) fn populate_instrument_node_metadata(
         .iter_mut()
         .filter(|node| node.kind == NodeKind::Section)
     {
-        let Some(label) = node.label.as_deref() else {
+        let (Some(place), Some(body)) = (node.fragment(), node.label.clone()) else {
             continue;
         };
-        let kind = reference_node_kind(&label);
-        node.locator_kind = Some(kind.to_owned());
-        let body = match kind {
-            "article" => label.strip_prefix("art"),
-            "part" => label.strip_prefix("part"),
-            "division" => label.strip_prefix("div"),
-            "schedule" if label.starts_with("sched") => label.strip_prefix("sched"),
-            "schedule" if label.starts_with("exh") => label.strip_prefix("exh"),
-            "schedule" if label.starts_with("annex") => label.strip_prefix("annex"),
-            "schedule" => label.strip_prefix("app"),
-            _ => label.strip_prefix("sec"),
-        }
-        .unwrap_or(label);
-        let word = match kind {
-            "article" => "article",
-            "part" => "part",
-            "division" => "division",
-            "schedule" if label.starts_with("exh") => "exhibit",
-            "schedule" if label.starts_with("annex") => "annex",
-            "schedule" if label.starts_with("app") => "appendix",
-            "schedule" => "schedule",
+        let kind = reference_node_kind(node);
+        // A schedule's kind is its own ("exhibit", "annex"); a section's is a subsection where it is part of one.
+        let word = match node.locator_kind.as_deref() {
+            Some("article") => "article",
+            Some("part") => "part",
+            Some("division") => "division",
+            Some("schedule") => "schedule",
+            Some("exhibit") => "exhibit",
+            Some("annex") => "annex",
+            Some("appendix") => "appendix",
             _ => "section",
         };
+        node.locator_kind = Some(if kind == "schedule" { word } else { kind }.to_owned());
+        let body = body.as_str();
         let raw_head = node
             .content_start
             .and_then(|end| {
@@ -453,8 +439,8 @@ pub(super) fn populate_instrument_node_metadata(
                 aliases.push(format!("{word} {}", legal_structure_model::layout::roman_numeral(value)).to_lowercase());
             }
         }
-        let label = label.to_lowercase();
-        aliases.retain(|alias| alias != &label);
+        let place = place.to_lowercase();
+        aliases.retain(|alias| alias != &place);
         aliases.dedup();
         node.aliases = (!aliases.is_empty()).then_some(aliases);
         node.marker_range = node.content_start.map(|end| ScalarRange {
@@ -466,9 +452,12 @@ pub(super) fn populate_instrument_node_metadata(
 
 struct ReferenceNode<'a> {
     label: &'a str,
+    /// Its place, as a reference's locator names it ("sec5(2)", "part2": `StructureNode::fragment`).
+    place: String,
     aliases: &'a [String],
     anchor: Option<&'a str>,
-    parent_label: Option<&'a str>,
+    /// Its parent's place.
+    parent_place: Option<String>,
     kind: &'static str,
     start: usize,
     end: usize,
@@ -489,19 +478,18 @@ fn reference_nodes<'a>(
         .iter()
         .filter(|node| node.kind == NodeKind::Section && node.label.is_some())
         .map(|node| {
-            let label = node.label.as_deref().unwrap();
-            let kind = reference_node_kind(&label);
-            let parent_label = node
+            let parent_place = node
                 .parent_id
                 .as_deref()
                 .and_then(|id| by_id.get(id))
-                .and_then(|parent| parent.label.as_deref());
+                .and_then(|parent| parent.fragment());
             ReferenceNode {
-                label,
+                label: node.label.as_deref().unwrap(),
+                place: node.fragment().unwrap(),
                 aliases: node.aliases.as_deref().unwrap_or_default(),
                 anchor: node.anchor.as_deref(),
-                parent_label,
-                kind,
+                parent_place,
+                kind: reference_node_kind(node),
                 start: node.range.start,
                 end: node.range.end,
                 depth: depths[node.id.as_str()],
@@ -510,26 +498,13 @@ fn reference_nodes<'a>(
         .collect()
 }
 
-fn node_keys(node: &ReferenceNode, label: String) -> Vec<String> {
-    let mut keys = vec![label];
-    let roman = match node.kind {
-        "article" => node
-            .label
-            .strip_prefix("art")
-            .map(|value| ("article", value)),
-        "part" => node.label.strip_prefix("part").map(|value| ("part", value)),
-        "division" => node
-            .label
-            .strip_prefix("div")
-            .map(|value| ("division", value)),
-        _ => None,
-    };
-    if let Some((word, value)) =
-        roman.and_then(|(word, value)| value.parse::<u32>().ok().map(|n| (word, n)))
-    {
-        keys.push(format!("{word} {}", legal_structure_model::layout::roman_numeral(value)).to_lowercase());
+fn node_keys(node: &ReferenceNode, place: String) -> Vec<String> {
+    let mut keys = vec![place];
+    let roman = matches!(node.kind, "article" | "part" | "division").then(|| node.label.parse::<u32>().ok()).flatten();
+    if let Some(value) = roman {
+        keys.push(format!("{} {}", node.kind, legal_structure_model::layout::roman_numeral(value)).to_lowercase());
     } else if matches!(node.kind, "section" | "subsection") {
-        keys.push(node.label.replacen("sec", "section ", 1).to_lowercase());
+        keys.push(format!("section {}", node.label).to_lowercase());
     }
     keys.sort();
     keys.dedup();
@@ -553,7 +528,7 @@ fn label_depth(locator: &str) -> usize {
 fn containing_reference_node(
     nodes: &[ReferenceNode],
     ordered: &[usize],
-    by_label: &HashMap<&str, usize>,
+    by_place: &HashMap<&str, usize>,
     position: usize,
 ) -> Option<usize> {
     let at = ordered.partition_point(|index| nodes[*index].start <= position);
@@ -563,9 +538,9 @@ fn containing_reference_node(
             return Some(index);
         }
         node = nodes[index]
-            .parent_label
+            .parent_place
             .as_deref()
-            .and_then(|label| by_label.get(label).copied());
+            .and_then(|place| by_place.get(place).copied());
     }
     None
 }
@@ -583,10 +558,10 @@ fn reference_locator(reference: &ProvisionReference, source: Option<&ReferenceNo
     let Some(source) = source else {
         return String::new();
     };
-    let Some(body) = source.label.strip_prefix("sec") else {
+    if !matches!(source.kind, "section" | "subsection") {
         return String::new();
-    };
-    let head = body.split(['(', '@']).next().unwrap_or("");
+    }
+    let head = source.label.split(['(', '@']).next().unwrap_or("");
     (!head.is_empty())
         .then(|| normalize_compact_numbered_section_locator(&format!("{head}{}", reference.label)))
         .unwrap_or_default()
@@ -608,9 +583,9 @@ pub(super) fn resolve_instrument_references(
     const INTEGRITY_GATE: f64 = 0.5;
 
     let nodes = reference_nodes(graph, depths);
-    let mut by_label = HashMap::with_capacity(nodes.len());
+    let mut by_place = HashMap::with_capacity(nodes.len());
     for (index, node) in nodes.iter().enumerate() {
-        by_label.entry(node.label).or_insert(index);
+        by_place.entry(node.place.as_str()).or_insert(index);
     }
     let mut ordered = (0..nodes.len()).collect::<Vec<_>>();
     ordered.sort_by_key(|index| (nodes[*index].start, nodes[*index].depth));
@@ -626,7 +601,7 @@ pub(super) fn resolve_instrument_references(
             .expect("valid top-level provision grammar")
     });
     for (node_index, node) in nodes.iter().enumerate() {
-        let label = node.label.to_lowercase();
+        let label = node.place.to_lowercase();
         if let Some(parent) = label_parent(&label) {
             child_depths
                 .entry(parent.to_owned())
@@ -680,7 +655,7 @@ pub(super) fn resolve_instrument_references(
     };
     let mut edges = Vec::with_capacity(references.len());
     for reference in references {
-        let source_index = containing_reference_node(&nodes, &ordered, &by_label, reference.start);
+        let source_index = containing_reference_node(&nodes, &ordered, &by_place, reference.start);
         let source = source_index.map(|index| &nodes[index]);
         let locator = reference_locator(&reference, source);
         let mut edge = InstrumentCrossReferenceEdge {
@@ -723,7 +698,7 @@ pub(super) fn resolve_instrument_references(
                 edge.target_label = Some(nodes[target].label.to_owned());
                 edge.target_start = Some(nodes[target].start);
                 edge.target_end = Some(nodes[target].end);
-                edge.self_loop = source.is_some_and(|source| source.label == nodes[target].label);
+                edge.self_loop = source.is_some_and(|source| source.place == nodes[target].place);
                 counts.self_loops += usize::from(edge.self_loop);
             } else if target.is_some_and(|value| value.1 > 1) {
                 counts.abstained += 1;

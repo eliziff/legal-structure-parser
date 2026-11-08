@@ -26,7 +26,7 @@ pub use assembly::{assemble_in_place, legislation_outline, write_levels};
 pub use legal_layout::{ablated, CitationSpan, LayoutAnalysis, NumberingMarker, PARTY_ROLES};
 pub use definitions::{DefinedTerm, DefinitionOccurrence};
 pub use document::{
-    CitedAuthority, Derivation, DocumentStructure, MarkupAncestor, NodeReading,
+    provision_mark, CitedAuthority, Derivation, DocumentStructure, MarkupAncestor, NodeReading,
     ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, PrimaryRole, SourceFragment, StructureNode,
 };
 pub use docx::{
@@ -134,6 +134,10 @@ pub struct StructureMarkerCandidate {
     pub marker_range: ScalarRange,
     pub label: String,
     pub grammar_value: String,
+    /// A provision's kind as its grammar read its marker ("section", "article", "part", ...); none for a clause read by
+    /// its number alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locator_kind: Option<String>,
     pub parent_candidate_id: Option<String>,
     pub level: usize,
     pub content_start: usize,
@@ -208,30 +212,10 @@ pub enum UnitRole {
     Item,
 }
 
-/// The locator a provision's grammar value makes it, at its depth (`level`) on its ladder: a word's own, else a clause
-/// at the top and a subclause under it.
-pub fn provision_locator(value: &str, level: usize) -> &'static str {
-    if value.starts_with("sec") {
-        "section"
-    } else if value.starts_with("art") {
-        "article"
-    } else if value.starts_with("part") {
-        "part"
-    } else if value.starts_with("div") {
-        "division"
-    } else if value.starts_with("sched") {
-        "schedule"
-    } else if value.starts_with("exh") {
-        "exhibit"
-    } else if value.starts_with("ann") {
-        "annex"
-    } else if value.starts_with("app") {
-        "appendix"
-    } else if level == 0 {
-        "clause"
-    } else {
-        "subclause"
-    }
+/// The locator a provision's marker makes it, at its depth (`level`) on its ladder: the kind its grammar read
+/// (`locator_kind`), else a clause at the top and a subclause under it.
+pub fn provision_locator(kind: Option<&str>, level: usize) -> &str {
+    kind.unwrap_or(if level == 0 { "clause" } else { "subclause" })
 }
 
 impl UnitRole {

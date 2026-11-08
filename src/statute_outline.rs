@@ -3,7 +3,7 @@
 //! its whole subtree, so a caller can lay the statute out or cut one provision out of it.
 
 use crate::analysis::citation_spans;
-use crate::{utf16_len, EngineError, NodeKind, ProviderTextInput, ProviderTextSourceKind};
+use crate::{provision_mark, utf16_len, EngineError, NodeKind, ProviderTextInput, ProviderTextSourceKind};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -98,7 +98,8 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
     // recovered where provisions open; the reading that finds more provisions is kept. The
     // recovery only breaks lines, so offsets into the text hold.
     let provisions = |structure: &crate::DocumentStructure| structure.nodes.iter()
-        .filter(|node| node.kind == NodeKind::Section && node.label.as_deref().is_some_and(|label| label.starts_with("sec") && !label.contains('(')))
+        .filter(|node| node.kind == NodeKind::Section && provision_mark(node.locator_kind.as_deref()) == "sec"
+            && node.label.as_deref().is_some_and(|label| !label.contains('(')))
         .count();
     let structure = if articles || provisions(&provider) * 200 < text.len().max(1) {
         let lineated = crate::instrument::instrument_reading(text)?;
@@ -141,7 +142,7 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
     // section's note above it, not one of its own.
     let mut noted = std::collections::HashSet::new();
     for node in structure.nodes.iter().filter(|node| node.kind == NodeKind::Section) {
-        let Some(label) = node.label.as_deref().and_then(|label| label.strip_prefix("sec")) else { continue };
+        let Some(label) = node.label.as_deref().filter(|_| provision_mark(node.locator_kind.as_deref()) == "sec") else { continue };
         let start = node.range.start;
         // A label read twice ("2(a)@2") prints as its first reading.
         let label = label.split('@').collect::<String>();

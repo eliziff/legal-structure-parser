@@ -1215,16 +1215,17 @@ pub(super) fn detect_legislation(
             .get(index + 1)
             .map_or(text.utf16_len(), |value| value.start);
         let end = schedule_start(text, section.content_start, end);
-        let parent = format!("sec{}", section.label);
-        let mut top = crate::labelled_node(NodeKind::Section, parent.clone(), section.start, end);
-        top.aliases = (!section.aliases.is_empty())
-            .then(|| section.aliases.iter().map(|value| format!("sec{value}")).collect());
+        let mut top = crate::labelled_node(NodeKind::Section, section.label.clone(), section.start, end);
+        top.locator_kind = Some("section".to_owned());
+        top.aliases = (!section.aliases.is_empty()).then(|| section.aliases.clone());
         top.content_start = Some(section.content_start);
+        let parent = top.fragment().unwrap();
         result.push(top);
         let children = enumerated_children(
             text,
             section.start..end,
-            &parent,
+            "section",
+            &section.label,
             section.content_start,
             matches!(section.family, SectionFamily::Bare | SectionFamily::DotTerm),
             None,
@@ -1245,11 +1246,7 @@ pub(super) fn detect_legislation(
         .iter()
         .filter(|claim| claim.kind == NodeKind::Section && claim.parent_id.is_none())
     {
-        let Some(label) = claim
-            .label
-            .as_deref()
-            .and_then(|value| value.strip_prefix("sec"))
-        else {
+        let Some(label) = claim.label.as_deref().filter(|_| claim.locator_kind.as_deref() == Some("section")) else {
             continue;
         };
         if !provision_label(label).is_some_and(|(value, end)| value == label && end == label.len())
@@ -1265,11 +1262,12 @@ pub(super) fn detect_legislation(
             .map_or(claim.range.start, |_| {
                 claim.range.start + lead + label.len()
             });
-        let parent = format!("sec{label}");
+        let parent = claim.fragment().unwrap();
         let children = enumerated_children(
             text,
             claim.range.start..claim.range.end,
-            &parent,
+            "section",
+            label,
             content_start,
             false,
             Some(label),

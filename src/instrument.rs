@@ -5,7 +5,7 @@ use crate::{
         find_provision_references, populate_instrument_node_metadata,
         resolve_instrument_references, FindProvisionReferencesOptions,
     },
-    javascript_whitespace, node_depths, AuthoritativeTableCell, AuthoritativeTables,
+    javascript_whitespace, node_depths, provision_mark, AuthoritativeTableCell, AuthoritativeTables,
     DetectionProfile, Evidence,
     DocumentStructure, EngineError, NodeKind, ScalarRange, ScalarText, StructureNode,
 };
@@ -224,26 +224,23 @@ pub(crate) fn cross_reference_graph(
     resolve_instrument_references(&text, structure, references, &depths)
 }
 
+/// Each provision's start by the keys a reference names it by: its place (`StructureNode::fragment`, "sec5(2)",
+/// "part2"), and an article's, part's or division's number in roman numerals ("part ii"). A key two provisions share
+/// names neither.
 #[cfg(feature = "structure-inference")]
-fn instrument_reference_index<'a>(
-    sections: impl Iterator<Item = (&'a str, usize)>,
-) -> HashMap<String, usize> {
+fn instrument_reference_index<'a>(sections: impl Iterator<Item = &'a StructureNode>) -> HashMap<String, usize> {
     let mut index = HashMap::new();
     let mut duplicates = HashSet::new();
-    for (label, start) in sections {
-        let aliases = [("art", "article"), ("part", "part"), ("div", "division")];
-        let keys = std::iter::once(label.to_ascii_lowercase()).chain(
-            aliases.into_iter().filter_map(|(prefix, word)| {
-                label
-                    .strip_prefix(prefix)
-                    .and_then(|value| value.parse::<u32>().ok())
-                    .map(|value| format!("{word} {}", legal_structure_model::layout::roman_numeral(value)))
-            }),
-        );
-        for key in keys {
+    for section in sections {
+        let Some(place) = section.fragment() else { continue };
+        let roman = matches!(section.locator_kind.as_deref(), Some("article" | "part" | "division"))
+            .then(|| section.label.as_deref()?.parse::<u32>().ok())
+            .flatten()
+            .map(|value| format!("{} {}", section.locator_kind.as_deref().unwrap(), legal_structure_model::layout::roman_numeral(value)));
+        for key in std::iter::once(place.to_ascii_lowercase()).chain(roman) {
             match index.entry(key) {
                 Entry::Vacant(entry) => {
-                    entry.insert(start);
+                    entry.insert(section.range.start);
                 }
                 Entry::Occupied(entry) => {
                     duplicates.insert(entry.key().clone());
@@ -278,23 +275,7 @@ fn instrument_lineation_score_blocks(
     blocks: &[StructureNode],
     endorsed: &[(String, usize, usize)],
 ) -> usize {
-    instrument_lineation_score_sections(
-        blocks.iter().filter_map(|block| {
-            (block.kind == NodeKind::Section)
-                .then_some(block.label.as_deref())
-                .flatten()
-                .map(|label| (label, block.range.start))
-        }),
-        endorsed,
-    )
-}
-
-#[cfg(feature = "structure-inference")]
-fn instrument_lineation_score_sections<'a>(
-    sections: impl Iterator<Item = (&'a str, usize)>,
-    endorsed: &[(String, usize, usize)],
-) -> usize {
-    let index = instrument_reference_index(sections);
+    let index = instrument_reference_index(blocks.iter().filter(|block| block.kind == NodeKind::Section));
     endorsed
         .iter()
         .filter(|(key, start, end)| {
@@ -308,22 +289,20 @@ fn instrument_lineation_score_sections<'a>(
 #[cfg(feature = "structure-inference")]
 fn instrument_block_head_span(blocks: &[StructureNode], coordinates: &ScalarText<'_>) -> f64 {
     instrument_head_span_sections(
-        blocks.iter().filter_map(|block| {
-            let label = block.label.as_deref()?;
-            (block.kind == NodeKind::Section)
-                .then_some((label, block.range.start))
-        }),
+        blocks.iter().filter(|block| block.kind == NodeKind::Section && block.label.is_some()),
         coordinates.utf16_len(),
     )
 }
 
 #[cfg(feature = "structure-inference")]
 fn instrument_head_span_sections<'a>(
-    sections: impl Iterator<Item = (&'a str, usize)>,
+    sections: impl Iterator<Item = &'a StructureNode>,
     text_length: usize,
 ) -> f64 {
-    let mut starts = sections.filter_map(|(label, start)| {
-        (label.starts_with("sec") && !label.contains('(')).then_some(start)
+    // (A section's own, not its subsections'.)
+    let mut starts = sections.filter_map(|section| {
+        (provision_mark(section.locator_kind.as_deref()) == "sec" && !section.label.as_deref()?.contains('('))
+            .then_some(section.range.start)
     });
     let Some(first) = starts.next() else {
         return 0.0;

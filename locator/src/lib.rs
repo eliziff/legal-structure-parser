@@ -25,7 +25,26 @@ pub fn normalize_numbered_section_locator(value: &str) -> String {
     normalize_compact_numbered_section_locator(&compact_provision_label(value))
 }
 
+/// A section's place as a link names it ("sec5(2)", "secIV"), or a heading's by its title ("sectitle:general
+/// provisions"), from a citation's locator ("s. 5 (2)", "section IV", "sec5(2)"); empty where it names neither.
 pub fn normalize_section_locator(locator: &str) -> String {
+    match section_locator(locator) {
+        Some(SectionLocator::Section(label)) => format!("sec{label}"),
+        Some(SectionLocator::Title(title)) => format!("sectitle:{title}"),
+        None => String::new(),
+    }
+}
+
+/// What a citation's section locator names: a section by its label as the structure holds it ("5(2)", "IV"), or a
+/// heading by its title, its words lowercased and spaced.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SectionLocator {
+    Section(String),
+    Title(String),
+}
+
+/// A citation's section locator read once ("s. 5 (2)", "section IV", "sec5(2)", "General Provisions").
+pub fn section_locator(locator: &str) -> Option<SectionLocator> {
     static PREFIX: OnceLock<Regex> = OnceLock::new();
     static CANONICAL_PREFIX: OnceLock<Regex> = OnceLock::new();
     static HEADING: OnceLock<Regex> = OnceLock::new();
@@ -42,9 +61,8 @@ pub fn normalize_section_locator(locator: &str) -> String {
             Regex::new(r"(?iu)^sec([\p{L}\p{N}])").expect("valid canonical section grammar")
         })
         .replace(&without_prefix, "$1");
-    let numbered = normalize_numbered_section_locator(&without_prefix);
-    if !numbered.is_empty() {
-        return numbered;
+    if let Some(label) = numbered_section_label(&compact_provision_label(&without_prefix)) {
+        return Some(SectionLocator::Section(label));
     }
     let heading = without_prefix
         .trim_end_matches(|character| character == '.' || javascript_whitespace(character));
@@ -52,21 +70,23 @@ pub fn normalize_section_locator(locator: &str) -> String {
         .get_or_init(|| Regex::new(r"^(?:[IVXLCDM]+|[A-Z])$").expect("valid heading grammar"))
         .is_match(heading)
     {
-        return format!("sec{heading}");
+        return Some(SectionLocator::Section(heading.to_owned()));
     }
     let lowercase = heading.to_lowercase();
     let normalized = NON_TITLE
         .get_or_init(|| Regex::new(r"[^\p{L}\p{N}]+").expect("valid section title grammar"))
         .replace_all(&lowercase, " ");
     let title = js_trim(&normalized);
-    if title.is_empty() {
-        String::new()
-    } else {
-        format!("sectitle:{title}")
-    }
+    (!title.is_empty()).then(|| SectionLocator::Title(title.to_owned()))
 }
 
+/// A numbered section's place ("sec33.1(2)") from its compact label, whitespace already out; empty where it is none.
 pub fn normalize_compact_numbered_section_locator(compact: &str) -> String {
+    numbered_section_label(compact).map_or_else(String::new, |label| format!("sec{label}"))
+}
+
+/// A numbered section's label ("33.1(2)", "A-1") where a compact label is one.
+pub fn numbered_section_label(compact: &str) -> Option<String> {
     static NUMERIC: OnceLock<Regex> = OnceLock::new();
     static ALPHANUMERIC: OnceLock<Regex> = OnceLock::new();
     let numeric = NUMERIC.get_or_init(|| {
@@ -77,11 +97,7 @@ pub fn normalize_compact_numbered_section_locator(compact: &str) -> String {
         Regex::new(r"^[A-Za-z]{1,3}(?:[.-][0-9A-Za-z]{1,8}){1,3}(?:\([^)]+\))*$")
             .expect("valid alphanumeric section locator grammar")
     });
-    if numeric.is_match(compact) || alphanumeric.is_match(compact) {
-        format!("sec{compact}")
-    } else {
-        String::new()
-    }
+    (numeric.is_match(compact) || alphanumeric.is_match(compact)).then(|| compact.to_owned())
 }
 
 /// Parse a numeric printed paragraph, page or transcript line locator using its canonical

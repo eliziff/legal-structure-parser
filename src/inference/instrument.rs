@@ -14,11 +14,13 @@ pub(super) struct ChildMark<'a> {
     content_start: usize,
 }
 
-/// A provision the grammar reads, open to the text's end until the next at its depth or above closes it: its label,
-/// where its words open, its parent named by label, and the diagnostic its reading raises, if any.
-fn grammar_section(start: usize, label: String, parent: Option<String>, content_start: usize, diagnostic: Option<&str>) -> StructureNode {
+/// A provision the grammar reads, open to the text's end until the next at its depth or above closes it: its kind as
+/// its marker reads ("section", "part", "schedule", ...), its label, where its words open, its parent named by its place
+/// (its kind's mark and label, `StructureNode::fragment`), and the diagnostic its reading raises, if any.
+fn grammar_section(start: usize, kind: &str, label: String, parent: Option<String>, content_start: usize, diagnostic: Option<&str>) -> StructureNode {
     let mut node = StructureNode::new(String::new(), NodeKind::Section, ScalarRange { start, end: usize::MAX }, ENGINE_ORIGIN, Derivation::Heuristic, parent);
     node.label = Some(label);
+    node.locator_kind = Some(kind.to_owned());
     node.content_start = Some(content_start);
     if let Some(code) = diagnostic {
         node.properties.insert("diagnostic".to_owned(), code.to_owned());
@@ -26,11 +28,26 @@ fn grammar_section(start: usize, label: String, parent: Option<String>, content_
     node
 }
 
+/// A provision open for what the grammar reads under it: its kind, its label and its depth.
+pub(super) struct OpenSection {
+    kind: &'static str,
+    label: String,
+    depth: usize,
+}
+
+impl OpenSection {
+    /// The place a provision of this one's kind labelled `label` has: its kind's mark and its label.
+    fn place(&self, label: &str) -> String {
+        format!("{}{label}", provision_mark(Some(self.kind)))
+    }
+}
+
 #[derive(Default)]
 pub(super) struct StructureState {
     nodes: Vec<(StructureNode, usize)>,
+    /// The open container's place (an article's, part's or division's), its provisions' parent.
     container: Option<String>,
-    section: Option<(String, usize)>,
+    section: Option<OpenSection>,
     stack: Vec<EnumFrame>,
     used: HashMap<String, usize>,
 }
@@ -401,25 +418,26 @@ impl StructureState {
         code: &'static str,
     ) -> String {
         let base = format!("{parent}({token})");
-        let label = match self.used.entry(base) {
+        let open = self.section.as_ref().unwrap();
+        let (kind, place, parent) = (open.kind, open.place(&base), open.place(&parent));
+        // (A label read again counts its printings by its place: a schedule's "b(1)" is no section's.)
+        let label = match self.used.entry(place) {
             Entry::Vacant(entry) => {
-                let label = entry.key().clone();
                 entry.insert(2);
-                label
+                base
             }
             Entry::Occupied(mut entry) => {
                 let occurrence = *entry.get();
-                let label = format!("{}@{occurrence}", entry.key());
                 *entry.get_mut() += 1;
-                label
+                format!("{base}@{occurrence}")
             }
         };
-        self.nodes.push((grammar_section(start, label.clone(), Some(parent), content_start, Some(code)), depth));
+        self.nodes.push((grammar_section(start, kind, label.clone(), Some(parent), content_start, Some(code)), depth));
         label
     }
 
     fn child(&mut self, token: &str, start: usize, content_start: usize) {
-        let (root, root_depth) = self.section.as_ref().unwrap();
+        let OpenSection { label: root, depth: root_depth, .. } = self.section.as_ref().unwrap();
         let readings = enum_readings(token).map(|reading| {
             reading.map(|(family, value)| {
                 let at = self.stack.iter().rposition(|frame| frame.family == family);
@@ -565,7 +583,7 @@ impl StructureState {
 
         self.stack.retain(|frame| frame.family <= family);
         let at = self.stack.iter().position(|frame| frame.family == family);
-        let (root, root_depth) = self.section.as_ref().unwrap();
+        let OpenSection { label: root, depth: root_depth, .. } = self.section.as_ref().unwrap();
         let root_depth = *root_depth;
         let parent = at
             .and_then(|index| index.checked_sub(1))
@@ -627,6 +645,7 @@ pub(super) fn repeated_subsection(rest: &str) -> bool {
 pub(super) fn enumerated_children(
     text: &ScalarText<'_>,
     range: std::ops::Range<usize>,
+    kind: &'static str,
     root: &str,
     content_start: usize,
     inline_at_root: bool,
@@ -679,9 +698,9 @@ pub(super) fn enumerated_children(
         let line = line.strip_suffix('\r').unwrap_or(line);
         let trimmed = line.trim_start_matches(instrument_space);
         // A subsection may repeat its section's number, as Manitoba prints "33(2) The ...".
-        let trimmed = root
-            .strip_prefix("sec")
-            .and_then(|number| trimmed.strip_prefix(number))
+        let trimmed = (kind == "section")
+            .then(|| trimmed.strip_prefix(root))
+            .flatten()
             .filter(|rest| numbered && line_start != range.start && repeated_subsection(rest))
             .unwrap_or(trimmed);
         let newline = line_byte + line.len() < bytes.end;
@@ -702,9 +721,10 @@ pub(super) fn enumerated_children(
     }
     markers.sort_by_key(|marker| marker.start);
     let mut state = StructureState {
-        section: Some((root.to_owned(), 0)),
+        section: Some(OpenSection { kind, label: root.to_owned(), depth: 0 }),
         ..Default::default()
     };
+    let parent = state.section.as_ref().unwrap().place(root);
     for index in 0..markers.len() {
         let marker = &markers[index];
         state.legislation_child(
@@ -725,7 +745,7 @@ pub(super) fn enumerated_children(
         node.range.end = markers
             .get(next_marker)
             .map_or(range.end, |marker| marker.start);
-        node.parent_id = Some(root.to_owned());
+        node.parent_id = Some(parent.clone());
     }
     state.nodes.into_iter().map(|(node, _)| node).collect()
 }
@@ -746,7 +766,9 @@ pub(super) fn direct_section(value: &str) -> Option<(String, usize)> {
     Some((found[label].to_owned(), found.get(label + 1)?.start()))
 }
 
-pub(super) fn instrument_top(value: &str, direct: bool) -> Option<(String, usize, bool)> {
+/// A provision a line opens at the top of an instrument's ladder: its kind, its label, where its words open, and whether
+/// it contains provisions (an article, a part, a division).
+pub(super) fn instrument_top(value: &str, direct: bool) -> Option<(&'static str, String, usize, bool)> {
     let possible_top = value
         .as_bytes()
         .first()
@@ -786,26 +808,29 @@ pub(super) fn instrument_top(value: &str, direct: bool) -> Option<(String, usize
         {
             return None;
         }
-        let word = found[word].to_ascii_lowercase();
-        let prefix = match word.as_str() {
-            "part" | "annex" => word.as_str(),
-            "schedule" => &word[..5],
-            _ => &word[..3],
+        let kind = match found[word].to_ascii_lowercase().as_str() {
+            "article" => "article",
+            "part" => "part",
+            "division" => "division",
+            "schedule" => "schedule",
+            "exhibit" => "exhibit",
+            "annex" => "annex",
+            _ => "appendix",
         };
-        let suffix = if container {
+        let label = if container {
             found[token].parse().ok()
                 .or_else(|| roman_value(&found[token]))?
                 .to_string()
         } else {
             found[token].to_ascii_lowercase()
         };
-        return Some((format!("{prefix}{suffix}"), found.get(rest)?.start(), true));
+        return Some((kind, label, found.get(rest)?.start(), true));
         }
     }
     direct
         .then_some(value)
         .and_then(direct_section)
-        .map(|(label, at)| (format!("sec{label}"), at, false))
+        .map(|(label, at)| ("section", label, at, false))
 }
 
 /// The provisions an instrument's grammar reads, and whether the text has no statute's run of sections, its sections
@@ -834,32 +859,33 @@ pub(crate) fn detect_instrument_grammar(
         let start = line.start;
         let selected = spine
             .next_if(|mark| mark.start == start)
-            .map(|mark| (format!("sec{}", mark.label), mark.content_start, false))
+            .map(|mark| ("section", mark.label.clone(), mark.content_start, false))
             .or_else(|| {
-                instrument_top(value, direct).map(|(label, at, container)| {
-                    (label, text.utf16_of_byte(line.byte_start + at), container)
+                instrument_top(value, direct).map(|(kind, label, at, container)| {
+                    (kind, label, text.utf16_of_byte(line.byte_start + at), container)
                 })
             })
             // A subsection repeating the number of the section it is in ("50.4(2) The ...", under "50.4(1) ...") is
             // that section's, read as its marker below, and opens no second section of the number.
-            .filter(|(label, _, container)| {
+            .filter(|(kind, label, _, container)| {
                 *container
                     || !(provider_refinements
                         && numbered
-                        && state.section.as_ref().is_some_and(|(open, _)| open == label)
-                        && label.strip_prefix("sec").and_then(|number| value.strip_prefix(number)).is_some_and(repeated_subsection))
+                        && *kind == "section"
+                        && state.section.as_ref().is_some_and(|open| open.kind == "section" && open.label == *label)
+                        && value.strip_prefix(label.as_str()).is_some_and(repeated_subsection))
             });
-        if let Some((label, content_start, container)) = selected {
+        if let Some((kind, label, content_start, container)) = selected {
             let depth = usize::from(!container && state.container.is_some());
             let parent = (!container).then(|| state.container.clone()).flatten();
-            state.nodes.push((grammar_section(start, label.clone(), parent, content_start, None), depth));
+            state.nodes.push((grammar_section(start, kind, label.clone(), parent, content_start, None), depth));
             state.stack.clear();
             numbered = false;
             if container {
-                state.container = Some(label);
+                state.container = Some(format!("{}{label}", provision_mark(Some(kind))));
                 state.section = None;
             } else {
-                state.section = Some((label, depth));
+                state.section = Some(OpenSection { kind, label, depth });
                 let content_byte = text.byte_of_utf16(content_start);
                 let inline = if content_byte <= line.byte_end {
                     &text.value[content_byte..line.byte_end]
@@ -884,8 +910,8 @@ pub(crate) fn detect_instrument_grammar(
             // A PDF's own lines also hold a parallel column's numbers; its candidate grammar
             // weighs those itself.
             None if !provider_refinements || !numbered => None,
-            None => state.section.as_ref().and_then(|(label, _)| {
-                let number = label.strip_prefix("sec")?;
+            None => state.section.as_ref().and_then(|open| {
+                let number = (open.kind == "section").then_some(open.label.as_str())?;
                 let rest = value
                     .strip_prefix(number)
                     .filter(|rest| repeated_subsection(rest))?;

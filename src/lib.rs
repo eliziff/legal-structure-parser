@@ -63,7 +63,7 @@ pub use text_units::text_units;
 pub use canlii::{canlii_case_url, canlii_court_route, canlii_law_url};
 pub(crate) use document::node_depths;
 pub use document::{
-    CitedAuthority, Derivation, DocumentStructure, MarkupAncestor,
+    provision_mark, CitedAuthority, Derivation, DocumentStructure, MarkupAncestor,
     ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, PrimaryRole, SourceFragment, StructureNode,
 };
 pub use docx_lint::*;

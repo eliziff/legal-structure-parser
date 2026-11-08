@@ -840,7 +840,7 @@ impl QuoteBlockKind {
 }
 
 /// Where a quotation was found: a block's kind and the label it prints ("12" of a paragraph or a page, "3–5" of a run
-/// of them; a provision's place, "sec5(2)").
+/// of them, "5(2)" of a provision).
 #[derive(Clone, PartialEq, Serialize)]
 pub struct QuoteBlockLabel {
     pub kind: QuoteBlockKind,
@@ -850,18 +850,8 @@ pub struct QuoteBlockLabel {
 }
 
 impl QuoteBlockLabel {
-    fn new(kind: QuoteBlockKind, label: String) -> Self {
-        Self { shown: Self::show(kind, &label), kind, label }
-    }
-
-    fn show(kind: QuoteBlockKind, label: &str) -> String {
-        match kind {
-            QuoteBlockKind::Paragraph => format!("par{label}"),
-            QuoteBlockKind::Page if label.contains('\u{2013}') => format!("pages {label}"),
-            QuoteBlockKind::Page => format!("page {label}"),
-            QuoteBlockKind::PdfPage => format!("PDF page {label}"),
-            QuoteBlockKind::Section => label.to_owned(),
-        }
+    fn new(block: &Block) -> Self {
+        Self { shown: block.shown(), kind: block.kind, label: block.label.clone() }
     }
 }
 
@@ -875,6 +865,10 @@ pub struct QuoteBlockInput {
     pub ranges: Vec<legal_structure_model::ScalarRange>,
     pub kind: QuoteBlockKind,
     pub label: String,
+    /// A provision's place, as a link names it ("sec5(2)", "part2": `StructureNode::fragment`): how it is shown, and how
+    /// a citation's section scope names it.
+    #[serde(default)]
+    pub place: Option<String>,
     pub start: usize,
     pub end: usize,
 }
@@ -915,7 +909,8 @@ pub fn document_quote_blocks(
     };
     let input = |node: &legal_structure_model::StructureNode, kind: QuoteBlockKind, label: String| {
         let range = document.query_range(node);
-        QuoteBlockInput { node_id: Some(node.id.clone()), ancestor_ids: ancestors(Some(node.id.as_str())), kind, label,
+        let place = (kind == QuoteBlockKind::Section).then(|| node.fragment()).flatten();
+        QuoteBlockInput { node_id: Some(node.id.clone()), ancestor_ids: ancestors(Some(node.id.as_str())), kind, label, place,
             start: range.start, end: range.end, ranges: document.query_ranges(node).into_owned() }
     };
     // A number the document prints: its marker stands in the text.
@@ -947,9 +942,7 @@ pub fn document_quote_blocks(
         let value = if kind == QuoteBlockKind::Page && numbered_pages { printed_page(node)?.as_str() } else { js_trim(node.label.as_deref()?) };
         let value = value.strip_prefix('[').and_then(|value| value.strip_suffix(']')).unwrap_or(value);
         let label = match kind {
-            QuoteBlockKind::Paragraph | QuoteBlockKind::Page | QuoteBlockKind::PdfPage => value.to_owned(),
-            // A provision is its place, as a link names it ("sec5(2)", "part2").
-            QuoteBlockKind::Section => node.fragment()?,
+            QuoteBlockKind::Paragraph | QuoteBlockKind::Page | QuoteBlockKind::PdfPage | QuoteBlockKind::Section => value.to_owned(),
         };
         Some(input(node, kind, label))
     }));
@@ -1018,9 +1011,25 @@ struct Block {
     ranges: Vec<legal_structure_model::ScalarRange>,
     kind: QuoteBlockKind,
     label: String,
+    place: Option<String>,
     start: usize,
     end: usize,
     text: String,
+}
+
+impl Block {
+    /// The block as a pinpoint is written for a reader: "par12", "page 5", "pages 5–6", "PDF page 3", a provision by
+    /// its place ("sec5(2)").
+    fn shown(&self) -> String {
+        let label = &self.label;
+        match self.kind {
+            QuoteBlockKind::Paragraph => format!("par{label}"),
+            QuoteBlockKind::Page if label.contains('\u{2013}') => format!("pages {label}"),
+            QuoteBlockKind::Page => format!("page {label}"),
+            QuoteBlockKind::PdfPage => format!("PDF page {label}"),
+            QuoteBlockKind::Section => self.place.clone().unwrap_or_else(|| label.clone()),
+        }
+    }
 }
 
 #[derive(Clone, Default, Deserialize)]
@@ -1274,7 +1283,8 @@ impl Located<'_> {
         }
         let mut sections = HashMap::new();
         for (index, block) in self.blocks.iter().enumerate() {
-            if block.kind == QuoteBlockKind::Section { sections.insert(block.label.to_lowercase(), index); }
+            // (A citation's section scope names a provision by its place: "sec5(2)".)
+            if block.kind == QuoteBlockKind::Section { sections.insert(block.place.as_ref().unwrap_or(&block.label).to_lowercase(), index); }
         }
         for section in &scopes.sections {
             for candidate in section_ancestors(section) {
@@ -1303,7 +1313,7 @@ impl Located<'_> {
                 let label = format!("{}\u{2013}{}", js_display(start), js_display(end));
                 let mut ranges = members.iter().flat_map(|block| block.ranges.iter().copied()).collect();
                 ScalarRange::normalize_union(&mut ranges);
-                combined.push(Block { node_id: None, ancestor_ids: Vec::new(), kind, label,
+                combined.push(Block { node_id: None, ancestor_ids: Vec::new(), kind, label, place: None,
                     start: ranges.first().map_or(members[0].start, |range| range.start),
                     end: ranges.last().map_or(members[members.len() - 1].end, |range| range.end),
                     text: legal_structure_model::text::membership_text_utf16(&self.source_text, &ranges), ranges });
@@ -1341,11 +1351,11 @@ impl Located<'_> {
         let mut labels: Vec<QuoteBlockLabel> = Vec::new();
         for &(score, candidate) in matches {
             let block = self.block(ranges, candidate);
-            if labels.iter().any(|known| known.kind == block.kind && known.label == block.label) { continue; }
+            if labels.iter().any(|known| known.kind == block.kind && known.shown == block.shown()) { continue; }
             if block.kind == QuoteBlockKind::Section && matches.iter().any(|&(other, other_candidate)| {
                 other >= score && within(block, self.block(ranges, other_candidate))
             }) { continue; }
-            labels.push(QuoteBlockLabel::new(block.kind, block.label.clone()));
+            labels.push(QuoteBlockLabel::new(block));
         }
         labels
     }
@@ -1475,7 +1485,7 @@ impl Located<'_> {
         let pages = self.blocks.iter().filter(|block| block.kind.is_page()).cloned().collect::<Vec<_>>();
         let mut hits = Vec::new();
         for block in &pages {
-            if self.reader.quote_match_score(quote, &block.text, 0.0) >= STRONG_MATCH { hits.push(QuoteBlockLabel::show(block.kind, &block.label)); }
+            if self.reader.quote_match_score(quote, &block.text, 0.0) >= STRONG_MATCH { hits.push(block.shown()); }
         }
         if !hits.is_empty() { return pinpoint_summary(&hits, 2); }
         for pair in pages.windows(2) {
@@ -1557,7 +1567,7 @@ fn locate_quotes_kept(kept: &mut Option<LocatorState>, text: &str, blocks: &[Quo
     };
     // What was kept is read only for the same text and the same blocks.
     let state = kept.take().filter(|state| state.whole == whole_at && state.blocks.len() == blocks.len()
-        && state.blocks.iter().zip(blocks).all(|(kept, block)| kept.label == block.label && kept.kind == block.kind
+        && state.blocks.iter().zip(blocks).all(|(kept, block)| kept.label == block.label && kept.place == block.place && kept.kind == block.kind
             && kept.start == block.start && kept.end == block.end && kept.node_id == block.node_id
             && kept.ancestor_ids == block.ancestor_ids && kept.ranges == ranges_of(block)));
     let (reader, blocks, prepared, whole, mut compared) = match state {
@@ -1566,7 +1576,7 @@ fn locate_quotes_kept(kept: &mut Option<LocatorState>, text: &str, blocks: &[Quo
             let blocks: Vec<Block> = blocks.iter().map(|block| {
                 let ranges = ranges_of(block);
                 Block { node_id: block.node_id.clone(), ancestor_ids: block.ancestor_ids.clone(),
-                    kind: block.kind, label: block.label.clone(), start: block.start, end: block.end,
+                    kind: block.kind, label: block.label.clone(), place: block.place.clone(), start: block.start, end: block.end,
                     text: legal_structure_model::text::membership_text_utf16(&source_text, &ranges), ranges }
             }).collect();
             let prepared = vec![None; blocks.len()];
