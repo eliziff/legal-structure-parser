@@ -101,7 +101,7 @@ pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineE
         .filter(|node| node.kind == NodeKind::Section && node.label.as_deref().is_some_and(|label| label.starts_with("sec") && !label.contains('(')))
         .count();
     let structure = if articles || provisions(&provider) * 200 < text.len().max(1) {
-        let lineated = crate::analyze_instrument(text.to_owned(), String::new(), &[], true)?;
+        let lineated = crate::instrument::instrument_reading(text)?;
         if provisions(&lineated) > provisions(&provider) { lineated } else { provider }
     } else {
         provider

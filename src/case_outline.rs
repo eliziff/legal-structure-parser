@@ -218,6 +218,8 @@ fn two_printings(text: &str) -> Option<Vec<(usize, Vec<ScalarRange>)>> {
 /// Each number of the first count `text` reads (the structure of a case's text), once, with the spans its first
 /// printing holds: the structure's paragraph, which ends where its own lines do (`paragraph_tail`).
 fn one_printing(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
+    // (A printing is read as a text of its own, not as a view of the whole one's structure: read whole, the count
+    // would take a number's later printing and hop from the one to the other.)
     let Ok(mut structure) = reading(text) else {
         return Vec::new();
     };

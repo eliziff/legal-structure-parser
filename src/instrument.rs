@@ -341,51 +341,44 @@ fn instrument_head_span_sections<'a>(
     }
 }
 
+/// The lineation an instrument is read on, the text it reads (none where that is `coordinates`' own, unmasked) and the
+/// provisions inference finds on it: its own text, its tables masked, or with `reconstruct_lineation` the recovery of
+/// its lines whose provisions the references it cites (`endorsed`) endorse best, a recovery being hypothesis 1 on.
 #[cfg(feature = "structure-inference")]
-fn derive_instrument_structure(
-    text: String,
-    document_id: String,
-    original_sha256: &str,
-    table_cells: &[AuthoritativeTableCell],
+fn select_lineation(
+    coordinates: &ScalarText<'_>,
+    tables: &AuthoritativeTables<'_>,
+    endorsed: &[(String, usize, usize)],
     reconstruct_lineation: bool,
-) -> Result<DocumentStructure, EngineError> {
-    let coordinates = ScalarText::new(&text);
-    let tables = AuthoritativeTables::new(&coordinates, table_cells)?;
-    let text_view = &coordinates;
-    let references =
-        find_provision_references(text_view, FindProvisionReferencesOptions::default());
-    let endorsed = endorsed_references(&references);
-    let first_is_original = tables.is_empty();
-    let mut selected_text = (!first_is_original).then(|| tables.masked_text(text.clone()));
-    let selected_view = selected_text.as_ref().map(|selected_text| {
-        if selected_text.len() == text_view.value.len() {
-            text_view.with_same_coordinates(selected_text)
+) -> (usize, Option<String>, Vec<StructureNode>) {
+    fn view<'b>(coordinates: &'b ScalarText<'_>, candidate: &'b str) -> ScalarText<'b> {
+        if candidate.len() == coordinates.value.len() {
+            coordinates.with_same_coordinates(candidate)
         } else {
-            ScalarText::new(selected_text)
+            ScalarText::new(candidate)
         }
-    });
-    let selected_coordinates = selected_view.as_ref().unwrap_or(text_view);
+    }
+    let mut selected_text = (!tables.is_empty()).then(|| tables.masked_text(coordinates.value.to_owned()));
+    let selected_view = selected_text.as_deref().map(|text| view(coordinates, text));
+    let selected_coordinates = selected_view.as_ref().unwrap_or(coordinates);
     let mut selected_blocks = crate::inference::detect_instrument(selected_coordinates);
     let mut selected = 0;
     let mut best = if endorsed.is_empty() {
         0
     } else {
-        instrument_lineation_score_blocks(&selected_blocks, &endorsed, selected_coordinates)
+        instrument_lineation_score_blocks(&selected_blocks, endorsed, selected_coordinates)
     };
     drop(selected_view);
     if reconstruct_lineation && best < endorsed.len() {
-        for (index, hypothesis) in instrument_lineation_recoveries(&text).enumerate() {
+        for (index, hypothesis) in instrument_lineation_recoveries(coordinates.value).enumerate() {
             let candidate_text = tables.masked_text(hypothesis);
-            let candidate_view = if candidate_text.len() == text_view.value.len() {
-                text_view.with_same_coordinates(&candidate_text)
-            } else {
-                ScalarText::new(&candidate_text)
-            };
+            let candidate_view = view(coordinates, &candidate_text);
             let candidate = crate::inference::detect_instrument(&candidate_view);
             if instrument_block_head_span(&candidate, &candidate_view) < 0.05 {
                 continue;
             }
-            let score = instrument_lineation_score_blocks(&candidate, &endorsed, &candidate_view);
+            let score = instrument_lineation_score_blocks(&candidate, endorsed, &candidate_view);
+            drop(candidate_view);
             if score > best {
                 selected = index + 1;
                 best = score;
@@ -397,15 +390,41 @@ fn derive_instrument_structure(
             }
         }
     }
-    let selected_original = selected == 0 && first_is_original;
+    (selected, selected_text, selected_blocks)
+}
+
+/// An instrument's text read into its provisions on the lineation its references endorse best (`select_lineation`,
+/// recovering its lines), without the contents, definitions and cross-references `analyze_instrument` adds.
+#[cfg(feature = "structure-inference")]
+pub(crate) fn instrument_reading(text: &str) -> Result<DocumentStructure, EngineError> {
+    let coordinates = ScalarText::new(text);
+    let references = find_provision_references(&coordinates, FindProvisionReferencesOptions::default());
+    let tables = AuthoritativeTables::new(&coordinates, &[])?;
+    let (_, selected_text, blocks) = select_lineation(&coordinates, &tables, &endorsed_references(&references), true);
+    let text = selected_text.unwrap_or_else(|| text.to_owned());
+    let structure = DocumentStructure::new(String::new(), "internal", text, "provider-adapter");
+    Ok(crate::derive::derive(Evidence::new(structure, DetectionProfile::Instrument), Some(blocks)))
+}
+
+#[cfg(feature = "structure-inference")]
+pub fn analyze_instrument(
+    text: impl Into<String>,
+    document_id: String,
+    table_cells: &[AuthoritativeTableCell],
+    reconstruct_lineation: bool,
+) -> Result<DocumentStructure, EngineError> {
+    let text = text.into();
+    let original_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
+    let coordinates = ScalarText::new(&text);
+    let tables = AuthoritativeTables::new(&coordinates, table_cells)?;
+    let references = find_provision_references(&coordinates, FindProvisionReferencesOptions::default());
+    let (selected, selected_text, selected_blocks) =
+        select_lineation(&coordinates, &tables, &endorsed_references(&references), reconstruct_lineation);
     drop(coordinates);
-    let (input_text, original_text) = if selected_original {
-        (text, None)
-    } else {
-        (
-            selected_text.expect("a non-original hypothesis owns its text"),
-            Some(text),
-        )
+    let selected_original = selected_text.is_none();
+    let (input_text, original_text) = match selected_text {
+        None => (text, None),
+        Some(selected_text) => (selected_text, Some(text)),
     };
     let structure = DocumentStructure::new(document_id, "internal", input_text, "provider-adapter");
     let mut structure = crate::derive::derive(Evidence::new(structure, DetectionProfile::Instrument), Some(selected_blocks));
@@ -496,27 +515,9 @@ fn derive_instrument_structure(
     if let Some(original) = original_text {
         structure.text = original;
     }
-    structure.text_sha256 = original_sha256.to_owned();
-    structure.revision = original_sha256.to_owned();
+    structure.revision = original_sha256.clone();
+    structure.text_sha256 = original_sha256;
     Ok(structure)
-}
-
-#[cfg(feature = "structure-inference")]
-pub fn analyze_instrument(
-    text: impl Into<String>,
-    document_id: String,
-    table_cells: &[AuthoritativeTableCell],
-    reconstruct_lineation: bool,
-) -> Result<DocumentStructure, EngineError> {
-    let text = text.into();
-    let original_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
-    derive_instrument_structure(
-        text,
-        document_id,
-        &original_sha256,
-        table_cells,
-        reconstruct_lineation,
-    )
 }
 
 /// Defined terms: a quoted capitalized term in brackets ("the "Agreement"") or opening a list
