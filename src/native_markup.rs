@@ -144,6 +144,23 @@ pub struct NativeMarkupInput {
     scope: NativeMarkupScope,
 }
 
+impl NativeMarkupInput {
+    /// A provider's record of one document: its text and its markup, nothing else known of it.
+    pub(crate) fn of(provider: &str, id: &str, text: String, markup: String) -> Self {
+        Self {
+            provider: provider.to_owned(),
+            id: id.to_owned(),
+            url: None,
+            text,
+            markup: Some(markup),
+            citation: None,
+            page_citations: Vec::new(),
+            markup_ancestors: Vec::new(),
+            scope: default_scope(),
+        }
+    }
+}
+
 /// A node of a block the markup declares, as the reader opens it: its kind, label (none where empty) and anchor, its
 /// range in the rendered text's UTF-16 until the reader puts it in scalars; the reader sets its markup on it.
 fn markup_node(kind: NodeKind, label: String, anchor: Option<String>) -> StructureNode {

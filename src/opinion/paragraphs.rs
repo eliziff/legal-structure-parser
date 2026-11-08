@@ -60,7 +60,7 @@ pub(super) fn settle(paragraphs: &mut Vec<StructureNode>, headings: &[StructureN
 pub(super) fn number_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending) {
     let mut paragraphs = &mut kinds.paragraphs;
 
-    join_block_counters(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    join_block_counters(structure, kinds);
     numbers_off_titles(structure, kinds); paragraphs = &mut kinds.paragraphs;
     let coordinates = ScalarText::new(&structure.text);
     // A quotation's numbers are the quotation's.
@@ -84,17 +84,17 @@ pub(super) fn number_paragraphs(structure: &mut DocumentStructure, kinds: &mut K
     for (index, label) in asked {
         paragraphs[index].label = Some(format!("par{}", label));
     }
-    split_numbered_blocks(structure, kinds); paragraphs = &mut kinds.paragraphs;
-    fill_skipped_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
-    pilcrow_read_as_one(structure, kinds); paragraphs = &mut kinds.paragraphs;
-    fill_skipped_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
-    misread_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
-    carry_title_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
-    walk_scanned_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
-    numbers_from_elsewhere(structure, kinds, pending); paragraphs = &mut kinds.paragraphs;
-    fill_skipped_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
-    closing_numbers(structure, kinds); paragraphs = &mut kinds.paragraphs;
-    list_labels(structure, kinds); paragraphs = &mut kinds.paragraphs;
+    split_numbered_blocks(structure, kinds);
+    fill_skipped_numbers(structure, kinds);
+    pilcrow_read_as_one(structure, kinds);
+    fill_skipped_numbers(structure, kinds);
+    misread_numbers(structure, kinds);
+    carry_title_numbers(structure, kinds);
+    walk_scanned_numbers(structure, kinds);
+    numbers_from_elsewhere(structure, kinds, pending);
+    fill_skipped_numbers(structure, kinds);
+    closing_numbers(structure, kinds);
+    list_labels(structure, kinds);
 }
 
 /// The lines past the last numbered paragraph that went out of the paragraphs as the opinion's foot, "[¶ 16.] GILBERTSON, Chief
@@ -169,7 +169,7 @@ fn numbers_held(paragraphs: &[StructureNode]) -> usize {
 
 /// A better reading replaces a worse one. A number of ours that stands between its new neighbours may stay: the reading can
 /// have passed over its paragraph. One out of its order was a misreading: "[110]" where the opinion prints "[¶ 10]".
-fn take_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds, mut taken: Vec<(usize, u32)>) {
+fn take_numbers(kinds: &mut Kinds, mut taken: Vec<(usize, u32)>) {
     let mut paragraphs = &mut kinds.paragraphs;
     taken.sort_unstable();
     for index in 0..paragraphs.len() {
@@ -215,7 +215,7 @@ fn walk_scanned_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
         }
     }
     if taken.len() >= LEAST && taken.len() * 2 >= open && taken.len() > numbers_held(paragraphs) {
-        take_numbers(structure, kinds, taken); paragraphs = &mut kinds.paragraphs;
+        take_numbers(kinds, taken);
     }
 }
 
@@ -241,9 +241,8 @@ fn numbers_from_elsewhere(structure: &mut DocumentStructure, kinds: &mut Kinds, 
     // Fewer than ours is still the better reading where they run in order: ours may hold every mark, half of them misread.
     
     let held = numbers_held(&kinds.paragraphs);
-    paragraphs = &mut kinds.paragraphs;
     if best.len() >= LEAST && (best.len() > held || named && best.len() * 2 >= held && best.windows(2).all(|pair| pair[0].1 < pair[1].1)) {
-        take_numbers(structure, kinds, best); paragraphs = &mut kinds.paragraphs;
+        take_numbers(kinds, best);
     }
 }
 

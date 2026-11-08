@@ -218,7 +218,7 @@ pub(super) fn enumerated_titles(structure: &mut DocumentStructure, kinds: &mut K
 }
 
 /// Bracketed lines of one form with no text between them are a list's items: a title has a section under it.
-pub(super) fn list_items(structure: &mut DocumentStructure, kinds: &mut Kinds) {
+pub(super) fn list_items(kinds: &mut Kinds) {
     let mut paragraphs = &mut kinds.paragraphs;
     let mut headings = &mut kinds.headings;
 

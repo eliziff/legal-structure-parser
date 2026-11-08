@@ -277,10 +277,8 @@ fn heads_pages(chain: &Chain) -> bool {
 
 #[derive(Default)]
 pub(super) struct Reading {
-    pub pages: Vec<StructureNode>,
-    pub paragraphs: Vec<StructureNode>,
-    pub notes: Vec<StructureNode>,
-    pub headings: Vec<StructureNode>,
+    /// The nodes it read, each in its kind's list (no parts: a plain text marks none).
+    pub kinds: Kinds,
     pub furniture: Vec<ScalarRange>,
     pub front: Vec<FrontLine>,
     pub tables: Vec<OpinionTable>,
@@ -1069,7 +1067,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
     // A title with no text under it is a name at the foot of the opinion.
     let last_text = paragraphs.last().map_or(0, |paragraph| paragraph.range.end);
     headings.retain(|heading| heading.range.start < last_text);
-    Reading { pages, paragraphs, notes, headings, furniture, front, tables }
+    Reading { kinds: Kinds { pages, paragraphs, notes, headings, parts: Vec::new() }, furniture, front, tables }
 }
 
 pub(super) fn ended_sentence(body: &str) -> bool {

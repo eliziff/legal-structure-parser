@@ -128,7 +128,7 @@ const PAGE_TEXT: usize = 400;
 /// A volume's leaves count its front matter, and so stand a constant ahead of its printed pages: "b620-3" and `pgmap="620"`
 /// on page 580 of 78 N.M. The head matter's first block is on the case's first page, which its citation names; with no head
 /// matter the opinion's first leaf stands for it, the pages reckoned and said to be. With no printed citation they stay leaves.
-pub(super) fn leaves_to_pages(structure: &mut DocumentStructure, kinds: &mut Kinds, record: &OpinionRecord) {
+pub(super) fn leaves_to_pages(kinds: &mut Kinds, record: &OpinionRecord) {
     let mut pages = &mut kinds.pages;
     static BLOCK: OnceLock<Regex> = OnceLock::new();
     let leaves = pages.iter().enumerate().filter(|(_, page)| page.grammar.as_deref() == Some("pgmap")).filter_map(|(at, page)| Some((at, page_number(&page.printed_label())?))).collect::<Vec<_>>();
