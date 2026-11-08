@@ -480,8 +480,7 @@ pub fn analyze_instrument(
             end: text.utf16_at_byte(end).unwrap(),
         },
         node_id: owners[paragraph].map(str::to_owned),
-        source_paragraph_id: paragraph.to_string(),
-        source_artifact_id: Some(structure.document_id.clone()),
+        paragraph,
     });
     structure.definitions = definitions;
     if !tables.is_empty() {

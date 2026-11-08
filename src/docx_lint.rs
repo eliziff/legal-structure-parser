@@ -434,11 +434,7 @@ pub fn docx_structure_lint(
         notes.push("No quoted defined terms were detected; defined-term checks abstained.".into());
     }
     for term in &structure.definitions {
-        let defined_in = term
-            .definitions
-            .iter()
-            .filter_map(|definition| definition.source_paragraph_id.parse::<usize>().ok())
-            .collect::<Vec<_>>();
+        let defined_in = term.definitions.iter().map(|definition| definition.paragraph).collect::<Vec<_>>();
         if defined_in.len() > 1 {
             let paragraph = *defined_in.last().unwrap();
             findings.push(DocxLintFinding {
