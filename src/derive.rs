@@ -21,6 +21,8 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
         })
         .unwrap_or_default();
     let mut counters = HashMap::<NodeKind, usize>::new();
+    // An inferred block may name its parent by the id inference gave it; that id is renumbered here.
+    let mut renumbered = HashMap::<String, String>::new();
     for mut block in inferred {
         let Some(range) = evidence.clip_inference(block.kind, block.range) else {
             continue;
@@ -34,6 +36,11 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
                 native_labels.contains(&(block.kind, place.to_ascii_lowercase()))
             }))
         {
+            // (What it holds stands under the node that takes its place.)
+            let place = block.places().next();
+            if let Some(place) = place.filter(|_| !block.id.is_empty()) {
+                renumbered.insert(std::mem::take(&mut block.id), place);
+            }
             continue;
         }
         let ordinal = counters.entry(block.kind).or_default();
@@ -42,7 +49,11 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
             Derivation::Native => "native",
             Derivation::Heuristic => "heuristic",
         };
-        block.id = format!("{source}-{}-{:06}", block.kind.name(), ordinal);
+        let id = format!("{source}-{}-{:06}", block.kind.name(), ordinal);
+        let provisional = std::mem::replace(&mut block.id, id);
+        if !provisional.is_empty() {
+            renumbered.insert(provisional, block.id.clone());
+        }
         // An instrument's ladder fault is the candidate runs' to read (`detect_structure_candidate_runs`), no node's.
         block.properties.remove("diagnostic");
         nodes.push(block);
@@ -63,7 +74,8 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
             }
         }
         for position in 0..nodes.len() {
-            let parent = nodes[position].parent_id.take();
+            let parent = nodes[position].parent_id.take()
+                .map(|parent| renumbered.get(&parent).cloned().unwrap_or(parent));
             nodes[position].parent_id = parent
                 .and_then(|label| {
                     if let Some(&candidate) = identities.get(label.as_str()) {
@@ -102,11 +114,7 @@ pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNo
                 .map(|parent_position| nodes[parent_position].id.clone());
         }
     }
-    // A statute is addressed by its printed labels, each provision under the outermost its label's chain reaches; and
-    // every node's level is written once its parents stand.
-    if evidence.profile == DetectionProfile::Legislation {
-        legal_structure_model::legislation_outline(&mut nodes);
-    }
+    // Every node's level is written once its parents stand.
     legal_structure_model::write_levels(&mut nodes).ok();
     let mut structure = evidence.structure;
     structure.profile = Some(evidence.profile);

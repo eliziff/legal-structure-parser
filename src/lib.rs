@@ -61,7 +61,6 @@ pub use citator::*;
 pub use text_units::text_units;
 #[cfg(all(feature = "citator", feature = "canlii"))]
 pub use canlii::{canlii_case_url, canlii_court_route, canlii_law_url};
-pub(crate) use document::node_depths;
 pub use document::{
     provision_mark, CitedAuthority, Derivation, DocumentStructure, MarkupAncestor,
     ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, PrimaryRole, SourceFragment, StructureNode,
@@ -87,7 +86,7 @@ pub use native_markup::{analyze_native_markup, NativeMarkupInput};
 pub use numeric_sequence::*;
 #[cfg(feature = "structure-inference")]
 pub use provider_text::{
-    provider_text_document_structure, windows_1252_punctuation, ProviderPage, ProviderSectionMap, ProviderTextInput,
+    provider_text_document_structure, provider_text_outline_reading, windows_1252_punctuation, ProviderPage, ProviderSectionMap, ProviderTextInput,
     ProviderTextSourceKind,
 };
 pub(crate) use tables::AuthoritativeTables;
@@ -182,11 +181,11 @@ mod derive;
 #[cfg(feature = "structure-inference")]
 mod statute_outline;
 #[cfg(feature = "structure-inference")]
-pub use statute_outline::{statute_outline, statute_provision_spans, StatuteOutlineEntry};
+pub use statute_outline::statute_provision_spans;
 #[cfg(feature = "structure-inference")]
 mod case_outline;
 #[cfg(feature = "structure-inference")]
-pub use case_outline::{case_outline, judgment_division, judgment_end, reasons_go_on, CaseOutlineEntry, LIST_NUMBERS};
+pub use case_outline::{judgment_division, judgment_end, reasons_go_on, LIST_NUMBERS};
 pub use judgment::{date_line, figure_caption};
 
 #[cfg(feature = "structure-inference")]

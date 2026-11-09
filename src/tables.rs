@@ -162,7 +162,6 @@ impl<'a> AuthoritativeTables<'a> {
         if self.cells.is_empty() {
             return Vec::new();
         }
-        let depths = node_depths(semantic_nodes);
         let mut nodes = Vec::with_capacity(self.cells.len() * 2);
         let native = |id, kind, range, parent| {
             StructureNode::new(id, kind, range, origin_id, Derivation::Native, parent)
@@ -181,7 +180,7 @@ impl<'a> AuthoritativeTables<'a> {
                         && node.range.start <= range.start
                         && range.end <= node.range.end
                 })
-                .max_by_key(|node| depths[node.id.as_str()]);
+                .max_by_key(|node| node.level);
             let table_id = format!("table:{table_number}");
             let table_name = cells
                 .iter()

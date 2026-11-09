@@ -5,7 +5,7 @@ use crate::{
         find_provision_references, populate_instrument_node_metadata,
         resolve_instrument_references, FindProvisionReferencesOptions,
     },
-    javascript_whitespace, node_depths, provision_mark, AuthoritativeTableCell, AuthoritativeTables,
+    javascript_whitespace, provision_mark, AuthoritativeTableCell, AuthoritativeTables,
     DetectionProfile, Evidence,
     DocumentStructure, EngineError, NodeKind, ScalarRange, ScalarText, StructureNode,
 };
@@ -220,8 +220,7 @@ pub(crate) fn cross_reference_graph(
 ) -> Result<InstrumentCrossReferenceGraph, EngineError> {
     let text = ScalarText::new(&structure.text);
     let references = find_provision_references(&text, FindProvisionReferencesOptions::default());
-    let depths = node_depths(&structure.nodes);
-    resolve_instrument_references(&text, structure, references, &depths)
+    resolve_instrument_references(&text, structure, references)
 }
 
 /// Each provision's start by the keys a reference names it by: its place (`StructureNode::fragment`, "sec5(2)",
@@ -423,10 +422,9 @@ pub fn analyze_instrument(
     structure.contents = Some(instrument_contents_outline_indexed(&text));
     let table_nodes = tables.nodes(&structure.nodes, "provider-adapter");
     structure.nodes.extend(table_nodes);
-    let depths = node_depths(&structure.nodes);
-    structure.cross_references = Some(resolve_instrument_references(
-        &text, &structure, references, &depths,
-    )?);
+    // (Its tables' rows and cells stand under them: the levels are written over every node.)
+    legal_structure_model::write_levels(&mut structure.nodes).ok();
+    structure.cross_references = Some(resolve_instrument_references(&text, &structure, references)?);
     let sections = structure
         .nodes
         .iter()
@@ -448,7 +446,7 @@ pub fn analyze_instrument(
         owners.push(
             active_sections
                 .iter()
-                .max_by_key(|(index, node)| (depths[node.id.as_str()], *index))
+                .max_by_key(|(index, node)| (node.level, *index))
                 .map(|(_, node)| node.id.as_str()),
         );
     }
@@ -462,18 +460,10 @@ pub fn analyze_instrument(
     });
     structure.definitions = definitions;
     if !tables.is_empty() {
-        let depths = depths
-            .into_iter()
-            .map(|(id, depth)| (id.to_owned(), depth))
-            .collect::<HashMap<_, _>>();
-        structure
-            .nodes
-            .sort_by_key(|node| (node.range.start, depths[node.id.as_str()]));
+        structure.nodes.sort_by_key(|node| (node.range.start, node.level));
     }
     drop(selected_coordinates);
     drop(text);
-    // (Its tables' rows and cells stand under them: the levels are written over every node.)
-    legal_structure_model::write_levels(&mut structure.nodes).ok();
     if let Some(original) = original_text {
         structure.text = original;
     }

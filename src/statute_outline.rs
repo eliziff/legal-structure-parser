@@ -1,232 +1,189 @@
-//! A statute's outline read from its text: its parts, divisions, headings and schedules, and
-//! each provision with its marginal note and its own text, in document order, each covering
-//! its whole subtree, so a caller can lay the statute out or cut one provision out of it.
+//! A statute's reading past its provisions, read from a provider's text of it as nodes: its headings (its parts,
+//! divisions and schedules) in their hierarchy, each provision's marginal note, and the title over it all.
 
-use crate::analysis::citation_spans;
-use crate::{provision_mark, utf16_len, EngineError, NodeKind, ProviderTextInput, ProviderTextSourceKind};
-use serde::Serialize;
+use crate::case_outline::{citation_title, front_line};
+use crate::statute::{markdown_line, marginal_note_shaped};
+use crate::{
+    provision_mark, utf16_len, Derivation, DocumentStructure, EngineError, NodeKind, PrimaryRole, ProviderTextInput,
+    ProviderTextSourceKind, ScalarRange, StructureNode,
+};
+use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StatuteOutlineEntry {
-    /// "preamble" (the words before the first heading or provision: a long title, an enacting
-    /// formula), "part", "division", "heading", "schedule", "section" (or "article" in a code
-    /// numbered by article), "subsection", "paragraph", "subparagraph" or "clause".
-    pub kind: &'static str,
-    /// Headings nest by their own hierarchy, a provision sits under the heading before it,
-    /// and each enumerated provision under the one it is part of.
-    pub level: usize,
-    /// The number as printed: "726", "726.1", "1-3", "(2)", "(a)", "PART XXIII"; empty for a
-    /// heading without one.
-    pub label: String,
-    /// A provision's marginal note, or a heading's text.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    /// The entry's own text, before any entry under it, without its label or the source's
-    /// emphasis marks: a line to each of its paragraphs. A heading's is the text after its line.
-    pub text: String,
-    /// The entry's span in the input, in UTF-16 code units, covering everything under it; a
-    /// provision's span opens with its marginal note.
-    pub start: usize,
-    pub end: usize,
-}
-
-/// A line of the text: its span and its content.
+/// A line of the text: its span, where its words open, and its content.
 struct TextLine<'a> {
     start: usize,
     end: usize,
     text: &'a str,
 }
 
-/// A heading line's kind, label and title: "PART XXIII – Sentencing" is a part labelled
-/// "PART XXIII" titled "Sentencing".
-fn heading(text: &str) -> (&'static str, String, Option<String>) {
-    let mut words = text.split_whitespace();
-    let first = words.next().unwrap_or_default();
-    let kind = match first.to_lowercase().as_str() {
-        "part" | "partie" => "part",
-        "division" => "division",
-        "schedule" | "annexe" | "appendix" => "schedule",
-        _ => "heading",
+/// A heading line's words after its markdown marks: the kind its first word names ("part", "division", "schedule"),
+/// and where that word and its number end ("PART XXIII", "Part 2", "Division A").
+fn heading(words: &str) -> (Option<&'static str>, usize) {
+    let mut tokens = words.split_whitespace().map(|token| (token.as_ptr() as usize - words.as_ptr() as usize, token));
+    let first = tokens.next().unwrap_or_default();
+    let kind = match first.1.trim_matches('*').to_lowercase().as_str() {
+        "part" | "partie" => Some("part"),
+        "division" => Some("division"),
+        "schedule" | "annexe" | "appendix" => Some("schedule"),
+        _ => None,
     };
-    if kind == "heading" {
-        return (kind, String::new(), Some(text.to_owned()));
+    if kind.is_none() {
+        return (None, 0);
     }
-    // Its number: digits, a Roman numeral or a letter ("PART XXIII", "Part 2", "Division A").
-    let number = words.next().map(|word| word.trim_end_matches(['.', ':'])).filter(|word| {
+    // Its number: digits, a Roman numeral or a letter.
+    let number = tokens.next().filter(|(_, word)| {
+        let word = word.trim_matches('*').trim_end_matches(['.', ':']);
         word.chars().any(|c| c.is_ascii_digit())
             || !word.is_empty() && word.chars().all(|c| "IVXLCDM".contains(c))
             || word.chars().count() == 1 && word.chars().all(|c| c.is_ascii_uppercase())
     });
-    let label = number.map_or_else(|| first.to_owned(), |number| format!("{first} {number}"));
-    let rest = text.split_whitespace().skip(if number.is_some() { 2 } else { 1 }).collect::<Vec<_>>().join(" ");
-    let title = rest.trim_start_matches(['–', '—', '-', ':', '.', ' ']).trim();
-    (kind, label, (!title.is_empty()).then(|| title.to_owned()))
+    let (at, printed) = number.unwrap_or(first);
+    (kind, at + printed.trim_end_matches(['.', ':']).len())
 }
 
-/// What a provision's enumerators make it, by how they nest: "(2)" a subsection, "(a)" a
-/// paragraph, "(i)" under a paragraph a subparagraph, "(A)" a clause.
-fn enumerated_kind(tokens: &[&str]) -> &'static str {
-    tokens.iter().fold("section", |parent, token| {
-        if token.starts_with(|c: char| c.is_ascii_digit()) {
-            "subsection"
-        } else if token.starts_with(|c: char| c.is_ascii_uppercase()) {
-            "clause"
-        } else if matches!(parent, "paragraph" | "subparagraph") {
-            "subparagraph"
-        } else {
-            "paragraph"
+/// A statute's headings, marginal notes and title as nodes, written on the structure its provisions were read into: a
+/// markdown heading ("## PART XXIII – Sentencing") under the heading with fewer marks before it, open until the next
+/// heading or provision; the document's own title ("# Criminal Code"), and a line before its first heading or
+/// provision naming it by its citation, as its title. A marginal note stands on its line just above its provision,
+/// blank lines aside: a section's in the shape of one, a subsection's set in bold alone; a section's first subsection,
+/// opening on the section's line, has the section's note above it, not one of its own.
+pub(crate) fn add_statute_nodes(structure: &mut DocumentStructure) {
+    let text = structure.text.as_str();
+    let mut lines = Vec::new();
+    let mut unit = 0;
+    for raw in text.split_inclusive('\n') {
+        let content = raw.trim_end_matches(['\n', '\r']);
+        lines.push(TextLine { start: unit, end: unit + utf16_len(content), text: content });
+        unit += utf16_len(raw);
+    }
+    let length = unit;
+    let provisions = structure.nodes.iter()
+        .filter(|node| node.kind == NodeKind::Section)
+        .map(|node| node.range.start)
+        .collect::<Vec<_>>();
+    let first_provision = provisions.iter().copied().min().unwrap_or(length);
+    let mut added = Vec::<StructureNode>::new();
+    let mut open = Vec::<(usize, String, usize)>::new();
+    let mut opened = false;
+    for line in &lines {
+        let trimmed = line.text.trim_start();
+        let lead = utf16_len(&line.text[..line.text.len() - trimmed.len()]);
+        let marks = trimmed.chars().take_while(|c| *c == '#').count();
+        let words_at = |byte: usize| line.start + lead + utf16_len(&trimmed[..byte]);
+        let markdown = marks > 0 && trimmed[marks..].starts_with(' ');
+        if markdown && provisions.iter().any(|&start| line.start <= start && start < line.end.max(line.start + 1)) {
+            continue;
         }
-    })
+        if markdown && marks == 1 || !markdown && !opened && line.end <= first_provision && citation_title(markdown_line(line.text).0) {
+            let id = format!("statute-span-{:06}", added.len() + 1);
+            added.push(front_line(id, PrimaryRole::Title, line.start + lead, line.end));
+            continue;
+        }
+        if !markdown {
+            continue;
+        }
+        opened = true;
+        let words = trimmed[marks..].trim();
+        let words_start = marks + (trimmed[marks..].len() - trimmed[marks..].trim_start().len());
+        let (kind, marker_end) = heading(words);
+        while open.last().is_some_and(|(depth, ..)| *depth >= marks) {
+            open.pop();
+        }
+        let (parent, level) = open.last().map_or((None, 1), |(_, id, level)| (Some(id.clone()), level + 1));
+        let id = format!("statute-heading-{:06}", added.len() + 1);
+        let mut node = StructureNode::new(id.clone(), NodeKind::Heading, ScalarRange { start: line.start, end: length },
+            crate::ENGINE_ORIGIN, Derivation::Heuristic, parent);
+        node.level = Some(level);
+        node.heading_range = Some(ScalarRange { start: words_at(words_start), end: line.end });
+        node.marker_range = (marker_end > 0).then(|| ScalarRange { start: words_at(words_start), end: words_at(words_start + marker_end) });
+        node.locator_kind = kind.map(str::to_owned);
+        node.label = Some(markdown_line(words).0.to_owned());
+        added.push(node);
+        open.push((marks, id, level));
+    }
+    // A heading heads what follows it until the next heading or provision.
+    let starts = added.iter().filter(|node| node.kind == NodeKind::Heading).map(|node| node.range.start)
+        .chain(provisions.iter().copied()).collect::<Vec<_>>();
+    for node in added.iter_mut().filter(|node| node.kind == NodeKind::Heading) {
+        let start = node.range.start;
+        node.range.end = starts.iter().copied().filter(|&next| next > start).min().unwrap_or(length);
+    }
+    // Each provision's marginal note.
+    let printed = |node: &StructureNode| node.marker_range.and_then(|range| {
+        let units = text.encode_utf16().skip(range.start).take(range.end - range.start).collect::<Vec<_>>();
+        Some(String::from_utf16_lossy(&units))
+    });
+    let mut noted = HashSet::new();
+    let ids = structure.nodes.iter().enumerate().map(|(at, node)| (node.id.clone(), at)).collect::<HashMap<_, _>>();
+    let mut notes = Vec::new();
+    for (at, node) in structure.nodes.iter().enumerate() {
+        if node.kind != NodeKind::Section || provision_mark(node.locator_kind.as_deref()) != "sec" {
+            continue;
+        }
+        let top = node.parent_id.as_ref().and_then(|parent| ids.get(parent)).is_none_or(|&parent| structure.nodes[parent].kind != NodeKind::Section);
+        let subsection = !top && printed(node).is_some_and(|marker| marker.trim_start().strip_prefix('(').is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit())));
+        if !top && !subsection {
+            continue;
+        }
+        let start = node.range.start;
+        let Some(above) = lines.iter().rposition(|line| line.end <= start && line.start < start) else { continue };
+        let Some(line) = lines[..=above].iter().rev().find(|line| !line.text.trim().is_empty()) else { continue };
+        let (_, emphasized) = markdown_line(line.text);
+        if line.text.trim_start().starts_with('#') || !marginal_note_shaped(line.text) || !top && !emphasized || !noted.insert(line.start) {
+            continue;
+        }
+        let lead = utf16_len(&line.text[..line.text.len() - line.text.trim_start().len()]);
+        notes.push((at, ScalarRange { start: line.start + lead, end: line.end }));
+    }
+    for (at, note) in notes {
+        structure.nodes[at].heading_range = Some(note);
+    }
+    structure.nodes.extend(added);
 }
 
-/// The text without markdown emphasis, a line to each paragraph.
-fn plain(text: &str) -> String {
-    text.lines()
-        .map(|line| line.replace(['*', '_'], "").trim().to_owned())
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Reads a statute's text, as A2AJ and other providers give it (markdown headings, a marginal
-/// note on its own line before its provision), into its outline. `articles` reads a code whose
-/// provisions are articles (Quebec's).
-pub fn statute_outline(text: &str, articles: bool) -> Result<Vec<StatuteOutlineEntry>, EngineError> {
+/// A statute's text read into its provisions, headings and notes (`add_statute_nodes`). Text run together, a page to a
+/// line (a PDF's page text), is read again with its lines recovered where provisions open, and the reading that finds
+/// more sections is kept; the recovery only breaks lines, so offsets into the text hold.
+pub(crate) fn statute_reading(text: &str) -> Result<DocumentStructure, EngineError> {
     let provider = crate::provider_text::provider_text_reading(ProviderTextInput::new("", ProviderTextSourceKind::Laws, text))?;
-    // Text run together, a page to a line (a PDF's page text), is read again with its lines
-    // recovered where provisions open; the reading that finds more provisions is kept. The
-    // recovery only breaks lines, so offsets into the text hold.
-    let provisions = |structure: &crate::DocumentStructure| structure.nodes.iter()
+    let sections = |structure: &DocumentStructure| structure.nodes.iter()
         .filter(|node| node.kind == NodeKind::Section && provision_mark(node.locator_kind.as_deref()) == "sec"
             && node.label.as_deref().is_some_and(|label| !label.contains('(')))
         .count();
-    let structure = if articles || provisions(&provider) * 200 < text.len().max(1) {
+    let mut structure = if sections(&provider) * 200 < text.len().max(1) {
         let lineated = crate::instrument::instrument_reading(text)?;
-        if provisions(&lineated) > provisions(&provider) { lineated } else { provider }
+        if sections(&lineated) > sections(&provider) { lineated } else { provider }
     } else {
         provider
     };
-    let units = text.encode_utf16().collect::<Vec<_>>();
-    let length = units.len();
-    let slice = |start: usize, end: usize| String::from_utf16_lossy(&units[start.min(length)..end.min(length)]);
-    let mut lines = Vec::new();
-    let (mut unit, mut byte) = (0, 0);
-    for raw in text.split_inclusive('\n') {
-        let content = raw.trim_end_matches(['\n', '\r']);
-        lines.push(TextLine { start: unit, end: unit + utf16_len(content), text: &text[byte..byte + content.len()] });
-        unit += utf16_len(raw);
-        byte += raw.len();
-    }
-    // An entry as read: its span, where its own text opens, and whether a heading.
-    struct Entry { start: usize, content: usize, end: usize, kind: &'static str, level: usize, label: String, title: Option<String>, heading: bool }
-    let mut entries = Vec::<Entry>::new();
-    for line in &lines {
-        let trimmed = line.text.trim_start();
-        let depth = trimmed.chars().take_while(|c| *c == '#').count();
-        // The document's own title ("# Criminal Code") opens no part of it.
-        if depth < 2 || !trimmed[depth..].starts_with(' ') { continue; }
-        let (kind, label, title) = heading(&plain(&trimmed[depth..]));
-        entries.push(Entry { start: line.start, content: line.end, end: length, kind, level: depth - 2, label, title, heading: true });
-    }
-    // A marginal note: a line all in bold just above its provision, blank lines aside.
-    let note = |start: usize| {
-        let index = lines.iter().rposition(|line| line.end <= start && line.start < start)?;
-        let line = lines[..=index].iter().rev().find(|line| !line.text.trim().is_empty())?;
-        let value = line.text.trim();
-        (value.len() > 4 && value.starts_with("**") && value.ends_with("**") && !value[2..value.len() - 2].contains("**")
-            && !value[2..value.len() - 2].trim().starts_with(|c: char| c.is_ascii_digit()))
-            .then(|| (line.start, plain(value)))
-    };
-    // The notes taken: a section's first subsection, opening on the section's line, has the
-    // section's note above it, not one of its own.
-    let mut noted = std::collections::HashSet::new();
-    for node in structure.nodes.iter().filter(|node| node.kind == NodeKind::Section) {
-        let Some(label) = node.label.as_deref().filter(|_| provision_mark(node.locator_kind.as_deref()) == "sec") else { continue };
-        let start = node.range.start;
-        // A label read twice ("2(a)@2") prints as its first reading.
-        let label = label.split('@').collect::<String>();
-        let (number, tokens) = label.split_once('(').map_or((label.as_str(), Vec::new()), |(number, rest)| {
-            (number, rest.split(')').map(|token| token.trim_start_matches('(')).filter(|token| !token.is_empty()).collect::<Vec<_>>())
-        });
-        let (kind, printed) = match tokens.last() {
-            None => (if articles { "article" } else { "section" }, number.to_owned()),
-            Some(token) => (enumerated_kind(&tokens), format!("({token})")),
-        };
-        // A section, and a subsection, may carry a marginal note.
-        let marginal = (tokens.is_empty() || kind == "subsection").then(|| note(start)).flatten()
-            .filter(|(start, _)| noted.insert(*start));
-        let heading_level = entries.iter().filter(|entry| entry.heading && entry.start <= start)
-            .map(|entry| entry.level + 1).last().unwrap_or(0);
-        entries.push(Entry {
-            start: marginal.as_ref().map_or(start, |(start, _)| *start),
-            content: start, end: length, kind, level: heading_level + tokens.len(),
-            label: printed, title: marginal.map(|(_, title)| title), heading: false,
-        });
-    }
-    entries.sort_by_key(|entry| (entry.start, entry.level));
-    // An entry closes where the next one not under it opens, so text the structure reads as no
-    // provision (a formula's lettered terms repeating "(a)") stays with the provision before it.
-    for index in 0..entries.len() {
-        let level = entries[index].level;
-        entries[index].end = entries[index + 1..].iter().find(|next| next.level <= level).map_or(length, |next| next.start);
-    }
-    // The words before the first entry, without the document's title ("# Criminal Code") or a line
-    // naming it by its citation.
-    let first = entries.first().map_or(length, |entry| entry.start);
-    let preamble = lines.iter()
-        .filter(|line| line.end <= first && !line.text.trim_start().starts_with('#'))
-        .map(|line| plain(line.text))
-        .filter(|line| !line.is_empty() && !citation_spans(line).iter().any(|span| span.range == (0..line.len())))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let preamble = (!preamble.is_empty()).then(|| StatuteOutlineEntry { kind: "preamble", level: 0, label: String::new(),
-        title: None, text: preamble, start: 0, end: first });
-    Ok(preamble.into_iter().chain(entries.iter().enumerate().map(|(index, entry)| {
-        // The entry's own text runs to the first entry under it.
-        let own_end = entries.get(index + 1).filter(|next| next.start < entry.end).map_or(entry.end, |next| next.start);
-        // A heading's text is what follows its line, as a schedule's body does.
-        let own = slice(entry.content, own_end.max(entry.content));
-        let own = plain(&own);
-        // A subsection may repeat its section's number ("5(1) The director ...").
-        let own = own.strip_prefix(entry.label.as_str())
-            .or_else(|| own.trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, '.' | '-')).trim_start()
-                .strip_prefix(entry.label.as_str()))
-            .unwrap_or(&own).trim_start_matches('.').trim().to_owned();
-        StatuteOutlineEntry { kind: entry.kind, level: entry.level, label: entry.label.clone(), title: entry.title.clone(),
-            text: own, start: entry.start.min(length), end: entry.end.min(length) }
-    })).collect())
+    add_statute_nodes(&mut structure);
+    Ok(structure)
 }
 
-/// Where each provision `labels` cite is in a statute's text, by its outline: a section or
-/// article ("16"), a part of one ("16(3)(a)", each part a level under the last), or a range
-/// ("49-51", "33 to 35") from its first provision through its last; each span (UTF-16) with
-/// everything under it, in the order the text has them. A label the outline does not hold has none.
+/// Where each provision `labels` cite is in a statute's text: a section or article ("16"), a part of one ("16(3)(a)"),
+/// or a range ("49-51", "33 to 35") from its first provision through its last; each span (UTF-16) from its marginal
+/// note through everything under it, in the order the text has them. A label the text holds no provision of has none.
 pub fn statute_provision_spans(text: &str, labels: &[String]) -> Result<Vec<[usize; 2]>, EngineError> {
-    static PARTS: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"^[^(]+|\([^)]*\)").unwrap());
     static RANGE: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"\s*(?:-|\u{2013}|to)\s*").unwrap());
-    let outline = statute_outline(text, false)?;
-    let entry = |label: &str| {
+    let mut structure = statute_reading(text)?;
+    legal_structure_model::assemble_in_place(&mut structure).map_err(EngineError::invalid)?;
+    let span = |label: &str| {
         let compact = label.chars().filter(|character| !character.is_whitespace()).collect::<String>();
-        let mut parts = PARTS.find_iter(&compact).map(|part| part.as_str());
-        let top = parts.next()?;
-        let mut at = outline.iter().find(|item| matches!(item.kind, "section" | "article")
-            && item.label.strip_suffix('.').unwrap_or(&item.label) == top.strip_suffix('.').unwrap_or(top))?;
-        for part in parts {
-            at = outline.iter().find(|item| item.start >= at.start && item.end <= at.end && item.level > at.level
-                && item.label == part)?;
-        }
-        Some(at)
+        let compact = compact.trim_end_matches('.');
+        let node = structure.nodes.iter().find(|node| node.kind == NodeKind::Section
+            && provision_mark(node.locator_kind.as_deref()) == "sec"
+            && node.label.as_deref().is_some_and(|label| label.trim_end_matches('.') == compact))?;
+        let start = node.heading_range.map_or(node.range.start, |note| note.start.min(node.range.start));
+        Some([start, node.extent.iter().map(|range| range.end).max().unwrap_or(node.range.end)])
     };
     let mut spans = labels.iter().filter_map(|label| {
-        if let Some(whole) = entry(label) {
-            return Some([whole.start, whole.end]);
+        if let Some(whole) = span(label) {
+            return Some(whole);
         }
         let mut ends = RANGE.split(label);
-        let (first, last) = (entry(ends.next().unwrap_or("")), ends.next().and_then(|to| (!to.is_empty()).then(|| entry(to)).flatten()));
-        Some([first?.start, last?.end])
+        let (first, last) = (span(ends.next().unwrap_or("")), ends.next().and_then(|to| (!to.is_empty()).then(|| span(to)).flatten()));
+        Some([first?[0], last?[1]])
     }).collect::<Vec<_>>();
     spans.sort_by_key(|span| span[0]);
     Ok(spans)

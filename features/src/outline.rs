@@ -1,360 +1,154 @@
-//! A document's own outline: its headings and its top-level sections, in order.
+//! A document's outline, read straight from its nodes: its headings, provisions, paragraphs, list items, quotations and
+//! front matter in order, each at its level under its parents, and the lines no node of them holds.
 
 use legal_structure::{
-    Derivation, DocumentStructure, NodeKind, PrimaryRole, ScalarText, StructureNode,
+    DocumentStructure, EngineError, NodeKind, PrimaryRole, ProviderTextSourceKind, ScalarRange, ScalarText, StructureNode,
 };
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutlineEntry {
-    /// "heading" or "section".
+    /// The node's kind ("heading", "section", "paragraph", "prose", "list_item", "quote", or "span", a line of the front
+    /// matter), or "text": lines no node of the outline holds.
     kind: &'static str,
-    /// Headings nest by their own hierarchy; a section sits under the heading before it.
+    /// Its depth under its parents, from 0; a line of text one under the node holding it.
     level: usize,
-    title: String,
-    /// The node's start in the document's query text.
+    /// Its number or enumerator as printed: "[12]", "(2)", "PART XXIII", "IV.".
+    #[serde(skip_serializing_if = "String::is_empty")]
+    label: String,
+    /// A heading's words; a provision's marginal note.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    /// Its own words, up to the first entry under it, without the source's emphasis marks: a line to each paragraph.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    text: String,
+    /// Its span in the document's query text; a provision's opens with its marginal note.
     start: usize,
+    end: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<PrimaryRole>,
+    /// A provision's kind as its marker reads it: "section", "part", "schedule", ...
+    #[serde(skip_serializing_if = "Option::is_none")]
+    locator: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     page_index: Option<usize>,
 }
 
-/// A provision as a reader cites it, by its kind and label: section 33.1 is "s 33.1", part 2 "Part 2"; a kind a reader
-/// names no other way by its place ("div2").
-fn section_title(node: &StructureNode) -> String {
-    let label = node.label.as_deref().unwrap_or_default();
-    let name = match node.locator_kind.as_deref() {
-        Some("section" | "subsection") => "s ",
-        Some("part") => "Part ",
-        Some("schedule") => "Schedule ",
-        Some("article") => "Art ",
-        Some("annex") => "Annex ",
-        Some("appendix") => "Appendix ",
-        _ => return node.fragment().unwrap_or_default(),
-    };
-    if label.is_empty() { node.fragment().unwrap_or_default() } else { format!("{name}{label}") }
+/// The outline's name for a node it holds.
+fn entry_kind(node: &StructureNode) -> Option<&'static str> {
+    if node.role == Some(PrimaryRole::Heading) {
+        return Some("heading");
+    }
+    match node.kind {
+        NodeKind::Heading => node.role.is_none().then_some("heading"),
+        NodeKind::Span => (node.grammar.as_deref() == Some("front")).then_some("span"),
+        NodeKind::Section | NodeKind::Paragraph | NodeKind::Prose | NodeKind::ListItem | NodeKind::Quote => {
+            node.role.is_none_or(|role| role == PrimaryRole::Text).then(|| node.kind.name())
+        }
+        _ => None,
+    }
 }
 
-fn own_start(node: &StructureNode) -> usize {
-    node.rendered_membership
-        .iter()
-        .map(|range| range.start)
-        .min()
-        .or_else(|| node.rendered_range.map(|range| range.start))
-        .or_else(|| node.ranges.iter().map(|range| range.start).min())
-        .unwrap_or(node.range.start)
+/// The words without a provider's emphasis marks, a line to each paragraph.
+fn plain(value: &str) -> String {
+    value.lines()
+        .map(|line| line.replace(['*', '_'], "").trim().to_owned())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
-fn outline_entries(
-    structure: &DocumentStructure,
-    sections: bool,
-    literal: bool,
-) -> Vec<OutlineEntry> {
-    let text = ScalarText::new(structure.query_text());
-    let source_text = ScalarText::new(&structure.text);
-    let nodes = structure
-        .nodes
-        .iter()
-        .map(|node| (node.id.as_str(), node))
-        .collect::<HashMap<_, _>>();
-    let depth = |node: &StructureNode, counts: &dyn Fn(&StructureNode) -> bool| {
-        let (mut level, mut parent) = (0usize, node.parent_id.as_deref());
-        let mut seen = HashSet::new();
-        while let Some(found) = parent
-            .filter(|id| seen.insert(*id))
-            .and_then(|id| nodes.get(id))
-        {
-            if counts(found) {
-                level += 1;
-            }
-            parent = found.parent_id.as_deref();
+/// The document's outline. In a text the structure renders apart from its source (a PDF's), each entry stands at its
+/// place in the rendered text and carries no words of its own.
+pub fn document_outline(structure: &DocumentStructure) -> Vec<OutlineEntry> {
+    let source = ScalarText::new(&structure.text);
+    let query = ScalarText::new(structure.query_text());
+    let rendered = structure.rendered_text.is_some();
+    let words = |range: ScalarRange| source.slice_utf16(range.start..range.end).map(plain).unwrap_or_default();
+    let mut nodes = structure.nodes.iter().filter_map(|node| Some((node, entry_kind(node)?))).collect::<Vec<_>>();
+    let span = |node: &StructureNode| {
+        if rendered {
+            return structure.query_range(node);
         }
-        level
+        let note = node.heading_range.filter(|_| node.kind == NodeKind::Section).map_or(node.range.start, |note| note.start);
+        ScalarRange { start: note.min(node.range.start), end: node.range.end }
     };
-    let ldml = |node: &StructureNode, tag: &str, class: &str| {
-        node.source == Derivation::Native
-            && node.markup_tag.as_deref() == Some(tag)
-            && node
-                .markup_attributes
-                .get("class")
-                .is_some_and(|classes| classes.split_ascii_whitespace().any(|value| value == class))
+    nodes.sort_by_key(|(node, _)| (span(node).start, node.level));
+    let mut entries = Vec::with_capacity(nodes.len());
+    // The lines up to `end` from where the last entry's own words stopped, at the depth of the deepest entry holding
+    // them.
+    let mut covered = 0;
+    let mut holding = Vec::<(usize, usize)>::new();
+    let lines = |entries: &mut Vec<OutlineEntry>, holding: &[(usize, usize)], from: usize, end: usize| {
+        let Some(stretch) = (from < end).then(|| source.slice_utf16(from..end)).flatten() else { return };
+        let mut at = from;
+        for line in stretch.split_inclusive('\n') {
+            let start = at + legal_structure::utf16_len(&line[..line.len() - line.trim_start().len()]);
+            at += legal_structure::utf16_len(line);
+            let text = plain(line);
+            if text.is_empty() {
+                continue;
+            }
+            let level = holding.iter().rev().find(|(_, holds)| *holds > start).map_or(0, |(level, _)| level + 1);
+            entries.push(OutlineEntry { kind: "text", level, label: String::new(), title: None, text, start,
+                end: start + legal_structure::utf16_len(line.trim()), role: None, locator: None, page_index: None });
+        }
     };
-    let mut entries = structure
-        .nodes
-        .iter()
-        .filter_map(|node| {
-            if literal && node.role != Some(PrimaryRole::Heading) {
-                return None;
-            }
-            if node.kind == NodeKind::Heading
-                && node.role.is_some_and(|role| role != PrimaryRole::Heading)
-            {
-                return None;
-            }
-            let kind = if node.role == Some(PrimaryRole::Heading) {
-                NodeKind::Heading
-            } else {
-                node.kind
-            };
-            let start = own_start(node);
-            let page_index = node.page_indexes.first().copied();
-            let label = if let Some(range) = node.heading_range {
-                source_text.slice_utf16(range.start..range.end)?.to_owned()
-            } else if kind == NodeKind::Heading
-                && (node.role == Some(PrimaryRole::Heading) || node.source == Derivation::Native)
-                && (node.role == Some(PrimaryRole::Heading) || node.markup_tag.is_some())
-            {
-                node.display_value.clone().unwrap_or_else(|| {
-                    if !node.rendered_membership.is_empty() {
-                        node.rendered_membership
-                            .iter()
-                            .filter_map(|range| text.slice_utf16(range.start..range.end))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    } else {
-                        let membership = if node.ranges.is_empty() {
-                            std::slice::from_ref(&node.range)
-                        } else {
-                            &node.ranges
-                        };
-                        membership
-                            .iter()
-                            .filter_map(|range| source_text.slice_utf16(range.start..range.end))
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    }
-                })
-            } else {
-                node.label.clone()?
-            }
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-            let entry = match kind {
-                NodeKind::Heading
-                    if !label.is_empty()
-                        && (node.role == Some(PrimaryRole::Heading)
-                            || label.chars().count() <= 200) =>
-                {
-                    Some(OutlineEntry {
-                        kind: "heading",
-                        // The heading and nested sections are source siblings,
-                        // so their hierarchy comes from the containing LDML sections.
-                        level: if literal {
-                            node.level.unwrap_or(0)
-                        } else if ldml(node, "section", "ldml-heading") {
-                            depth(node, &|parent| {
-                                parent.kind == NodeKind::Section
-                                    && ldml(parent, "div", "ldml-section")
-                            })
-                            .saturating_sub(1)
-                        } else {
-                            depth(node, &|parent| {
-                                parent.role == Some(PrimaryRole::Heading)
-                                    || parent.role.is_none() && parent.kind == NodeKind::Heading
-                            })
-                        },
-                        title: label,
-                        start,
-                        page_index,
-                    })
-                }
-                NodeKind::Section
-                    if sections && depth(node, &|parent| parent.kind == NodeKind::Section) == 0 =>
-                {
-                    Some(OutlineEntry {
-                        kind: "section",
-                        level: 0,
-                        title: section_title(node),
-                        start,
-                        page_index,
-                    })
-                }
-                _ => None,
-            }?;
-            Some((node, entry))
-        })
-        .collect::<Vec<_>>();
-    // Apply the existing repeated-title view rule before observing sibling
-    // ranks: an omitted entry must not set a surviving heading's level.
-    let mut counts = HashMap::<String, usize>::new();
-    for (_, entry) in entries.iter().filter(|(_, entry)| entry.kind == "heading") {
-        *counts.entry(entry.title.to_lowercase()).or_default() += 1;
-    }
-    entries.retain(|(node, entry)| {
-        node.role == Some(PrimaryRole::Heading)
-            || entry.kind != "heading"
-            || counts[&entry.title.to_lowercase()] < 3
-    });
-    if literal {
-        return entries.into_iter().map(|(_, entry)| entry).collect();
-    }
-    let mut ranked = entries
-        .iter()
-        .enumerate()
-        .filter_map(|(index, (node, _))| {
-            if node.kind != NodeKind::Heading || node.source != Derivation::Native {
-                return None;
-            }
-            let rank = match node.markup_tag.as_deref()?.as_bytes() {
-                [b'h', rank @ b'1'..=b'6'] => *rank,
-                _ => return None,
-            };
-            let start = node.markup_start?;
-            let element = structure
-                .markup_elements
-                .binary_search_by_key(&start, |element| element.markup_start)
-                .ok()
-                .map(|index| &structure.markup_elements[index])?;
-            Some((start, index, element.parent, rank))
-        })
-        .collect::<Vec<_>>();
-    ranked.sort_unstable_by_key(|&(start, _, _, _)| start);
-    let mut rank_stacks = HashMap::<Option<usize>, Vec<u8>>::new();
-    for (_, index, parent, rank) in ranked {
-        let stack = rank_stacks.entry(parent).or_default();
-        while stack.last().is_some_and(|previous| *previous >= rank) {
-            stack.pop();
-        }
-        // Sibling Hn declarations supply relative depth within their actual
-        // source parent; skipped ranks do not create synthetic headings.
-        entries[index].1.level += stack.len();
-        stack.push(rank);
-    }
-    entries.into_iter().map(|(_, entry)| entry).collect()
-}
-
-/// The document's own outline: its headings and its top-level sections, in order; a judgment's
-/// numbers are not sections.
-pub fn document_outline(
-    structure: &DocumentStructure,
-    pdf: bool,
-) -> Vec<OutlineEntry> {
-    // Exact PDF source identity and established role and level facts select literal
-    // projection. Other sources retain their existing markup view rules.
-    let literal = pdf
-        && !structure.source_fragments.is_empty()
-        && structure.nodes.iter().any(|node| node.role.is_some())
-        && structure
-            .nodes
-            .iter()
-            .filter(|node| node.role.is_some())
-            .all(|node| node.level.is_some());
-    let mut entries = outline_entries(structure, !pdf, literal);
-    let explicit_headings = structure
-        .nodes
-        .iter()
-        .filter(|node| !literal && node.role == Some(PrimaryRole::Heading))
-        .map(own_start)
-        .collect::<HashSet<_>>();
-    let declared_entries = entries
-        .iter()
-        .filter(|entry| entry.kind == "heading" && explicit_headings.contains(&entry.start))
-        .map(|entry| {
-            (
-                entry.start,
-                entry.level,
-                entry.title.clone(),
-                entry.page_index,
-            )
-        })
-        .collect::<Vec<_>>();
-    entries.retain(|entry| entry.kind != "heading" || !explicit_headings.contains(&entry.start));
-    entries.sort_by_key(|entry| entry.start);
-    if literal {
-        return entries;
-    }
-    // The matter before a judgment's reasons (the style of cause, the court, the parties and
-    // counsel, a date) is no heading of the text: the outline opens with the headings that run
-    // straight into its first numbered paragraph, as its case outline reads it ("[1]"), with no
-    // text between them. An enactment's title pages (its title block, assent, a consolidation's
-    // cover) are the pages before its first section.
-    let start = |node: &StructureNode| node.rendered_range.unwrap_or(node.range).start;
-    // Where the reasons open: the structure's first numbered paragraph, else (a judgment numbering none) its first
-    // passage of prose.
-    let first = |numbered: bool| {
-        structure
-            .nodes
-            .iter()
-            .filter(|node| match numbered {
-                true => node.kind == NodeKind::Paragraph && node.label.is_some(),
-                false => node.kind == NodeKind::Prose && node.label.is_none(),
-            })
-            .map(start)
-            .min()
-    };
-    let paragraph = first(true).or_else(|| first(false));
-    if paragraph.is_none() {
-        // A judgment's section nodes are a misreading; an enactment's sections are its printed reading's.
-        if let Some(page) = entries
-            .iter()
-            .filter(|entry| entry.kind == "section")
-            .filter_map(|entry| entry.page_index)
-            .min()
-        {
-            entries.retain(|entry| {
-                entry.kind != "heading" || entry.page_index.is_none_or(|at| at >= page)
-            });
-        }
-    }
-    if let Some(body) = paragraph {
-        let declared_headings = structure
-            .nodes
-            .iter()
-            .filter(|node| {
-                node.kind == NodeKind::Heading
-                    && node.source == Derivation::Native
-                    && node.markup_tag.is_some()
-            })
-            .map(start)
-            .collect::<HashSet<_>>();
-        let mut opens = body;
-        for entry in entries
-            .iter()
-            .rev()
-            .filter(|entry| entry.kind == "heading" && entry.start < body)
-        {
-            // Text lying wholly between this heading and what follows it; the paragraph that
-            // opens the body, whatever its parts, is not between.
-            let text_between = structure.nodes.iter().any(|node| {
-                matches!(
-                    node.kind,
-                    NodeKind::Prose | NodeKind::List | NodeKind::Table | NodeKind::Paragraph
-                ) && start(node) > entry.start
-                    && node.rendered_range.unwrap_or(node.range).end <= opens
-            });
-            // A date alone ("March 31, 2021") dates the reasons; it heads nothing.
-            if text_between || !legal_citations::cues::layout_heading_text_plausible(&entry.title) {
-                break;
-            }
-            opens = entry.start;
-        }
-        // A bracketed footnote can be mistaken for the first body paragraph.
-        // That heuristic must not remove headings declared by the source.
-        entries.retain(|entry| {
-            entry.kind != "heading"
-                || entry.start >= opens
-                || declared_headings.contains(&entry.start)
-        });
-    }
-    let mut heading = None;
-    for entry in &mut entries {
-        if entry.kind == "heading" {
-            heading = Some(entry.level);
+    for (index, &(node, kind)) in nodes.iter().enumerate() {
+        let place = span(node);
+        let level = node.level.map_or(0, |level| level.saturating_sub(1));
+        let heading = kind == "heading";
+        let label = match node.marker_range {
+            Some(marker) if !rendered => words(marker),
+            _ if node.kind == NodeKind::Section && !rendered => node.content_start
+                .map(|content| words(ScalarRange { start: node.range.start, end: content }).trim_start_matches('#').trim().to_owned())
+                .unwrap_or_default(),
+            _ if node.kind == NodeKind::ListItem => node.label.clone().unwrap_or_default(),
+            _ => String::new(),
+        };
+        let within = |range: &ScalarRange| node.range.start <= range.start && range.end <= node.range.end;
+        let title = if heading {
+            node.display_value.clone()
+                .or_else(|| node.heading_range.filter(|_| !rendered).map(words))
+                .or_else(|| node.label.clone())
+                .or_else(|| rendered.then(|| structure.query_ranges(node).iter()
+                    .filter_map(|range| query.slice_utf16(range.start..range.end)).collect::<Vec<_>>().join(" ")))
+                .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|title| !title.is_empty())
         } else {
-            entry.level = heading.map_or(0, |level| level + 1);
+            node.heading_range.filter(|note| !rendered && !within(note)).map(words)
+        };
+        let mut entry = OutlineEntry { kind, level, label, title, text: String::new(), start: place.start, end: place.end,
+            role: node.role.filter(|_| kind == "span"), locator: node.locator_kind.clone(),
+            page_index: node.page_indexes.first().copied() };
+        if rendered {
+            entries.push(entry);
+            continue;
         }
+        let own = match node.kind {
+            _ if heading => node.heading_range.filter(within).map_or(node.range.end, |line| line.end),
+            NodeKind::Span | NodeKind::Quote => node.range.start,
+            _ => [node.marker_range.map(|marker| marker.end), node.content_start].into_iter().flatten()
+                .fold(node.range.start, usize::max),
+        };
+        // Its own words run to the first entry under it.
+        let own_end = nodes.get(index + 1).map(|(next, _)| span(next).start).filter(|&next| next < node.range.end)
+            .unwrap_or(node.range.end).max(own);
+        lines(&mut entries, &holding, covered, place.start);
+        entry.text = words(ScalarRange { start: own, end: own_end });
+        entries.push(entry);
+        holding.retain(|(_, holds)| *holds > place.start);
+        holding.push((level, node.range.end));
+        covered = covered.max(own_end);
     }
-    for (start, level, title, page_index) in declared_entries {
-        entries.push(OutlineEntry {
-            kind: "heading",
-            level,
-            title,
-            start,
-            page_index,
-        });
+    if !rendered {
+        lines(&mut entries, &holding, covered, source.utf16_len());
     }
-    entries.sort_by_key(|entry| entry.start);
     entries
+}
+
+/// The outline of a provider's text of a judgment or a statute (`provider_text_outline_reading`).
+pub fn text_outline(text: &str, source_kind: ProviderTextSourceKind) -> Result<Vec<OutlineEntry>, EngineError> {
+    Ok(document_outline(&legal_structure::provider_text_outline_reading(text, source_kind)?))
 }

@@ -12,13 +12,7 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
         .iter()
         .enumerate()
         .map(|(index, point)| {
-            point.parent_id.as_ref().and_then(|parent| {
-                points[..index].iter().rposition(|candidate| {
-                    candidate.fragment().as_ref() == Some(parent)
-                        && candidate.range.start <= point.range.start
-                        && point.range.start < candidate.range.end
-                })
-            })
+            point.parent_id.as_ref().and_then(|parent| points[..index].iter().rposition(|candidate| candidate.id == *parent))
         })
         .collect::<Vec<_>>();
     // A section read from nothing but its number (no statute's run of sections, and no article, part or division), on

@@ -1215,21 +1215,21 @@ pub(super) fn detect_legislation(
             .get(index + 1)
             .map_or(text.utf16_len(), |value| value.start);
         let end = schedule_start(text, section.content_start, end);
-        let mut top = crate::labelled_node(NodeKind::Section, section.label.clone(), section.start, end);
-        top.locator_kind = Some("section".to_owned());
+        let mut top = grammar_section(section.start, "section", section.label.clone(), None, section.content_start, None);
+        top.range.end = end;
         top.aliases = (!section.aliases.is_empty()).then(|| section.aliases.clone());
-        top.content_start = Some(section.content_start);
         let parent = top.fragment().unwrap();
-        result.push(top);
         let children = enumerated_children(
             text,
             section.start..end,
             "section",
             &section.label,
+            &top.id,
             section.content_start,
             matches!(section.family, SectionFamily::Bare | SectionFamily::DotTerm),
             None,
         );
+        result.push(top);
         if merge_native && !children.is_empty() {
             parent_blocks
                 .entry(parent.to_ascii_lowercase())
@@ -1268,6 +1268,7 @@ pub(super) fn detect_legislation(
             claim.range.start..claim.range.end,
             "section",
             label,
+            &claim.id,
             content_start,
             false,
             Some(label),

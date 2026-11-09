@@ -1,56 +1,45 @@
-//! A judgment's outline read from its text: its headings in their hierarchy, its numbered
-//! paragraphs, the lists within them, and the matter before and after its reasons, in document
-//! order, so a caller can lay the judgment out.
+//! A judgment's reading past its numbered paragraphs, read from a provider's text of it as nodes: its headings in their
+//! hierarchy, the lists within its paragraphs, the passages they quote, and the lines of the matter before its reasons.
 
 use crate::inference::{enumerated, heading_between, joined_heading_levels, may_head, run_in_heading, Levels};
 use crate::filing::{front_matter_line, FrontMatterLine};
 use crate::analysis::citation_spans;
 use crate::{
-    Derivation, DocumentStructure, EngineError, NodeKind, ProviderTextInput, ProviderTextSourceKind, ScalarRange,
-    StructureNode, utf16_len,
+    Derivation, DocumentStructure, EngineError, NodeKind, PrimaryRole, ProviderTextInput, ProviderTextSourceKind,
+    ScalarRange, StructureNode, utf16_len,
 };
 use crate::judgment::{author_line, date_line, signature_line};
-use serde::Serialize;
+use std::collections::HashMap;
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CaseOutlineEntry {
-    /// "heading", "paragraph" (a numbered paragraph), "item" (an entry of a list within a
-    /// paragraph) or "text" (the matter before and after the reasons, and a paragraph's lines
-    /// that are not a list's: a quotation, or its words after a list).
-    pub kind: &'static str,
-    /// A heading's depth among the headings; an item's depth in its list, from 1; a paragraph's
-    /// other lines 1; 0 otherwise.
-    pub level: usize,
-    /// As printed: "[12]", "IV.", "(a)", "•"; empty where there is none.
-    pub label: String,
-    /// The entry's words, without its label.
-    pub text: String,
-    /// The entry's span in the input, in UTF-16 code units.
-    pub start: usize,
-    pub end: usize,
-    /// A front-matter line's part: "title" (the provider's line naming the decision by its
-    /// citation), "party" (a party's role), "caption" (a short line of the court's heading),
-    /// "labelled" ("DOCKET: C69420") or "counsel".
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<&'static str>,
-}
-
-/// What a line before a judgment's reasons is: the opening line that names the decision by its
-/// citation ("R. v. Murphy, 2022 ONCA 615"), a party's role, a short line that is no label's and no
-/// counsel's, a labelled line, or counsel's.
-fn front_role(line: &str, opening: bool) -> Option<&'static str> {
-    if opening && citation_spans(line).iter().any(|span| span.range == (0..line.len())) {
-        return Some("title");
+/// What a line before a judgment's reasons is: the opening line that names the decision by its citation ("R. v.
+/// Murphy, 2022 ONCA 615"), a party's role, a short line that is no label's and no counsel's (the caption's), a
+/// labelled line, or counsel's.
+fn front_role(line: &str, opening: bool) -> Option<PrimaryRole> {
+    if opening && citation_title(line) {
+        return Some(PrimaryRole::Title);
     }
     match front_matter_line(line) {
-        FrontMatterLine::Party => Some("party"),
-        FrontMatterLine::Labelled => Some("labelled"),
-        FrontMatterLine::Counsel => Some("counsel"),
+        FrontMatterLine::Party => Some(PrimaryRole::Party),
+        FrontMatterLine::Labelled => Some(PrimaryRole::Labelled),
+        FrontMatterLine::Counsel => Some(PrimaryRole::Counsel),
         FrontMatterLine::Other => {
-            (line.chars().count() <= 72 && !line.ends_with(['.', ';', ':'])).then_some("caption")
+            (line.chars().count() <= 72 && !line.ends_with(['.', ';', ':'])).then_some(PrimaryRole::Caption)
         }
     }
+}
+
+/// Whether a line is a citation and nothing else: the provider's line naming the document by it.
+pub(crate) fn citation_title(line: &str) -> bool {
+    citation_spans(line).iter().any(|span| span.range == (0..line.len()))
+}
+
+/// A line of the front matter as a node: a Span the `front` grammar names, its role the line's.
+pub(crate) fn front_line(id: String, role: PrimaryRole, start: usize, end: usize) -> StructureNode {
+    let mut line = StructureNode::new(id, NodeKind::Span, ScalarRange { start, end }, crate::ENGINE_ORIGIN, Derivation::Heuristic, None);
+    line.grammar = Some("front".to_owned());
+    line.role = Some(role);
+    line.level = Some(1);
+    line
 }
 
 /// Where lines between paragraphs stand: before the reasons, among them, or after them.
@@ -61,15 +50,7 @@ enum Place {
     Tail,
 }
 
-/// Reads a judgment's text, as A2AJ and other providers give it (a line to a paragraph, its
-/// headings on lines of their own or run into the paragraph they open), into its outline. The
-/// paragraphs are the structure layer's; the headings are the lines between them its heading
-/// grammar takes as headings.
-pub fn case_outline(text: &str) -> Result<Vec<CaseOutlineEntry>, EngineError> {
-    Ok(add_case_nodes(&mut reading(text)?))
-}
-
-/// A judgment's text read as a provider gives it, before the nodes its outline adds (`add_case_nodes`).
+/// A judgment's text read as a provider gives it, before the nodes `add_case_nodes` adds.
 fn reading(text: &str) -> Result<DocumentStructure, EngineError> {
     crate::provider_text::provider_text_reading(ProviderTextInput::new("", ProviderTextSourceKind::Cases, text))
 }
@@ -221,9 +202,9 @@ fn one_printing(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
         .collect()
 }
 
-/// Each paragraph a judgment's outline reads: where its number opens and closes, where its range ends, and its number
-/// as printed ("[12]"), in order. A judgment that numbers no paragraphs has its unnumbered ones, each without a label.
-fn paragraph_spans(structure: &DocumentStructure, units: &[u16]) -> Vec<(usize, usize, usize, String)> {
+/// Each paragraph a judgment's reading holds: where its number opens and closes and where its range ends, in order. A
+/// judgment that numbers no paragraphs has its unnumbered ones.
+fn paragraph_spans(structure: &DocumentStructure, units: &[u16]) -> Vec<(usize, usize, usize)> {
     let mut paragraphs = structure
         .nodes
         .iter()
@@ -235,7 +216,7 @@ fn paragraph_spans(structure: &DocumentStructure, units: &[u16]) -> Vec<(usize, 
             let start = (paragraph_start..end.saturating_sub(marker.len()) + 1)
                 .find(|at| units[*at..].starts_with(&marker))
                 .unwrap_or(paragraph_start);
-            Some((start, (start + marker.len()).min(end), end, format!("[{number}]")))
+            Some((start, (start + marker.len()).min(end), end))
         })
         .collect::<Vec<_>>();
     if paragraphs.is_empty() {
@@ -243,7 +224,7 @@ fn paragraph_spans(structure: &DocumentStructure, units: &[u16]) -> Vec<(usize, 
             .nodes
             .iter()
             .filter(|node| node.kind == NodeKind::Prose && node.label.is_none())
-            .map(|node| (node.range.start, node.range.start, node.range.end, String::new()))
+            .map(|node| (node.range.start, node.range.start, node.range.end))
             .collect();
     }
     paragraphs.sort_by_key(|paragraph| paragraph.0);
@@ -251,49 +232,147 @@ fn paragraph_spans(structure: &DocumentStructure, units: &[u16]) -> Vec<(usize, 
     paragraphs
 }
 
-/// A judgment's outline from its structure's numbered paragraphs and the lines around them.
-fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
-    // The text's UTF-16 code units, the outline read over them.
+/// The nodes a judgment's reading adds, written as its lines are read: each heading under the heading it falls within,
+/// each list's item under its list (a nested item under the item it continues), the passages a paragraph quotes, and
+/// the front matter's lines.
+struct Writer {
+    /// The paragraphs (their span, id and level) the lines fall in.
+    paragraphs: Vec<(ScalarRange, String, usize)>,
+    nodes: Vec<StructureNode>,
+    levels: HashMap<String, usize>,
+    /// The open headings, outermost first: each one's depth and id.
+    headings: Vec<(usize, String)>,
+    /// The open list: the paragraph it is in, its node, and each level's last item.
+    list: Option<(Option<String>, usize, Vec<String>)>,
+    /// The open quotation: its span and the paragraph quoting it.
+    quote: Option<(usize, usize, String)>,
+    previous_item: bool,
+}
+
+/// A line as the reading takes it, for what it ends of the open list and quotation.
+enum Read<'a> {
+    Heading,
+    Item,
+    /// A line no heading or item reads: `inner` where it is a paragraph's own (after its first), `words` its text.
+    Text { inner: bool, words: &'a str },
+}
+
+impl Writer {
+    fn owner(&self, start: usize) -> Option<String> {
+        self.paragraphs.iter().find(|(range, ..)| range.start <= start && start < range.end).map(|(_, id, _)| id.clone())
+    }
+
+    fn add(&mut self, kind: NodeKind, start: usize, end: usize, parent: Option<String>) -> usize {
+        let id = format!("case-{}-{:06}", kind.name(), self.nodes.len() + 1);
+        let level = parent.as_ref().map_or(1, |parent| self.levels[parent] + 1);
+        let mut node = StructureNode::new(id.clone(), kind, ScalarRange { start, end }, crate::ENGINE_ORIGIN, Derivation::Heuristic, parent);
+        node.level = Some(level);
+        self.levels.insert(id, level);
+        self.nodes.push(node);
+        self.nodes.len() - 1
+    }
+
+    /// A line starting at `start`, as read: a paragraph's list ends where anything else of it starts, its quotation where
+    /// a line no quotation's does. A line after a list that carries on the paragraph's sentence in lower case is the
+    /// paragraph's own words.
+    fn read(&mut self, start: usize, end: usize, read: Read<'_>) {
+        let owner = self.owner(start);
+        if !matches!(read, Read::Item) || self.list.as_ref().is_some_and(|(list_owner, ..)| *list_owner != owner) {
+            self.list = None;
+        }
+        let quoted = matches!(read, Read::Text { inner: true, words } if owner.is_some()
+            && !(self.previous_item && words.starts_with(char::is_lowercase)));
+        if !quoted || self.quote.as_ref().map(|(.., quoting)| quoting) != owner.as_ref() {
+            self.close_quote();
+        }
+        if let (true, Some(owner)) = (quoted, owner) {
+            match self.quote.as_mut() {
+                Some((_, quote_end, _)) => *quote_end = end,
+                None => self.quote = Some((start, end, owner)),
+            }
+        }
+        self.previous_item = matches!(read, Read::Item);
+    }
+
+    fn close_quote(&mut self) {
+        if let Some((start, end, owner)) = self.quote.take() {
+            self.add(NodeKind::Quote, start, end, Some(owner));
+        }
+    }
+
+    /// A heading at `depth` among the headings, `title` as printed, its enumerator printed at `marker`.
+    fn heading(&mut self, depth: usize, title: String, marker: Option<ScalarRange>, start: usize, end: usize) {
+        self.read(start, end, Read::Heading);
+        while self.headings.last().is_some_and(|(open, _)| *open >= depth) {
+            self.headings.pop();
+        }
+        let parent = self.headings.last().map(|(_, id)| id.clone());
+        let at = self.add(NodeKind::Heading, start, end, parent);
+        let heading = &mut self.nodes[at];
+        heading.label = Some(title);
+        heading.marker_range = marker;
+        self.headings.push((depth, heading.id.clone()));
+    }
+
+    /// An item at `depth` in its list (from 1), its enumerator printed at `marker`.
+    fn item(&mut self, depth: usize, token: &str, marker: ScalarRange, end: usize) {
+        let start = marker.start;
+        self.read(start, end, Read::Item);
+        let owner = self.owner(start);
+        let list = match self.list.as_ref() {
+            Some((_, list, _)) => *list,
+            None => {
+                let list = self.add(NodeKind::List, start, end, owner.clone());
+                self.list = Some((owner, list, vec![self.nodes[list].id.clone()]));
+                list
+            }
+        };
+        let items = &mut self.list.as_mut().unwrap().2;
+        items.truncate(depth.max(1));
+        let under = items.last().cloned();
+        let at = self.add(NodeKind::ListItem, start, end, under);
+        self.nodes[at].label = Some(token.to_owned());
+        self.nodes[at].marker_range = Some(marker);
+        let id = self.nodes[at].id.clone();
+        self.list.as_mut().unwrap().2.push(id);
+        let range = &mut self.nodes[list].range;
+        (range.start, range.end) = (range.start.min(start), range.end.max(end));
+    }
+
+    fn front(&mut self, role: PrimaryRole, start: usize, end: usize, words: &str) {
+        self.read(start, end, Read::Text { inner: false, words });
+        let id = format!("case-span-{:06}", self.nodes.len() + 1);
+        self.nodes.push(front_line(id, role, start, end));
+    }
+}
+
+/// A judgment's reading beyond its numbered paragraphs, as nodes (`Writer`), from the structure's numbered paragraphs
+/// and the lines around them, as A2AJ and other providers give a judgment's text (a line to a paragraph, its headings
+/// on lines of their own or run into the paragraph they open). The headings are the lines between the paragraphs the
+/// heading grammar takes as headings. A paragraph ends where a heading after it opens.
+pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) {
     let units = structure.text.encode_utf16().collect::<Vec<_>>();
     let newline = u16::from(b'\n');
     let slice = |start: usize, end: usize| String::from_utf16_lossy(&units[start..end]);
-    // Where each line opens.
-    let line_start = |at: usize| {
-        units[..at]
-            .iter()
-            .rposition(|unit| *unit == newline)
-            .map_or(0, |at| at + 1)
-    };
+    let line_start = |at: usize| units[..at].iter().rposition(|unit| *unit == newline).map_or(0, |at| at + 1);
     let paragraphs = paragraph_spans(structure, &units);
-
-    let mut entries = Vec::new();
+    let mut writer = Writer {
+        paragraphs: structure.nodes.iter().filter(|node| node.kind == NodeKind::Paragraph)
+            .map(|node| (node.range, node.id.clone(), node.level.unwrap_or(1))).collect(),
+        nodes: Vec::new(),
+        levels: HashMap::new(),
+        headings: Vec::new(),
+        list: None,
+        quote: None,
+        previous_item: false,
+    };
+    writer.levels = writer.paragraphs.iter().map(|(_, id, level)| (id.clone(), *level)).collect();
     let mut headings = Levels::default();
     let mut last_heading = 0;
-    let push = |entries: &mut Vec<CaseOutlineEntry>,
-                kind,
-                level,
-                label: String,
-                start: usize,
-                end: usize,
-                own: &str| {
-        entries.push(CaseOutlineEntry {
-            kind,
-            level,
-            label,
-            text: own.trim().to_owned(),
-            start,
-            end,
-            role: None,
-        });
-    };
-    // The lines between two paragraphs (or before the first): each a heading where the heading
-    // grammar reads it as one, before what follows it; the matter before the reasons ends in the
-    // headings that open them.
-    let mut between = |entries: &mut Vec<CaseOutlineEntry>,
-                       list: &mut Levels,
-                       start: usize,
-                       end: usize,
-                       place: Place| {
+    let mut front_lines = 0;
+    // The lines between two paragraphs (or before the first): each a heading where the heading grammar reads it as one,
+    // before what follows it; the matter before the reasons ends in the headings that open them.
+    let mut between = |writer: &mut Writer, list: &mut Levels, start: usize, end: usize, place: Place| {
         let mut lines = Vec::new();
         let mut at = start;
         while at < end {
@@ -307,8 +386,8 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
             }
             at = close + 1;
         }
-        // A heading's path, a level at a time; a sentence heading is one level. The last line, where
-        // the paragraph after it opens on that line, is a path its number vouches for.
+        // A heading's path, a level at a time; a sentence heading is one level. The last line, where the paragraph
+        // after it opens on that line, is a path its number vouches for.
         let joined = end > start && end < units.len() && units[end - 1] != newline;
         let heading = |index: usize, line: &str| {
             // The last line, its paragraph's number run in after it, is read as the paragraph reader reads it.
@@ -320,9 +399,8 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
                 None => heading_between(line, &slice(end, (end + 200).min(units.len()))),
             })
         };
-        // Before the reasons, only the headings that open them count: the enumerated ones just
-        // before the first paragraph, and the line above them ("REASONS FOR JUDGMENT"); the
-        // matter after the reasons has none.
+        // Before the reasons, only the headings that open them count: the enumerated ones just before the first
+        // paragraph, and the line above them ("REASONS FOR JUDGMENT"); the matter after the reasons has none.
         let opening = match place {
             Place::Front => {
                 let mut opening = lines.len();
@@ -341,75 +419,60 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
             Place::Tail => lines.len(),
         };
         for (index, (from, to, line)) in lines.iter().enumerate() {
-            // A line going on with the list the paragraph above ends in is that list's; before the
-            // reasons (a publication ban quoting its enactment), a line may also open a list.
-            let opens = |token: &str| {
-                matches!(place, Place::Front) && index < opening && Levels::opens(token)
-            };
-            if let Some((token, rest)) =
-                enumerated(line).filter(|(token, _)| list.continues(token) || opens(token))
-            {
+            // A line going on with the list the paragraph above ends in is that list's; before the reasons (a
+            // publication ban quoting its enactment), a line may also open a list.
+            let front = matches!(place, Place::Front) && index < opening;
+            let opening_line = front && front_lines == 0;
+            front_lines += usize::from(front);
+            if let Some((token, _)) = enumerated(line).filter(|(token, _)| list.continues(token) || front && Levels::opens(token)) {
                 let depth = list.read(token).unwrap_or_default();
-                push(
-                    entries,
-                    "item",
-                    depth + 1,
-                    token.to_owned(),
-                    *from,
-                    *to,
-                    rest,
-                );
+                writer.item(depth + 1, token, ScalarRange { start: *from, end: *from + utf16_len(token) }, *to);
                 continue;
             }
             let Some(levels) = (index >= opening).then(|| heading(index, line)).flatten() else {
-                let role = (matches!(place, Place::Front) && index < opening)
-                    .then(|| front_role(line, entries.is_empty()));
-                push(entries, "text", 0, String::new(), *from, *to, line);
-                entries.last_mut().unwrap().role = role.flatten();
+                match front.then(|| front_role(line, opening_line)).flatten() {
+                    Some(role) => writer.front(role, *from, *to, line),
+                    None => writer.read(*from, *to, Read::Text { inner: false, words: line }),
+                }
                 continue;
             };
-            // Each level takes its depth from its enumerator; one without keeps the depth of the
-            // heading before it.
+            // Each level takes its depth from its enumerator; one without keeps the depth of the heading before it.
+            let mut cursor = 0;
             for level in levels {
-                let (label, words) = match enumerated(&level).and_then(|(token, rest)| {
-                    headings.read(token).map(|depth| (depth, token, rest))
-                }) {
-                    Some((depth, token, rest)) => {
-                        last_heading = depth;
-                        (token.to_owned(), rest.to_owned())
-                    }
-                    None => (String::new(), level),
-                };
-                push(entries, "heading", last_heading, label, *from, *to, &words);
+                let found = line[cursor..].find(level.as_str()).map(|at| cursor + at);
+                let read = enumerated(&level).and_then(|(token, _)| headings.read(token).map(|depth| (depth, token)));
+                let marker = read.and_then(|(depth, token)| {
+                    last_heading = depth;
+                    found.map(|at| {
+                        let start = *from + utf16_len(&line[..at]);
+                        ScalarRange { start, end: start + utf16_len(token) }
+                    })
+                });
+                if let Some(at) = found {
+                    cursor = at + level.len();
+                }
+                writer.heading(last_heading, level, marker, *from, *to);
             }
         }
     };
-    let first = paragraphs
-        .first()
-        .map_or(units.len(), |paragraph| paragraph.0);
-    // A2AJ opens a decision with its catalogue record (court, date, citation, file numbers) up to
-    // a line "Decision Content"; the decision starts after it.
+    let first = paragraphs.first().map_or(units.len(), |paragraph| paragraph.0);
+    // A2AJ opens a decision with its catalogue record (court, date, citation, file numbers) up to a line "Decision
+    // Content"; the decision starts after it.
     let record = "Decision Content".encode_utf16().collect::<Vec<_>>();
     let opens = (0..first)
         .find(|at| {
             (*at == 0 || units[at - 1] == newline)
                 && units[*at..].starts_with(&record)
-                && units
-                    .get(at + record.len())
-                    .is_none_or(|unit| *unit == newline || *unit == u16::from(b'\r'))
+                && units.get(at + record.len()).is_none_or(|unit| *unit == newline || *unit == u16::from(b'\r'))
         })
         .map_or(0, |at| at + record.len() + 1);
-    between(
-        &mut entries,
-        &mut Levels::default(),
-        opens.min(first),
-        first,
-        Place::Front,
-    );
-    for (index, (start, marker_end, range_end, label)) in paragraphs.iter().enumerate() {
+    if opens > 0 {
+        writer.nodes.push(front_line("case-span-record".to_owned(), PrimaryRole::Furniture, 0, opens.min(first)));
+    }
+    between(&mut writer, &mut Levels::default(), opens.min(first), first, Place::Front);
+    for (index, (start, marker_end, range_end)) in paragraphs.iter().enumerate() {
         let next = paragraphs.get(index + 1).map(|paragraph| paragraph.0);
-        // A heading run into the next paragraph's line ("IV. Standard of Review [50] ...") is
-        // not this paragraph's.
+        // A heading run into the next paragraph's line ("IV. Standard of Review [50] ...") is not this paragraph's.
         let body_end = next.map_or(*range_end, |next| {
             let line = line_start(next);
             if line > *start {
@@ -421,26 +484,16 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
         let mut lines = Vec::new();
         let mut at = *marker_end;
         while at < body_end {
-            let close = (at..body_end)
-                .find(|at| units[*at] == newline)
-                .unwrap_or(body_end);
+            let close = (at..body_end).find(|at| units[*at] == newline).unwrap_or(body_end);
             if !char::decode_utf16(units[at..close].iter().copied()).all(|c| c.is_ok_and(char::is_whitespace)) {
                 lines.push((at, close));
             }
             at = close + 1;
         }
-        // The paragraph ends where its own lines do (`paragraph_tail`): the headings after it, the matter after the
-        // reasons, are read with the lines between the paragraphs.
+        // The paragraph's first line is its own; the headings after it, the matter after the reasons, are read with
+        // the lines between the paragraphs (`paragraph_tail`).
         let (first_start, first_end) = lines.first().copied().unwrap_or((*marker_end, *marker_end));
-        push(
-            &mut entries,
-            "paragraph",
-            0,
-            label.clone(),
-            *start,
-            first_end,
-            &slice(first_start, first_end),
-        );
+        writer.read(first_start, first_end, Read::Text { inner: false, words: "" });
         let mut list = Levels::default();
         for (from, to) in lines.into_iter().skip(1) {
             let value = slice(from, to);
@@ -450,200 +503,18 @@ fn read(structure: &DocumentStructure) -> Vec<CaseOutlineEntry> {
             }
             let from = from + utf16_len(&value[..value.len() - value.trim_start().len()]);
             let to = from + utf16_len(trimmed);
-            match enumerated(trimmed)
-                .and_then(|(token, rest)| list.read(token).map(|level| (token, rest, level)))
-            {
-                Some((token, rest, level)) => push(
-                    &mut entries,
-                    "item",
-                    level + 1,
-                    token.to_owned(),
-                    from,
-                    to,
-                    rest,
-                ),
-                None => push(&mut entries, "text", 1, String::new(), from, to, trimmed),
+            match enumerated(trimmed).and_then(|(token, _)| list.read(token).map(|level| (token, level))) {
+                Some((token, level)) => writer.item(level + 1, token, ScalarRange { start: from, end: from + utf16_len(token) }, to),
+                None => writer.read(from, to, Read::Text { inner: true, words: trimmed }),
             }
         }
         let gap_end = next.unwrap_or(units.len());
-        between(
-            &mut entries,
-            &mut list,
-            body_end,
-            gap_end,
-            if next.is_some() {
-                Place::Between
-            } else {
-                Place::Tail
-            },
-        );
+        between(&mut writer, &mut list, body_end, gap_end, if next.is_some() { Place::Between } else { Place::Tail });
     }
-    entries
-}
-
-/// A judgment's reading beyond its numbered paragraphs, as nodes: its headings, each under the
-/// heading it falls within; the lists within a paragraph, each item under its list (a nested item
-/// under the item it continues); and the passages a paragraph quotes. A line after a list that
-/// carries on the paragraph's sentence in lower case is the paragraph's own words. Returns the outline they are read
-/// from (`case_outline`).
-pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) -> Vec<CaseOutlineEntry> {
-    let entries = read(structure);
-    let paragraphs = structure
-        .nodes
-        .iter()
-        .filter(|node| node.kind == NodeKind::Paragraph)
-        .map(|node| (node.range, node.id.clone()))
-        .collect::<Vec<_>>();
-    let owner = |start: usize| {
-        paragraphs
-            .iter()
-            .find(|(range, _)| range.start <= start && start < range.end)
-            .map(|(_, id)| id.clone())
-    };
-    let mut ordinals = std::collections::HashMap::<NodeKind, usize>::new();
-    for node in &structure.nodes {
-        if let Some(ordinal) = node
-            .id
-            .strip_prefix("heuristic-")
-            .and_then(|rest| rest.strip_prefix(node.kind.name()))
-            .and_then(|rest| rest.strip_prefix('-'))
-            .and_then(|rest| rest.parse::<usize>().ok())
-        {
-            let entry = ordinals.entry(node.kind).or_default();
-            *entry = (*entry).max(ordinal);
-        }
-    }
-    let mut added = Vec::new();
-    let mut node = |kind: NodeKind,
-                    start: usize,
-                    end: usize,
-                    label: Option<String>,
-                    parent: Option<String>| {
-        let ordinal = ordinals.entry(kind).or_default();
-        *ordinal += 1;
-        let mut node = StructureNode::new(
-            format!("heuristic-{}-{:06}", kind.name(), *ordinal),
-            kind,
-            ScalarRange { start, end },
-            crate::ENGINE_ORIGIN,
-            Derivation::Heuristic,
-            parent,
-        );
-        node.label = label;
-        let id = node.id.clone();
-        added.push(node);
-        id
-    };
-    let mut headings: Vec<String> = Vec::new();
-    // The paragraph a list is in, and its open items: the list, then each level's last item.
-    let mut list: Option<(String, Vec<String>)> = None;
-    let mut quote: Option<(usize, usize, String)> = None;
-    let mut previous_item = false;
-    for entry in &entries {
-        let parent = owner(entry.start);
-        // A paragraph's list and quote end where anything else of it starts.
-        if entry.kind != "item"
-            || parent.as_deref() != list.as_ref().map(|(owner, ..)| owner.as_str())
-        {
-            list = None;
-        }
-        let quoted = entry.kind == "text"
-            && entry.level == 1
-            && parent.is_some()
-            && !(previous_item && entry.text.starts_with(char::is_lowercase));
-        if !quoted || parent.as_deref() != quote.as_ref().map(|(.., owner)| owner.as_str()) {
-            if let Some((start, end, owner)) = quote.take() {
-                node(NodeKind::Quote, start, end, None, Some(owner));
-            }
-        }
-        match entry.kind {
-            "heading" => {
-                headings.truncate(entry.level);
-                let parent = headings.last().cloned();
-                let title = [entry.label.as_str(), entry.text.as_str()]
-                    .into_iter()
-                    .filter(|part| !part.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let id = node(
-                    NodeKind::Heading,
-                    entry.start,
-                    entry.end,
-                    Some(title),
-                    parent,
-                );
-                headings.resize(entry.level, id.clone());
-                headings.push(id);
-            }
-            "item" if parent.is_some() => {
-                let paragraph = parent.unwrap();
-                let (_, items) = list.get_or_insert_with(|| {
-                    let id = node(
-                        NodeKind::List,
-                        entry.start,
-                        entry.end,
-                        None,
-                        Some(paragraph.clone()),
-                    );
-                    (paragraph.clone(), vec![id])
-                });
-                let depth = entry.level.max(1);
-                items.truncate(depth);
-                let under = items.last().cloned();
-                let id = node(
-                    NodeKind::ListItem,
-                    entry.start,
-                    entry.end,
-                    Some(entry.label.clone()),
-                    under,
-                );
-                items.push(id);
-            }
-            "text" if quoted => {
-                let owner = parent.unwrap();
-                match quote.as_mut() {
-                    Some((_, end, _)) => *end = entry.end,
-                    None => quote = Some((entry.start, entry.end, owner)),
-                }
-            }
-            _ => {}
-        }
-        previous_item = entry.kind == "item";
-    }
-    if let Some((start, end, owner)) = quote.take() {
-        node(NodeKind::Quote, start, end, None, Some(owner));
-    }
-    // Each list spans its items.
-    let mut spans = std::collections::HashMap::<String, (usize, usize)>::new();
-    let parents = added
-        .iter()
-        .map(|node| (node.id.clone(), node.parent_id.clone()))
-        .collect::<std::collections::HashMap<_, _>>();
-    for item in added.iter().filter(|node| node.kind == NodeKind::ListItem) {
-        let mut at = item.parent_id.clone();
-        while let Some(id) = at {
-            if id.starts_with("heuristic-list-") {
-                let span = spans
-                    .entry(id)
-                    .or_insert((item.range.start, item.range.end));
-                span.0 = span.0.min(item.range.start);
-                span.1 = span.1.max(item.range.end);
-                break;
-            }
-            at = parents.get(&id).cloned().flatten();
-        }
-    }
-    for list in added.iter_mut().filter(|node| node.kind == NodeKind::List) {
-        if let Some((start, end)) = spans.get(&list.id) {
-            list.range = ScalarRange {
-                start: *start,
-                end: *end,
-            };
-        }
-    }
+    writer.close_quote();
+    let added = writer.nodes;
     // A paragraph ends where a heading after it opens what follows, the whitespace before the heading walked back over:
     // the heading is no paragraph's.
-    let units = structure.text.encode_utf16().collect::<Vec<_>>();
     let heading_starts = added.iter().filter(|node| node.kind == NodeKind::Heading).map(|node| node.range.start).collect::<Vec<_>>();
     for paragraph in structure.nodes.iter_mut().filter(|node| node.kind == NodeKind::Paragraph) {
         let Some(&start) = heading_starts.iter().filter(|&&start| paragraph.range.start < start && start < paragraph.range.end).min() else { continue };
@@ -658,5 +529,4 @@ pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) -> Vec<CaseOutli
         paragraph.ranges.retain(|range| range.start < range.end);
     }
     structure.nodes.extend(added);
-    entries
 }

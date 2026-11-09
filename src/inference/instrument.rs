@@ -2,23 +2,30 @@
 
 use super::*;
 
+/// An open level of a provision's enumerators: its family, the value last read in it, and the label and id of the
+/// provision that value opened.
 pub(super) struct EnumFrame {
     family: u8,
     value: String,
     label: String,
+    id: String,
 }
 
+/// A subprovision's marker: its token, where its line opens, where the printed "(token)" opens, and where its words open.
 pub(super) struct ChildMark<'a> {
     token: &'a str,
     start: usize,
+    marker: usize,
     content_start: usize,
 }
 
 /// A provision the grammar reads, open to the text's end until the next at its depth or above closes it: its kind as
-/// its marker reads ("section", "part", "schedule", ...), its label, where its words open, its parent named by its place
-/// (its kind's mark and label, `StructureNode::fragment`), and the diagnostic its reading raises, if any.
-fn grammar_section(start: usize, kind: &str, label: String, parent: Option<String>, content_start: usize, diagnostic: Option<&str>) -> StructureNode {
-    let mut node = StructureNode::new(String::new(), NodeKind::Section, ScalarRange { start, end: usize::MAX }, ENGINE_ORIGIN, Derivation::Heuristic, parent);
+/// its marker reads ("section", "part", "schedule", ...), its label as printed, where its words open, its parent's id,
+/// and the diagnostic its reading raises, if any. Its id is its place and start until `derive` numbers it: a label
+/// printed twice ("2(a)" in a section and in its schedule) is told apart by it.
+pub(super) fn grammar_section(start: usize, kind: &str, label: String, parent: Option<String>, content_start: usize, diagnostic: Option<&str>) -> StructureNode {
+    let id = format!("{}{label}:{start}", provision_mark(Some(kind)));
+    let mut node = StructureNode::new(id, NodeKind::Section, ScalarRange { start, end: usize::MAX }, ENGINE_ORIGIN, Derivation::Heuristic, parent);
     node.label = Some(label);
     node.locator_kind = Some(kind.to_owned());
     node.content_start = Some(content_start);
@@ -28,28 +35,21 @@ fn grammar_section(start: usize, kind: &str, label: String, parent: Option<Strin
     node
 }
 
-/// A provision open for what the grammar reads under it: its kind, its label and its depth.
+/// A provision open for what the grammar reads under it: its kind, its label, its depth and its id.
 pub(super) struct OpenSection {
     kind: &'static str,
     label: String,
     depth: usize,
-}
-
-impl OpenSection {
-    /// The place a provision of this one's kind labelled `label` has: its kind's mark and its label.
-    fn place(&self, label: &str) -> String {
-        format!("{}{label}", provision_mark(Some(self.kind)))
-    }
+    id: String,
 }
 
 #[derive(Default)]
 pub(super) struct StructureState {
     nodes: Vec<(StructureNode, usize)>,
-    /// The open container's place (an article's, part's or division's), its provisions' parent.
+    /// The open container's id (an article's, part's or division's), its provisions' parent.
     container: Option<String>,
     section: Option<OpenSection>,
     stack: Vec<EnumFrame>,
-    used: HashMap<String, usize>,
 }
 
 pub(crate) fn inserted_letter_token(token: &str) -> Option<(&str, &str)> {
@@ -408,36 +408,32 @@ pub(super) fn admitted_dialects<'a>(
 }
 
 impl StructureState {
+    /// A subprovision under the frame at `parent` (the open section where none), its marker printed at `marker`: its label
+    /// and id, which the frame its value opens takes.
+    #[allow(clippy::too_many_arguments)]
     fn emit_child(
         &mut self,
         token: &str,
         start: usize,
+        marker: ScalarRange,
         content_start: usize,
-        parent: String,
+        parent: Option<usize>,
         depth: usize,
         code: &'static str,
-    ) -> String {
-        let base = format!("{parent}({token})");
+    ) -> (String, String) {
         let open = self.section.as_ref().unwrap();
-        let (kind, place, parent) = (open.kind, open.place(&base), open.place(&parent));
-        // (A label read again counts its printings by its place: a schedule's "b(1)" is no section's.)
-        let label = match self.used.entry(place) {
-            Entry::Vacant(entry) => {
-                entry.insert(2);
-                base
-            }
-            Entry::Occupied(mut entry) => {
-                let occurrence = *entry.get();
-                *entry.get_mut() += 1;
-                format!("{base}@{occurrence}")
-            }
-        };
-        self.nodes.push((grammar_section(start, kind, label.clone(), Some(parent), content_start, Some(code)), depth));
-        label
+        let (parent_label, parent_id) = parent
+            .map_or((&open.label, &open.id), |at| (&self.stack[at].label, &self.stack[at].id));
+        let label = format!("{parent_label}({token})");
+        let mut node = grammar_section(start, open.kind, label.clone(), Some(parent_id.clone()), content_start, Some(code));
+        node.marker_range = Some(marker);
+        let id = node.id.clone();
+        self.nodes.push((node, depth));
+        (label, id)
     }
 
     fn child(&mut self, token: &str, start: usize, content_start: usize) {
-        let OpenSection { label: root, depth: root_depth, .. } = self.section.as_ref().unwrap();
+        let OpenSection { depth: root_depth, .. } = self.section.as_ref().unwrap();
         let readings = enum_readings(token).map(|reading| {
             reading.map(|(family, value)| {
                 let at = self.stack.iter().rposition(|frame| frame.family == family);
@@ -476,26 +472,19 @@ impl StructureState {
         });
         let (pass, family, value, at) = selected.unwrap_or((4, 0, "", None));
         let (parent, depth) = if pass == 4 {
-            (root.clone(), root_depth + 1)
+            (None, root_depth + 1)
         } else if let Some(index) = at {
             self.stack.truncate(index + 1);
             self.stack[index].value = value.to_owned();
-            (
-                index
-                    .checked_sub(1)
-                    .map_or_else(|| root.clone(), |parent| self.stack[parent].label.clone()),
-                root_depth + index + 1,
-            )
+            (index.checked_sub(1), root_depth + index + 1)
         } else {
-            let parent = self
-                .stack
-                .last()
-                .map_or_else(|| root.clone(), |frame| frame.label.clone());
+            let parent = self.stack.len().checked_sub(1);
             let depth = root_depth + self.stack.len() + 1;
             self.stack.push(EnumFrame {
                 family,
                 value: value.to_owned(),
                 label: String::new(),
+                id: String::new(),
             });
             (parent, depth)
         };
@@ -507,9 +496,11 @@ impl StructureState {
             (3, _) => "instrument_ladder_midcounter_open",
             _ => "instrument_ladder_violation",
         };
-        let label = self.emit_child(token, start, content_start, parent, depth, code);
+        let marker = ScalarRange { start, end: content_start };
+        let (label, id) = self.emit_child(token, start, marker, content_start, parent, depth, code);
         if pass < 4 {
-            self.stack.last_mut().unwrap().label = label;
+            let frame = self.stack.last_mut().unwrap();
+            (frame.label, frame.id) = (label, id);
         }
     }
 
@@ -518,6 +509,7 @@ impl StructureState {
         token: &str,
         next: Option<&str>,
         start: usize,
+        marker: usize,
         content_start: usize,
     ) {
         let (head, suffix) = token.split_once('.').unwrap_or((token, ""));
@@ -583,13 +575,10 @@ impl StructureState {
 
         self.stack.retain(|frame| frame.family <= family);
         let at = self.stack.iter().position(|frame| frame.family == family);
-        let OpenSection { label: root, depth: root_depth, .. } = self.section.as_ref().unwrap();
-        let root_depth = *root_depth;
+        let root_depth = self.section.as_ref().unwrap().depth;
         let parent = at
             .and_then(|index| index.checked_sub(1))
-            .and_then(|index| self.stack.get(index))
-            .or_else(|| self.stack.iter().rev().find(|frame| frame.family < family))
-            .map_or_else(|| root.clone(), |frame| frame.label.clone());
+            .or_else(|| self.stack.iter().rposition(|frame| frame.family < family));
         if let Some(index) = at {
             self.stack[index].value = value;
         } else {
@@ -597,21 +586,21 @@ impl StructureState {
                 family,
                 value,
                 label: String::new(),
+                id: String::new(),
             });
         }
-        let label = self.emit_child(
+        let marker = ScalarRange { start: marker, end: marker + utf16_len(token) + 2 };
+        let (label, id) = self.emit_child(
             token,
             start,
+            marker,
             content_start,
             parent,
             root_depth + usize::from(family),
             "legislation_child",
         );
-        self.stack
-            .iter_mut()
-            .find(|frame| frame.family == family)
-            .unwrap()
-            .label = label;
+        let frame = self.stack.iter_mut().find(|frame| frame.family == family).unwrap();
+        (frame.label, frame.id) = (label, id);
     }
 }
 
@@ -647,6 +636,7 @@ pub(super) fn enumerated_children(
     range: std::ops::Range<usize>,
     kind: &'static str,
     root: &str,
+    root_id: &str,
     content_start: usize,
     inline_at_root: bool,
     leading_label: Option<&str>,
@@ -665,6 +655,7 @@ pub(super) fn enumerated_children(
         Some(ChildMark {
             token,
             start: text.utf16_of_byte(bytes.start + prefix + close),
+            marker: text.utf16_of_byte(bytes.start + prefix),
             content_start: text.utf16_of_byte(bytes.start + prefix + content),
         })
     });
@@ -682,6 +673,7 @@ pub(super) fn enumerated_children(
             markers.push(ChildMark {
                 token,
                 start,
+                marker: content_start,
                 content_start: text.utf16_of_byte(text.byte_of_utf16(content_start) + at),
             });
         }
@@ -709,6 +701,7 @@ pub(super) fn enumerated_children(
                 markers.push(ChildMark {
                     token,
                     start: line_start,
+                    marker: text.utf16_of_byte(line_byte + line.len() - trimmed.len()),
                     content_start: text.utf16_of_byte(line_byte + line.len() - trimmed.len() + at),
                 });
             }
@@ -721,16 +714,16 @@ pub(super) fn enumerated_children(
     }
     markers.sort_by_key(|marker| marker.start);
     let mut state = StructureState {
-        section: Some(OpenSection { kind, label: root.to_owned(), depth: 0 }),
+        section: Some(OpenSection { kind, label: root.to_owned(), depth: 0, id: root_id.to_owned() }),
         ..Default::default()
     };
-    let parent = state.section.as_ref().unwrap().place(root);
     for index in 0..markers.len() {
         let marker = &markers[index];
         state.legislation_child(
             marker.token,
             markers.get(index + 1).map(|next| next.token),
             marker.start,
+            marker.marker,
             marker.content_start,
         );
     }
@@ -745,7 +738,6 @@ pub(super) fn enumerated_children(
         node.range.end = markers
             .get(next_marker)
             .map_or(range.end, |marker| marker.start);
-        node.parent_id = Some(parent.clone());
     }
     state.nodes.into_iter().map(|(node, _)| node).collect()
 }
@@ -878,14 +870,16 @@ pub(crate) fn detect_instrument_grammar(
         if let Some((kind, label, content_start, container)) = selected {
             let depth = usize::from(!container && state.container.is_some());
             let parent = (!container).then(|| state.container.clone()).flatten();
-            state.nodes.push((grammar_section(start, kind, label.clone(), parent, content_start, None), depth));
+            let section = grammar_section(start, kind, label.clone(), parent, content_start, None);
+            let id = section.id.clone();
+            state.nodes.push((section, depth));
             state.stack.clear();
             numbered = false;
             if container {
-                state.container = Some(format!("{}{label}", provision_mark(Some(kind))));
+                state.container = Some(id);
                 state.section = None;
             } else {
-                state.section = Some(OpenSection { kind, label, depth });
+                state.section = Some(OpenSection { kind, label, depth, id });
                 let content_byte = text.byte_of_utf16(content_start);
                 let inline = if content_byte <= line.byte_end {
                     &text.value[content_byte..line.byte_end]

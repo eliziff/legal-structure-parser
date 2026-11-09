@@ -4,10 +4,7 @@ use crate::{
     DOCUMENT_STRUCTURE_SCHEMA,
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, HashMap, HashSet},
-};
+use std::{borrow::Cow, collections::BTreeMap};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +90,10 @@ pub enum PrimaryRole {
     Date,
     DocketNumber,
     Court,
+    /// A party's role in a judgment's caption ("Appellant", "Respondents").
+    Party,
+    /// A line of the front matter that names what it gives ("DOCKET: C69420").
+    Labelled,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -114,8 +115,8 @@ pub struct StructureNode {
     pub extent: Vec<ScalarRange>,
     pub kind: NodeKind,
     pub range: ScalarRange,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub rendered_range: Option<ScalarRange>,
+    /// Where the node reads in the query text, as assembly writes it; in a rendered text (`rendered_text`), none where
+    /// it reads nowhere there.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rendered_ranges: Vec<ScalarRange>,
     /// Own logical content, before adding descendant section membership.
@@ -196,7 +197,6 @@ impl StructureNode {
             extent: Vec::new(),
             kind,
             range,
-            rendered_range: None,
             rendered_ranges: Vec::new(),
             rendered_membership: Vec::new(),
             origin_id: origin_id.into(),
@@ -315,51 +315,6 @@ fn object_members(object: &[u8]) -> Vec<&[u8]> {
     }
     members
 }
-
-pub fn node_depths<'a>(nodes: &'a [StructureNode]) -> HashMap<&'a str, usize> {
-    let parents = nodes
-        .iter()
-        .map(|node| (node.id.as_str(), node.parent_id.as_deref()))
-        .collect::<HashMap<_, _>>();
-    let mut seen = HashSet::new();
-    let mut depths = HashMap::with_capacity(nodes.len());
-    for node in nodes {
-        seen.clear();
-        let mut depth = 0;
-        let mut parent = node.parent_id.as_deref();
-        while let Some(id) = parent.filter(|id| seen.insert(*id)) {
-            depth += 1;
-            parent = parents.get(id).copied().flatten();
-        }
-        depths.insert(node.id.as_str(), depth);
-    }
-    depths
-}
-
-pub fn public_structure_label(value: &str) -> Cow<'_, str> {
-    if !value.contains('@') {
-        return Cow::Borrowed(value);
-    }
-    let mut result = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some(at) = rest.find('@') {
-        result.push_str(&rest[..at]);
-        let digits = rest[at + 1..]
-            .bytes()
-            .take_while(u8::is_ascii_digit)
-            .count();
-        if digits == 0 {
-            result.push('@');
-            rest = &rest[at + 1..];
-        } else {
-            rest = &rest[at + 1 + digits..];
-        }
-    }
-    result.push_str(rest);
-    Cow::Owned(result)
-}
-
-
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CitedAuthority {
@@ -559,11 +514,8 @@ impl DocumentStructure {
 
     /// Exact readable parts, kept separate from the envelope used to position a node.
     pub fn query_ranges<'a>(&self, node: &'a StructureNode) -> Cow<'a, [ScalarRange]> {
-        if !node.rendered_ranges.is_empty() {
+        if !node.rendered_ranges.is_empty() || self.rendered_text.is_some() {
             return Cow::Borrowed(&node.rendered_ranges);
-        }
-        if let Some(range) = node.rendered_range {
-            return Cow::Owned(vec![range]);
         }
         if (matches!(node.kind, NodeKind::Heading | NodeKind::Section)
             || node.role == Some(PrimaryRole::Heading)) && !node.extent.is_empty() {
@@ -575,19 +527,12 @@ impl DocumentStructure {
         Cow::Owned(vec![node.range])
     }
 
+    /// The envelope of the node's query ranges; a node that reads nowhere in a rendered text stands at its start.
     pub fn query_range(&self, node: &StructureNode) -> ScalarRange {
         let ranges = self.query_ranges(node);
-        ScalarRange {
-            start: ranges
-                .iter()
-                .map(|range| range.start)
-                .min()
-                .unwrap_or(node.range.start),
-            end: ranges
-                .iter()
-                .map(|range| range.end)
-                .max()
-                .unwrap_or(node.range.end),
+        match (ranges.iter().map(|range| range.start).min(), ranges.iter().map(|range| range.end).max()) {
+            (Some(start), Some(end)) => ScalarRange { start, end },
+            _ => ScalarRange { start: 0, end: 0 },
         }
     }
 }

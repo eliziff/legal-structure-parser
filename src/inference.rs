@@ -1,8 +1,5 @@
 use super::*;
-use std::{
-    collections::{hash_map::Entry, BTreeMap},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 macro_rules! cached_regex {
     ($name:ident, $pattern:expr) => {{

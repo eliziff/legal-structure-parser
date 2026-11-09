@@ -22,7 +22,7 @@ pub use legal_layout::{ScalarRange};
 pub mod text;
 
 pub use analysis::{install_structure_analysis, structure_analysis, NotePairing, StructureAnalysis, NOTE_PAIRING_ORIGIN};
-pub use assembly::{assemble_in_place, legislation_outline, write_levels};
+pub use assembly::{assemble_in_place, write_levels};
 pub use legal_layout::{ablated, CitationSpan, LayoutAnalysis, NumberingMarker, PARTY_ROLES};
 pub use definitions::{DefinedTerm, DefinitionOccurrence};
 pub use document::{

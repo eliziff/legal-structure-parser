@@ -461,11 +461,25 @@ pub fn provider_text_document_structure(
             crate::case_outline::add_case_nodes(&mut structure);
         }
         ProviderTextSourceKind::Laws => {
+            crate::statute_outline::add_statute_nodes(&mut structure);
             structure.cross_references = Some(crate::instrument::cross_reference_graph(&structure)?);
         }
     }
     structure.refresh_revision().expect("Typed document structure is serializable");
     Ok(structure)
+}
+
+/// A provider's text of a judgment or a statute read whole, for its outline: without the cross-references and the
+/// revision a served document takes, a statute's text run together read on its recovered lines (`statute_reading`).
+pub fn provider_text_outline_reading(text: &str, source_kind: ProviderTextSourceKind) -> Result<DocumentStructure, EngineError> {
+    match source_kind {
+        ProviderTextSourceKind::Cases => {
+            let mut structure = provider_text_reading(ProviderTextInput::new("", source_kind, text))?;
+            crate::case_outline::add_case_nodes(&mut structure);
+            Ok(structure)
+        }
+        ProviderTextSourceKind::Laws => crate::statute_outline::statute_reading(text),
+    }
 }
 
 /// A provider's text as derive reads it: the provider's own sections and pages and what inference finds, without the

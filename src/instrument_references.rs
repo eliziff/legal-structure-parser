@@ -456,44 +456,29 @@ struct ReferenceNode<'a> {
     place: String,
     aliases: &'a [String],
     anchor: Option<&'a str>,
-    /// Its parent's place.
-    parent_place: Option<String>,
+    /// Its parent, where that is a provision too.
+    parent: Option<usize>,
     kind: &'static str,
     start: usize,
     end: usize,
-    depth: usize,
+    level: usize,
 }
 
-fn reference_nodes<'a>(
-    graph: &'a DocumentStructure,
-    depths: &HashMap<&str, usize>,
-) -> Vec<ReferenceNode<'a>> {
-    let by_id = graph
-        .nodes
+fn reference_nodes(graph: &DocumentStructure) -> Vec<ReferenceNode<'_>> {
+    let sections = graph.nodes.iter().filter(|node| node.kind == NodeKind::Section && node.label.is_some()).collect::<Vec<_>>();
+    let by_id = sections.iter().enumerate().map(|(index, node)| (node.id.as_str(), index)).collect::<HashMap<_, _>>();
+    sections
         .iter()
-        .map(|node| (node.id.as_str(), node))
-        .collect::<HashMap<_, _>>();
-    graph
-        .nodes
-        .iter()
-        .filter(|node| node.kind == NodeKind::Section && node.label.is_some())
-        .map(|node| {
-            let parent_place = node
-                .parent_id
-                .as_deref()
-                .and_then(|id| by_id.get(id))
-                .and_then(|parent| parent.fragment());
-            ReferenceNode {
-                label: node.label.as_deref().unwrap(),
-                place: node.fragment().unwrap(),
-                aliases: node.aliases.as_deref().unwrap_or_default(),
-                anchor: node.anchor.as_deref(),
-                parent_place,
-                kind: reference_node_kind(node),
-                start: node.range.start,
-                end: node.range.end,
-                depth: depths[node.id.as_str()],
-            }
+        .map(|node| ReferenceNode {
+            label: node.label.as_deref().unwrap(),
+            place: node.fragment().unwrap(),
+            aliases: node.aliases.as_deref().unwrap_or_default(),
+            anchor: node.anchor.as_deref(),
+            parent: node.parent_id.as_deref().and_then(|id| by_id.get(id).copied()),
+            kind: reference_node_kind(node),
+            start: node.range.start,
+            end: node.range.end,
+            level: node.level.unwrap_or_default(),
         })
         .collect()
 }
@@ -513,34 +498,23 @@ fn node_keys(node: &ReferenceNode, place: String) -> Vec<String> {
 
 fn label_parent(locator: &str) -> Option<&str> {
     let body = locator.strip_prefix("sec")?;
-    let body = body.split('@').next().unwrap_or(body);
     body.ends_with(')').then_some(())?;
     let open = body.rfind('(')?;
     Some(&locator[..3 + open])
 }
 
 fn label_depth(locator: &str) -> usize {
-    locator.strip_prefix("sec").map_or(1, |body| {
-        1 + body.split('@').next().unwrap_or(body).matches('(').count()
-    })
+    locator.strip_prefix("sec").map_or(1, |body| 1 + body.matches('(').count())
 }
 
-fn containing_reference_node(
-    nodes: &[ReferenceNode],
-    ordered: &[usize],
-    by_place: &HashMap<&str, usize>,
-    position: usize,
-) -> Option<usize> {
+fn containing_reference_node(nodes: &[ReferenceNode], ordered: &[usize], position: usize) -> Option<usize> {
     let at = ordered.partition_point(|index| nodes[*index].start <= position);
     let mut node = at.checked_sub(1).map(|index| ordered[index]);
     while let Some(index) = node {
         if position < nodes[index].end {
             return Some(index);
         }
-        node = nodes[index]
-            .parent_place
-            .as_deref()
-            .and_then(|place| by_place.get(place).copied());
+        node = nodes[index].parent;
     }
     None
 }
@@ -561,7 +535,7 @@ fn reference_locator(reference: &ProvisionReference, source: Option<&ReferenceNo
     if !matches!(source.kind, "section" | "subsection") {
         return String::new();
     }
-    let head = source.label.split(['(', '@']).next().unwrap_or("");
+    let head = source.label.split('(').next().unwrap_or("");
     (!head.is_empty())
         .then(|| normalize_compact_numbered_section_locator(&format!("{head}{}", reference.label)))
         .unwrap_or_default()
@@ -575,20 +549,15 @@ pub(super) fn resolve_instrument_references(
     text: &ScalarText<'_>,
     graph: &DocumentStructure,
     references: Vec<ProvisionReference>,
-    depths: &HashMap<&str, usize>,
 ) -> Result<InstrumentCrossReferenceGraph, EngineError> {
     const MIN_ADDRESSABLE_NODES: usize = 3;
     const MIN_TARGET_REACH: f64 = 0.05;
     const MIN_TARGETS_FOR_REACH: usize = 3;
     const INTEGRITY_GATE: f64 = 0.5;
 
-    let nodes = reference_nodes(graph, depths);
-    let mut by_place = HashMap::with_capacity(nodes.len());
-    for (index, node) in nodes.iter().enumerate() {
-        by_place.entry(node.place.as_str()).or_insert(index);
-    }
+    let nodes = reference_nodes(graph);
     let mut ordered = (0..nodes.len()).collect::<Vec<_>>();
-    ordered.sort_by_key(|index| (nodes[*index].start, nodes[*index].depth));
+    ordered.sort_by_key(|index| (nodes[*index].start, nodes[*index].level));
 
     let mut targets =
         HashMap::<String, (Option<usize>, usize)>::with_capacity(nodes.len().saturating_mul(2));
@@ -655,7 +624,7 @@ pub(super) fn resolve_instrument_references(
     };
     let mut edges = Vec::with_capacity(references.len());
     for reference in references {
-        let source_index = containing_reference_node(&nodes, &ordered, &by_place, reference.start);
+        let source_index = containing_reference_node(&nodes, &ordered, reference.start);
         let source = source_index.map(|index| &nodes[index]);
         let locator = reference_locator(&reference, source);
         let mut edge = InstrumentCrossReferenceEdge {

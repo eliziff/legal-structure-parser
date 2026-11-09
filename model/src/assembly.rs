@@ -1,34 +1,9 @@
 //! Derive a structure's levels and extents from its recorded parents and membership.
-use crate::document::public_structure_label;
 use crate::{DocumentStructure, NodeKind, PrimaryRole, ScalarRange, StructureNode};
 use std::collections::{HashMap, VecDeque};
 
-fn envelope(ranges: &[ScalarRange]) -> Option<ScalarRange> {
-    Some(ScalarRange {
-        start: ranges.iter().map(|range| range.start).min()?,
-        end: ranges.iter().map(|range| range.end).max()?,
-    })
-}
-
 fn heading(node: &crate::StructureNode) -> bool {
     matches!(node.kind, NodeKind::Heading | NodeKind::Section) || node.role == Some(PrimaryRole::Heading)
-}
-
-/// The nodes a statute's readers address by label: its paragraphs and prose, pages, provisions, notes and tables.
-fn addressed(node: &StructureNode) -> bool {
-    matches!(node.kind, NodeKind::Paragraph | NodeKind::Prose | NodeKind::Page | NodeKind::Section | NodeKind::Footnote | NodeKind::Table
-        | NodeKind::Row | NodeKind::Cell)
-}
-
-/// A statute's labels as its readers address them, written once: each addressed node's label as printed, the occurrence
-/// that told a repeated label apart left off (`public_structure_label`). Its parents stay the provisions that hold it:
-/// a link's passage is read off them (`contained_leaf_blocks`).
-pub fn legislation_outline(nodes: &mut [StructureNode]) {
-    for node in nodes.iter_mut().filter(|node| addressed(node)) {
-        if let Some(label) = &node.label {
-            node.label = Some(public_structure_label(label).into_owned());
-        }
-    }
 }
 
 /// Each node's one-based level under its parents (`parent_id`), and the nodes from the roots down.
@@ -81,20 +56,13 @@ pub fn assemble_in_place(structure: &mut DocumentStructure) -> Result<(), String
         if same_text {
             return Ok(spans[i].clone());
         }
-        if !node.rendered_membership.is_empty() {
+        if !node.rendered_membership.is_empty() || node.rendered_ranges.is_empty() {
             return Ok(node.rendered_membership.clone());
-        }
-        if node.rendered_range == Some(ScalarRange { start: 0, end: 0 }) && node.rendered_ranges.is_empty() {
-            return Ok(Vec::new());
         }
         if heading(node) {
             return Err("Rendered sections require their own logical membership".to_owned());
         }
-        if !node.rendered_ranges.is_empty() {
-            return Ok(node.rendered_ranges.clone());
-        }
-        node.rendered_range.map(|range| vec![range])
-            .ok_or_else(|| "Missing source-to-manuscript membership".to_owned())
+        Ok(node.rendered_ranges.clone())
     }).collect::<Result<Vec<_>, String>>()?;
     let mut rendered_extents = own_rendered.clone();
     for i in order.into_iter().rev() {
@@ -112,7 +80,6 @@ pub fn assemble_in_place(structure: &mut DocumentStructure) -> Result<(), String
         node.extent = std::mem::take(&mut spans[i]);
         node.rendered_ranges = if heading(node) { rendered_extents[i].clone() } else { own_rendered[i].clone() };
         node.rendered_membership = own_rendered[i].clone();
-        node.rendered_range = Some(envelope(&node.rendered_ranges).unwrap_or(ScalarRange { start: 0, end: 0 }));
     }
     Ok(())
 }

@@ -69,8 +69,8 @@ pub fn document_fingerprint(document: &DocumentStructure) -> DocumentFingerprint
     let rendered_ranges = document
         .nodes
         .iter()
-        .map(|node| node.rendered_range)
-        .collect::<Vec<Option<ScalarRange>>>();
+        .map(|node| &node.rendered_ranges)
+        .collect::<Vec<&Vec<ScalarRange>>>();
     let nodes = document
         .nodes
         .iter()
