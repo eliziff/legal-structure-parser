@@ -256,6 +256,14 @@ pub(super) fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usiz
                 continue;
             }
             let heading = &line.text[..at];
+            // A number after a locator's word is the place it names ("on page 1.", "at para 4."), no paragraph's.
+            let word = heading.trim_end().rsplit(char::is_whitespace).next().unwrap_or_default();
+            let located = word.chars().any(char::is_alphabetic)
+                && ["page", "paragraph", "line", "footnote"].iter().any(|kind| legal_locator::parse_ordinal(kind, &format!("{word} 1")).is_some());
+            if located {
+                at = end;
+                continue;
+            }
             let formal = (style == MarkerStyle::Bracket || !heading.contains('.')) && formal_heading(heading);
             let sentence = style == MarkerStyle::Bracket
                 && sentence_heading(heading, &text.value[line.byte_start + end..]);
