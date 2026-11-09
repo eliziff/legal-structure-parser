@@ -33,8 +33,8 @@ pub use passage_links::{cited_passage_link, courtlistener_link, law_web_link, Co
     SourceLinkRequest, VerifiedPdf};
 #[cfg(feature = "document-query")]
 pub use quote_location::{
-    corrected_quote, document_quote_blocks, editorial_quote, locate_quotes_in, locate_source_quotes, locate_source_quotes_kept, quote_text_comparison,
-    verbatim_repair, LocatedQuote, QuoteBlockInput, QuoteLocator, QuoteSource, QuoteComparison, QuoteLocation, QuoteToLocate,
+    corrected_quote, editorial_quote, locate_document_quotes, quote_text_comparison, verbatim_repair, CitedPinpoint, LocatedQuote,
+    QuoteLocator, QuoteSource, QuoteComparison, QuoteLocation, QuoteToLocate,
 };
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
 pub use printed_statute::statute_currency;

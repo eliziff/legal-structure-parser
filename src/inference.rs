@@ -137,6 +137,14 @@ fn decimal_prefix(value: &str, maximum: usize) -> Option<(&str, usize)> {
 }
 
 pub(super) fn inferred_blocks(evidence: &Evidence, text: &ScalarText<'_>) -> Vec<StructureNode> {
+    let mut blocks = profile_blocks(evidence, text);
+    if !blocks.iter().chain(&evidence.structure.nodes).any(|node| node.kind == NodeKind::Page) {
+        blocks.extend(marked_pages(text));
+    }
+    blocks
+}
+
+fn profile_blocks(evidence: &Evidence, text: &ScalarText<'_>) -> Vec<StructureNode> {
     match evidence.profile {
         DetectionProfile::Legislation => {
             let mut blocks = detect_legislation(

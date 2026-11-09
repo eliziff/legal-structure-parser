@@ -11,8 +11,6 @@ const RANKED: [&str; 8] = ["text", "provision", "list_item", "heading", "quote",
 const WORD_OUTER: [&str; 7] = ["PART", "PARTIE", "BOOK", "LIVRE", "TITLE", "TITRE", "VOLUME"];
 const WORD_INNER: [&str; 16] = ["ARTICLE", "CHAPTER", "CHAPITRE", "DIVISION", "SECTION", "SCHEDULE", "ANNEX", "ANNEXE",
     "APPENDIX", "TAB", "RULE", "RÈGLE", "REGLE", "CLAUSE", "FORM", "FORMULE"];
-const ROMANS: [&str; 28] = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii", "xiii", "xiv", "xv",
-    "xvi", "xvii", "xviii", "xix", "xx", "xxi", "xxii", "xxiii", "xxiv", "xxv", "xxx", "xl", "l"];
 
 struct Patterns {
     sec: Regex,
@@ -92,7 +90,8 @@ pub fn numbering(text: &str, open_letter: Option<char>) -> String {
             }
             return numeral.into();
         }
-        if ROMANS.contains(&low.as_str()) {
+        // (A numeral counts to 25, or is 30, 40 or 50.)
+        if legal_structure_model::layout::roman_value(&low).is_some_and(|value| value <= 25 || matches!(value, 30 | 40 | 50)) {
             return numeral.into();
         }
     }

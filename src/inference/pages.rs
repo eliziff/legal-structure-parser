@@ -117,6 +117,23 @@ pub(super) fn detect_pages(
     blocks
 }
 
+/// A text no other reading pages that prints "[page LABEL]" lines has a page from each such line to the next, its
+/// printed label the marker's.
+pub(super) fn marked_pages(text: &ScalarText<'_>) -> Vec<StructureNode> {
+    let mut byte = 0;
+    let starts = text.value.split_inclusive('\n').filter_map(|line| {
+        let start = byte;
+        byte += line.len();
+        crate::journal::page_marker(line).map(|label| (text.utf16_of_byte(start), label))
+    }).collect::<Vec<_>>();
+    starts.iter().enumerate().map(|(index, &(start, label))| {
+        let end = starts.get(index + 1).map_or(text.utf16_len(), |next| next.0);
+        let mut page = crate::labelled_node(NodeKind::Page, label.to_owned(), start, end);
+        page.aliases = Some(vec![label.to_owned()]);
+        page
+    }).collect()
+}
+
 /// Form feeds are the source's own page breaks, so a physical page no printed number marks is
 /// still a page. It takes the number the printed pages count it to, else its place in the text.
 pub(super) fn form_feed_pages(evidence: &Evidence, text: &ScalarText<'_>, blocks: &[StructureNode]) -> Vec<StructureNode> {

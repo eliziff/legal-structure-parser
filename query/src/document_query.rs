@@ -1,4 +1,4 @@
-use legal_locator::{literal_page_marker, normalize_section_locator, parse_ordinal};
+use legal_locator::{normalize_section_locator, parse_ordinal};
 use crate::{
     text::{equal_fold, trim_javascript_whitespace as js_trim, JS_WHITESPACE_CLASS as JS_WS},
     AuthoritativeTableCell, Derivation, DetectionProfile,
@@ -122,21 +122,6 @@ pub struct DocumentTextWindow<'a> {
     pub range_end_line: Option<usize>,
 }
 
-struct PageSpan {
-    pdf_page: Option<usize>,
-    printed_labels: Vec<String>,
-    ranges: Vec<ScalarRange>,
-    start: usize,
-    end: usize,
-}
-
-enum PageLookup {
-    Found(Vec<ScalarRange>),
-    Ambiguous,
-    NoPages,
-    NotFound,
-}
-
 enum DocumentAddress {
     Section { locator: String },
     Page { spec: String },
@@ -213,11 +198,6 @@ enum ProjectionOrder {
     Native,
 }
 
-#[derive(Clone, Copy)]
-struct BlockPosition {
-    node: usize,
-}
-
 fn projection_order(profile: Option<DetectionProfile>) -> ProjectionOrder {
     match profile {
         Some(DetectionProfile::CaseRootedComplete) => ProjectionOrder::Case,
@@ -243,11 +223,6 @@ pub(crate) fn queried_as(node: &StructureNode, kind: NodeKind) -> bool {
     node.kind == kind || kind == NodeKind::Paragraph && node.kind == NodeKind::Prose
 }
 
-/// A served node's label as the document prints it (none for prose).
-fn position_label<'a>(document: &'a DocumentStructure, position: &BlockPosition) -> &'a str {
-    document.nodes[position.node].label.as_deref().unwrap_or_default()
-}
-
 /// Whether a locator names a node by its label: a provision by its place, its kind's mark and its label ("sec5(2)",
 /// "part2", as a citation's locator reads: `normalize_section_locator`), any other node by its label.
 fn labelled(node: &StructureNode, label: &str) -> bool {
@@ -258,33 +233,44 @@ fn labelled(node: &StructureNode, label: &str) -> bool {
     }
 }
 
-fn projected_positions(document: &DocumentStructure) -> Vec<BlockPosition> {
+/// Whether `label` names a node: a prose block by the label its publisher anchors it by, exactly; any other by its label
+/// (`labelled`) or an alias, a provision's also under its kind's mark or as it is ("section 5(2)").
+fn names(node: &StructureNode, label: &str) -> bool {
+    let own = if node.kind == NodeKind::Prose && node.label.is_some() && node.label == node.anchor {
+        node.label.as_deref() == Some(label)
+    } else {
+        labelled(node, label)
+    };
+    let mark = if node.kind == NodeKind::Section { provision_mark(node.locator_kind.as_deref()) } else { "" };
+    own || node.aliases.as_deref().unwrap_or_default().iter()
+        .any(|alias| equal_fold(alias, label) || !mark.is_empty() && equal_fold(&format!("{mark}{alias}"), label))
+}
+
+/// The indexes of the nodes the query serves, in its order.
+fn projected_positions(document: &DocumentStructure) -> Vec<usize> {
     let mut positions = document
         .nodes
         .iter()
         .enumerate()
         .filter(|(_, node)| projected(node) && (node.kind == NodeKind::Prose || node.label.is_some()))
-        .map(|(node, _)| BlockPosition { node })
+        .map(|(index, _)| index)
         .collect::<Vec<_>>();
+    let key = |index: &usize| {
+        let node = &document.nodes[*index];
+        (document.query_range(node), node.label.as_deref().unwrap_or_default())
+    };
     match projection_order(document.profile) {
-        ProjectionOrder::StablePosition => positions.sort_by_key(|position| {
-            let range = document.query_range(&document.nodes[position.node]);
+        ProjectionOrder::StablePosition => positions.sort_by_key(|index| {
+            let (range, _) = key(index);
             (range.start, range.end)
         }),
-        ProjectionOrder::Position => positions.sort_by(|left, right| {
-            let left_range = document.query_range(&document.nodes[left.node]);
-            let right_range = document.query_range(&document.nodes[right.node]);
-            (left_range.start, left_range.end, position_label(document, left))
-                .cmp(&(right_range.start, right_range.end, position_label(document, right)))
+        ProjectionOrder::Position => positions.sort_by_key(|index| {
+            let (range, label) = key(index);
+            (range.start, range.end, label)
         }),
-        ProjectionOrder::Legislation => positions.sort_by(|left, right| {
-            let left_range = document.query_range(&document.nodes[left.node]);
-            let right_range = document.query_range(&document.nodes[right.node]);
-            left_range
-                .start
-                .cmp(&right_range.start)
-                .then_with(|| right_range.end.cmp(&left_range.end))
-                .then_with(|| position_label(document, left).cmp(position_label(document, right)))
+        ProjectionOrder::Legislation => positions.sort_by_key(|index| {
+            let (range, label) = key(index);
+            (range.start, std::cmp::Reverse(range.end), label)
         }),
         ProjectionOrder::Case | ProjectionOrder::Native => {}
     }
@@ -316,7 +302,7 @@ pub struct DocumentQuery {
     searched: AtomicBool,
     coordinates: OnceLock<crate::text::ScalarCoordinates>,
     lines: OnceLock<Vec<[usize; 3]>>,
-    blocks: OnceLock<Vec<BlockPosition>>,
+    blocks: OnceLock<Vec<usize>>,
     search: OnceLock<search::SearchIndex>,
     replay: OnceLock<text_fragment::ReplayIndex>,
     normalized_fragment_text: OnceLock<String>,
@@ -369,7 +355,7 @@ impl DocumentQuery {
         }
     }
 
-    fn positions<'a>(&'a self, document: &DocumentStructure) -> &'a [BlockPosition] {
+    fn positions<'a>(&'a self, document: &DocumentStructure) -> &'a [usize] {
         self.blocks.get_or_init(|| projected_positions(document))
     }
 
@@ -780,13 +766,8 @@ impl DocumentQuery {
             .collect()
     }
 
-    fn materialize<'a>(
-        &self,
-        document: &'a DocumentStructure,
-        position: &BlockPosition,
-        text: &ScalarText<'_>,
-    ) -> Passage<'a> {
-        let reading = document.reading(&document.nodes[position.node]);
+    fn materialize<'a>(&self, document: &'a DocumentStructure, index: usize, text: &ScalarText<'_>) -> Passage<'a> {
+        let reading = document.reading(&document.nodes[index]);
         Passage { text: crate::text::membership_text_utf16(text, &reading.ranges), reading }
     }
 
@@ -798,84 +779,43 @@ impl DocumentQuery {
     ) -> impl Iterator<Item = &'a StructureNode> + 'a {
         self.positions(document)
             .iter()
-            .map(|position| &document.nodes[position.node])
+            .map(|&index| &document.nodes[index])
             .filter(move |node| kind.is_none_or(|kind| queried_as(node, kind)))
     }
 
-    fn position_matches(
-        &self,
-        document: &DocumentStructure,
-        position: &BlockPosition,
-        label: &str,
-    ) -> bool {
-        let node = &document.nodes[position.node];
-        let matches_label =
-            if node.kind == NodeKind::Prose && node.label.is_some() && node.label == node.anchor {
-                position_label(document, position) == label
-            } else {
-                labelled(node, label)
-            };
-        // (A provision's alias names it as its label does, under its kind's mark, or as it is: "section 5(2)".)
-        let mark = if node.kind == NodeKind::Section { provision_mark(node.locator_kind.as_deref()) } else { "" };
-        matches_label
-            || node
-                .aliases
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .any(|alias| equal_fold(alias, label) || !mark.is_empty() && equal_fold(&format!("{mark}{alias}"), label))
+    /// The indexes of the nodes the query serves as `kind`, in its order.
+    fn served(&self, document: &DocumentStructure, kind: NodeKind) -> Vec<usize> {
+        self.positions(document).iter().copied().filter(|&index| queried_as(&document.nodes[index], kind)).collect()
     }
 
-    fn position_resolves(
-        &self,
-        document: &DocumentStructure,
-        position: &BlockPosition,
-        label: &str,
-        kind: Option<NodeKind>,
-    ) -> bool {
-        self.position_matches(document, position, label)
-            || (document.nodes[position.node]
-                .anchor
-                .as_deref()
-                .is_some_and(|anchor| anchor == label)
+    fn resolves(&self, document: &DocumentStructure, node: &StructureNode, label: &str, kind: Option<NodeKind>) -> bool {
+        names(node, label)
+            || (node.anchor.as_deref() == Some(label)
                 // Publisher IDs and legal labels are separate namespaces: a
                 // displayed footnote 1 can have browser ID fn0, while fn1 is
                 // another footnote's ID. A known legal label in the requested
                 // kind takes precedence; untyped graph lookup considers all kinds.
-                && !self.positions(document).iter().any(|candidate| {
-                    kind.is_none_or(|kind| queried_as(&document.nodes[candidate.node], kind))
-                        && self.position_matches(document, candidate, label)
-                }))
+                && !self.blocks(document, kind).any(|candidate| names(candidate, label)))
     }
 
-    fn unique_position<'a>(
-        &'a self,
-        document: &DocumentStructure,
-        label: &str,
-        kind: Option<NodeKind>,
-    ) -> Option<&'a BlockPosition> {
-        let mut matches = self
-            .positions(document)
-            .iter()
-            .filter(|position| kind.is_none_or(|kind| queried_as(&document.nodes[position.node], kind)))
-            .filter(|position| self.position_resolves(document, position, label, kind));
+    fn unique_position(&self, document: &DocumentStructure, label: &str, kind: Option<NodeKind>) -> Option<usize> {
+        let mut matches = self.positions(document).iter().copied().filter(|&index| {
+            let node = &document.nodes[index];
+            kind.is_none_or(|kind| queried_as(node, kind)) && self.resolves(document, node, label, kind)
+        });
         let found = matches.next()?;
         matches.next().is_none().then_some(found)
     }
 
-    fn subtree_positions<'a>(
-        &'a self,
-        document: &DocumentStructure,
-        seed: &BlockPosition,
-    ) -> Vec<&'a BlockPosition> {
+    fn subtree_positions(&self, document: &DocumentStructure, seed: usize) -> Vec<usize> {
         let by_id = document.nodes.iter().enumerate()
             .map(|(index, node)| (node.id.as_str(), index)).collect::<HashMap<_, _>>();
-        self.positions(document).iter().filter(|position| {
-            let mut current = Some(position.node);
+        self.positions(document).iter().copied().filter(|&position| {
+            let mut current = Some(position);
             let mut seen = HashSet::new();
             while let Some(index) = current {
                 if !seen.insert(index) { break; }
-                if index == seed.node { return true; }
+                if index == seed { return true; }
                 current = document.nodes[index].parent_id.as_deref()
                     .and_then(|parent| by_id.get(parent).copied());
             }
@@ -898,23 +838,15 @@ impl DocumentQuery {
         locator: &'a str,
     ) -> Cow<'a, str> {
         let exact = js_trim(locator);
-        if self
-            .positions(document)
-            .iter()
-            .filter(|position| queried_as(&document.nodes[position.node], kind))
-            .any(|position| labelled(&document.nodes[position.node], exact))
-        {
+        if self.blocks(document, Some(kind)).any(|node| labelled(node, exact)) {
             return Cow::Borrowed(exact);
         }
         let normalized = normalize_document_locator(kind, locator);
         if !normalized.is_empty() {
             return Cow::Owned(normalized);
         }
-        self.positions(document)
-            .iter()
-            .filter(|position| queried_as(&document.nodes[position.node], kind))
-            .any(|position| {
-                let node = &document.nodes[position.node];
+        self.blocks(document, Some(kind))
+            .any(|node| {
                 node.anchor
                     .as_deref()
                     .is_some_and(|anchor| equal_fold(anchor, exact))
@@ -927,6 +859,29 @@ impl DocumentQuery {
             })
             .then_some(Cow::Borrowed(exact))
             .unwrap_or_default()
+    }
+
+    /// The lookup of `selected`, one of `available`, with `context` of its neighbours each side.
+    fn found<'a>(
+        &self,
+        document: &'a DocumentStructure,
+        requested_label: String,
+        available: &[usize],
+        selected: usize,
+        context_blocks: usize,
+    ) -> DocumentLookup<'a> {
+        let order = available.iter().position(|&candidate| candidate == selected).unwrap_or(0);
+        let context = context(context_blocks);
+        let text = self.text(document);
+        let passages = |indexes: &[usize]| indexes.iter().map(|&index| self.materialize(document, index, &text)).collect();
+        DocumentLookup {
+            status: DocumentLookupStatus::Found,
+            requested_label,
+            matches: vec![document.nodes[selected].label.clone().unwrap_or_default()],
+            block: Some(self.materialize(document, selected, &text)),
+            before: passages(&available[order.saturating_sub(context)..order]),
+            after: passages(&available[order + 1..(order + 1 + context).min(available.len())]),
+        }
     }
 
     fn lookup_label<'a>(
@@ -947,27 +902,18 @@ impl DocumentQuery {
         if requested_label.is_empty() {
             return empty(DocumentLookupStatus::Unavailable);
         }
-        let mut available = Vec::new();
-        let mut selected = None;
-        let mut ambiguous = false;
-        for position in self.positions(document) {
-            if !queried_as(&document.nodes[position.node], kind) {
-                continue;
-            }
-            available.push(position);
-            if self.position_resolves(document, position, requested_label, Some(kind)) {
-                ambiguous |= selected.replace(position).is_some();
-            }
-        }
+        let available = self.served(document, kind);
         if available.is_empty() {
             return empty(DocumentLookupStatus::Unavailable);
         }
-        let selected = if ambiguous { None } else { selected };
-        let Some(selected) = selected else {
+        let mut resolved = available.iter().copied()
+            .filter(|&index| self.resolves(document, &document.nodes[index], requested_label, Some(kind)));
+        let (Some(selected), None) = (resolved.next(), resolved.next()) else {
             let matches = available
                 .iter()
-                .filter(|position| self.position_matches(document, position, requested_label))
-                .map(|position| position_label(document, position).to_owned())
+                .map(|&index| &document.nodes[index])
+                .filter(|node| names(node, requested_label))
+                .map(|node| node.label.clone().unwrap_or_default())
                 .collect::<Vec<_>>();
             return DocumentLookup {
                 status: if matches.is_empty() {
@@ -979,26 +925,7 @@ impl DocumentQuery {
                 ..empty(DocumentLookupStatus::NotFound)
             };
         };
-        let order = available
-            .iter()
-            .position(|candidate| candidate.node == selected.node)
-            .unwrap_or(0);
-        let context = context(context_blocks);
-        let text = self.text(document);
-        DocumentLookup {
-            status: DocumentLookupStatus::Found,
-            requested_label: requested_label.to_owned(),
-            matches: vec![position_label(document, selected).to_owned()],
-            block: Some(self.materialize(document, selected, &text)),
-            before: available[order.saturating_sub(context)..order]
-                .iter()
-                .map(|position| self.materialize(document, position, &text))
-                .collect(),
-            after: available[order + 1..(order + 1 + context).min(available.len())]
-                .iter()
-                .map(|position| self.materialize(document, position, &text))
-                .collect(),
-        }
+        self.found(document, requested_label.to_owned(), &available, selected, context_blocks)
     }
 
     pub fn read_range<'a>(
@@ -1009,18 +936,11 @@ impl DocumentQuery {
         to: &str,
         context_blocks: usize,
     ) -> Option<DocumentRangeLookup<'a>> {
-        let available = self
-            .positions(document)
-            .iter()
-            .filter(|position| queried_as(&document.nodes[position.node], kind))
-            .collect::<Vec<_>>();
+        let available = self.served(document, kind);
         let resolve = |locator: &str| {
             let label = self.requested_label(document, kind, locator);
-            let position = self
-                .unique_position(document, &label, Some(kind))?;
-            available
-                .iter()
-                .position(|candidate| candidate.node == position.node)
+            let index = self.unique_position(document, &label, Some(kind))?;
+            available.iter().position(|&candidate| candidate == index)
         };
         let first_index = resolve(from)?;
         let last_index = resolve(to)?;
@@ -1046,13 +966,9 @@ impl DocumentQuery {
         })
     }
 
-    fn contained_leaf_blocks<'a>(
-        &'a self,
-        document: &DocumentStructure,
-        blocks: &[&'a BlockPosition],
-    ) -> Vec<&'a BlockPosition> {
+    fn contained_leaf_blocks(&self, document: &DocumentStructure, blocks: &[usize]) -> Vec<usize> {
         // (Prose is read among paragraphs, as paragraphs are asked for.)
-        let Some(kind) = blocks.first().map(|position| match document.nodes[position.node].kind {
+        let Some(kind) = blocks.first().map(|&index| match document.nodes[index].kind {
             NodeKind::Prose => NodeKind::Paragraph,
             kind => kind,
         }) else {
@@ -1064,7 +980,7 @@ impl DocumentQuery {
         }
         let mut ranges = blocks
             .iter()
-            .flat_map(|position| document.query_ranges(&document.nodes[position.node]).into_owned())
+            .flat_map(|&index| document.query_ranges(&document.nodes[index]).into_owned())
             .map(|range| (range.start, range.end))
             .collect::<Vec<_>>();
         ranges.sort_unstable();
@@ -1078,19 +994,17 @@ impl DocumentQuery {
         }
         let ranges = covered;
         let contained = self
-            .positions(document)
-            .iter()
-            .filter(|position| {
-                if !queried_as(&document.nodes[position.node], kind) {
-                    return false;
-                }
-                let range = document.query_range(&document.nodes[position.node]);
+            .served(document, kind)
+            .into_iter()
+            .filter(|&index| {
+                let node = &document.nodes[index];
+                let range = document.query_range(node);
                 // A point at a paragraph boundary is not contained prose from
                 // the adjacent paragraph. Keep it when explicitly selected.
                 if range.start == range.end {
-                    return blocks.iter().any(|block| block.node == position.node);
+                    return blocks.contains(&index);
                 }
-                document.query_ranges(&document.nodes[position.node]).iter().all(|part| {
+                document.query_ranges(node).iter().all(|part| {
                     let count = ranges.partition_point(|(start, _)| *start <= part.start);
                     count > 0 && ranges[count - 1].1 >= part.end
                 })
@@ -1101,36 +1015,42 @@ impl DocumentQuery {
         }
         // Range membership determines eligibility; only source parent edges
         // determine ancestry, including through unprojected intermediate nodes.
+        // An ancestor whose own words stop where its first subprovision opens
+        // ("(3) The Minister may" over "(a) …") is a leaf of its own.
         let by_id = document.nodes.iter().enumerate()
             .map(|(index, node)| (node.id.as_str(), index)).collect::<HashMap<_, _>>();
-        let eligible = contained.iter().map(|position| position.node).collect::<HashSet<_>>();
+        let eligible = contained.iter().copied().collect::<HashSet<_>>();
         let mut parents = HashSet::new();
-        for candidate in &contained {
-            let mut current = document.nodes[candidate.node].parent_id.as_deref()
+        for &candidate in &contained {
+            let held = document.query_range(&document.nodes[candidate]);
+            let mut current = document.nodes[candidate].parent_id.as_deref()
                 .and_then(|parent| by_id.get(parent).copied());
-            let mut seen = HashSet::from([candidate.node]);
+            let mut seen = HashSet::from([candidate]);
             while let Some(index) = current {
                 if !seen.insert(index) { break; }
-                if eligible.contains(&index) { parents.insert(index); }
+                if eligible.contains(&index) && document.query_ranges(&document.nodes[index]).iter()
+                    .any(|range| range.start <= held.start && held.end <= range.end) {
+                    parents.insert(index);
+                }
                 current = document.nodes[index].parent_id.as_deref()
                     .and_then(|parent| by_id.get(parent).copied());
             }
         }
         contained
             .into_iter()
-            .filter(|candidate| !parents.contains(&candidate.node))
+            .filter(|candidate| !parents.contains(candidate))
             .collect()
     }
 
     fn materialize_leaf_blocks<'a>(
         &self,
         document: &'a DocumentStructure,
-        blocks: &[&BlockPosition],
+        blocks: &[usize],
         text: &ScalarText<'_>,
     ) -> Vec<Passage<'a>> {
         self.contained_leaf_blocks(document, blocks)
             .into_iter()
-            .map(|position| self.materialize(document, position, text))
+            .map(|index| self.materialize(document, index, text))
             .filter(|unit| !unit.text.is_empty() || unit.reading.node.anchor.is_some())
             .collect()
     }
@@ -1141,51 +1061,67 @@ impl DocumentQuery {
         start: usize,
         end: usize,
     ) -> Option<Passage<'a>> {
-        let position = self
+        let index = self
             .positions(document)
             .iter()
-            .filter_map(|position| {
-                let ranges = document.query_ranges(&document.nodes[position.node]);
+            .filter_map(|&index| {
+                let ranges = document.query_ranges(&document.nodes[index]);
                 ranges.iter().any(|range| range.start <= start && range.end >= end)
-                    .then_some((position, ranges.iter().map(|range| range.end - range.start).sum::<usize>()))
+                    .then_some((index, ranges.iter().map(|range| range.end - range.start).sum::<usize>()))
             })
             .min_by_key(|(_, length)| *length)?
             .0;
-        Some(self.materialize(document, position, &self.text(document)))
+        Some(self.materialize(document, index, &self.text(document)))
     }
 
-    fn page_map(&self, document: &DocumentStructure) -> Vec<PageSpan> {
-        let mut pages = Vec::new();
-        for position in self.positions(document).iter().filter(|position| {
-            document.nodes[position.node].kind == NodeKind::Page
-        }) {
-            let node = &document.nodes[position.node];
-            let range = document.query_range(node);
-            let pdf_page = node.page_indexes.first().map(|page| *page + 1);
-            let printed_labels = node
-                .aliases
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .map(|alias| js_trim(alias))
-                .filter(|alias| !alias.is_empty())
-                .map(str::to_owned)
-                .collect();
-            pages.push(PageSpan {
-                pdf_page,
-                printed_labels,
-                ranges: document.query_ranges(node).into_owned(),
-                start: range.start,
-                end: range.end,
-            });
+    /// The page that holds `start..end`, else the first that shares any of it.
+    pub fn page_at<'a>(&'a self, document: &'a DocumentStructure, start: usize, end: usize) -> Option<legal_structure_model::NodeReading<'a>> {
+        let page = |holds: &dyn Fn(&ScalarRange) -> bool| self.blocks(document, Some(NodeKind::Page))
+            .find(|page| document.query_ranges(page).iter().any(holds));
+        page(&|range| range.start <= start && range.end >= end)
+            .or_else(|| page(&|range| range.start < end && range.end > start))
+            .map(|page| document.reading(page))
+    }
+
+    /// The page `requested` names ("pdf:3", "printed:iv", "12"): a PDF page by its number, a printed page by its
+    /// printed label (an alias); a bare number names the PDF page, or the printed page of a page no PDF numbers.
+    fn page_address(&self, document: &DocumentStructure, requested: &str) -> DocumentAddressResolution {
+        static QUALIFIED: OnceLock<Regex> = OnceLock::new();
+        let raw = js_trim(requested);
+        let qualified = regex_parts(
+            &[r"(?iu)^(pdf|printed)", JS_WS, r"*[:=]", JS_WS, r"*(.+)$"],
+            &QUALIFIED,
+        )
+        .captures(raw);
+        let wanted = js_trim(qualified.as_ref().map_or(raw, |capture| &capture[2]));
+        let pdf = qualified.as_ref().map_or_else(
+            || !wanted.is_empty() && wanted.len() <= 6 && wanted.bytes().all(|byte| byte.is_ascii_digit()),
+            |capture| capture[1].eq_ignore_ascii_case("pdf"),
+        );
+        let wanted_pdf = if !pdf {
+            None
+        } else if wanted == "null" {
+            Some(None)
+        } else {
+            wanted.parse::<usize>().ok().filter(|value| value.to_string() == wanted).map(Some)
+        };
+        let printed = |page: &StructureNode| {
+            !wanted.is_empty() && page.aliases.iter().flatten().any(|alias| equal_fold(js_trim(alias), wanted))
+        };
+        let mut pages = self.blocks(document, Some(NodeKind::Page)).peekable();
+        if pages.peek().is_none() {
+            return DocumentAddressResolution::NoPages;
         }
-        pages.sort_by_key(|page| page.start);
-        if pages.is_empty() {
-            return page_map_from_markers_with_scalar(document.query_text(), || {
-                self.text(document)
-            });
+        let mut matches = pages.filter(|page| match page.page_indexes.first().map(|index| index + 1) {
+            None if pdf && qualified.is_none() => printed(page),
+            pdf_page if pdf => wanted_pdf == Some(pdf_page),
+            _ => printed(page),
+        });
+        match (matches.next(), matches.next()) {
+            (Some(page), None) => DocumentAddressResolution::Found { spans: document.query_ranges(page).into_owned() },
+            (Some(_), Some(_)) => DocumentAddressResolution::Ambiguous,
+            (None, _) => DocumentAddressResolution::NotFound,
         }
-        pages
     }
 
     /// Resolve an existing node identity without crossing display-label namespaces.
@@ -1195,33 +1131,17 @@ impl DocumentQuery {
         selector: &GraphScopeSeed,
         context_blocks: usize,
     ) -> DocumentLookup<'a> {
-        let GraphScopeSeed::NodeId(id) = selector else {
-            let GraphScopeSeed::Locator(locator) = selector else { unreachable!() };
-            return self.structure_block(document, locator, context_blocks);
+        let id = match selector {
+            GraphScopeSeed::NodeId(id) => id,
+            GraphScopeSeed::Locator(locator) => return self.structure_block(document, locator, context_blocks),
         };
-        let positions = self.positions(document);
-        let selected = positions.iter().find(|position| document.nodes[position.node].id == *id);
-        let Some(selected) = selected else {
+        let Some(selected) = self.positions(document).iter().copied().find(|&index| document.nodes[index].id == *id) else {
             return DocumentLookup { status: DocumentLookupStatus::NotFound,
                 requested_label: id.clone(), matches: Vec::new(), block: None,
                 before: Vec::new(), after: Vec::new() };
         };
-        let kind = document.nodes[selected.node].kind;
-        let available = positions.iter().filter(|position|
-            queried_as(&document.nodes[position.node], kind)).collect::<Vec<_>>();
-        let index = available.iter().position(|position| position.node == selected.node).unwrap();
-        let context = context(context_blocks);
-        let text = self.text(document);
-        DocumentLookup {
-            status: DocumentLookupStatus::Found,
-            requested_label: id.clone(),
-            matches: vec![position_label(document, selected).to_owned()],
-            block: Some(self.materialize(document, selected, &text)),
-            before: available[index.saturating_sub(context)..index].iter()
-                .map(|position| self.materialize(document, position, &text)).collect(),
-            after: available[index + 1..(index + 1 + context).min(available.len())].iter()
-                .map(|position| self.materialize(document, position, &text)).collect(),
-        }
+        let available = self.served(document, document.nodes[selected].kind);
+        self.found(document, id.clone(), &available, selected, context_blocks)
     }
 
     pub fn structure_block<'a>(
@@ -1264,8 +1184,8 @@ impl DocumentQuery {
     ) -> Option<GraphScope<'a>> {
         let seed = match seed {
             GraphScopeSeed::Locator(locator) => self.unique_position(document, js_trim(locator), None)?,
-            GraphScopeSeed::NodeId(id) => self.positions(document).iter()
-                .find(|position| document.nodes[position.node].id == *id)?,
+            GraphScopeSeed::NodeId(id) => self.positions(document).iter().copied()
+                .find(|&index| document.nodes[index].id == *id)?,
         };
         self.graph_scope_position(document, graph, seed, follow, depth, include_descendants, include_units)
     }
@@ -1274,7 +1194,7 @@ impl DocumentQuery {
         &self,
         document: &'a DocumentStructure,
         graph: &InstrumentCrossReferenceGraph,
-        seed: &BlockPosition,
+        seed: usize,
         follow: FollowDirection,
         depth: usize,
         include_descendants: bool,
@@ -1289,10 +1209,10 @@ impl DocumentQuery {
         // Labels are display locators, not node identities. Edge coordinates must
         // identify exactly one reflected owner, including across repeated labels.
         let endpoint = |label: &str, start: usize, end: usize, target: bool| {
-            let mut matches = self.positions(document).iter().filter(|position| {
-                if document.nodes[position.node].kind != NodeKind::Section
-                    || !equal_fold(position_label(document, position), label) { return false; }
-                let node = &document.nodes[position.node];
+            let mut matches = self.positions(document).iter().copied().filter(|&index| {
+                let node = &document.nodes[index];
+                if node.kind != NodeKind::Section
+                    || !equal_fold(node.label.as_deref().unwrap_or_default(), label) { return false; }
                 if target {
                     // The graph producer records the source node's range, not its
                     // rendered projection or descendant extent.
@@ -1309,8 +1229,8 @@ impl DocumentQuery {
             let found = matches.next()?;
             matches.next().is_none().then_some(found)
         };
-        let mut reached = vec![*seed];
-        let mut reached_nodes = initial.iter().map(|position| position.node).collect::<HashSet<_>>();
+        let mut reached = vec![seed];
+        let mut reached_nodes = initial.iter().copied().collect::<HashSet<_>>();
         let mut frontier = reached_nodes.clone();
         let mut hops = 0;
         let mut omissions = Vec::new();
@@ -1324,28 +1244,28 @@ impl DocumentQuery {
                 let target = edge.target_label.as_deref().zip(edge.target_start.zip(edge.target_end))
                     .and_then(|(label, (start, end))| endpoint(label, start, end, true));
                 let forward = matches!(follow, FollowDirection::Out | FollowDirection::Both)
-                    && source.is_some_and(|source| frontier.contains(&source.node));
+                    && source.is_some_and(|source| frontier.contains(&source));
                 let backward = matches!(follow, FollowDirection::In | FollowDirection::Both)
-                    && target.is_some_and(|target| frontier.contains(&target.node));
+                    && target.is_some_and(|target| frontier.contains(&target));
                 if !forward && !backward { continue; }
-                if edge.status != InstrumentCrossReferenceStatus::Resolved || source.is_none() || target.is_none() {
+                let (Some(source), Some(target), true) =
+                    (source, target, edge.status == InstrumentCrossReferenceStatus::Resolved) else {
                     if omitted_edges.insert(edge_index) {
                         omissions.push(GraphScopeOmission {
                             edge_index,
                             edge: edge.clone(),
-                            source_node_id: source.map(|source| document.nodes[source.node].id.clone()),
-                            target_node_id: target.map(|target| document.nodes[target.node].id.clone()),
+                            source_node_id: source.map(|source| document.nodes[source].id.clone()),
+                            target_node_id: target.map(|target| document.nodes[target].id.clone()),
                             missing_endpoints: [("source", source.is_none()), ("target", target.is_none())]
                                 .into_iter().filter_map(|(endpoint, missing)| missing.then_some(endpoint)).collect(),
                         });
                     }
                     continue;
-                }
-                let (Some(source), Some(target)) = (source, target) else { unreachable!() };
+                };
                 let other = if forward { target } else { source };
-                if reached_nodes.insert(other.node) {
-                    reached.push(*other);
-                    next.insert(other.node);
+                if reached_nodes.insert(other) {
+                    reached.push(other);
+                    next.insert(other);
                 }
             }
             frontier = next;
@@ -1353,19 +1273,19 @@ impl DocumentQuery {
         }
         let mut rest = reached
             .into_iter()
-            .filter(|position| position.node != seed.node)
+            .filter(|&index| index != seed)
             .collect::<Vec<_>>();
-        rest.sort_by_key(|position| document.query_range(&document.nodes[position.node]).start);
+        rest.sort_by_key(|&index| document.query_range(&document.nodes[index]).start);
         let text = self.text(document);
         let seed = self.materialize(document, seed, &text);
         Some(GraphScope {
             seed,
             nodes: rest
                 .iter()
-                .map(|position| {
-                    let materialized = self.materialize(document, position, &text);
+                .map(|&index| {
+                    let materialized = self.materialize(document, index, &text);
                     let units = include_units
-                        .then(|| self.materialize_leaf_blocks(document, &[position], &text));
+                        .then(|| self.materialize_leaf_blocks(document, &[index], &text));
                     let units = units.filter(|units| {
                         units.len() != 1 || units[0].reading.span != materialized.reading.span
                     });
@@ -1389,16 +1309,7 @@ impl DocumentQuery {
     ) -> DocumentAddressResolution {
         match parse_address(spec) {
             None | Some(DocumentAddress::Offset) => DocumentAddressResolution::Invalid,
-            Some(DocumentAddress::Page { spec }) => {
-                match resolve_page_in_map(&self.page_map(document), &spec) {
-                    PageLookup::Found(spans) => {
-                        DocumentAddressResolution::Found { spans }
-                    }
-                    PageLookup::NoPages => DocumentAddressResolution::NoPages,
-                    PageLookup::NotFound => DocumentAddressResolution::NotFound,
-                    PageLookup::Ambiguous => DocumentAddressResolution::Ambiguous,
-                }
-            }
+            Some(DocumentAddress::Page { spec }) => self.page_address(document, &spec),
             Some(DocumentAddress::Section { locator }) => {
                 let lookup = self.structure_block(document, &locator, 0);
                 let block = match (lookup.status, lookup.block) {
@@ -1420,8 +1331,8 @@ impl DocumentQuery {
                     else {
                         return DocumentAddressResolution::NotAddressable;
                     };
-                    let Some(seed) = self.positions(document).iter().find(|position|
-                        std::ptr::eq(block.reading.node, &document.nodes[position.node]))
+                    let Some(seed) = self.positions(document).iter().copied().find(|&index|
+                        std::ptr::eq(block.reading.node, &document.nodes[index]))
                     else { return DocumentAddressResolution::NotAddressable; };
                     let Some(scope) = self.graph_scope_position(
                         document,
@@ -1452,97 +1363,6 @@ pub fn normalize_document_locator(kind: NodeKind, locator: &str) -> String {
         NodeKind::Section => normalize_section_locator(locator),
         _ => String::new(),
     }
-}
-
-fn page_map_from_markers_with_scalar<'a>(
-    text: &str,
-    scalar: impl FnOnce() -> ScalarText<'a>,
-) -> Vec<PageSpan> {
-    let mut byte = 0;
-    let mut markers = text.split_inclusive('\n').filter_map(|line| {
-        let start = byte;
-        byte += line.len();
-        let label = literal_page_marker(line, false)?;
-        (!label.is_empty() && label.len() <= 40 && !label.contains(']')).then_some((start, label))
-    });
-    let Some(first) = markers.next() else {
-        return Vec::new();
-    };
-    let scalar = scalar();
-    let mut pages = Vec::<PageSpan>::new();
-    for (start_byte, raw_label) in std::iter::once(first).chain(markers) {
-        let label = js_trim(raw_label);
-        if label.is_empty() {
-            continue;
-        }
-        let start = scalar.utf16_at_byte(start_byte).expect("marker boundary");
-        if let Some(previous) = pages.last_mut() {
-            previous.end = start;
-            previous.ranges[0].end = start;
-        }
-        let pdf_page = (label.len() <= 6 && label.bytes().all(|byte| byte.is_ascii_digit()))
-            .then(|| label.parse().ok())
-            .flatten();
-        pages.push(PageSpan {
-            pdf_page,
-            printed_labels: vec![label.to_owned()],
-            ranges: vec![ScalarRange { start, end: scalar.utf16_len() }],
-            start,
-            end: scalar.utf16_len(),
-        });
-    }
-    pages
-}
-
-fn resolve_page_in_map(pages: &[PageSpan], requested: &str) -> PageLookup {
-    static QUALIFIED: OnceLock<Regex> = OnceLock::new();
-    if pages.is_empty() {
-        return PageLookup::NoPages;
-    }
-    let raw = js_trim(requested);
-    let qualified = regex_parts(
-        &[r"(?iu)^(pdf|printed)", JS_WS, r"*[:=]", JS_WS, r"*(.+)$"],
-        &QUALIFIED,
-    )
-    .captures(raw);
-    let wanted = js_trim(qualified.as_ref().map_or(raw, |capture| &capture[2]));
-    let pdf = qualified.as_ref().map_or_else(
-        || {
-            !wanted.is_empty()
-                && wanted.len() <= 6
-                && wanted.bytes().all(|byte| byte.is_ascii_digit())
-        },
-        |capture| capture[1].eq_ignore_ascii_case("pdf"),
-    );
-    let wanted_pdf = if pdf {
-        if wanted == "null" {
-            Some(None)
-        } else {
-            wanted
-                .parse::<usize>()
-                .ok()
-                .filter(|value| value.to_string() == wanted)
-                .map(Some)
-        }
-    } else {
-        None
-    };
-    let mut matches = pages.iter().filter(|page| {
-        if pdf {
-            wanted_pdf == Some(page.pdf_page)
-        } else {
-            page.printed_labels
-                .iter()
-                .any(|label| equal_fold(label, wanted))
-        }
-    });
-    if let Some(page) = matches.next() {
-        if matches.next().is_some() {
-            return PageLookup::Ambiguous;
-        }
-        return PageLookup::Found(page.ranges.clone());
-    }
-    PageLookup::NotFound
 }
 
 fn parse_address(spec: &str) -> Option<DocumentAddress> {

@@ -67,14 +67,14 @@ impl DocumentQuery {
             let position = self.unique_position(document, &label, Some(kind))?;
             // A citation's paragraph is the one printed with its number, never one the structure counted where it
             // read no numbers: the 38th block of prose is not paragraph 38.
-            let node = &document.nodes[position.node];
+            let node = &document.nodes[position];
             (kind != NodeKind::Paragraph || node.marker_range.is_some_and(|range| range.start < range.end))
                 .then_some(position)
         };
         let first = resolve(start)?;
         let last = resolve(end)?;
-        if document.query_range(&document.nodes[first.node]).start
-            > document.query_range(&document.nodes[last.node]).start {
+        if document.query_range(&document.nodes[first]).start
+            > document.query_range(&document.nodes[last]).start {
             return None;
         }
         let selected = self.read_range(document, kind, start, end, 0)?;

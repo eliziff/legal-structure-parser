@@ -6,9 +6,12 @@
 
 use crate::quote_verification::QuoteSupport;
 use legal_structure::{javascript_whitespace as js_space, trim_javascript_whitespace as js_trim, utf16_len, JS_WHITESPACE_CLASS};
-use legal_structure_model::{ScalarRange, ScalarText};
+use legal_document_query::DocumentQuery;
+use legal_structure::parse_ordinal;
+use legal_structure_model::{text::ScalarCoordinates, DocumentStructure, NodeKind, ScalarRange, ScalarText, StructureNode};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
@@ -38,7 +41,6 @@ static ONLY_BRACKET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[[^\]]+\]
 static LEADING_NUMBER: LazyLock<Regex> = LazyLock::new(||
     Regex::new(r"^(?:\[[\s]*[0-9]{1,4}[\s]*\]|[0-9]{1,4}[\s]*\([0-9]{1,4}\)|[0-9]{1,4})[\s]+").unwrap());
 static WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
-static SECTION_TAIL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\([^)]+\)$").unwrap());
 
 fn is_dash(c: char) -> bool {
     matches!(c, '-' | '\u{ad}' | '\u{2010}'..='\u{2015}' | '\u{2212}')
@@ -46,20 +48,18 @@ fn is_dash(c: char) -> bool {
 fn is_word_char(c: char) -> bool {
     c.is_alphabetic() || c.is_numeric()
 }
-/// `text.slice(start, end)` in UTF-16 units.
-fn slice16(text: &[u16], start: usize, end: usize) -> String {
-    let end = end.min(text.len());
-    if start >= end { return String::new(); }
-    String::from_utf16_lossy(&text[start..end])
+/// `text.slice(start, end)` in UTF-16 units, its end clamped to the text and a character either end splits left out.
+fn slice_utf16<'t>(text: &ScalarText<'t>, start: usize, end: usize) -> &'t str {
+    let end = end.min(text.utf16_len());
+    match (text.byte_at_utf16_ceil(start), text.byte_at_utf16_floor(end)) {
+        (Some(from), Some(to)) if from < to => &text.value[from..to],
+        _ => "",
+    }
 }
-/// `haystack.indexOf(needle, from)` over UTF-16 units.
-fn index_of16(haystack: &[u16], needle: &[u16], from: usize) -> Option<usize> {
-    if needle.is_empty() { return Some(from.min(haystack.len())); }
-    if needle.len() > haystack.len() { return None; }
-    (from..=haystack.len() - needle.len()).find(|&at| haystack[at..at + needle.len()] == *needle)
-}
-fn byte_to_utf16(text: &str, byte: usize) -> usize {
-    utf16_len(&text[..byte])
+/// `haystack.indexOf(needle, from)`, in UTF-16 units.
+fn index_of(haystack: &ScalarText, needle: &str, from: usize) -> Option<usize> {
+    let byte = haystack.byte_at_utf16_ceil(from)?;
+    haystack.value[byte..].find(needle).and_then(|at| haystack.utf16_at_byte(byte + at))
 }
 
 /// Each text's tokens, words and keys, read once per call.
@@ -71,8 +71,8 @@ struct Reader {
     whole: Option<(usize, usize)>,
     whole_words: Option<std::sync::Arc<LongWords>>,
     whole_positions: Option<std::sync::Arc<Vec<usize>>>,
-    /// The document's text in UTF-16, as written and lower-cased.
-    whole_units: Option<std::sync::Arc<(Vec<u16>, Vec<u16>)>>,
+    /// The document's text's coordinates, and its lower-cased text with its coordinates.
+    whole_text: Option<std::sync::Arc<(ScalarCoordinates, ScalarCoordinates, String)>>,
     /// A long document's runs of letters and digits, where its anchor phrases are looked for.
     whole_runs: std::sync::OnceLock<Option<std::sync::Arc<TextRuns>>>,
 }
@@ -239,16 +239,15 @@ fn find_exact(needle: &str, haystack: &str) -> Option<usize> {
                 let before = haystack[..found.start()].chars().next_back();
                 let after = haystack[found.end()..].chars().next();
                 if !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char) {
-                    return Some(byte_to_utf16(haystack, found.start()));
+                    return Some(utf16_len(&haystack[..found.start()]));
                 }
                 from = found.start() + haystack[found.start()..].chars().next().map_or(1, char::len_utf8);
             }
             None
         });
     }
-    let lower = haystack.to_lowercase().encode_utf16().collect::<Vec<_>>();
-    let needle = needle.to_lowercase().encode_utf16().collect::<Vec<_>>();
-    index_of16(&lower, &needle, 0)
+    let lower = haystack.to_lowercase();
+    index_of(&ScalarText::new(&lower), &needle.to_lowercase(), 0)
 }
 
 fn exact_in_source(quote: &str, source: &str) -> bool {
@@ -477,12 +476,12 @@ impl Reader {
 
 /// Where each token starts in the text (UTF-16), found in order in its lower-cased form.
 fn token_positions(text: &str, source: &[String]) -> Vec<usize> {
-    let lower = text.to_lowercase().encode_utf16().collect::<Vec<_>>();
+    let lower = text.to_lowercase();
+    let lower = ScalarText::new(&lower);
     let mut positions = Vec::with_capacity(source.len());
     let mut from = 0usize;
     for token in source.iter() {
-        let needle = token.to_lowercase().encode_utf16().collect::<Vec<_>>();
-        let at = index_of16(&lower, &needle, from).unwrap_or(from);
+        let at = index_of(&lower, &token.to_lowercase(), from).unwrap_or(from);
         positions.push(at);
         from = at + 1.max(utf16_len(token));
     }
@@ -651,7 +650,8 @@ impl TextRuns {
 
 /// The text around the quotation's first anchor phrase found whole, its words separated by anything but letters and
 /// digits, case aside.
-fn long_source_region(quote: &str, text: &str, units: &[u16], runs: Option<&TextRuns>, window: usize) -> String {
+fn long_source_region(quote: &str, source: &ScalarText, runs: Option<&TextRuns>, window: usize) -> String {
+    let text = source.value;
     let words = quote_words(quote);
     let edge = |c: Option<char>| c.is_some_and(|c| is_word_char(c) || c == '_');
     let edges = |start: usize, end: usize| !edge(text[..start].chars().next_back()) && !edge(text[end..].chars().next());
@@ -677,9 +677,9 @@ fn long_source_region(quote: &str, text: &str, units: &[u16], runs: Option<&Text
             }
         };
         if let Some((start, end)) = found {
-            let at = byte_to_utf16(text, start);
+            let at = source.utf16_at_byte(start).unwrap_or_default();
             let length = utf16_len(&text[start..end]);
-            return slice16(units, at.saturating_sub(window), units.len().min(at + length + utf16_len(quote) + window));
+            return slice_utf16(source, at.saturating_sub(window), at + length + utf16_len(quote) + window).to_owned();
         }
     }
     String::new()
@@ -694,33 +694,35 @@ impl Reader {
         let quoted = self.tokens(q);
         if utf16_len(text) <= LONG_SOURCE_CHARS && internal_omission(&quoted)
             && self.tokens(text).len().saturating_mul(quoted.len()) <= MAX_SEQUENCE_WORK { return text.to_owned(); }
-        let q_units = q.encode_utf16().collect::<Vec<_>>();
-        let head = slice16(&q_units, 0, 40);
-        let (local, whole);
+        let q_length = utf16_len(q);
+        let head = slice_utf16(&ScalarText::new(q), 0, 40).to_owned();
+        let whole;
         // The whole quotation where it stands as written, else its opening: an opening several passages share
         // finds only the first of them.
-        let needles = if q_units.len() > 40 { vec![q.to_owned(), head] } else { vec![head] };
-        let (units, found): (&[u16], Option<usize>) = if self.is_whole(text) {
-            whole = self.whole_units.get_or_insert_with(|| std::sync::Arc::new((text.encode_utf16().collect(),
-                text.to_lowercase().encode_utf16().collect()))).clone();
+        let needles = if q_length > 40 { vec![q.to_owned(), head] } else { vec![head] };
+        let (source, found) = if self.is_whole(text) {
+            whole = self.whole_text.get_or_insert_with(|| {
+                let lower = text.to_lowercase();
+                std::sync::Arc::new((ScalarCoordinates::new(text), ScalarCoordinates::new(&lower), lower))
+            }).clone();
             // find_exact, the document's lower-cased text read once.
+            let lower = ScalarText::with_coordinates(&whole.2, &whole.1);
             let found = needles.iter().find_map(|needle| {
                 let needle = js_trim(needle);
                 if needle.is_empty() { None } else if SINGLE_WORD.is_match(needle) { find_exact(needle, text) }
-                    else { index_of16(&whole.1, &needle.to_lowercase().encode_utf16().collect::<Vec<_>>(), 0) }
+                    else { index_of(&lower, &needle.to_lowercase(), 0) }
             });
-            (&whole.0, found)
+            (ScalarText::with_coordinates(text, &whole.0), found)
         } else {
-            local = text.encode_utf16().collect::<Vec<_>>();
-            (&local, needles.iter().find_map(|needle| find_exact(needle, text)))
+            (ScalarText::new(text), needles.iter().find_map(|needle| find_exact(needle, text)))
         };
         if let Some(at) = found {
-            return slice16(&units, at.saturating_sub(window / 2), units.len().min(at + q_units.len() + window / 2));
+            return slice_utf16(&source, at.saturating_sub(window / 2), at + q_length + window / 2).to_owned();
         }
-        if units.len() > LONG_SOURCE_CHARS {
+        if source.utf16_len() > LONG_SOURCE_CHARS {
             let runs = if self.is_whole(text) { self.whole_runs.get_or_init(|| TextRuns::new(text).map(std::sync::Arc::new)).clone() }
                 else { TextRuns::new(text).map(std::sync::Arc::new) };
-            return long_source_region(q, text, units, runs.as_deref(), window);
+            return long_source_region(q, &source, runs.as_deref(), window);
         }
         if quoted.is_empty() { return text.to_owned(); }
         let step = 1.max(quoted.len() / 2);
@@ -745,7 +747,7 @@ impl Reader {
         if source.is_empty() { return text.to_owned(); }
         let first = best_at.saturating_sub(quoted.len());
         let last = (source.len() - 1).min(best_at + quoted.len() * 3);
-        slice16(&units, positions[first], positions[last] + utf16_len(&source[last]))
+        slice_utf16(&ScalarText::new(text), positions[first], positions[last] + utf16_len(&source[last])).to_owned()
     }
 
     fn only_bracketed(&mut self, text: &str) -> bool {
@@ -765,16 +767,15 @@ impl Reader {
         if plan.source_safe_complete && !plan.source_word_intervals.is_empty() {
             let mut start = plan.source_word_intervals.iter().map(|span| span.start).min().unwrap();
             let mut end = plan.source_word_intervals.iter().map(|span| span.end).max().unwrap();
-            let units = source_region.encode_utf16().collect::<Vec<_>>();
+            let region = ScalarText::new(source_region);
             // A source's bracket the words begin or end inside is kept whole.
-            let (open, close) = (u16::from(b'['), u16::from(b']'));
-            let count = |unit: u16, start: usize, end: usize| units[start..end].iter().filter(|&&found| found == unit).count();
-            if count(close, start, end) > count(open, start, end) && start > 0 && units[start - 1] == open { start -= 1; }
-            if count(open, start, end) > count(close, start, end) && units.get(end) == Some(&close) { end += 1; }
+            let count = |bracket: char, start: usize, end: usize| slice_utf16(&region, start, end).matches(bracket).count();
+            if count(']', start, end) > count('[', start, end) && start > 0 && slice_utf16(&region, start - 1, start) == "[" { start -= 1; }
+            if count('[', start, end) > count(']', start, end) && slice_utf16(&region, end, end + 1) == "]" { end += 1; }
             // The source's punctuation after the words only as far as the quotation carries punctuation there.
             let ending = js_trim(quote).chars().rev().take_while(|c| !is_word_char(*c)).collect::<String>();
-            let tail = slice16(&units, end, units.len()).chars().take_while(|c| ending.contains(*c)).collect::<String>();
-            let exact = format!("{}{tail}", slice16(&units, start, end));
+            let tail = slice_utf16(&region, end, region.utf16_len()).chars().take_while(|c| ending.contains(*c)).collect::<String>();
+            let exact = format!("{}{tail}", slice_utf16(&region, start, end));
             return if utf16_len(&exact) <= max_chars { exact } else { String::new() };
         }
         let omission = internal_omission(&quoted);
@@ -822,7 +823,7 @@ impl Reader {
     }
 }
 
-#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum QuoteBlockKind {
     Paragraph,
@@ -845,32 +846,24 @@ impl QuoteBlockKind {
 pub struct QuoteBlockLabel {
     pub kind: QuoteBlockKind,
     pub label: String,
-    /// As a pinpoint is written for a reader: "par12", "page 5", "pages 5–6", "PDF page 3", "sec5(2)".
+    /// As a pinpoint is written for a reader: a paragraph or provision by its place ("par12", "sec5(2)"), "page 5",
+    /// "pages 5–6", "PDF page 3".
     pub shown: String,
 }
 
 impl QuoteBlockLabel {
     fn new(block: &Block) -> Self {
-        Self { shown: block.shown(), kind: block.kind, label: block.label.clone() }
+        let label = &block.label;
+        let shown = match block.kind {
+            QuoteBlockKind::Paragraph | QuoteBlockKind::Section => {
+                block.node.and_then(StructureNode::fragment).unwrap_or_else(|| format!("par{label}"))
+            }
+            QuoteBlockKind::Page if label.contains('\u{2013}') => format!("pages {label}"),
+            QuoteBlockKind::Page => format!("page {label}"),
+            QuoteBlockKind::PdfPage => format!("PDF page {label}"),
+        };
+        Self { shown, kind: block.kind, label: label.to_string() }
     }
-}
-
-/// A source's paragraph, page or provision, by its offsets (UTF-16) in the source's text.
-#[derive(Clone, Deserialize)]
-pub struct QuoteBlockInput {
-    /// Actual reflected identity, absent for raw membership-only inputs.
-    pub node_id: Option<String>,
-    #[serde(default)]
-    pub ancestor_ids: Vec<String>,
-    pub ranges: Vec<legal_structure_model::ScalarRange>,
-    pub kind: QuoteBlockKind,
-    pub label: String,
-    /// A provision's place, as a link names it ("sec5(2)", "part2": `StructureNode::fragment`): how it is shown, and how
-    /// a citation's section scope names it.
-    #[serde(default)]
-    pub place: Option<String>,
-    pub start: usize,
-    pub end: usize,
 }
 
 /// How a source's locators are read: a provider's text by every block its structure labels; a PDF by what it prints,
@@ -883,52 +876,52 @@ pub enum QuoteSource {
     Legislation,
 }
 
-/// Prepare quotation locators from the document's own reflected structure. A PDF uses the
-/// paragraph numbers it prints, its sections and the page numbers it prints, front matter's and
-/// every sequence's as printed; a PDF that prints no page numbers, its PDF pages.
-pub fn document_quote_blocks(
-    document: &legal_structure_model::DocumentStructure,
-    query: &legal_document_query::DocumentQuery,
-    source: QuoteSource,
-) -> Vec<QuoteBlockInput> {
+/// A paragraph, page or provision a quotation is located in: a node the query serves, read as `kind` under `label`
+/// (a paragraph's or page's number as printed, a provision's label), or a cited run of them joined (no node).
+#[derive(Clone)]
+struct Block<'a> {
+    node: Option<&'a StructureNode>,
+    kind: QuoteBlockKind,
+    label: Cow<'a, str>,
+    ranges: Cow<'a, [ScalarRange]>,
+    text: String,
+}
+
+impl Block<'_> {
+    fn start(&self) -> usize {
+        self.ranges.first().map_or(0, |range| range.start)
+    }
+
+    /// The number its label prints, where it is a whole number.
+    fn number(&self) -> Option<u64> {
+        self.label.parse().ok()
+    }
+}
+
+/// The document's blocks a quotation is located among, from the nodes the query serves. A PDF uses the paragraph
+/// numbers it prints, its sections and the page numbers it prints, front matter's and every sequence's as printed; a
+/// PDF that prints no page numbers, its PDF pages.
+fn document_quote_blocks<'a>(document: &'a DocumentStructure, query: &'a DocumentQuery, source: QuoteSource) -> Vec<Block<'a>> {
     let pdf = source != QuoteSource::Text;
-    use legal_structure::parse_ordinal;
-    use legal_structure_model::NodeKind;
     let blocks = query.blocks(document, None).collect::<Vec<_>>();
-    let nodes = document.nodes.iter().map(|node| (node.id.as_str(), node)).collect::<HashMap<_, _>>();
-    let ancestors = |id: Option<&str>| {
-        let mut current = id.and_then(|id| nodes.get(id)).and_then(|node| node.parent_id.as_deref());
-        let mut seen = id.into_iter().collect::<HashSet<_>>();
-        let mut ancestors = Vec::new();
-        while let Some(id) = current {
-            if !seen.insert(id) { break; }
-            ancestors.push(id.to_owned());
-            current = nodes.get(id).and_then(|node| node.parent_id.as_deref());
+    let block = |node: &'a StructureNode, kind: QuoteBlockKind, label: Cow<'a, str>| {
+        let mut ranges = document.query_ranges(node);
+        if !ranges.windows(2).all(|pair| pair[0].end < pair[1].start) {
+            ScalarRange::normalize_union(ranges.to_mut());
         }
-        ancestors
+        Block { node: Some(node), kind, label, ranges, text: String::new() }
     };
-    let input = |node: &legal_structure_model::StructureNode, kind: QuoteBlockKind, label: String| {
-        let range = document.query_range(node);
-        let place = (kind == QuoteBlockKind::Section).then(|| node.fragment()).flatten();
-        QuoteBlockInput { node_id: Some(node.id.clone()), ancestor_ids: ancestors(Some(node.id.as_str())), kind, label, place,
-            start: range.start, end: range.end, ranges: document.query_ranges(node).into_owned() }
-    };
-    // A number the document prints: its marker stands in the text.
-    let printed_number = |node: &legal_structure_model::StructureNode| node.marker_range.is_some_and(|range| range.start < range.end);
     let mut printed = Vec::new();
     if pdf {
-        printed = blocks.iter().filter_map(|node| {
-            // A paragraph's number is a locator only where the PDF prints it.
-            if node.kind != NodeKind::Paragraph || !printed_number(node) { return None; }
+        // A paragraph's number is a locator only where the PDF prints it.
+        printed = blocks.iter().filter(|node| node.kind == NodeKind::Paragraph && node.prints_label()).filter_map(|node| {
             let number = parse_ordinal("paragraph", node.label.as_deref()?)?;
-            Some(input(node, QuoteBlockKind::Paragraph, number.to_string()))
+            Some(block(node, QuoteBlockKind::Paragraph, number.to_string().into()))
         }).collect::<Vec<_>>();
-        printed.sort_by_key(|block| (block.start, block.end));
+        printed.sort_by_key(|block| (block.start(), block.ranges.last().map_or(0, |range| range.end)));
     }
     // A PDF prints its pages' numbers where a page holds the label it prints (`aliases`).
-    fn printed_page(node: &legal_structure_model::StructureNode) -> Option<&String> {
-        node.aliases.as_deref().and_then(<[String]>::first)
-    }
+    let printed_page = |node: &'a StructureNode| node.aliases.as_deref().and_then(<[String]>::first);
     let numbered_pages = pdf && blocks.iter().any(|node| node.kind == NodeKind::Page && printed_page(node).is_some());
     printed.extend(blocks.into_iter().filter_map(|node| {
         let kind = match node.kind {
@@ -941,110 +934,113 @@ pub fn document_quote_blocks(
         // A page is the number it prints, where the PDF prints them; a page printing none is no locator then.
         let value = if kind == QuoteBlockKind::Page && numbered_pages { printed_page(node)?.as_str() } else { js_trim(node.label.as_deref()?) };
         let value = value.strip_prefix('[').and_then(|value| value.strip_suffix(']')).unwrap_or(value);
-        let label = match kind {
-            QuoteBlockKind::Paragraph | QuoteBlockKind::Page | QuoteBlockKind::PdfPage | QuoteBlockKind::Section => value.to_owned(),
-        };
-        Some(input(node, kind, label))
+        Some(block(node, kind, value.into()))
     }));
     printed
 }
 
-/// Every quotation located in `text` among `blocks`. A PDF's quotation is located by one scheme of its locators: the
-/// kind its citation names where the PDF prints it, else the PDF's numbered paragraphs, provisions or pages, the
-/// first it prints.
-pub fn locate_source_quotes(source: QuoteSource, text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate],
-    compare: bool) -> Vec<LocatedQuote> {
-    locate_source_quotes_kept(&mut QuoteLocator::default(), source, text, blocks, quotes, compare)
-}
-
-/// What locating quotations reads of a document's text and blocks, kept by its holder for every quotation located in
-/// that document later: each block's text and readings, the whole text's, and the reader's indexes of it.
-#[derive(Default)]
-pub struct QuoteLocator {
-    kept: HashMap<(QuoteSource, Option<QuoteBlockKind>), LocatorState>,
-}
-
-struct LocatorState {
-    /// The trimmed text the state was read from, by where it is.
-    whole: (usize, usize),
-    reader: Reader,
-    blocks: Vec<Block>,
-    prepared: Vec<Option<std::sync::Arc<Prepared>>>,
-    whole_prepared: Option<std::sync::Arc<Prepared>>,
-    /// The whole text as a quotation found nowhere in it is compared with it.
-    whole_compared: Option<ComparedText>,
-}
-
-/// [`locate_source_quotes`], reading what `locator` kept of the document where it is the same text and blocks.
-pub fn locate_source_quotes_kept(locator: &mut QuoteLocator, source: QuoteSource, text: &str,
-    blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate], compare: bool) -> Vec<LocatedQuote> {
+/// Every quotation located in the document's text among its blocks, read from `source`. A PDF's quotation is located
+/// by one scheme of its locators: the kind its citation names where the PDF prints it, else the PDF's numbered
+/// paragraphs, provisions or pages, the first it prints. What is read of the document is kept in `locator` for every
+/// quotation located in it later.
+pub fn locate_document_quotes(locator: &mut QuoteLocator, document: &DocumentStructure, query: &DocumentQuery,
+    source: QuoteSource, quotes: &[QuoteToLocate], compare: bool) -> Vec<LocatedQuote> {
     use QuoteBlockKind::{Page, Paragraph, Section};
-    let mut locate = |kind: Option<QuoteBlockKind>, blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate]| {
-        let kept = locator.kept.entry((source, kind));
-        let mut state = match kept { std::collections::hash_map::Entry::Occupied(found) => Some(found.remove()), _ => None };
-        let located = locate_quotes_kept(&mut state, text, blocks, quotes, compare);
-        if let Some(state) = state { locator.kept.insert((source, kind), state); }
+    let text = document.query_text();
+    let blocks = document_quote_blocks(document, query, source);
+    let mut locate = |kind: Option<QuoteBlockKind>, blocks: Vec<Block>, quotes: &[QuoteToLocate]| {
+        let kept = locator.kept.remove(&(source, kind));
+        let (located, state) = locate_quotes_kept(kept, document, text, blocks, quotes, compare);
+        locator.kept.insert((source, kind), state);
         located
     };
     if source == QuoteSource::Text { return locate(None, blocks, quotes); }
     let printed = |kind: QuoteBlockKind| blocks.iter().any(|block| block.kind == kind);
-    let scheme = |scopes: &QuoteScopes| [(Paragraph, &scopes.paragraphs), (Page, &scopes.pages)].into_iter()
+    let scheme = |scopes: &Scopes| [(Paragraph, &scopes.paragraphs), (Page, &scopes.pages)].into_iter()
         .filter(|(_, asked)| !asked.is_empty()).map(|(kind, _)| kind)
         .chain((!scopes.sections.is_empty()).then_some(Section))
         .find(|kind| printed(*kind)).or_else(|| [Paragraph, Section, Page].into_iter().find(|kind| printed(*kind)));
-    let schemes = quotes.iter().map(|quote| scheme(&quote.scopes)).collect::<Vec<_>>();
+    let schemes = quotes.iter().map(|quote| scheme(&Scopes::of(&quote.pinpoints))).collect::<Vec<_>>();
     let mut located = quotes.iter().map(|_| None).collect::<Vec<_>>();
     for kind in [Some(Paragraph), Some(Section), Some(Page), None] {
         let members = (0..quotes.len()).filter(|&at| schemes[at] == kind).collect::<Vec<_>>();
         if members.is_empty() { continue; }
         let kept = blocks.iter().filter(|block| Some(block.kind) == kind).cloned().collect::<Vec<_>>();
         let group = members.iter().map(|&at| quotes[at].clone()).collect::<Vec<_>>();
-        for (at, found) in members.into_iter().zip(locate(kind, &kept, &group)) { located[at] = Some(found); }
+        for (at, found) in members.into_iter().zip(locate(kind, kept, &group)) { located[at] = Some(found); }
     }
     located.into_iter().map(|found| found.expect("every quotation is located")).collect()
 }
 
-#[derive(Clone)]
-struct Block {
-    node_id: Option<String>,
-    ancestor_ids: Vec<String>,
-    ranges: Vec<legal_structure_model::ScalarRange>,
-    kind: QuoteBlockKind,
-    label: String,
-    place: Option<String>,
-    start: usize,
-    end: usize,
-    text: String,
+/// What locating quotations reads of a document's text and blocks, kept by the document for every quotation located
+/// in it later: each block's text and readings, the whole text's, and the reader's indexes of it.
+#[derive(Default)]
+pub struct QuoteLocator {
+    kept: HashMap<(QuoteSource, Option<QuoteBlockKind>), LocatorState>,
 }
 
-impl Block {
-    /// The block as a pinpoint is written for a reader: "par12", "page 5", "pages 5–6", "PDF page 3", a provision by
-    /// its place ("sec5(2)").
-    fn shown(&self) -> String {
-        let label = &self.label;
-        match self.kind {
-            QuoteBlockKind::Paragraph => format!("par{label}"),
-            QuoteBlockKind::Page if label.contains('\u{2013}') => format!("pages {label}"),
-            QuoteBlockKind::Page => format!("page {label}"),
-            QuoteBlockKind::PdfPage => format!("PDF page {label}"),
-            QuoteBlockKind::Section => self.place.clone().unwrap_or_else(|| label.clone()),
+/// What one scheme of a document's blocks read, by block in the order `document_quote_blocks` gives them.
+struct LocatorState {
+    reader: Reader,
+    texts: Vec<String>,
+    prepared: Vec<Option<std::sync::Arc<Prepared>>>,
+    whole_prepared: Option<std::sync::Arc<Prepared>>,
+    /// The whole text as a quotation found nowhere in it is compared with it.
+    whole_compared: Option<ComparedText>,
+}
+
+/// The paragraphs, pages and provisions a citation's pinpoints name: whole numbers of paragraphs and pages, first to
+/// last, and provisions by their place ("sec5(2)").
+#[derive(Default)]
+struct Scopes {
+    paragraphs: Vec<(u64, u64)>,
+    pages: Vec<(u64, u64)>,
+    sections: Vec<String>,
+}
+
+impl Scopes {
+    fn of(pinpoints: &[CitedPinpoint]) -> Self {
+        let mut scopes = Self::default();
+        for pinpoint in pinpoints {
+            let Some(first) = pinpoint.first.as_deref().filter(|first| !first.is_empty()) else { continue };
+            let ranges = match pinpoint.kind.as_str() {
+                "section" => {
+                    scopes.sections.push(format!("sec{}", first.chars().filter(|c| !js_space(*c)).collect::<String>()));
+                    continue;
+                }
+                "paragraph" => &mut scopes.paragraphs,
+                "page" => &mut scopes.pages,
+                _ => continue,
+            };
+            let number = |value: &str| js_trim(value).parse::<u64>().ok();
+            if let (Some(first), Some(last)) = (number(first), number(pinpoint.last.as_deref().unwrap_or(first))) {
+                ranges.push((first, first.max(last)));
+            }
         }
+        scopes
+    }
+
+    fn any(&self) -> bool {
+        !self.paragraphs.is_empty() || !self.pages.is_empty() || !self.sections.is_empty()
     }
 }
 
-#[derive(Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct QuoteScopes {
-    pub paragraphs: Vec<(f64, f64)>,
-    pub pages: Vec<(f64, f64)>,
-    pub sections: Vec<String>,
+/// A pinpoint of the citation a quotation is for, as the citation engine read it: its kind ("paragraph", "page",
+/// "section") and its first locator and the last of a range.
+#[derive(Clone, Deserialize)]
+pub struct CitedPinpoint {
+    pub kind: String,
+    #[serde(default)]
+    pub first: Option<String>,
+    #[serde(default)]
+    pub last: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]
 pub struct QuoteToLocate {
     pub quote: String,
     #[serde(default)]
-    pub scopes: QuoteScopes,
+    pub pinpoints: Vec<CitedPinpoint>,
     /// The quotation's id, which a host's checks of it name the evidence by.
     #[serde(default)]
     pub id: Option<String>,
@@ -1097,29 +1093,16 @@ pub struct LocatedQuote {
     pub comparison: Option<QuoteComparison>,
 }
 
-fn js_number(text: &str) -> f64 {
-    let value = js_trim(text);
-    if value.is_empty() { return 0.0; }
-    value.parse::<f64>().ok().filter(|_| !value.chars().any(|c| c.is_alphabetic() && c != 'e' && c != 'E'))
-        .unwrap_or(f64::NAN)
+fn in_ranges(value: Option<u64>, ranges: &[(u64, u64)]) -> bool {
+    value.is_some_and(|value| ranges.iter().any(|&(first, last)| first <= value && value <= last))
 }
-fn block_number(block: &Block) -> f64 {
-    js_number(&block.label)
-}
-fn in_ranges(value: f64, ranges: &[(f64, f64)]) -> bool {
-    ranges.iter().any(|&(a, b)| a <= value && value <= b)
-}
-fn has_scopes(scopes: &QuoteScopes) -> bool {
-    !scopes.paragraphs.is_empty() || !scopes.pages.is_empty() || !scopes.sections.is_empty()
-}
-fn section_ancestors(label: &str) -> Vec<String> {
-    let mut out = vec![label.to_owned()];
-    let mut current = label.to_owned();
-    while SECTION_TAIL.is_match(&current) {
-        current = SECTION_TAIL.replace(&current, "").into_owned();
-        out.push(current.clone());
-    }
-    out
+/// A cited provision's place and the places of those holding it, nearest first: "sec5(2)(a)", "sec5(2)", "sec5".
+fn holders(place: &str) -> impl Iterator<Item = &str> {
+    std::iter::successors(Some(place), |place| {
+        let rest = place.strip_suffix(')')?;
+        let at = rest.rfind('(')?;
+        (at + 1 < rest.len() && !rest[at + 1..].contains(')')).then(|| &rest[..at])
+    })
 }
 fn word_count(quote: &str, text: &str) -> usize {
     let (needle, words) = (quote_words(quote), quote_words(text));
@@ -1134,20 +1117,6 @@ fn pinpoint_summary(pinpoints: &[String], limit: usize) -> String {
     out
 }
 
-/// Whether `inner` is a smaller block of the same kind inside `outer`.
-fn within(outer: &Block, inner: &Block) -> bool {
-    let extent = |block: &Block| block.ranges.first().zip(block.ranges.last()).map(|(first, last)| (first.start, last.end));
-    inner.kind == outer.kind
-        // Its members' extent first: most blocks are not inside each other, and this alone says so.
-        && extent(inner).zip(extent(outer)).is_none_or(|(inner, outer)| outer.0 <= inner.0 && inner.1 <= outer.1)
-        && inner.ranges.iter().all(|part| outer.ranges.iter().any(|range| range.start <= part.start && part.end <= range.end))
-        && match outer.node_id.as_ref().zip(inner.node_id.as_ref()) {
-            Some((outer_id, _)) => inner.ancestor_ids.contains(outer_id),
-            None => outer.ranges.iter().map(|range| range.end - range.start).sum::<usize>()
-                > inner.ranges.iter().map(|range| range.end - range.start).sum::<usize>(),
-        }
-}
-
 /// A block a quotation is scored against: one of the source's, or the cited range of them joined.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Candidate {
@@ -1157,9 +1126,12 @@ enum Candidate {
 
 struct Located<'a> {
     reader: Reader,
+    document: &'a DocumentStructure,
+    /// The document's nodes by id, read where one block is asked whether it holds another.
+    by_id: std::cell::OnceCell<HashMap<&'a str, &'a StructureNode>>,
     text: &'a str,
     source_text: ScalarText<'a>,
-    blocks: Vec<Block>,
+    blocks: Vec<Block<'a>>,
     /// Each block's readings, and the whole text's, prepared once for every quotation.
     prepared: Vec<Option<std::sync::Arc<Prepared>>>,
     whole: Option<std::sync::Arc<Prepared>>,
@@ -1170,7 +1142,7 @@ struct Prepared {
     text: String,
     length: usize,
     key: String,
-    lower: Vec<u16>,
+    lower: String,
     /// A long source's tokens are read only where a quotation's bracketed suffix is looked for in them.
     tokens: std::sync::OnceLock<std::sync::Arc<Vec<String>>>,
     counts: HashMap<String, usize>,
@@ -1190,7 +1162,7 @@ struct Quoted {
     core: Vec<String>,
     key: String,
     single: bool,
-    needle: Vec<u16>,
+    needle: String,
     aliases: HashMap<String, String>,
     counts: HashMap<String, usize>,
 }
@@ -1199,7 +1171,7 @@ impl Reader {
     fn prepare(&mut self, source: &str) -> Prepared {
         let trimmed = js_trim(source);
         let key = self.exact_key(trimmed);
-        let lower = key.to_lowercase().encode_utf16().collect();
+        let lower = key.to_lowercase();
         let length = utf16_len(trimmed);
         if length > LONG_SOURCE_CHARS {
             return Prepared { length, lower, key, tokens: Default::default(), counts: HashMap::new(),
@@ -1224,7 +1196,7 @@ impl Reader {
         let key = self.exact_key(q);
         let mut counts = HashMap::new();
         for token in &core { *counts.entry(token.clone()).or_default() += 1; }
-        Quoted { empty: q.is_empty(), single: SINGLE_WORD.is_match(js_trim(&key)), needle: js_trim(&key).to_lowercase().encode_utf16().collect(),
+        Quoted { empty: q.is_empty(), single: SINGLE_WORD.is_match(js_trim(&key)), needle: js_trim(&key).to_lowercase(),
             aliases: alignment_aliases(&core), key, core, counts }
     }
 }
@@ -1247,7 +1219,7 @@ fn prepared_score(quoted: &Quoted, source: &Prepared, floor: f64) -> f64 {
 fn prepared_exact(quoted: &Quoted, source: &Prepared) -> bool {
     let found = if quoted.needle.is_empty() || source.key.is_empty() { false }
         else if quoted.single { find_exact(&quoted.key, &source.key).is_some() }
-        else { index_of16(&source.lower, &quoted.needle, 0).is_some() };
+        else { source.lower.contains(quoted.needle.as_str()) };
     if found { return true; }
     let (q, s) = (collapse_initial_case(&quoted.key), collapse_initial_case(&source.key));
     (q != quoted.key || s != source.key) && find_exact(&q, &s).is_some()
@@ -1261,15 +1233,41 @@ struct Resolution {
     cited: Option<(f64, Vec<QuoteBlockLabel>, String)>,
 }
 
-impl Located<'_> {
-    fn block<'b>(&'b self, ranges: &'b [Block], candidate: Candidate) -> &'b Block {
+impl<'a> Located<'a> {
+    fn block<'b>(&'b self, ranges: &'b [Block<'a>], candidate: Candidate) -> &'b Block<'a> {
         match candidate { Candidate::Block(index) => &self.blocks[index], Candidate::Range(index) => &ranges[index] }
     }
 
+    /// Whether `inner` is a smaller block of the same kind inside `outer`: a node under it, or a joined run inside
+    /// another.
+    fn within(&self, outer: &Block, inner: &Block) -> bool {
+        let extent = |block: &Block| block.ranges.first().zip(block.ranges.last()).map(|(first, last)| (first.start, last.end));
+        inner.kind == outer.kind
+            // Its members' extent first: most blocks are not inside each other, and this alone says so.
+            && extent(inner).zip(extent(outer)).is_none_or(|(inner, outer)| outer.0 <= inner.0 && inner.1 <= outer.1)
+            && inner.ranges.iter().all(|part| outer.ranges.iter().any(|range| range.start <= part.start && part.end <= range.end))
+            && match outer.node.zip(inner.node) {
+                Some((outer, inner)) => {
+                    let by_id = self.by_id.get_or_init(|| self.document.nodes.iter().map(|node| (node.id.as_str(), node)).collect());
+                    let mut parent = inner.parent_id.as_deref();
+                    // (A parent cycle ends where the walk has taken as many steps as there are nodes.)
+                    let mut steps = by_id.len();
+                    while let (Some(id), true) = (parent, steps > 0) {
+                        if id == outer.id { return true; }
+                        parent = by_id.get(id).and_then(|node| node.parent_id.as_deref());
+                        steps -= 1;
+                    }
+                    false
+                }
+                None => outer.ranges.iter().map(|range| range.end - range.start).sum::<usize>()
+                    > inner.ranges.iter().map(|range| range.end - range.start).sum::<usize>(),
+            }
+    }
+
     /// The cited blocks, each with whether it is the one cited rather than a provision holding it: every paragraph
-    /// and page of a cited number, and of a cited provision the last one of its label, else of its nearest ancestor's
+    /// and page of a cited number, and of a cited provision the last one of its place, else of its nearest holder's
     /// (a2aj_pinpoint_scope._cited_block_selection).
-    fn cited_selection(&self, scopes: &QuoteScopes) -> Vec<(usize, bool)> {
+    fn cited_selection(&self, scopes: &Scopes) -> Vec<(usize, bool)> {
         let mut selected: Vec<(usize, bool)> = Vec::new();
         let set = |index: usize, value: bool, selected: &mut Vec<(usize, bool)>| {
             match selected.iter_mut().find(|(at, _)| *at == index) {
@@ -1278,19 +1276,22 @@ impl Located<'_> {
             }
         };
         for (index, block) in self.blocks.iter().enumerate() {
-            if block.kind == QuoteBlockKind::Paragraph && in_ranges(block_number(block), &scopes.paragraphs) { set(index, true, &mut selected); }
-            if block.kind.is_page() && in_ranges(block_number(block), &scopes.pages) { set(index, true, &mut selected); }
+            if block.kind == QuoteBlockKind::Paragraph && in_ranges(block.number(), &scopes.paragraphs) { set(index, true, &mut selected); }
+            if block.kind.is_page() && in_ranges(block.number(), &scopes.pages) { set(index, true, &mut selected); }
         }
         let mut sections = HashMap::new();
         for (index, block) in self.blocks.iter().enumerate() {
             // (A citation's section scope names a provision by its place: "sec5(2)".)
-            if block.kind == QuoteBlockKind::Section { sections.insert(block.place.as_ref().unwrap_or(&block.label).to_lowercase(), index); }
+            if block.kind == QuoteBlockKind::Section {
+                let place = block.node.and_then(StructureNode::fragment).unwrap_or_else(|| block.label.to_string());
+                sections.insert(place.to_lowercase(), index);
+            }
         }
         for section in &scopes.sections {
-            for candidate in section_ancestors(section) {
+            for candidate in holders(section) {
                 if let Some(&index) = sections.get(&candidate.to_lowercase()) {
                     let before = selected.iter().find(|(at, _)| *at == index).is_some_and(|(_, value)| *value);
-                    set(index, before || candidate.to_lowercase() == section.to_lowercase(), &mut selected);
+                    set(index, before || candidate.len() == section.len(), &mut selected);
                     break;
                 }
             }
@@ -1298,31 +1299,30 @@ impl Located<'_> {
         selected
     }
 
-    fn range_blocks(&self, scopes: &QuoteScopes) -> Vec<Block> {
+    fn range_blocks(&self, scopes: &Scopes) -> Vec<Block<'a>> {
         let mut combined = Vec::new();
         for (kind, ranges) in [(QuoteBlockKind::Paragraph, &scopes.paragraphs), (QuoteBlockKind::Page, &scopes.pages)] {
             for &(start, end) in ranges.iter() {
                 if end <= start { continue; }
-                let mut members = self.blocks.iter().filter(|block| (block.kind == kind || kind.is_page() && block.kind.is_page()) && start <= block_number(block)
-                    && block_number(block) <= end).collect::<Vec<_>>();
-                members.sort_by(|a, b| block_number(a).partial_cmp(&block_number(b)).unwrap_or(std::cmp::Ordering::Equal));
-                let wanted = (end - start + 1.0) as usize;
-                if members.len() != wanted || members.iter().enumerate().any(|(i, block)| block_number(block) != start + i as f64) {
+                let mut members = self.blocks.iter().filter_map(|block| {
+                    let number = block.number().filter(|number| start <= *number && *number <= end)?;
+                    (block.kind == kind || kind.is_page() && block.kind.is_page()).then_some((number, block))
+                }).collect::<Vec<_>>();
+                members.sort_by_key(|(number, _)| *number);
+                if members.len() as u64 != end - start + 1
+                    || members.iter().zip(start..).any(|((number, _), wanted)| *number != wanted) {
                     continue;
                 }
-                let label = format!("{}\u{2013}{}", js_display(start), js_display(end));
-                let mut ranges = members.iter().flat_map(|block| block.ranges.iter().copied()).collect();
+                let mut ranges = members.iter().flat_map(|(_, block)| block.ranges.iter().copied()).collect();
                 ScalarRange::normalize_union(&mut ranges);
-                combined.push(Block { node_id: None, ancestor_ids: Vec::new(), kind, label, place: None,
-                    start: ranges.first().map_or(members[0].start, |range| range.start),
-                    end: ranges.last().map_or(members[members.len() - 1].end, |range| range.end),
-                    text: legal_structure_model::text::membership_text_utf16(&self.source_text, &ranges), ranges });
+                combined.push(Block { node: None, kind, label: format!("{start}\u{2013}{end}").into(),
+                    text: legal_structure_model::text::membership_text_utf16(&self.source_text, &ranges), ranges: ranges.into() });
             }
         }
         combined
     }
 
-    fn scored(&mut self, quote: &str, candidates: &[Candidate], ranges: &[Block]) -> Vec<(f64, Candidate)> {
+    fn scored(&mut self, quote: &str, candidates: &[Candidate], ranges: &[Block<'a>]) -> Vec<(f64, Candidate)> {
         let mut out = Vec::new();
         let quoted = self.reader.quoted(quote);
         for &candidate in candidates {
@@ -1343,17 +1343,17 @@ impl Located<'_> {
             } { out.push((score, candidate)); }
         }
         out.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
-            .then(self.block(ranges, a.1).start.cmp(&self.block(ranges, b.1).start)));
+            .then(self.block(ranges, a.1).start().cmp(&self.block(ranges, b.1).start())));
         out
     }
 
-    fn specific_labels(&self, matches: &[(f64, Candidate)], ranges: &[Block]) -> Vec<QuoteBlockLabel> {
+    fn specific_labels(&self, matches: &[(f64, Candidate)], ranges: &[Block<'a>]) -> Vec<QuoteBlockLabel> {
         let mut labels: Vec<QuoteBlockLabel> = Vec::new();
         for &(score, candidate) in matches {
             let block = self.block(ranges, candidate);
-            if labels.iter().any(|known| known.kind == block.kind && known.shown == block.shown()) { continue; }
+            if labels.iter().any(|known| known.kind == block.kind && known.shown == QuoteBlockLabel::new(block).shown) { continue; }
             if block.kind == QuoteBlockKind::Section && matches.iter().any(|&(other, other_candidate)| {
-                other >= score && within(block, self.block(ranges, other_candidate))
+                other >= score && self.within(block, self.block(ranges, other_candidate))
             }) { continue; }
             labels.push(QuoteBlockLabel::new(block));
         }
@@ -1361,22 +1361,22 @@ impl Located<'_> {
     }
 
     /// The matches whose block holds no other's of its kind scoring as well: a schedule's provision, not the schedule.
-    fn most_specific(&self, matches: Vec<(f64, Candidate)>, ranges: &[Block]) -> Vec<(f64, Candidate)> {
+    fn most_specific(&self, matches: Vec<(f64, Candidate)>, ranges: &[Block<'a>]) -> Vec<(f64, Candidate)> {
         let keep = matches.iter().map(|&(score, candidate)| !matches.iter().any(|&(other, inner)| other >= score
-            && within(self.block(ranges, candidate), self.block(ranges, inner)))).collect::<Vec<_>>();
+            && self.within(self.block(ranges, candidate), self.block(ranges, inner)))).collect::<Vec<_>>();
         matches.into_iter().zip(keep).filter_map(|(found, keep)| keep.then_some(found)).collect()
     }
 
     /// The matches whose block holds the quotation as written, else case aside: those holding it as written first,
     /// then where its words run closest together, then nearest the cited places (`near`), then in order; a block
     /// giving way to one inside it that holds it.
-    fn holding(&self, support: &QuoteSupport, matches: &[(f64, Candidate)], ranges: &[Block], near: &[usize])
+    fn holding(&self, support: &QuoteSupport, matches: &[(f64, Candidate)], ranges: &[Block<'a>], near: &[usize])
         -> Vec<(f64, Candidate)> {
         let found = matches.iter().filter_map(|&(score, candidate)| support.hold(&self.block(ranges, candidate).text)
             .map(|hold| (hold, score, candidate))).collect::<Vec<_>>();
         let mut kept = found.iter().copied().filter(|&(.., candidate)| !found.iter().any(|&(.., inner)|
-            within(self.block(ranges, candidate), self.block(ranges, inner)))).collect::<Vec<_>>();
-        let start = |candidate: Candidate| self.block(ranges, candidate).start;
+            self.within(self.block(ranges, candidate), self.block(ranges, inner)))).collect::<Vec<_>>();
+        let start = |candidate: Candidate| self.block(ranges, candidate).start();
         let distance = |candidate: Candidate| near.iter().map(|&at| start(candidate).abs_diff(at)).min().unwrap_or(0);
         kept.sort_by_key(|&(hold, _, candidate)| (hold, distance(candidate), start(candidate)));
         kept.into_iter().map(|(_, score, candidate)| (score, candidate)).collect()
@@ -1397,9 +1397,9 @@ impl Located<'_> {
         whole.max(self.reader.quote_match_score(quote, &region, 0.0))
     }
 
-    fn resolve(&mut self, quote: &str, scopes: &QuoteScopes) -> Resolution {
+    fn resolve(&mut self, quote: &str, scopes: &Scopes) -> Resolution {
         let text = self.text;
-        let selection = if has_scopes(scopes) { self.cited_selection(scopes) } else { Vec::new() };
+        let selection = if scopes.any() { self.cited_selection(scopes) } else { Vec::new() };
         let scoped = selection.iter().map(|(index, _)| Candidate::Block(*index)).collect::<Vec<_>>();
         let ranges = self.range_blocks(scopes);
         let mut scoped_and_ranges = scoped.clone();
@@ -1423,7 +1423,7 @@ impl Located<'_> {
         let all = (0..self.blocks.len()).map(Candidate::Block).collect::<Vec<_>>();
         let alternates = self.scored(quote, &all, &ranges).into_iter().filter(|(_, c)| !scoped_set.contains(c)).collect::<Vec<_>>();
         // Wording found at several places: a pinpoint that misses most often meant the one nearest it.
-        let near = scoped.iter().map(|&candidate| self.block(&ranges, candidate).start).collect::<Vec<_>>();
+        let near = scoped.iter().map(|&candidate| self.block(&ranges, candidate).start()).collect::<Vec<_>>();
         let mut matches = self.holding(&support, &alternates, &ranges, &near);
         let held = !matches.is_empty();
         // Held nowhere: the closest wording, the cited passage's first.
@@ -1449,7 +1449,7 @@ impl Located<'_> {
             let collapsed = alternates.iter().copied().filter(|&(score, c)| {
                 let block = self.block(&ranges, c);
                 block.kind != QuoteBlockKind::Section || !alternates.iter().any(|&(other, oc)| other >= score
-                    && within(block, self.block(&ranges, oc)))
+                    && self.within(block, self.block(&ranges, oc)))
             }).collect::<Vec<_>>();
             if !collapsed.is_empty() && (collapsed.len() == 1 || collapsed[0].0 - collapsed[1].0 >= 0.1) {
                 matches = collapsed[..1].to_vec();
@@ -1466,7 +1466,7 @@ impl Located<'_> {
                 labels = self.specific_labels(&matches, &ranges);
             }
             let location = if !scoped.is_empty() || target_kind_available { "alternate" }
-                else if has_scopes(scopes) { "scope_unavailable" } else { "uncited" };
+                else if scopes.any() { "scope_unavailable" } else { "uncited" };
             let cited = (location == "alternate" && !scoped_matches.is_empty()).then(|| (scoped_matches[0].0,
                 self.specific_labels(&scoped_matches[..1], &ranges), self.block(&ranges, scoped_matches[0].1).text.clone()));
             return Resolution { location, score: matches[0].0, labels, text: self.block(&ranges, matches[0].1).text.clone(), cited };
@@ -1474,7 +1474,7 @@ impl Located<'_> {
         let score = self.document_score(quote, text);
         if score >= MIN_MATCH {
             let location = if !scoped.is_empty() || target_kind_available { "alternate_document" }
-                else if has_scopes(scopes) { "scope_unavailable_document" } else { "uncited_document" };
+                else if scopes.any() { "scope_unavailable_document" } else { "uncited_document" };
             return Resolution { location, score, labels: Vec::new(), text: text.to_owned(), cited: None };
         }
         Resolution { location: "unmatched", score, labels: Vec::new(), text: String::new(), cited: None }
@@ -1485,7 +1485,7 @@ impl Located<'_> {
         let pages = self.blocks.iter().filter(|block| block.kind.is_page()).cloned().collect::<Vec<_>>();
         let mut hits = Vec::new();
         for block in &pages {
-            if self.reader.quote_match_score(quote, &block.text, 0.0) >= STRONG_MATCH { hits.push(block.shown()); }
+            if self.reader.quote_match_score(quote, &block.text, 0.0) >= STRONG_MATCH { hits.push(QuoteBlockLabel::new(block).shown); }
         }
         if !hits.is_empty() { return pinpoint_summary(&hits, 2); }
         for pair in pages.windows(2) {
@@ -1511,7 +1511,7 @@ impl Located<'_> {
         QuoteCorrection { region, fragment, corrected: corrected_quote(quote, &source) }
     }
 
-    fn locate(&mut self, quote: &str, scopes: &QuoteScopes) -> QuoteLocation {
+    fn locate(&mut self, quote: &str, scopes: &Scopes) -> QuoteLocation {
         let text = self.text;
         let mut resolution = if self.blocks.is_empty() {
             Resolution { location: "uncited_document", score: self.document_score(quote, text), labels: Vec::new(),
@@ -1543,50 +1543,30 @@ impl Located<'_> {
     }
 }
 
-/// How JavaScript writes a whole number held as a double.
-fn js_display(value: f64) -> String {
-    if value.fract() == 0.0 && value.abs() < 1e21 { format!("{}", value as i64) } else { format!("{value}") }
-}
-
-/// Every quotation of `quotes` located in `text`, its blocks given by their UTF-16 offsets, and with `compare`,
-/// compared with the source's words where it was found (the whole text where it was not).
-pub fn locate_quotes_in(text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate], compare: bool) -> Vec<LocatedQuote> {
-    locate_quotes_kept(&mut None, text, blocks, quotes, compare)
-}
-
-/// [`locate_quotes_in`], from what `kept` holds of the same text and blocks, and leaving there what it read.
-fn locate_quotes_kept(kept: &mut Option<LocatorState>, text: &str, blocks: &[QuoteBlockInput], quotes: &[QuoteToLocate],
-    compare: bool) -> Vec<LocatedQuote> {
+/// Every quotation of `quotes` located in `text` (the document's) among `blocks`, and with `compare`, compared with the
+/// source's words where it was found (the whole text where it was not); from what `kept` read of the same blocks, and
+/// with what it read now.
+fn locate_quotes_kept(kept: Option<LocatorState>, document: &DocumentStructure, text: &str, mut blocks: Vec<Block>,
+    quotes: &[QuoteToLocate], compare: bool) -> (Vec<LocatedQuote>, LocatorState) {
     let source_text = ScalarText::new(text);
     let trimmed = js_trim(text);
     let whole_at = (trimmed.as_ptr() as usize, trimmed.len());
-    let ranges_of = |block: &QuoteBlockInput| {
-        let mut ranges = block.ranges.clone();
-        ScalarRange::normalize_union(&mut ranges);
-        ranges
-    };
-    // What was kept is read only for the same text and the same blocks.
-    let state = kept.take().filter(|state| state.whole == whole_at && state.blocks.len() == blocks.len()
-        && state.blocks.iter().zip(blocks).all(|(kept, block)| kept.label == block.label && kept.place == block.place && kept.kind == block.kind
-            && kept.start == block.start && kept.end == block.end && kept.node_id == block.node_id
-            && kept.ancestor_ids == block.ancestor_ids && kept.ranges == ranges_of(block)));
-    let (reader, blocks, prepared, whole, mut compared) = match state {
-        Some(state) => (state.reader, state.blocks, state.prepared, state.whole_prepared, state.whole_compared),
+    let (reader, prepared, whole, mut compared) = match kept {
+        Some(state) => {
+            for (block, text) in blocks.iter_mut().zip(state.texts) { block.text = text; }
+            (state.reader, state.prepared, state.whole_prepared, state.whole_compared)
+        }
         None => {
-            let blocks: Vec<Block> = blocks.iter().map(|block| {
-                let ranges = ranges_of(block);
-                Block { node_id: block.node_id.clone(), ancestor_ids: block.ancestor_ids.clone(),
-                    kind: block.kind, label: block.label.clone(), place: block.place.clone(), start: block.start, end: block.end,
-                    text: legal_structure_model::text::membership_text_utf16(&source_text, &ranges), ranges }
-            }).collect();
-            let prepared = vec![None; blocks.len()];
-            (Reader { whole: Some(whole_at), ..Reader::default() }, blocks, prepared, None, None)
+            for block in &mut blocks {
+                block.text = legal_structure_model::text::membership_text_utf16(&source_text, &block.ranges);
+            }
+            (Reader { whole: Some(whole_at), ..Reader::default() }, vec![None; blocks.len()], None, None)
         }
     };
-    let mut located = Located { reader, text, source_text, blocks, prepared, whole };
+    let mut located = Located { reader, document, by_id: Default::default(), text, source_text, blocks, prepared, whole };
     // A quotation compared with the whole text reads its index and words, built once.
     let out = quotes.iter().map(|item| {
-        let found = located.locate(&item.quote, &item.scopes);
+        let found = located.locate(&item.quote, &Scopes::of(&item.pinpoints));
         let passage = [found.correction.region.as_str(), found.text.as_str()].into_iter().find(|value| !value.is_empty())
             .unwrap_or(text);
         let comparison = if !compare { None } else if passage == text {
@@ -1597,8 +1577,8 @@ fn locate_quotes_kept(kept: &mut Option<LocatorState>, text: &str, blocks: &[Quo
         LocatedQuote { comparison, found }
     }).collect::<Vec<_>>();
     let Located { reader, blocks, prepared, whole, .. } = located;
-    *kept = Some(LocatorState { whole: whole_at, reader, blocks, prepared, whole_prepared: whole, whole_compared: compared });
-    out
+    let texts = blocks.into_iter().map(|block| block.text).collect();
+    (out, LocatorState { reader, texts, prepared, whole_prepared: whole, whole_compared: compared })
 }
 
 // The quotation rewritten to the source's words, and what differs: Beaver's authoritiesDiscrepancy.ts (editorialQuote,
@@ -1648,18 +1628,18 @@ fn editorial_equivalent(value: &str) -> String {
         None => normalized,
     }
 }
-/// One UTF-16 unit, lower-cased as JavaScript's `s[0].toLowerCase()` reads it.
-fn unit_lower(unit: u16) -> String {
-    String::from_utf16_lossy(&[unit]).to_lowercase()
-}
 /// The same word but for the case of its first letter.
-fn first_letter_case(written: &[u16], other: &[u16]) -> bool {
-    !written.is_empty() && written.len() == other.len() && written[1..] == other[1..]
-        && unit_lower(written[0]) == unit_lower(other[0])
+fn first_letter_case(written: &str, other: &str) -> bool {
+    let (mut written, mut other) = (written.chars(), other.chars());
+    match (written.next(), other.next()) {
+        (Some(first), Some(other_first)) => written.as_str() == other.as_str() && first.to_lowercase().eq(other_first.to_lowercase()),
+        _ => false,
+    }
 }
 /// `[x]` around the first letter of `written`.
-fn bracket_first(written: &[u16]) -> String {
-    format!("[{}]{}", slice16(written, 0, 1), slice16(written, 1, written.len()))
+fn bracket_first(written: &str) -> String {
+    let mut chars = written.chars();
+    chars.next().map_or_else(String::new, |first| format!("[{first}]{}", chars.as_str()))
 }
 
 fn join_tokens(values: &[String]) -> String {
@@ -1690,17 +1670,16 @@ fn internal_insertion(authored: &str, source: &str) -> String {
     if authored.is_empty() || source.is_empty() || authored.contains(['[', ']']) || source.contains(['[', ']']) {
         return String::new();
     }
-    // Code points aligned, UTF-16 sliced, as the oracle does.
-    let edits = sequence_opcodes(&source.chars().collect::<Vec<_>>(), &authored.chars().collect::<Vec<_>>());
+    let (source, authored) = (source.chars().collect::<Vec<_>>(), authored.chars().collect::<Vec<_>>());
+    let edits = sequence_opcodes(&source, &authored);
     let inserts = edits.iter().filter(|edit| edit.0 == "insert").collect::<Vec<_>>();
     if inserts.len() != 1 || edits.iter().any(|edit| edit.0 != "equal" && edit.0 != "insert") { return String::new(); }
     let equal: usize = edits.iter().filter(|edit| edit.0 == "equal").map(|edit| edit.2 - edit.1).sum();
     let inserted = inserts[0].4 - inserts[0].3;
-    let length = utf16_len(source);
+    let length = source.len();
     if equal < 3.min(length) || inserted as f64 > 4f64.max(length as f64 / 2.0 + 1.0) { return String::new(); }
-    let (source, authored) = (source.encode_utf16().collect::<Vec<_>>(), authored.encode_utf16().collect::<Vec<_>>());
-    edits.iter().map(|&(tag, a, b, c, d)| if tag == "equal" { slice16(&source, a, b) }
-        else { format!("[{}]", slice16(&authored, c, d)) }).collect()
+    edits.iter().map(|&(tag, a, b, c, d)| if tag == "equal" { source[a..b].iter().collect() }
+        else { format!("[{}]", authored[c..d].iter().collect::<String>()) }).collect()
 }
 
 fn format_authored(authored: &[String], source: Option<&[String]>) -> Vec<String> {
@@ -1708,8 +1687,7 @@ fn format_authored(authored: &[String], source: Option<&[String]>) -> Vec<String
     if let Some([s]) = source {
         let a = &authored[0];
         if authored.len() == 1 && SINGLE_WORD.is_match(a) && SINGLE_WORD.is_match(s) {
-            let (written, other) = (a.encode_utf16().collect::<Vec<_>>(), s.encode_utf16().collect::<Vec<_>>());
-            if first_letter_case(&written, &other) && written[0] != other[0] { return vec![bracket_first(&written)]; }
+            if first_letter_case(a, s) && a.chars().next() != s.chars().next() { return vec![bracket_first(a)]; }
             let internal = internal_insertion(a, s);
             if !internal.is_empty() { return vec![internal]; }
         }
@@ -1736,11 +1714,10 @@ pub fn editorial_quote(authored_quote: &str, source_quote: &str) -> String {
         match tag {
             "equal" => for (index, item) in source[i1..i2].iter().enumerate() {
                 let written = &authored[j1 + index];
-                let units = written.encode_utf16().collect::<Vec<_>>();
                 output.push(if item == written || INITIAL.is_match(written)
                         || DOUBLE_QUOTES.contains(&item.as_str()) || SINGLE_QUOTES.contains(&item.as_str()) { written.clone() }
                     else if SINGLE_WORD.is_match(item) && SINGLE_WORD.is_match(written)
-                        && first_letter_case(&units, &item.encode_utf16().collect::<Vec<_>>()) { bracket_first(&units) }
+                        && first_letter_case(written, item) { bracket_first(written) }
                     else { item.clone() });
             },
             // Source words left out inside the quotation are an ellipsis; those before or after it are not quoted.
@@ -1874,28 +1851,29 @@ pub fn quote_text_comparison(authored: &str, source: &str) -> QuoteComparison {
 /// verbatim repair is looked for, read once for every quotation compared with it.
 struct ComparedText {
     page: legal_document_query::TextFragmentPage,
-    units: Vec<u16>,
+    coordinates: ScalarCoordinates,
     words: std::cell::OnceCell<SourceWords>,
 }
 
 impl ComparedText {
     fn new(source: &str) -> Self {
         ComparedText { page: legal_document_query::TextFragmentPage::new(source.to_owned()),
-            units: source.encode_utf16().collect(), words: Default::default() }
+            coordinates: ScalarCoordinates::new(source), words: Default::default() }
     }
 }
 
 fn quote_text_comparison_in(authored: &str, text: &ComparedText) -> QuoteComparison {
-    let (source, units) = (text.page.text(), &text.units);
+    let source = text.page.text();
+    let units = ScalarText::with_coordinates(source, &text.coordinates);
     let plan = legal_document_query::text_fragment_plan_in(source, &text.page, &[authored.to_owned()], false, false, false);
     let matches = if plan.source_safe_complete { plan.source_word_intervals.iter().map(|interval| QuoteComparisonMatch {
-        start: interval.start, end: interval.end, text: slice16(&units, interval.start, interval.end) }).collect() }
+        start: interval.start, end: interval.end, text: slice_utf16(&units, interval.start, interval.end).to_owned() }).collect() }
         else { Vec::new() };
     let candidate = if matches.is_empty() {
         verbatim_repair_in(authored, source, text.words.get_or_init(|| SourceWords::new(source)))
     } else {
         let start = matches.iter().map(|found: &QuoteComparisonMatch| found.start).min().unwrap_or(0);
-        Some(slice16(&units, start, matches.iter().map(|found| found.end).max().unwrap_or(0)))
+        Some(slice_utf16(&units, start, matches.iter().map(|found| found.end).max().unwrap_or(0)).to_owned())
     };
     let present = candidate.as_deref().filter(|value| !value.is_empty());
     let (editorial, changes) = match present {

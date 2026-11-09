@@ -618,10 +618,6 @@ struct Family {
     count: &'static str,
 }
 
-fn roman_value(token: &str) -> Option<u32> {
-    legal_structure_model::layout::roman_value(token).filter(|value| *value < 90)
-}
-
 /// A marker's family and the value it counts, read whole: "(a)", "1.", "iv)", "[12]", "2.3", "•".
 /// A single letter that is also a roman numeral reads as a letter when `letter` says the letters
 /// of its brackets stand open at the letter before it.
@@ -675,7 +671,8 @@ fn marker_family(
     }
     let single = inner.chars().count() == 1 && inner.chars().all(|c| c.is_ascii_alphabetic());
     let letter_value = |c: char| u32::from(c.to_ascii_lowercase()) - u32::from('a') + 1;
-    if let Some(value) = roman_value(inner) {
+    // (A marker's numeral counts below 90.)
+    if let Some(value) = legal_structure_model::layout::roman_value(inner).filter(|value| *value < 90) {
         let upper = inner.chars().all(|c| c.is_ascii_uppercase());
         let lower = inner.chars().all(|c| c.is_ascii_lowercase());
         if upper || lower {

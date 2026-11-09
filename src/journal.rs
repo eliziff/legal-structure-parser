@@ -113,7 +113,8 @@ fn value_text(value: Option<&Value>) -> String {
     }
 }
 
-fn page_marker(line: &str) -> Option<&str> {
+/// The label of a line that is a page's literal marker ("[page 12]"), trimmed: at most 40 bytes and no bracket.
+pub(crate) fn page_marker(line: &str) -> Option<&str> {
     let label = literal_page_marker(line, false)?.trim();
     (!label.is_empty() && label.len() <= 40 && !label.contains(']')).then_some(label)
 }
