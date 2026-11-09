@@ -5,7 +5,7 @@ use crate::case_outline::{citation_title, front_line};
 use crate::statute::{markdown_line, marginal_note_shaped};
 use crate::{
     provision_mark, utf16_len, Derivation, DocumentStructure, EngineError, NodeKind, PrimaryRole, ProviderTextInput,
-    ProviderTextSourceKind, ScalarRange, StructureNode,
+    ProviderTextSourceKind, ScalarRange, ScalarText, StructureNode,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -57,11 +57,12 @@ pub(crate) fn add_statute_nodes(structure: &mut DocumentStructure) {
         unit += utf16_len(raw);
     }
     let length = unit;
-    let provisions = structure.nodes.iter()
+    let mut provisions = structure.nodes.iter()
         .filter(|node| node.kind == NodeKind::Section)
         .map(|node| node.range.start)
         .collect::<Vec<_>>();
-    let first_provision = provisions.iter().copied().min().unwrap_or(length);
+    provisions.sort_unstable();
+    let first_provision = provisions.first().copied().unwrap_or(length);
     let mut added = Vec::<StructureNode>::new();
     let mut open = Vec::<(usize, String, usize)>::new();
     let mut opened = false;
@@ -71,7 +72,8 @@ pub(crate) fn add_statute_nodes(structure: &mut DocumentStructure) {
         let marks = trimmed.chars().take_while(|c| *c == '#').count();
         let words_at = |byte: usize| line.start + lead + utf16_len(&trimmed[..byte]);
         let markdown = marks > 0 && trimmed[marks..].starts_with(' ');
-        if markdown && provisions.iter().any(|&start| line.start <= start && start < line.end.max(line.start + 1)) {
+        if markdown && provisions.get(provisions.partition_point(|&start| start < line.start))
+            .is_some_and(|&start| start < line.end.max(line.start + 1)) {
             continue;
         }
         if markdown && marks == 1 || !markdown && !opened && line.end <= first_provision && citation_title(markdown_line(line.text).0) {
@@ -102,17 +104,17 @@ pub(crate) fn add_statute_nodes(structure: &mut DocumentStructure) {
         open.push((marks, id, level));
     }
     // A heading heads what follows it until the next heading or provision.
-    let starts = added.iter().filter(|node| node.kind == NodeKind::Heading).map(|node| node.range.start)
+    let mut starts = added.iter().filter(|node| node.kind == NodeKind::Heading).map(|node| node.range.start)
         .chain(provisions.iter().copied()).collect::<Vec<_>>();
+    starts.sort_unstable();
     for node in added.iter_mut().filter(|node| node.kind == NodeKind::Heading) {
         let start = node.range.start;
-        node.range.end = starts.iter().copied().filter(|&next| next > start).min().unwrap_or(length);
+        node.range.end = starts.get(starts.partition_point(|&next| next <= start)).copied().unwrap_or(length);
     }
     // Each provision's marginal note.
-    let printed = |node: &StructureNode| node.marker_range.and_then(|range| {
-        let units = text.encode_utf16().skip(range.start).take(range.end - range.start).collect::<Vec<_>>();
-        Some(String::from_utf16_lossy(&units))
-    });
+    let indexed = ScalarText::new(text);
+    let printed = |node: &StructureNode| node.marker_range
+        .and_then(|range| indexed.slice_utf16(range.start..range.end));
     let mut noted = HashSet::new();
     let ids = structure.nodes.iter().enumerate().map(|(at, node)| (node.id.clone(), at)).collect::<HashMap<_, _>>();
     let mut notes = Vec::new();
@@ -126,7 +128,7 @@ pub(crate) fn add_statute_nodes(structure: &mut DocumentStructure) {
             continue;
         }
         let start = node.range.start;
-        let Some(above) = lines.iter().rposition(|line| line.end <= start && line.start < start) else { continue };
+        let Some(above) = lines.partition_point(|line| line.end <= start && line.start < start).checked_sub(1) else { continue };
         let Some(line) = lines[..=above].iter().rev().find(|line| !line.text.trim().is_empty()) else { continue };
         let (_, emphasized) = markdown_line(line.text);
         if line.text.trim_start().starts_with('#') || !marginal_note_shaped(line.text) || !top && !emphasized || !noted.insert(line.start) {
