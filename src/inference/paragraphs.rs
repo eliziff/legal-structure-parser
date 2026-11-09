@@ -362,8 +362,16 @@ fn rooted_on_author(text: &ScalarText<'_>, chain: &mut Vec<Marker>) {
 
 /// An excerpt of a decision opening mid-count ("[42]", "[43]", an authority's cited pages): where no count reads from
 /// near 1, its bracketed numbers rising in the text's order by one or two (a paragraph the excerpt skips), at least two.
-fn excerpt_count(chain: &mut Vec<Marker>, candidates: &[Marker]) {
-    let mut sorted = candidates.to_vec();
+fn excerpt_count(text: &ScalarText<'_>, chain: &mut Vec<Marker>, candidates: &[Marker]) {
+    if candidates.len() < 2 {
+        return;
+    }
+    // Reported years can rise by one too; citation text establishes no paragraph count.
+    let citations = crate::analysis::citation_spans(text.value);
+    let mut sorted = candidates.iter().filter(|marker| {
+        let start = text.byte_of_utf16(marker.start);
+        !citations.iter().any(|span| span.core_range.contains(&start))
+    }).cloned().collect::<Vec<_>>();
     sorted.sort_by_key(|marker| marker.start);
     let mut best: Vec<Marker> = Vec::new();
     let mut run: Vec<Marker> = Vec::new();
@@ -424,12 +432,12 @@ pub(super) fn rooted_chain(candidates: &[Marker]) -> (Vec<Marker>, f64) {
 
 /// The case profile's count, including its existing recovery of a lost opening or a mid-count excerpt.
 /// Glued labels are evaluated by this same reading, so a count recovered after them can retain them.
-fn paragraph_chain(candidates: &[Marker], style: MarkerStyle) -> Vec<Marker> {
+fn paragraph_chain(text: &ScalarText<'_>, candidates: &[Marker], style: MarkerStyle) -> Vec<Marker> {
     let (mut chain, mut score) = rooted_chain(candidates);
     extend_over_gaps(&mut chain, candidates);
     lost_root(&mut chain, &mut score, candidates);
     if style == MarkerStyle::Bracket && chain.is_empty() {
-        excerpt_count(&mut chain, candidates);
+        excerpt_count(text, &mut chain, candidates);
     }
     chain
 }
@@ -595,7 +603,7 @@ pub(super) fn bridge_glued_labels(
     }
     let pool = candidates.iter().chain(&glued)
         .filter(|marker| marker.start < until).cloned().collect::<Vec<_>>();
-    let longer = paragraph_chain(&pool, MarkerStyle::Bracket);
+    let longer = paragraph_chain(text, &pool, MarkerStyle::Bracket);
     if longer.len() <= chain.len() {
         return;
     }
@@ -684,15 +692,34 @@ fn extend_over_gaps(chain: &mut Vec<Marker>, candidates: &[Marker]) {
 /// J.A.: I agree.").
 pub(super) fn endnote_shaped(text: &ScalarText<'_>, chain: &[Marker]) -> bool {
     let length = text.utf16_len();
-    chain.len() >= 8
-        && length > 0
-        && chain[0].start as f64 > length as f64 * 0.5
+    let Some(first) = chain.first() else { return false };
+    let tail = length > 0
+        && first.start as f64 > length as f64 * 0.5
         && chain
             .iter()
             .filter(|value| value.start as f64 > length as f64 * 0.75)
             .count() as f64
             / chain.len() as f64
-            >= 0.7
+            >= 0.7;
+    if !tail || chain.len() >= 8 {
+        return tail;
+    }
+    // A short list in the tail is supported by its first note's actual call in the preceding body.
+    // Use the same pairer that materializes the notes, rather than promoting them to paragraphs.
+    if first.number != 1 {
+        return false;
+    }
+    let index = text.lines();
+    let note_start = index[index.partition_point(|line| line[2] <= first.start) - 1][2];
+    let notes = crate::text_notes::text_note_blocks(text, note_start, &HashSet::new());
+    let Some(opening) = notes.iter().find(|note| note.marker_range.is_some_and(|range| range.start == first.start)) else {
+        return false;
+    };
+    let body = |note: &StructureNode| text.slice_utf16(note.range.start..note.range.end)
+        .expect("note body is bounded").trim();
+    // Flattened provider text may print a note twice; its paired printing supports the same labelled body.
+    notes.iter().any(|note| note.label == opening.label && body(note) == body(opening)
+        && note.calls.iter().any(|call| call.end <= note_start))
 }
 
 /// Where another count from 1 opens among a rooted count's other numbers: "[1]" followed by "[2]"
@@ -1256,7 +1283,7 @@ pub(super) fn detect_paragraphs(
             // the notes. A paragraph quoting another decision's "[1]" to "[3]" opens no such count.
             let list = note_list_start(text, &candidates).unwrap_or(usize::MAX);
             let mut before = candidates.iter().filter(|marker| marker.start < list).cloned().collect::<Vec<_>>();
-            let mut chain = paragraph_chain(&before, style);
+            let mut chain = paragraph_chain(text, &before, style);
             if style == MarkerStyle::Bracket {
                 bridge_glued_labels(text, &mut before, &mut chain, list);
                 let held = candidates.iter().map(|marker| marker.start).collect::<HashSet<_>>();

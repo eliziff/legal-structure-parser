@@ -42,13 +42,17 @@ pub(super) fn detect_case(
 mod tests {
     use crate::{provider_text_document_structure, NodeKind, ProviderTextInput, ProviderTextSourceKind};
 
-    fn paragraphs(text: &str) -> Vec<String> {
+    fn reading(text: &str) -> crate::DocumentStructure {
         provider_text_document_structure(ProviderTextInput::new(
             "2031 ABCA 700",
             ProviderTextSourceKind::Cases,
             text,
         ))
         .unwrap()
+    }
+
+    fn paragraphs(text: &str) -> Vec<String> {
+        reading(text)
         .nodes
         .into_iter()
         .filter(|node| node.kind == NodeKind::Paragraph)
@@ -88,6 +92,55 @@ mod tests {
                 (first..=first + 2).map(|number| number.to_string()).collect::<Vec<_>>(),
                 "count opening at {first}",
             );
+        }
+    }
+
+    #[test]
+    fn called_tail_notes_do_not_become_the_decisions_paragraphs() {
+        let preface = "The unnumbered reasons address the parties' procedural submissions and explain \
+            why the hearing complied with the governing legislation. ".repeat(8);
+        let text = format!("REASONS FOR JUDGMENT\n{preface}\n\
+            The court considers the notice issue in light of the earlier decision[1]. \
+            The applicant received written notice and an opportunity to answer the evidence before the hearing. \
+            The second authority explains the procedural requirements[2]. \
+            The court has considered the parties' submissions and rejects the remaining objection for the reasons \
+            set out in the third authority[3]. The motion is dismissed with costs.\n\
+            [1] Harbour v. Board, [2029] 1 C.T.C. 140, explains the requirements for notice before a hearing.\n\
+            [2] River v. Council, [2030] 2 C.T.C. 250, discusses the opportunity to answer the evidence.\n\
+            [3] Lake v. Tribunal, [2031] 3 C.T.C. 360, addresses the remaining objection raised by the applicant.");
+        let document = reading(&text);
+        assert!(!document.nodes.iter().any(|node| node.kind == NodeKind::Paragraph && node.label.is_some()));
+        let notes = document.nodes.iter().filter(|node| node.kind == NodeKind::Endnote).collect::<Vec<_>>();
+        assert_eq!(notes.iter().map(|note| note.label.as_deref().unwrap()).collect::<Vec<_>>(), ["1", "2", "3"]);
+        assert!(notes.iter().all(|note| !note.calls.is_empty()));
+    }
+
+    #[test]
+    fn reported_years_do_not_replace_a_parenthesized_paragraph_count() {
+        let body = "The court considered the evidence and the parties' submissions before deciding \
+            whether the notice complied with the governing legislation and the requirements of procedural fairness.";
+        let mut lines = (1..=16).map(|number| format!("({number}) {body}")).collect::<Vec<_>>();
+        lines.insert(11, "[2030] N.S.J. No.483 (C.A.) (Q.L.) and Harbour v Board,".to_owned());
+        lines.insert(12, "[2031] N.S.J. No.206 (C.A.) (Q.L.).".to_owned());
+        assert_eq!(paragraphs(&lines.join("\n")), (1..=16).map(|number| number.to_string()).collect::<Vec<_>>());
+        // High paragraph numbers remain readable when their lines are paragraphs, rather than citations.
+        assert_eq!(paragraphs(&format!("[2030] {body}\n[2031] {body}")), ["2030", "2031"]);
+    }
+
+    #[test]
+    fn tremblay_retains_its_called_reporter_footnotes() {
+        let text = include_str!("fixtures/1946-scc-tremblay.txt");
+        let coordinates = crate::ScalarText::new(text);
+        let document = provider_text_document_structure(ProviderTextInput::new(
+            "[1946] SCR 448", ProviderTextSourceKind::Cases, text,
+        )).unwrap();
+        assert!(!document.nodes.iter().any(|node| node.kind == NodeKind::Paragraph && node.label.is_some()));
+        let notes = document.nodes.iter().filter(|node| node.kind == NodeKind::Endnote).collect::<Vec<_>>();
+        let labels = notes.iter().filter_map(|note| note.label.as_deref()).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(labels.into_iter().collect::<Vec<_>>(), ["1", "2", "3"]);
+        for (label, citation) in [("1", "[1923] S.C.R. 1."), ("2", "[1928] S.C.R. 154."), ("3", "[1928] S.C.R. 396.")] {
+            assert!(notes.iter().any(|note| note.label.as_deref() == Some(label) && !note.calls.is_empty()
+                && coordinates.slice_utf16(note.range.start..note.range.end).unwrap().contains(citation)));
         }
     }
 }

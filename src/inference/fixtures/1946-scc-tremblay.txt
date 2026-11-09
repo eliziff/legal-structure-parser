@@ -1,0 +1,52 @@
+Tremblay v. Beaumont
+Collection
+Supreme Court Judgments
+Date
+1946-06-03
+Report
+[1946] SCR 448
+Judges
+Rinfret, Thibaudeau; Hudson, Albert Blellock; Rand, Ivan Cleveland; Kellock, Roy Lindsay; Estey, James Wilfred
+On appeal from
+Quebec
+Subjects
+Appeal
+Decision Content
+Supreme Court of Canada
+Tremblay v. Beaumont, [1946] S.C.R. 448
+Date: 1946-06-03
+Léon Tremblay (Plaintiff) Appellant;
+and
+Antoine Beaumont (Defendant) Respondent.
+1946: May 21, 22; 1946: June 3.
+Present: Rinfret C.J. and Hudson, Rand, Kellock and Estey JJ.
+ON APPEAL FROM THE COURT OF KING'S BENCH, APPEAL SIDE, PROVINCE OF QUBEC.
+Appeal—Jurisdiction—Amount in controversy—Inclusion of interest on judgment in computing amount—Principle applies whether judgment of first instance is affirmed or reversed by appellate court.
+The interest running on the judgment of the court of first instance up to the date of the judgment of the appellate court must be included in computing "the amount or value of the matter in controversy in the appeal" to this Court.—Supreme Court Act, s.s. 39, 40.
+Such principle does apply, not only when the judgment of a court of first instance, allowing less than $2,000, has been affirmed by an appellate court, but also where such a judgment has been reversed by that court.
+Bridge v. Eggett ([1928] S.C.R. 154) and Dominion Cartage Company v. Cloutier ([1928] S.C.R. 396) ref.
+APPEAL from the judgment of the Court of King's Bench, appeal side, province of Quebec, reversing by a majority the judgment of the Superior Court, Boulanger J. and dismissing the appellant's action. The judgment of the trial judge condemned the respondent to pay to the appellant an amount of $1,942.50 for damages.
+Louis A. Pouliot K.C. and F. Dorion K.C. for the appellant.
+Pierre de Varennes for the respondent.
+The judgment of the Court was delivered by The Chief Justice:—Le savant procureur de l'intimé, au cours de sa plaidoirie, a soulevé pour la première fois une objection à la juridiction de la Cour pour entendre cette cause.
+Il n'a pas nié que le montant total en capital et intérêt, qui est en question dans l'appel, excède $2,000.00, suivant les exigences de l'article 39 de la Loi de la Cour Suprême du Canada, si l’on tient compte du jugement rendu par la Cour Supérieure. Mais il a prétendu que, comme la Cour du Banc du Roi (en Appel) avait infirmé le jugement de la Cour Supérieure et avait rejeté l'action, il n'existait plus de condamnation pécuniaire et, par conséquent, l'appel devant cette Cour n'était plus justifié par les prescriptions de cet article 39.
+A l'appui de sa prétention, il a cité trois jugements de cette Cour: Hamilton v. Evans,[1]; Bridge v. Eggett,[2]; Dominion Cartage Co. v. Cloutier,[3]. Mais nous n'avons vraiment à tenir compte que de ces deux derniers arrêts car ils sont postérieurs au premier; et, comme la Cour l'a fait remarquer dans l'affaire de Dominion Cartage Company3, la décision re Bridge v. Eggett2 a mis de côté l'opinion qui avait été exprimée dams Hamilton v. Evans1.
+L'article 40 de la Loi de la Cour Suprême spécifie que la computation du montant ou l'estimation de la valeur en litige ne doit pas comprendre l'intérêt subséquent à la date du jugement dont l'appel est porté devant cette Cour.
+En vertu du principe inclusio unius fit exclusio alterius, cela veut dire que, par conséquent, l'intérêt pour la période qui s'étend depuis le jugement de la cour de première instance jusqu'à la date du jugement de la cour d'appel, doit être compris pour calculer le montant ou la valeur en litige dans l'appel à cette Cour. C'est toujours ainsi que depuis un grand nombre d'années cette section a été interprétée pour définir la juridiction de la Cour Suprême, et c'est ainsi que doivent être compris les arrêts de Bridge v. Eggett2 et de Dominion Cartage Co. v. Cloutier3.
+Si, dans le "jugé" qui figure en tête de ces deux causes dans les rapports de 1928, l'on a employé les expressions
+where the judgment of a court of first instance for recovery of a sum of money is affirmed by an appellate court.
+c'est uniquement parce que, dans chacune de ces causes, la cour d'appel avait confirmé le jugement de première instance. Il n'y avait nulle intention de déclarer que le principe invoqué dans ces deux causes ne s'appliquait qu'aux cas où la cour d'appel avait confirmé le jugement de première instance. Le principe s'applique également lorsque la cour d'appel a infirmé le premier jugement.
+En effet, s'il fallait en décider autrement, il faudrait dire que lorsqu'une action de plus de $2,000.00 a été rejetée par la Cour de première instance, il n'y aurait plus moyen de porter cette cause en appel devant la Cour Suprême. D'ailleurs, les termes dont s'est servi le juge en chef rejetant, au nom de la Cour, les deux motions dans ces causes invoquant le défaut de juridiction, montrent clairement
+that interest in the judgment of the trial court up to the date of the judgment of the appellate court, must be included in computing the amount in controversy in the appeal.
+Nous devons donc maintenir que cette Cour a juridiction en l'espèce.
+Reporter's note:—On the merits this Court held that the appellate court was not justified, upon the facts and circumstances of the case, in setting aside the judgment of the trial court. Consequently, the appeal to this Court was allowed and the judgment of the Superior Court was restored, with costs in all courts to be paid by the respondent.
+Solicitors for the appellant: Dorion, Dorion & Robitaille.
+Solicitor for the respondent: Pierre de Varennes.
+[1] [1923] S.C.R. 1.
+[2] [1928] S.C.R. 154.
+[3] [1928] S.C.R. 396.
+3 [1928] S.C.R. 396.
+2 [1928] S.C.R. 154.
+1 [1923] S.C.R. 1.
+2 [1928] S.C.R. 154.
+3 [1928] S.C.R. 396.
