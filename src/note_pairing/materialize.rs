@@ -162,7 +162,14 @@ pub(super) fn materialize(
         if pair.refs.is_empty() {
             pairing.diagnostics.push(Diagnostic::new("FOOTNOTE_UNMATCHED_LABEL", Some(label_line.page_index)));
         }
-        let kind = if pair.endnote { NodeKind::Endnote } else { NodeKind::Footnote };
+        // The source's physical note kind survives a document-wide numbering run. That run's
+        // inferred endnote mode is only a fallback for labels recovered outside a note region.
+        let kind = match label_line.note_mode() {
+            Some(NoteMode::Footnote) => NodeKind::Footnote,
+            Some(NoteMode::Endnote) => NodeKind::Endnote,
+            _ if pair.endnote => NodeKind::Endnote,
+            _ => NodeKind::Footnote,
+        };
         let range = ranges.first().zip(ranges.last()).map_or(ScalarRange { start: label_range.end, end: label_range.end },
             |(first, last)| ScalarRange { start: first.start, end: last.end });
         let id = format!("fnv2-pair-LEGALPDF-document-{:06}", pairing.notes.len() + 1);
