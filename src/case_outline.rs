@@ -77,11 +77,11 @@ pub(crate) fn judgment_paragraphs(text: &str) -> Vec<(usize, Vec<ScalarRange>)> 
     // paragraph's (a stray "272" among a few low numbers), and a text none of whose numbers do numbers none.
     let numbers: std::collections::BTreeSet<usize> = paragraphs.iter().map(|(number, _)| *number).collect();
     let counted = numbers.iter().copied().filter(|&number| numbers.range(..=number).count() * 5 >= number * 4).max();
-    // A text none of whose numbers count from 1 that prints one unbroken run of them is an excerpt opening mid-count
-    // ("[42]", "[43]"): its run is its count.
+    // A text none of whose numbers count from 1 that prints one run of them, each one or two past the last, is an excerpt
+    // opening mid-count ("[42]", "[43]"): its run is its count.
     let excerpt = || {
-        let (first, last) = (*numbers.first()?, *numbers.last()?);
-        (numbers.len() >= 2 && last - first + 1 == numbers.len()).then_some(last)
+        let rising = numbers.iter().zip(numbers.iter().skip(1)).all(|(a, b)| b - a <= 2);
+        (numbers.len() >= 2 && rising).then(|| *numbers.last().expect("two numbers"))
     };
     let reach = counted.or_else(excerpt).unwrap_or(0);
     paragraphs.retain(|(number, _)| *number <= reach);

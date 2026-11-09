@@ -351,14 +351,14 @@ fn rooted_on_author(text: &ScalarText<'_>, chain: &mut Vec<Marker>) {
 }
 
 /// An excerpt of a decision opening mid-count ("[42]", "[43]", an authority's cited pages): where no count reads from
-/// near 1, its bracketed numbers each the last plus one, in the text's order, at least two of them.
+/// near 1, its bracketed numbers rising in the text's order by one or two (a paragraph the excerpt skips), at least two.
 fn excerpt_count(chain: &mut Vec<Marker>, candidates: &[Marker]) {
     let mut sorted = candidates.to_vec();
     sorted.sort_by_key(|marker| marker.start);
     let mut best: Vec<Marker> = Vec::new();
     let mut run: Vec<Marker> = Vec::new();
     for marker in sorted {
-        if run.last().is_some_and(|last| marker.number != last.number + 1) {
+        if run.last().is_some_and(|last| !(last.number + 1..=last.number + 2).contains(&marker.number)) {
             run.clear();
         }
         run.push(marker);
@@ -1415,7 +1415,15 @@ pub(super) fn detect_paragraphs(
                 && (rooted || first_utf16 <= 1_200 || start <= 0.5)
                 // A rooted count standing alone may be an endorsement of a few short paragraphs ("[1] The motion
                 // judge did not err …", "[2] Accordingly, the appeal is dismissed …").
-                && if rooted { counts.iter().sum::<usize>() >= 20 } else { counts.iter().copied().max().unwrap_or(0) >= 30 }
+                && if rooted {
+                    counts.iter().sum::<usize>() >= 20
+                } else if hypothesis.style == MarkerStyle::Bracket {
+                    // Bracketed numbers opening their lines are a decision's paragraphs, an excerpt of a few short ones
+                    // too: no list is numbered so.
+                    counts.iter().sum::<usize>() >= 10
+                } else {
+                    counts.iter().copied().max().unwrap_or(0) >= 30
+                }
         } else {
             let substantive = counts.iter().filter(|value| **value >= 12).count() as f64
                 / hypothesis.markers.len() as f64;
