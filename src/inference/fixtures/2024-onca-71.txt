@@ -1,0 +1,82 @@
+R. v. C.J.
+Collection
+Decisions of the Court of Appeal
+Date
+2024-01-31
+Neutral citation
+2024 ONCA 71
+Docket numbers
+COA-23-CR-0137
+Judges
+Fairburn, J. Michal; Pepall, Sarah E.; Dawe, Jonathan
+Subject
+Criminal
+Decision Content
+WARNING
+The President of the panel hearing this appeal directs that the following should be attached to the file:
+An order restricting publication in this proceeding under ss. 486.4 or 486.6 of the Criminal Code shall continue. These sections of the Criminal Code provide:
+486.4 (1) Subject to subsection (2), the presiding judge or justice may make an order directing that any information that could identify the victim or a witness shall not be published in any document or broadcast or transmitted in any way, in proceedings in respect of
+(a) any of the following offences:
+(i) an offence under section 151, 152, 153, 153.1, 155, 160, 162, 162.1, 163.1, 170, 171, 171.1, 172, 172.1, 172.2, 173, 213, 271, 272, 273, 279.01, 279.011, 279.02, 279.03, 280, 281, 286.1, 286.2, 286.3, 346 or 347, or
+(ii) any offence under this Act, as it read from time to time before the day on which this subparagraph comes into force, if the conduct alleged would be an offence referred to in subparagraph (i) if it occurred on or after that day; or
+(b) two or more offences being dealt with in the same proceeding, at least one of which is an offence referred to in paragraph (a).
+(2) In proceedings in respect of the offences referred to in paragraph (1)(a) or (b), the presiding judge or justice shall
+(a) as soon as feasible, inform any witness under the age of 18 years and the victim of the right to make an application for the order;
+(b) on application made by the victim, the prosecutor or any such witness, make the order; and
+(c) if an order is made, as soon as feasible, inform the witnesses and the victim who are the subject of that order of its existence and of their right to apply to revoke or vary it.
+(2.1) Subject to subsection (2.2), in proceedings in respect of an offence other than an offence referred to in subsection (1), if the victim is under the age of 18 years, the presiding judge or justice may make an order directing that any information that could identify the victim shall not be published in any document or broadcast or transmitted in any way.
+(2.2) In proceedings in respect of an offence other than an offence referred to in subsection (1), if the victim is under the age of 18 years, the presiding judge or justice shall
+(a) as soon as feasible, inform the victim of their right to make an application for the order;
+(b) on application of the victim or the prosecutor, make the order; and
+(c) if an order is made, as soon as feasible, inform the victim of the existence of the order and of their right to apply to revoke or vary it.
+(3) In proceedings in respect of an offence under section 163.1, a judge or justice shall make an order directing that any information that could identify a witness who is under the age of eighteen years, or any person who is the subject of a representation, written material or a recording that constitutes child pornography within the meaning of that section, shall not be published in any document or broadcast or transmitted in any way.
+(3.1) If the prosecutor makes an application for an order under paragraph (2)(b) or (2.2)(b), the presiding judge or justice shall
+(a) if the victim or witness is present, inquire of the victim or witness if they wish to be the subject of the order;
+(b) if the victim or witness is not present, inquire of the prosecutor if, before the application was made, they determined if the victim or witness wishes to be the subject of the order; and
+(c) in any event, advise the prosecutor of their duty under subsection (3.2).
+(3.2) If the prosecutor makes the application, they shall, as soon as feasible after the presiding judge or justice makes the order, inform the judge or justice that they have
+(a) informed the witnesses and the victim who are the subject of the order of its existence;
+(b) determined whether they wish to be the subject of the order; and
+(4) An order made under this section does not apply in either of the following circumstances:
+(a) the disclosure of information is made in the course of the administration of justice when the purpose of the disclosure is not one of making the information known in the community; or
+(b) the disclosure of information is made by a person who is the subject of the order and is about that person and their particulars, in any forum and for any purpose, and they did not intentionally or recklessly reveal the identity of or reveal particulars likely to identify any other person whose identity is protected by an order prohibiting the publication in any document or the broadcasting or transmission in any way of information that could identify that other person.
+(5) An order made under this section does not apply in respect of the disclosure of information by the victim or witness when it is not the purpose of the disclosure to make the information known to the public, including when the disclosure is made to a legal professional, a health care professional or a person in a relationship of trust with the victim or witness.
+486.6 (1) Every person who fails to comply with an order made under any of subsections 486.4(1) to (3) or subsection 486.5(1) or (2) is guilty of an offence punishable on summary conviction.
+(1.1) A prosecutor shall not commence or continue a prosecution against a person who is the subject of the order unless, in the opinion of the prosecutor,
+(a) the person knowingly failed to comply with the order;
+(b) the privacy interests of another person who is the subject of any order prohibiting the publication in any document or the broadcasting or transmission in any way of information that could identify that person have been compromised; and
+(c) a warning to the individual is not appropriate.
+(2) For greater certainty, an order referred to in subsection (1) applies to prohibit, in relation to proceedings taken against any person who fails to comply with the order, the publication in any document or the broadcasting or transmission in any way of information that could identify a victim, witness or justice system participant whose identity is protected by the order.
+WARNING
+This appeal is subject to a mandatory publication ban under s. 278.9. This section of the Criminal Code provides:
+278.9 (1) No person shall publish in any document, or broadcast or transmit in any way, any of the following:
+(a) the contents of an application made under section 278.3;
+(b) any evidence taken, information given or submissions made at a hearing under subsection 278.4(1) or 278.6(2); or
+(c) the determination of the judge pursuant to subsection 278.5(1) or 278.7(1) and the reasons provided pursuant to section 278.8, unless the judge, after taking into account the interests of justice and the right to privacy of the person to whom the record relates, orders that the determination may be published.
+(2) Every person who contravenes subsection (1) is guilty of an offence punishable on summary conviction.
+COURT OF APPEAL FOR ONTARIO
+CITATION: R. v. C.J., 2024 ONCA 71
+DATE: 20240131
+DOCKET: COA-23-CR-0137
+Fairburn A.C.J.O., Pepall and Dawe JJ.A.
+BETWEEN
+His Majesty the King
+Respondent
+and
+C.J.
+Appellant
+Mark Ertel, for the appellant
+Étienne Lacombe, for the respondent
+Heard and released orally: January 26, 2024
+On appeal from the conviction entered by Justice Gary W. Tranmer of the Superior Court of Justice, dated June 14, 2022, and on the sentence imposed on February 15, 2023.[1]
+REASONS FOR DECISION
+[1] This is an appeal from conviction for sexual assault. The sole ground of appeal rests on a suggestion that the trial judge applied uneven scrutiny to the evidence of the appellant and complainant. This is a notoriously difficult allegation to make out on appeal, largely owing to the high degree of deference that appellate courts owe to trial judges’ findings of credibility. Despite Mr. Ertel’s capable submissions, this appeal fails.
+[2] While there were difficulties with both the appellant’s and complainant’s evidence, the trial judge carefully reviewed the inconsistencies and explained in detail why he rejected the appellant’s credibility and why he nonetheless accepted the complainant’s credibility.
+[3] The trial judge did not apply a different standard to the appellant’s and complainant’s evidence. Once he rejected the appellant’s evidence for the detailed reasons given and found that his evidence did not raise a reasonable doubt, this case was left to be decided on the third prong of R. v. W.(D.), [1991] 1 S.C.R. 742. The trial judge gave cogent reasons for accepting the complainant’s credibility. This included relying on the fact that, unlike the appellant, the complainant was not inconsistent on the core elements of the offence.
+[4] While the appellant argues that the trial judge erroneously ignored a number of the inconsistencies in the complainant’s evidence because he described them as immaterial or irrelevant, we do not read the reasons in this way. Read in context, the trial judge was merely using these characterizations to reference the fact that those inconsistencies did not go to the core essence of the allegations.
+[5] In addition, the trial judge noted that, while legally unnecessary, there was corroboration of the complainant’s evidence, as elicited through the complainant’s roommates and medical evidence, that supported the complainant’s credibility and reliability. It was open to the trial judge to come to the conclusions he reached. It is not for this court to retry the case in circumstances where we owe deference to the trial judge’s findings.
+[6] The appeal is dismissed.
+“Fairburn A.C.J.O.”
+“S.E. Pepall J.A.”
+“J. Dawe J.A.”
+[1] The appellant’s notice of appeal states that he is seeking leave to appeal sentence, but no arguments were made regarding sentence. Accordingly, leave to appeal sentence is dismissed.

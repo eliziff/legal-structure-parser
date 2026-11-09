@@ -143,6 +143,31 @@ mod tests {
                 && coordinates.slice_utf16(note.range.start..note.range.end).unwrap().contains(citation)));
         }
     }
+
+    #[test]
+    fn five_called_notes_survive_mixed_style_recovery() {
+        let document = reading(include_str!("fixtures/2003-fc-993.txt"));
+        assert!(!document.nodes.iter().any(|node| node.kind == NodeKind::Paragraph && node.label.is_some()));
+        let notes = document.nodes.iter().filter(|node| node.kind == NodeKind::Endnote).collect::<Vec<_>>();
+        assert_eq!(notes.iter().filter_map(|note| note.label.as_deref()).collect::<Vec<_>>(), ["1", "2", "3", "4", "5"]);
+        assert!(notes.iter().all(|note| !note.calls.is_empty()));
+    }
+
+    #[test]
+    fn late_reasons_are_distinct_from_the_note_the_catalogue_calls() {
+        let text = include_str!("fixtures/2024-onca-71.txt");
+        let document = reading(text);
+        let paragraphs = document.nodes.iter().filter(|node| node.kind == NodeKind::Paragraph).collect::<Vec<_>>();
+        assert_eq!(paragraphs.iter().filter_map(|node| node.label.as_deref()).collect::<Vec<_>>(), ["1", "2", "3", "4", "5", "6"]);
+        let coordinates = crate::ScalarText::new(text);
+        assert!(coordinates.slice_utf16(paragraphs[0].range.start..paragraphs[0].range.end).unwrap()
+            .starts_with("[1] This is an appeal"));
+        let note = document.nodes.iter().find(|node| node.kind == NodeKind::Endnote).unwrap();
+        assert_eq!(note.label.as_deref(), Some("1"));
+        assert!(coordinates.slice_utf16(note.range.start..note.range.end).unwrap()
+            .starts_with("The appellant’s notice of appeal"));
+        assert!(!note.calls.is_empty());
+    }
 }
 
 /// A provider text's paragraphs with its note list after them, paired by note pairing's plain-text

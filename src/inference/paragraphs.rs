@@ -366,6 +366,10 @@ fn excerpt_count(text: &ScalarText<'_>, chain: &mut Vec<Marker>, candidates: &[M
     if candidates.len() < 2 {
         return;
     }
+    let numbers = candidates.iter().map(|marker| marker.number).collect::<HashSet<_>>();
+    if !numbers.iter().any(|number| numbers.contains(&(number + 1)) || numbers.contains(&(number + 2))) {
+        return;
+    }
     // Reported years can rise by one too; citation text establishes no paragraph count.
     let citations = crate::analysis::citation_spans(text.value);
     let mut sorted = candidates.iter().filter(|marker| {
@@ -704,7 +708,7 @@ pub(super) fn endnote_shaped(text: &ScalarText<'_>, chain: &[Marker]) -> bool {
     if !tail || chain.len() >= 8 {
         return tail;
     }
-    // A short list in the tail is supported by its first note's actual call in the preceding body.
+    // A short list in the tail needs actual calls in the preceding body.
     // Use the same pairer that materializes the notes, rather than promoting them to paragraphs.
     if first.number != 1 {
         return false;
@@ -712,14 +716,21 @@ pub(super) fn endnote_shaped(text: &ScalarText<'_>, chain: &[Marker]) -> bool {
     let index = text.lines();
     let note_start = index[index.partition_point(|line| line[2] <= first.start) - 1][2];
     let notes = crate::text_notes::text_note_blocks(text, note_start, &HashSet::new());
+    let body = |note: &StructureNode| text.slice_utf16(note.range.start..note.range.end)
+        .expect("note body is bounded").trim();
     let Some(opening) = notes.iter().find(|note| note.marker_range.is_some_and(|range| range.start == first.start)) else {
         return false;
     };
-    let body = |note: &StructureNode| text.slice_utf16(note.range.start..note.range.end)
-        .expect("note body is bounded").trim();
     // Flattened provider text may print a note twice; its paired printing supports the same labelled body.
-    notes.iter().any(|note| note.label == opening.label && body(note) == body(opening)
-        && note.calls.iter().any(|call| call.end <= note_start))
+    let paired_opening = notes.iter().any(|note| note.label == opening.label && body(note) == body(opening)
+        && note.calls.iter().any(|call| call.end <= note_start));
+    // Every number needs a call before this zone. A catalogue's footnote 1 can otherwise make
+    // a decision's late paragraphs 1–6 look like notes, though paragraphs 2–6 have no calls there.
+    paired_opening && chain.iter().all(|marker| {
+        let label = marker.number.to_string();
+        notes.iter().any(|note| note.label.as_deref() == Some(label.as_str())
+            && note.calls.iter().any(|call| call.end <= note_start))
+    })
 }
 
 /// Where another count from 1 opens among a rooted count's other numbers: "[1]" followed by "[2]"
@@ -1300,7 +1311,7 @@ pub(super) fn detect_paragraphs(
             // A decision of one paragraph numbers it "[1]", and no note call names it.
             let lone = style == MarkerStyle::Bracket && chain.len() == 1 && chain[0].number == 1 && candidates.len() == 1
                 && !text.value[..text.byte_of_utf16(chain[0].start)].contains("[1]");
-            if chain.len() < 2 && !lone || endnote_shaped(text, &chain) {
+            if chain.len() < 2 && !lone {
                 continue;
             }
             let short = chain.len() < 5;
@@ -1366,6 +1377,8 @@ pub(super) fn detect_paragraphs(
             let score = chain_score(&chain);
             hypotheses.push(Hypothesis { style: chain[0].style, markers: chain, all: pooled.into(), short: false, score });
         }
+        // A mixed-style recovery has the same note-list evidence as the individual styles.
+        hypotheses.retain(|hypothesis| !endnote_shaped(text, &hypothesis.markers));
     }
     if profile != DetectionProfile::CaseRootedComplete
         && hypotheses

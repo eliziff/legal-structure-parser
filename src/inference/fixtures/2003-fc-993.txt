@@ -1,0 +1,150 @@
+Esco Corp. v. Quality Steel Foundries Ltd.
+Court (s) Database
+Federal Court Decisions
+Date
+2003-08-20
+Neutral citation
+2003 FC 993
+File numbers
+T-238-03
+Notes
+Digest
+Decision Content
+Federal Court
+CANADA
+Cour fédérale
+Date: 20030820
+Docket: T-238-03
+Citation: 2003 FC 993
+Ottawa, Ontario, this 20th day of August, 2003
+PRESENT: THE HONOURABLE JOHANNE GAUTHIER
+BETWEEN:
+ESCO CORPORATION and
+ESCO LIMITED
+Plaintiffs
+- and -
+QUALITY STEEL FOUNDRIES LTD.
+Defendant
+REASONS FOR ORDER AND ORDER
+I. The defendant seeks to remove Dimock Stratton Clarizio LLP (Dimock) as solicitors of record for the plaintiffs because Michael Crinson, a young associate, did previous work on behalf of the defendant in the context of a patent application for an invention back in 1999 while working at another law firm.
+II. The test for determining if Dimock should be disqualified is: Would a reasonably informed member of the public be satisfied that no use of confidential information would occur if Dimock is allowed to continue its representation of plaintiffs in this case (Martin v. Gray, [1990] 3 S.C.R. 1235).
+III. Because the answer to this question depends so much on the context, I will now review in some details the relevant facts.
+Facts
+IV. In December 1998, the defendant through Dr. Netterville retained Borden Ladner Gervais LLP (BLG) to prepare and file a patent application in Canada and elsewhere and to provide associated legal advice in respect of their invention. The patent application No. 2,274,236 entitled "Assembly for fastening a tooth to an adapter"("the application") was prepared and filed on June 10, 1999 with the Canadian Patent Office. Christine Collard, a senior patent agent and lawyer at BLG was responsible for this mandate and she did most of the work.
+V. On November 24, 1999, Dr. Netterville was trying to reach Ms. Collard to discuss an amendment to the application. Ms. Collard was absent from the firm for most of that month and it was suggested to him that Mr. Crinson, a young associate, may be able to help him. At that time, Mr. Crinson was a patent agent trainee and newly sworn-in attorney working at BLG (then Scott & Aylen). He worked mostly on litigation files but spent about 20% of his time dealing with prosecution of patent applications. It is unclear why he was chosen to hold the "fort" for Ms. Collard during her absence because there is no evidence that he ever worked on the application or anything else related to the defendant before November 24th.
+VI. In any event, Mr. Crinson took the call from Dr. Netterville and during his brief telephone conversation (19 to 24 minutes according to the time docket), Dr. Netterville tried to describe to him the inventive features he was seeking to include in his application. However, it appears from Dr. Netterville's affidavit that Mr. Crinson had some difficulty visualising what he was
+describing. It was agreed that Dr. Netterville would write a letter providing a diagrammatic description of those features which he believed to be patentable.
+VII. This confidential letter dated November 25, 1999, was not filed but it is generally described in the affidavits of Ms. Collard and Dr. Netterville as containing (i) computer generated drawings of defendant's product referred to as the MAGLOK shroud including the wear member, the adapter and the lock for securing the wear member to the adapter; (ii) diagrams and description of the MAGLOK locking system; (iii) proposed claim language in respect of those features; and (iv) a discussion of possible patenting strategies in respect of the invention. Ms. Collard indicates in her affidavit that "much" of this information is still confidential today.
+VIII. The telephone conversation of November 24, 1999, was recorded by Mr. Crinson in the time docket for the file simply as "T.C. with Quality Steel re amendments to patent application". No further work was recorded by Mr. Crinson in the time docket thereafter. It is thus, not clear from the evidence if he actually spent any time to read and understand the letter sent by Dr. Netterville.
+IX. Ms. Collard states in her affidavit that she had a "substantial conversation" with Mr. Crinson upon her return to the office about the locking mechanism which appears to be the most significant inventive feature covered by the application. However, this conversation was not recorded in the time docket by either of them so we do not know exactly when it took place.
+X. In his affidavit, Dr. Netterville states that he spoke to someone at BLG on November 26 but he could not recall exactly if it was with Mr. Crinson. He appears to assume that he spoke with Mr. Crinson because he had closed his letter of November 25, 1999 to him, by saying that he looked "forward to discussing these issues with you later today".
+XI. In February 2000, Mr. Crinson left BLG and started to work at Dimock.
+XII. At the end of July 2002, Dimock were approached by the plaintiffs with respect to a potential infringement action against the defendant in relation to three of their patents, namely Canadian Patent Nos. 2,076,019 (the '019 Patent), 2,067,818 (the '818 Patent) and 2,238,644 (the '644 Patent). These patents all relate to replaceable excavating teeth for the bucket of excavator equipment and involve different products manufactured and distributed by the defendant. The only one relevant to the present motion is the '019 Patent, particularly claim 24 which is alleged to be infringed (the only claim referred to in the statement of claim) by the defendant through the manufacture and sale of their MAGLOK shroud.
+XIII. Between July 31 and August 6, 2002, Dimock in accordance with their policy on conflicts of interest sent various e-mails to all the members of the firm inquiring about potential conflicts. Mr. Crinson received and reviewed such inquiry, reflected upon it and because he did not remember being involved at all with the defendant, he deleted the message concluding that there was no possible conflict.
+XIV. The file was accepted by Dimock on this basis and two lawyers were assigned to work on it, that is, Ron Dimock and Pamela Adams. For several months, Mr. Dimock was in communication with Ms. Collard to discuss the allegations of infringement and explore the possibility of settlement. In February 2003, Dimock instituted the action in the present court file. About three weeks later BLG on March 12, 2003, wrote to Dimock to advise them of the conflict involving Mr. Crinson requesting that plaintiffs immediately change their solicitors of record.
+XV. Until then, Dimock's file had been physically located in Pamela Adams' office. Once the potential conflict was identified, the file was moved to a locked cabinet and the computer network limited the access to any computer file related thereto. The offices of Ron Dimock and Pamela Adams were put off limits to Mr. Crinson and all members of the firm were advised about the conflict and the need to segregate Mr. Crinson[1].
+Issues
+XVI. The defendant argues that a reasonable man would conclude that confidential information would be divulged because the prior mandate involving Mr. Crinson at BLG is sufficiently related to the infringement action to benefit from a presumption that confidential information was imparted to him. Moreover, Dimock cannot rely on the measures taken by them to insulate Mr. Crinson because (i) these measures were put in place ex post facto, i.e. several months after the mandate was accepted and (ii) these measures were deficient in many ways as they did not meet all of the Canadian Bar Association Task Force Guidelines on screening methods.
+XVII. The plaintiffs submit that there is no evidence that "relevant confidential information" was imparted. In any event, whatever relevant information was disclosed, it is now in the public domain. Furthermore, considering the nature and extent of work performed by Mr. Crinson and the fact that he does not remember anything about the defendant and will not have any opportunity to refresh his memory, a reasonably informed member of the public would be satisfied that no use of confidential information would occur.
+Analysis
+XVIII. In order to apply the test set out in Martin v. Gray, supra, two questions should be looked at. First, the Court should determine if the lawyer received confidential information attributable to a solicitor/client relationship relevant to the matter at hand. If the first answer is yes, the Court should then assess if there is a risk that it will be used to the prejudice of the former client.
+XIX. With respect to the first question, Justice Sopinka adopted in Martin v. Gray, supra, the "substantial relationship" test applied by the American courts. He indicated that Canadian courts could apply a presumption that confidential information has been imparted when such a relationship had been established by the party seeking to remove the "tainted lawyer or law firm".[2] But the Canadian approach differs from the American one in that, this presumption is refutable, whereas it is irrefutable in the United States.
+XX. The Supreme Court of Canada did not have to discuss further the concept of "substantial relationship" because in that case the lawyer who had moved to the new firm worked extensively for the opposite party in the very same court proceeding and the relationship was evident.
+XXI. I understand this concept to require the Court to look at similarities in the factual situations and in the legal questions involved in the two mandates and also at the nature of the work performed by the tainted individual. For example, if there was no factual or legal similarities in the two mandates, a counsel could nevertheless have been so intimately involved with a client as a general adviser to conclude that there was a substantial relationship. The reverse could also be true.
+XXII. With respect to the second question, I understand the law to be that colleagues of a tainted lawyer may still act in a file if they establish through clear and cogent evidence that a fair minded reasonably informed member of the public would not conclude that the confidential information imparted or presumed to have been imparted, is likely to be disclosed because of institutional measures put in place to prevent such disclosure. The kind of measures which could satisfy the public should be independently verifiable and are to be put in place before any possibility of tainting occurs. They would include what is often referred to as Chinese walls or columns of silence.
+XXIII. The foundation of the test set out by the Supreme Court of Canada is that the integrity of the administration of justice and the public's confidence in it, is fundamental and paramount, but the rule should not be applied so rigidly as to unduly deprive a party of its right to the counsel of its choice and the right of lawyers to mobility.
+XXIV. As a result of Martin v. Gray, supra, the Canadian Bar Association created a task force to study these issues. The guidelines set out by this task force were included in a report entitled "Conflict of Interest Disqualification: Martin v. Gray and Screening Methods". These guidelines were adopted by the Association by Resolution 93-07-A in August 1993. The resolution and guidelines are set out in full.
+WHEREAS the Supreme Court of Canada's decision in Martin v. Gray addressed many issues that arise when lawyers transfer between law firms that are acting for parties that are adverse in interest;
+WHEREAS the supreme Court of Canada, in its majority judgment in Martin v. Gray, called upon the Canadian Bar Association to consider the possible guidelines that could enable a law firm in a Martin v. Gray situation to avoid disqualification;
+WHEREAS the Canadian Bar Association formed a Task Force to respond to the Supreme Court of Canada's invitation;
+WHEREAS the Task Force has prepared a Report dated February 1993 entitled "Conflict of Interest Disqualification: Martin v. Gray and Screening Devices";
+BE IT RESOLVED THAT The Canadian Bar Association adopt the Task Force's Report and in particular urge that:
+1. The use of screens be permitted in appropriate circumstances to permit law firms with Martin v. Gray conflicts to avoid disqualification;
+2. Law firms considering whether the use of a screen is an appropriate response to the conflict that the law firm faces be guided by the following factors:
+i) the timing of the erection of the screen;
+ii) the size of the law firm, including the number of lawyers, the physical size of the office, the number of offices and the number of areas of practice;
+iii) the number of disqualified lawyers in the law firm;
+iv) the features of the screen that will be put in place;
+v) the nature of the screened lawyer(s)'s relationship with the firm;
+vi) the substantiality of the relationship between the former representation and the current matter;
+vii) the time that has elapsed between the two conflicting matters; and
+viii) the nature of the disqualified lawyer(s)'s involvement with the matter giving rise to the conflict.
+3. Law firms planning the erection of a screen implement the first three of the following guidelines and consider the balance of the following guidelines and implement those that are appropriate to the circumstances and to the conflict they face.
+i) The screened lawyer should not participate in the current representation;
+ii) the screened lawyer should not disclose confidential information relating to the prior representation;
+iii) No member of the new firm should disclose confidential information relating to the current matter or the prior representation with the screened lawyer.
+iv) The current client matter should be discussed only within the limited group who are working on the matter;
+v) The files of the current client, including computer files, should be physically segregated from the regular filing system, specifically identified, and accessible only to those lawyers and support personnel in the firm who are working on the matter (or require access for other specifically identified and approved reasons);
+vi) No member of the law firm should show the screened lawyer any documents relating to the current client matter;
+vii) the measures taken by the firm to screen the lawyer should be stated in a written policy explained to all lawyers and support personnel within the firm, supported by an admonition that violation of the policy will result in sanctions, up to an including dismissal;
+viii) Affidavits or undertakings, whichever is appropriate to the circumstances, should be provided by the relevant firm members, setting out that they have adhered to and/or that they will continue to adhere to all elements of the screen;
+ix) The current and former clients should be informed that the screened lawyer is now with the firm representing the current client;
+x) The current and former clients should be informed of the measures adopted by the firm to ensure that there will be no misuse of the confidential information;
+xi) The screened lawyer's office should be located away from the offices of those working on the current client matter;
+xii) The screened lawyer should work with associates and support personnel different from those working on the current client matter;
+xiii) Every effort should be made to obtain the former client's informed consent to the new firm's representation.
+XXV. The Law Society of Upper Canada, the statutory authority governing the legal profession in Ontario (Dimock is located in Toronto) also adopted new rules under the title "Avoidance of Conflicts of Interest/Acting Against Client". Rule 2.04(5) of the Rules of Professional Conduct (November 1, 2000) provides:
+2.04 (5) Where a lawyer has acted for a former client and obtained confidential information relevant to a new matter, the lawyer's partner or associate may act in the new matter against the former client if:
+(a) the former client consents to the lawyer's partner or associate acting, or
+(b) the law firm establishes that it is in the interests of justice that it act in the new matter, having regard to all relevant circumstances, including
+(i) the adequacy and timing of the measures taken to ensure that no disclosure of the former client's confidential information to the partner or associate having carriage of the new matter will occur,
+(ii) the extent of prejudice to any party,
+(iii) the good faith of the parties,
+(iv) the availability of suitable alternative counsel, and
+(v) issues affecting the public interest.
+XXVI. This new rule does not refer to the Canadian Bar Association Guidelines but it appears from the decision in Re Ford Motor Co. of Canada v. Osler, Hoskin & Harcourt, (1996) 27 O.R. (3d) 181 at 199, that shortly after the guidelines were adopted, the Upper Canada Law Society included in their Professional Conduct Handbook (1995 Edition) the following comment:
+The guidelines at the end of this Commentary, adapted from the Canadian Bar Association Task Force report entitled: Conflict of Interest Disqualification: Martin v. Gray and Screening Methods (February 1993), are intended as a checklist of relevant factors to be considered. Adoption of only some of the guidelines may be adequate in some cases, while adoption of them all may not be sufficient in others." [My emphasis]
+XXVII. It is to be noted that the question here, is not if there is a "theoretical possibility" that Mr. Crinson was privy to confidential information relevant to the second retainer rather, the Court must make a "realistic appraisal"[3] of the possibility that confidential information was disclosed to Mr. Crinson while he was at BLG.
+XXVIII. As mentioned, I am not totally convinced that Mr. Crinson read Dr. Netterville's letter in any detail. Nevertheless, I am ready to impute to him knowledge of the content of that letter which was addressed to him. As to the conversation between Ms. Collard and Mr. Crinson, Ms. Collard did not indicate exactly when it took place, notably because of the absence of entry in the time docket. The Court has no reason to doubt that a conversation did take place and that the locking device which seems to be a core feature of the invention described in the application was discussed but I find that there is no realistic possibility that they discussed anything other than what was contained in the letter of November 25 given that nothing in the evidence indicates that Mr. Crinson was supposed to perform any other work in this file.
+XXIX. With respect to the conversation on November 26 (see par. 10 above), the evidence is somewhat wanting. Dr. Netterville does not say if it was brief or substantial. Because of i) the absence of any record in the time docket linking Mr. Crinson to this second call and ii) the absence of evidence indicating that additional information (i.e. different than what was included in the letter of November 25) was conveyed by Dr. Netterville during this November 26 conversation, I do not consider this conversation of significance for my analysis.
+XXX. The defendant did not argue that the legal questions raised in the patent infringement action relate in any way to a legal issue dealt with by Mr. Crinson. In any event, looking at the statement of claim and the statement of defence on file, it appears that the three main relevant
+legal issues are: (i) can the MAGLOK shroud be construed as infringing the '019 Patent, (ii) is '019 Patent invalid because of prior art described in the statement of defence and (iii) is claim 24 invalid because it is too broad claiming more than what was invented, more particularly because it purports to apply to wear members that do not have a keeper equipped opening and a non- compressable body to lock the wear member to the adaptor. The evidence does not support a conclusion that there is a realistic possibility that Mr. Crinson addressed any similar legal questions during his brief involvement in the defendant's file at BLG.
+XXXI. But the defendant argues that there is a similarity in the factual situations of the two retainers because to answer the first legal issue stated in the infringement action, the plaintiffs must establish that the MAGLOK shroud has all the elements described in claim 24. This claim reads as follows:
+A replaceable wear member for protecting the digging edge of an excavator comprising a unitary metal member having a general U-shape in side elevation providing a pair of spaced-apart legs connected by a forward connecting portion, each said leg having an inner surface, an outer surface and a rear end and at least one of said legs being equipped with an opening in the outer surface thereof spaced from said rear rend thereof of said one leg, characterized in that said one leg is equipped with a longitudinal, generally T-shaped slot extending to the rear end of said one leg so as to slidingly engage a complementarily contoured boss on the excavator and said opening communicates with said slot to receive a lock member against a rear surface of said opening and a rear surface of the boss to prevent said wear member from being removed from the boss.
+XXXII. The technology involved is not complex. The claim does not refer to a process or chemical components. The '019 Patent is a mechanical patent. The elements in claim 24 are described mostly by reference to their shape. As is stated in the statement of defence and prima facie, the type of lock member used does not appear to be relevant.
+XXXIII. The MAGLOK shroud is currently on the market and it is difficult to understand why one looking at the product alone or in conjunction with the drawings in the '019 Patent and those published in the application, could not properly assess all that is relevant to the allegation of infringement.
+XXXIV. Still, the defendant argues that relevant confidential knowledge should be imputed to Mr. Crinson because of the information conveyed to him about the MAGLOK shroud and described in details in the drawings attached to the letter of November 25, 1999.
+XXXV.As mentioned, in her affidavit Ms. Collard having listed the four types of information contained in the letter of November 25, 1999, states that "much of it" is still confidential[4]. Unfortunately, she was not cross-examined to determine what portion of the information remains confidential to this day. I believe that I can assume that the patenting strategy would still be confidential as well as the claim language given that the application has not yet been allowed and the version published may not include amendments discussed in November 1999. But, as discussed earlier, this information, although confidential, would not be relevant to the current proceeding.
+XXXVI. If some of the technical information conveyed about the MAGLOK shroud in general and about the locking mechanism more particularly is still confidential, is it because of the form in which it was conveyed to Mr. Crinson, that is in-house drawings as opposed to drawings used for the application? Or is it really that it depicted features that are not embodied in the product on the market or that could not be discovered through an inspection of the product?
+XXXVII. Despite the reservations expressed above, the Court is prepared to give the defendant the benefit of the doubt. I therefore find that there is a realistic possibility that relevant confidential information about the technical specifications of the MAGLOK shroud, was imparted to Mr. Crinson. However, the relationship between the prior legal work done by Mr. Crinson with the defendant and the current mandate at Dimock is not such that the Court can realistically presume that any other type of relevant confidential information was imparted to Mr. Crinson.
+XXXVIII. This being said, I will now look at the second question.
+XXXIX. During the hearing, the defendant argued strongly that the institutional measures adopted by Dimock were insufficient because, among other things, they did not include a written policy with respect to Chinese walls, there is no clear evidence that the students or other support personnel at Dimock working with Ron Dimock and Pamela Adams undertook not to work with Mr. Crinson, no formal undertakings have actually been signed and more importantly, the measures were taken too late given that Dimock was involved with this mandate many months before the conflict was discovered.
+XL. I have carefully considered the evidence in light of the rule of the Upper Canada Law Society as well as the guidelines of the Canadian Bar Task Force with respect to conflicts and screening methods. Of course, none of these are binding on the Court but, as it has been said in the past in other cases, they are still entitled to deference.
+XLI. I reviewed all the authorities cited by the parties as well as others applying the Martin v. Gray principles. As can be expected such decisions turn on their own facts. I find that none dealt with a set of facts that is truly comparable to the present case. In some, the tainted lawyers had also forgotten the information that had been imparted to them but they had been more substantially involved in a first mandate closely connected to the second matter. There were memories to be prompted, particularly in the case of lawyers who were also proposing to act in the second matter. Others involved delay in implementing Chinese walls when there was substantial confidential information to be protected and the delay arose in circumstances where the law firms either knew or should have known of the potential conflict of interest.
+XLII. Here, I find that as of July 2002, Mr. Crinson did not actually possess any confidential information relevant to the current action which he could disclose to his colleagues at Dimock. In coming to the conclusion, I do not simply rely on the affidavit of Mr. Crinson which does state that he did not then and does not now remember any involvement whatsoever with the defendant but also on the circumstantial evidence which corroborates this statement as well as simple common sense.
+XLIII. Dr. Netterville states that Mr. Crinson could not visualize the elements of the MAGLOK shroud. The absence of further record in the time docket indicates that Mr. Crinson did not spend any time or at least any significant time to internalize whatever technical information was included in the letter of November 25, 1999[5]. There also appears to be no reason for him to do so for there is no evidence that he had any further work to perform in the file. There is no evidence that Mr. Crinson kept a copy of the drawings. It is not disputed that he did not answer the conflict check request in the summer of 2002 because he did not remember anything about the defendant file.
+XLIV. The inference that lawyers will talk and that information moves around in a firm, especially a small firm, can only weigh heavily in the balance in assessing the suitability of measures taken to isolate a tainted lawyer if that lawyer actually has something to say or disclose to his colleagues or some substantial memories to tap into. As I said, in this case, it is unlikely that there are any memories of the technical information that could be refreshed.
+XLV. Also, I find that Dimock were diligent in implementing their conflict check policy and that in the present context, they could not have known of the potential conflict prior to receiving the letter from BLG. It is to be noted that Ms. Collard did not raise it either during the months she was in contact with Mr. Dimock. Although this is certainly not a determinative factor, it is still a part of the circumstantial evidence.
+XLVI. Finally, weighing all of the particular circumstances of this case, I am convinced that a well-informed member of the public would be satisfied that no confidential information would be disclosed to anybody working on this file for the plaintiffs by Mr. Crinson.
+ORDER
+THIS COURT ORDERS that:
+1. The motion is dismissed and no costs are awarded.
+"Johanne Gauthier"
+Judge
+FEDERAL COURT OF CANADA
+TRIAL DIVISION
+NAMES OF COUNSEL AND SOLICITORS OF RECORD
+DOCKET: T-238-03
+STYLE OF CAUSE: ESCO Corporation and ESCO Limited
+v. Quality Steel Foundries Ltd.
+PLACE OF HEARING: Ottawa, Ontario
+DATE OF HEARING: April 22, 2003
+REASONS FOR ORDER AND ORDER: Gauthier, J.
+DATED: August 20, 2003
+APPEARANCES:
+Ronald Dimock FOR PLAINTIFF
+Kevin L. LaRoche FOR DEFENDENT
+SOLICITORS OF RECORD:
+Dimock Stratton Clarizio LLP FOR APPLICANT
+3202-20 Queen Street
+Toronto, Ontario M5H 3R3
+Borden Ladner Gervais LLP FOR RESPONDENT
+1100-100 Queen Street
+Ottawa, Ontario K1P 1J9
+[1] Ms. Pamela Adams was not cross-examined on her statements in that respect and I take them as undisputed.
+[2] The defendant therefore has the burden of proof in respect of the first question. That burden will shift
+to the plaintiff if circumstances justifying the application of the refutable presumption are established.
+Whereas on the second question, the burden of proof is on the plaintiff.
+[3] Chapters Inc. V. Davies, Ward & Beck LLP, 52 O.R. (3d) 566 at 573 citing Westinghouse Electric Corp. V. Gulf Oil Corp., 588 F.2d 221 (1978)
+[4] I prefer Ms. Collard's evidence on this point to that of Dr. Netterville for she is in a better position to make such an assessment. Dr. Netterville's sweeping statement that all the information he disclosed to Ms. Collard and Mr. Crinson in this file is still confidential information is not credible when one considers that the information disclosed by Dr. Netterville to Ms. Collard was necessarily used to some extent to draft the application which has been opened to public inspection since December 10, 2000.
+[5] As I said, I find that this letter contains the most extensive information which could be presumed to have been imparted to Mr. Crinson.
