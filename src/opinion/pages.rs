@@ -39,14 +39,7 @@ pub(super) fn page_number(label: &str) -> Option<u32> {
     if let Some(number) = digits.split(|c: char| !c.is_ascii_digit()).next().filter(|part| !part.is_empty()).and_then(|part| part.parse().ok()) {
         return Some(number);
     }
-    if label.is_empty() || !label.chars().all(|c| "IVXLCDM".contains(c)) {
-        return None;
-    }
-    let value = |c: char| match c { 'I' => 1, 'V' => 5, 'X' => 10, 'L' => 50, 'C' => 100, 'D' => 500, _ => 1000 };
-    let letters = label.chars().map(value).collect::<Vec<u32>>();
-    Some(letters.iter().enumerate().fold(0i64, |total, (at, &letter)| {
-        if letters.get(at + 1).is_some_and(|next| *next > letter) { total - letter as i64 } else { total + letter as i64 }
-    }) as u32)
+    legal_structure_model::layout::roman_value(label).filter(|_| label.bytes().all(|byte| byte.is_ascii_uppercase()))
 }
 
 pub(super) fn series_of(node: &StructureNode) -> String {
@@ -56,12 +49,48 @@ pub(super) fn series_of(node: &StructureNode) -> String {
     node.markup_attributes.get("pagescheme").cloned().unwrap_or_else(|| "reporter".to_owned())
 }
 
-pub(super) fn page_source(node: &StructureNode) -> &'static str {
-    match node.grammar.as_deref() {
-        Some("courtlistener-opening-page") => "opening",
-        Some("courtlistener-printed-star-page") => "printed",
-        _ => "markup",
+/// The page printed before a page: 289 before 290, and an inserted page's own run, 595 before 595a and 595a before 595b.
+fn previous_page(printed: &str) -> Option<String> {
+    if !printed.is_empty() && printed.len() <= 5 && printed.bytes().all(|byte| byte.is_ascii_digit()) {
+        return printed.parse::<u32>().ok().filter(|number| *number >= 2).map(|number| (number - 1).to_string());
     }
+    let letter = printed.chars().next_back().filter(char::is_ascii_lowercase)?;
+    let digits = &printed[..printed.len() - 1];
+    if digits.is_empty() || digits.len() > 5 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some(if letter == 'a' { digits.to_owned() } else { format!("{digits}{}", (letter as u8 - 1) as char) })
+}
+
+/// The text before a numbering's first mark in a writing sits on the page before it: "*289" opens page 289, and what precedes
+/// it in its writing (an opinion part, a Westlaw opinion block, else the text) is page 288. A page a note holds is the note's;
+/// another numbering's page may cover the same text, this numbering's may not.
+pub(super) fn opening_pages(structure: &DocumentStructure, coordinates: &ScalarText, notes: &[ScalarRange], pages: &mut Vec<StructureNode>) {
+    let writings = structure.markup_elements.iter().filter(|element| element.tag == "opinion" || element.tag.ends_with("_text")
+        || element.tag == "div" && element.attributes.get("class").is_some_and(|classes| classes.split_ascii_whitespace().any(|class| class == "co_opinionBlock")))
+        .map(|element| element.range).collect::<Vec<_>>();
+    let writing_of = |at: usize| writings.iter().filter(|writing| writing.start <= at && at < writing.end).map(|writing| writing.start).max().unwrap_or(0);
+    let mut firsts = BTreeMap::<(&str, usize), usize>::new();
+    for (index, page) in pages.iter().enumerate().filter(|(_, page)| !notes.iter().any(|note| note.start <= page.range.start && page.range.start < note.end)) {
+        let first = firsts.entry((page.series.as_str(), writing_of(page.range.start))).or_insert(index);
+        if page.range.start < pages[*first].range.start {
+            *first = index;
+        }
+    }
+    let mut opening = Vec::new();
+    for ((series, scope), first) in firsts {
+        let end = pages[first].range.start;
+        let (Some(before), Some(gap)) = (previous_page(pages[first].label.as_deref().unwrap_or("")), coordinates.slice_utf16(scope..end)) else { continue };
+        let words = gap.trim_start_matches(javascript_whitespace);
+        if trim_js(words).is_empty() {
+            continue;
+        }
+        let start = scope + utf16_len(&gap[..gap.len() - words.len()]);
+        if !pages.iter().any(|page| page.series == series && page.range.start < end && start < page.range.end) {
+            opening.push(read_page(before, series.to_owned(), start, end, None, "opening"));
+        }
+    }
+    pages.extend(opening);
 }
 
 /// Pages no mark prints. Harvard's `pgmap` gives the volume's leaves a block stands on, "316", or for a block that turns a
@@ -159,25 +188,26 @@ pub(super) fn leaves_to_pages(kinds: &mut Kinds, record: &OpinionRecord) {
 }
 
 /// Page numbers printed in the text, each form its own numbering: "{**18 Misc 3d at 418}" the official reporter's,
-/// "[*5]" a slip opinion's, "[original page 5]" the source's, and in a text whose source gives none "*517", "**18",
+/// "[*5]" a slip opinion's, a Connecticut Superior Court opinion's "CT Page 6807" its own, "[original page 5]" the
+/// source's, and in a text whose source gives none "*517", "**18",
 /// "*Page 169". A framed form says what it is; bare stars must run, and a bare "(642)" or "[522]" run from the first pages
 /// of one of the case's printed citations.
 pub(super) fn printed_page_marks(structure: &mut DocumentStructure, kinds: &mut Kinds, citations: &[OpinionCitation]) {
     static MARK: OnceLock<Regex> = OnceLock::new();
     let held = kinds.pages.iter().filter_map(|page| page.series.strip_prefix("reporter-")?.parse::<usize>().ok()).collect::<HashSet<_>>();
     let numbered = |stars: usize| held.contains(&stars);
-    let mark = MARK.get_or_init(|| Regex::new(r"\{\*+\d+\s[^{}\n]{1,30}\sat\s(\d{1,5})\}|\[ ?(\*+) ?(\d{1,5}) ?[\]J]|\[(?:(?i:original) )?(?i:page|pg\.?) (\d{1,5})\]|(\*{1,3}) ?(?:Page )?(\d{1,5})(?-u:\b)|\((\d{2,5})\)|\[(\d{2,5})\]").unwrap());
+    let mark = MARK.get_or_init(|| Regex::new(r"\{\*+\d+\s[^{}\n]{1,30}\sat\s(\d{1,5})\}|\[ ?(\*+) ?(\d{1,5}) ?[\]J]|\[(?:(?i:original) )?(?i:page|pg\.?) (\d{1,5})\]|(\*{1,3}) ?(?:Page )?(\d{1,5})(?-u:\b)|\((\d{2,5})\)|\[(\d{2,5})\]|(?-u:\b)CT Page (\d{1,5})(?-u:\b)").unwrap());
     let mut existing = kinds.pages.iter().filter_map(|page| page.marker_range).collect::<Vec<_>>();
     existing.sort_by_key(|mark| mark.start);
     let cited = citations.iter().filter(|citation| !matches!(citation.kind.as_str(), "6" | "7" | "8") && !citation.reporter.contains("LEXIS")).filter_map(|citation| citation.page.parse::<u32>().ok()).collect::<Vec<_>>();
     let within_citation = |number: u32| cited.iter().any(|first| (*first..=first + PAGE_REACH).contains(&number));
     let opens_citation = |number: u32| cited.iter().any(|first| (*first..=first + 3).contains(&number));
-    // By form: 1 brace, 3 "[page N]", 10 + n bracketed n stars, 20 + n bare n stars, 31 "(N)", 32 "[N]".
+    // By form: 1 brace, 2 "CT Page N", 3 "[page N]", 10 + n bracketed n stars, 20 + n bare n stars, 31 "(N)", 32 "[N]".
     let mut found = HashMap::<usize, Vec<(usize, usize, u32)>>::new();
-    let mut units = Units::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     for capture in mark.captures_iter(&structure.text) {
         let whole = capture.get(0).unwrap();
-        let form = if capture.get(1).is_some() { 1 } else if let Some(stars) = capture.get(2) { 10 + stars.len() } else if capture.get(4).is_some() { 3 } else if capture.get(7).is_some() { 31 } else if capture.get(8).is_some() { 32 } else { 20 + capture.get(5).map_or(1, |stars| stars.len()) };
+        let form = if capture.get(1).is_some() { 1 } else if let Some(stars) = capture.get(2) { 10 + stars.len() } else if capture.get(4).is_some() { 3 } else if capture.get(7).is_some() { 31 } else if capture.get(8).is_some() { 32 } else if capture.get(9).is_some() { 2 } else { 20 + capture.get(5).map_or(1, |stars| stars.len()) };
         if (21..24).contains(&form) {
             let before = structure.text[..whole.start()].trim_end_matches(' ');
             // "at *3" pins a citation; a star on a word is a note's.
@@ -189,11 +219,11 @@ pub(super) fn printed_page_marks(structure: &mut DocumentStructure, kinds: &mut 
         if (12..14).contains(&form) && numbered(form - 10) {
             continue;
         }
-        let Some(number) = [1, 3, 4, 6, 7, 8].iter().find_map(|&group| capture.get(group)).and_then(|number| number.as_str().parse().ok()) else { continue };
+        let Some(number) = [1, 3, 4, 6, 7, 8, 9].iter().find_map(|&group| capture.get(group)).and_then(|number| number.as_str().parse().ok()) else { continue };
         if form > 30 && !within_citation(number) {
             continue;
         }
-        let unit = units.at(whole.start());
+        let unit = coordinates.utf16_of_byte(whole.start());
         if existing[..existing.partition_point(|mark| mark.start <= unit)].last().is_some_and(|mark| unit < mark.end) {
             continue;
         }
@@ -218,6 +248,8 @@ pub(super) fn printed_page_marks(structure: &mut DocumentStructure, kinds: &mut 
         if form > 30 && !(opens_citation(longest[0].2) && longest.windows(2).all(|pair| pair[1].0 - pair[0].1 >= PAGE_TEXT)) { continue; }
         let series = match form {
             1 => "reporter-official".to_owned(),
+            2 if slip_held => "slip-printed".to_owned(),
+            2 => "slip".to_owned(),
             3 => "original".to_owned(),
             11 if !several && slip_held && !numbered(1) => "slip-printed".to_owned(),
             11 if numbered(1) => "reporter-printed".to_owned(),

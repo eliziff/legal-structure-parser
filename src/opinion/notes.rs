@@ -17,7 +17,7 @@ pub(super) fn note_label_of(coordinates: &ScalarText, note: &StructureNode) -> (
 /// whatever a scanner did to the rest; else it is new, and its words join the end of the reading text. Either way a note of
 /// ours with no call takes the other's, placed by the words before it. `coordinates` index the other's text; the words a
 /// new note brings index ours again.
-pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds, other: &DocumentStructure, coordinates: &ScalarText) {
+pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pending, other: &DocumentStructure, coordinates: &ScalarText) {
     const SHINGLE: usize = 4;
     if !other.nodes.iter().any(|node| node.kind == NodeKind::Footnote) {
         return;
@@ -54,7 +54,9 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds,
         }
         let calls = note.calls.iter().filter_map(|call| placed(*call)).collect::<Vec<_>>();
         if let Some(same) = held.iter().position(|ours| words.iter().filter(|word| ours.contains(*word)).count() * 2 > words.len()) {
-            kinds.opinion.note_witness[usize::from(kinds.notes[same].calls.is_empty())] += 1;
+            if let Some(witness) = pending.witness.as_mut() {
+                witness.note_witness[usize::from(kinds.notes[same].calls.is_empty())] += 1;
+            }
             if kinds.notes[same].calls.is_empty() {
                 if calls.is_empty() && !note.calls.is_empty() {
                     kinds.notes[same].properties.insert("called_outside".to_owned(), String::new());
@@ -63,7 +65,9 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds,
             }
             continue;
         }
-        kinds.opinion.note_witness[2] += 1;
+        if let Some(witness) = pending.witness.as_mut() {
+            witness.note_witness[2] += 1;
+        }
         structure.text.push('\n');
         let start = utf16_len(&structure.text);
         structure.text.push_str(body);
@@ -330,25 +334,29 @@ pub(super) fn flat_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     if opened.is_empty() {
         return;
     }
-    let mut units = Units::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let calls = CALL.get_or_init(|| Regex::new(r"\[(?:FN ?|fn\.? ?|Note )(\d{1,3})\]").unwrap()).captures_iter(&structure.text)
         .filter(|capture| !opened.iter().any(|open| open.0 <= capture.get(0).unwrap().start() && capture.get(0).unwrap().start() < open.1))
-        .map(|capture| { let whole = capture.get(0).unwrap(); (capture[1].to_owned(), units.at(whole.start()), utf16_len(whole.as_str())) }).collect::<Vec<_>>();
-    let mut units = Units::new(&structure.text);
-    let starts = opened.iter().map(|open| units.at(open.1)).collect::<Vec<_>>();
+        .map(|capture| { let whole = capture.get(0).unwrap(); (capture[1].to_owned(), coordinates.utf16_of_byte(whole.start()), utf16_len(whole.as_str())) }).collect::<Vec<_>>();
+    let starts = opened.iter().map(|open| coordinates.utf16_of_byte(open.1)).collect::<Vec<_>>();
     // A note set flat ends with its own paragraph, ahead of the next note or not: the opinion goes on below it. A plain text's
-    // lines wrap, so its paragraphs end at a blank line; a paragraph's own mark ends one anywhere.
+    // lines wrap, so its paragraphs end at a blank line; a paragraph's own mark ends one anywhere. Under a "Footnotes" line
+    // the notes are a list of their own, as a slip opinion sets them: each runs to the next.
     static PAST: OnceLock<Regex> = OnceLock::new();
     static BROKEN: OnceLock<Regex> = OnceLock::new();
+    static LIST: OnceLock<Regex> = OnceLock::new();
     let past = PAST.get_or_init(|| Regex::new(r"\n[ \t]*\n|\n[ \t]*[\[{(]?¶").unwrap());
     let broken = BROKEN.get_or_init(|| Regex::new(r"\n").unwrap());
+    let listed = LIST.get_or_init(|| Regex::new(r"(?m)^[ \t]*Footnotes[ \t]*$").unwrap()).find(&structure.text).map(|head| head.end());
     let closes = if kinds.opinion.rendition == "plain_text.txt" { past } else { broken };
-    let mut units = Units::new(&structure.text);
     let stops = opened.iter().enumerate().map(|(index, open)| {
         let limit = opened.get(index + 1).map_or(structure.text.len(), |next| next.0);
         let body = &structure.text[open.1..limit];
+        if listed.is_some_and(|head| head <= open.0) {
+            return coordinates.utf16_of_byte(open.1 + body.trim_end_matches(javascript_whitespace).len());
+        }
         let lead = body.len() - body.trim_start().len();
-        units.at(closes.find(&body[lead..]).map_or(limit, |close| open.1 + lead + close.start()))
+        coordinates.utf16_of_byte(closes.find(&body[lead..]).map_or(limit, |close| open.1 + lead + close.start()))
     }).collect::<Vec<_>>();
     let found = opened.iter().enumerate().map(|(index, (_, _, number))| (number.clone(), starts[index], stops[index])).collect::<Vec<_>>();
     for (number, start, stop) in found {
@@ -428,12 +436,12 @@ pub(super) fn share_note_calls(structure: &mut DocumentStructure, kinds: &mut Ki
     if !kinds.notes.iter().any(|note| note.calls.is_empty() && note.label.as_deref().unwrap_or("").bytes().all(|byte| byte.is_ascii_digit())) {
         return;
     }
-    let mut units = Units::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let mut printed = HashMap::<String, Vec<ScalarRange>>::new();
     let call = CALL.get_or_init(|| Regex::new(r"\[(\d{1,3})\]").unwrap());
     for capture in call.captures_iter(&structure.text) {
         let whole = capture.get(0).unwrap();
-        let unit = units.at(whole.start());
+        let unit = coordinates.utf16_of_byte(whole.start());
         let opening = kinds.paragraphs.iter().any(|paragraph| paragraph.range.start == unit);
         if !opening && !kinds.notes.iter().any(|note| note.ranges.iter().any(|range| range.start <= unit && unit < range.end)) {
             printed.entry(capture[1].to_owned()).or_default().push(ScalarRange { start: unit, end: unit + utf16_len(whole.as_str()) });

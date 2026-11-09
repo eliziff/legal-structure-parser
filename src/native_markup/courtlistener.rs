@@ -2787,273 +2787,6 @@ pub(super) fn clip_courtlistener_paragraphs_to_opinions(
     }
 }
 
-/// Pages a CourtListener opinion prints only as text: a New York slip opinion's "[*2]" and a
-/// Connecticut Superior Court opinion's "CT Page 6807", each opening the page it numbers.
-pub(super) fn courtlistener_printed_star_pages(structure: &mut DocumentStructure) {
-    if structure.nodes.iter().any(|node| node.kind == NodeKind::Page) {
-        return;
-    }
-    static MARKER: OnceLock<Regex> = OnceLock::new();
-    let text = structure.query_text();
-    let mut markers = Vec::<(usize, usize, u32)>::new();
-    let (mut byte, mut unit) = (0, 0);
-    for capture in MARKER
-        .get_or_init(|| Regex::new(r"\[\*(\d{1,5})\]|\bCT Page (\d{1,5})\b").unwrap())
-        .captures_iter(text)
-    {
-        let whole = capture.get(0).unwrap();
-        unit += utf16_len(&text[byte..whole.start()]);
-        byte = whole.start();
-        let Ok(number) = capture.get(1).or_else(|| capture.get(2)).unwrap().as_str().parse::<u32>() else {
-            continue;
-        };
-        // One numbering, read forward: each page follows the one before it.
-        if markers.last().is_some_and(|&(_, _, last)| number != last + 1) {
-            continue;
-        }
-        markers.push((unit, unit + utf16_len(whole.as_str()), number));
-    }
-    let end = utf16_len(text);
-    let pages = markers.iter().enumerate().map(|(index, &(start, marker_end, number))| {
-        let mut node = crate::StructureNode::new(
-            format!("heuristic-printed-page-{}", index + 1),
-            NodeKind::Page,
-            ScalarRange { start, end: markers.get(index + 1).map_or(end, |next| next.0) },
-            crate::ENGINE_ORIGIN,
-            Derivation::Heuristic,
-            None,
-        );
-        node.label = Some(format!("{number}"));
-        node.aliases = Some(vec![format!("*{number}")]);
-        node.marker_range = Some(ScalarRange { start, end: marker_end });
-        node.grammar = Some("courtlistener-printed-star-page".to_owned());
-        node
-    }).collect::<Vec<_>>();
-    structure.nodes.extend(pages);
-}
-
-/// A New York slip opinion's notes, printed as text: "[FN1]" in the opinion and, under a "Footnotes" line,
-/// "Footnote 1: ..." for each. Each note runs to the next; every one must be referenced and they must run 1, 2, 3...
-pub(super) fn courtlistener_slip_notes(structure: &mut DocumentStructure) {
-    if structure.nodes.iter().any(|node| node.kind == NodeKind::Footnote) {
-        return;
-    }
-    static HEAD: OnceLock<Regex> = OnceLock::new();
-    static BODY: OnceLock<Regex> = OnceLock::new();
-    static REFERENCE: OnceLock<Regex> = OnceLock::new();
-    let text = structure.query_text();
-    let Some(head) = HEAD.get_or_init(|| Regex::new(r"(?m)^[ \t]*Footnotes[ \t]*$").unwrap()).find(text) else {
-        return;
-    };
-    let bodies = BODY.get_or_init(|| Regex::new(r"(?m)^[ \t]*(Footnote ([0-9]{1,3}):)").unwrap())
-        .captures_iter(&text[head.end()..])
-        .filter_map(|capture| {
-            let label = capture.get(1)?;
-            Some((capture[2].parse::<usize>().ok()?, head.end() + label.start(), head.end() + label.end()))
-        })
-        .collect::<Vec<_>>();
-    if bodies.is_empty() || bodies.iter().enumerate().any(|(index, body)| body.0 != index + 1) {
-        return;
-    }
-    let mut references = HashMap::<usize, Vec<ScalarRange>>::new();
-    for capture in REFERENCE.get_or_init(|| Regex::new(r"\[FN([0-9]{1,3})\]").unwrap()).captures_iter(&text[..head.start()]) {
-        let (Some(whole), Ok(number)) = (capture.get(0), capture[1].parse::<usize>()) else { continue };
-        let start = utf16_len(&text[..whole.start()]);
-        references.entry(number).or_default().push(ScalarRange { start, end: start + utf16_len(whole.as_str()) });
-    }
-    if bodies.iter().any(|body| !references.contains_key(&body.0)) {
-        return;
-    }
-    let mut additions = Vec::new();
-    for (index, &(number, label_start, label_end)) in bodies.iter().enumerate() {
-        let end = bodies.get(index + 1).map_or(text.len(), |next| next.1);
-        let body_end = label_start + text[label_start..end].trim_end_matches(javascript_whitespace).len();
-        let label = ScalarRange { start: utf16_len(&text[..label_start]), end: utf16_len(&text[..label_end]) };
-        let range = ScalarRange { start: label.start, end: utf16_len(&text[..body_end]) };
-        let refs = references.remove(&number).unwrap_or_default();
-        let mut node = crate::StructureNode::new(
-            format!("heuristic-slip-note-{number}"),
-            NodeKind::Footnote,
-            range,
-            crate::ENGINE_ORIGIN,
-            Derivation::Heuristic,
-            None,
-        );
-        node.label = Some(format!("{number}"));
-        node.marker_range = Some(label);
-        node.grammar = Some("courtlistener-slip-notes".to_owned());
-        node.calls = refs;
-        additions.push(node);
-    }
-    structure.nodes.extend(additions);
-}
-
-/// An opinion's opening page: the text before the first page marker of a numbering sits on the
-/// page before it, so "*289" opens page 289 and what precedes it in the opinion is page 288.
-pub(super) fn courtlistener_opening_pages(structure: &mut DocumentStructure) {
-    const TRACK: [&str; 3] = ["citation-index", "data-citation-index", "pagescheme"];
-    let pages = structure.nodes.iter().enumerate()
-        .filter(|(_, node)| node.kind == NodeKind::Page)
-        .map(|(index, node)| (index, structure.query_range(node)))
-        .collect::<Vec<_>>();
-    let note_ids = structure.nodes.iter().filter(|node| node.kind == NodeKind::Footnote)
-        .map(|node| node.id.clone()).collect::<HashSet<_>>();
-    let track_of = |node: &crate::StructureNode| TRACK.iter()
-        .filter_map(|name| node.markup_attributes.get(*name).cloned()).collect::<Vec<_>>();
-    // The first page of each numbering in each opinion; a page a note owns is that note's.
-    let mut firsts = BTreeMap::<(Vec<String>, Option<String>), (usize, ScalarRange)>::new();
-    for &(index, range) in &pages {
-        let node = &structure.nodes[index];
-        if node.parent_id.as_ref().is_some_and(|parent| note_ids.contains(parent)) {
-            continue;
-        }
-        firsts.entry((track_of(node), node.parent_id.clone()))
-            .and_modify(|first| if range.start < first.1.start { *first = (index, range) })
-            .or_insert((index, range));
-    }
-    let coordinates = ScalarText::new(structure.query_text());
-    let mut opening = Vec::new();
-    for ((track, parent), (index, range)) in firsts {
-        let first = &structure.nodes[index];
-        let Some(printed) = first.label.as_deref() else {
-            continue;
-        };
-        let Some(before) = previous_page(printed) else {
-            continue;
-        };
-        let scope_start = parent.as_ref()
-            .and_then(|id| structure.nodes.iter().find(|node| &node.id == id))
-            .map_or(0, |node| structure.query_range(node).start);
-        let end = range.start;
-        let Some(gap) = coordinates.slice_utf16(scope_start..end) else {
-            continue;
-        };
-        if gap.trim_matches(javascript_whitespace).is_empty() {
-            continue;
-        }
-        let start = scope_start + utf16_len(&gap[..gap.len() - gap.trim_start_matches(javascript_whitespace).len()]);
-        // Another numbering's page may cover the same text; this numbering's may not.
-        if pages.iter().any(|(other, span)| span.start < end && start < span.end
-            && track_of(&structure.nodes[*other]) == track) {
-            continue;
-        }
-        let mut node = crate::StructureNode::new(
-            format!("heuristic-opening-page-{}", opening.len() + 1),
-            NodeKind::Page,
-            ScalarRange { start, end },
-            crate::ENGINE_ORIGIN,
-            Derivation::Heuristic,
-            parent,
-        );
-        node.label = Some(format!("{before}"));
-        node.aliases = first.aliases.as_ref().map(|aliases| aliases.iter()
-            .filter_map(|alias| alias.strip_suffix(printed).map(|stem| format!("{stem}{before}")))
-            .collect());
-        node.markup_attributes = TRACK.iter()
-            .filter_map(|name| Some((name.to_string(), first.markup_attributes.get(*name)?.clone())))
-            .collect();
-        node.grammar = Some("courtlistener-opening-page".to_owned());
-        opening.push(node);
-    }
-    structure.nodes.extend(opening);
-}
-
-/// The page printed before a page: 289 before 290, and an inserted page's own run, 595 before 595a and
-/// 595a before 595b.
-pub(super) fn previous_page(printed: &str) -> Option<String> {
-    if !printed.is_empty() && printed.len() <= 5 && printed.bytes().all(|byte| byte.is_ascii_digit()) {
-        return printed.parse::<u32>().ok().filter(|number| *number >= 2).map(|number| (number - 1).to_string());
-    }
-    let letter = printed.chars().next_back().filter(char::is_ascii_lowercase)?;
-    let digits = &printed[..printed.len() - 1];
-    if digits.is_empty() || digits.len() > 5 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    Some(if letter == 'a' { digits.to_owned() } else { format!("{digits}{}", (letter as u8 - 1) as char) })
-}
-
-pub(super) fn class_listed(attributes: &BTreeMap<String, String>, wanted: &str) -> bool {
-    attributes.get("class").is_some_and(|classes| classes.split_ascii_whitespace().any(|class| class == wanted))
-}
-
-/// A public.resource.org paragraph prints its own number in a SPAN.num before its text.
-pub(super) fn courtlistener_resource_paragraph_markers(structure: &mut DocumentStructure) {
-    let coordinates = ScalarText::new(structure.query_text());
-    let elements = &structure.markup_elements;
-    let markers = structure.nodes.iter().enumerate().filter_map(|(index, node)| {
-        if node.kind != NodeKind::Paragraph || node.marker_range.is_some()
-            || node.markup_tag.as_deref() != Some("div") || !class_listed(&node.markup_attributes, "num")
-        {
-            return None;
-        }
-        let number = node.label.as_deref()?;
-        let element = elements.binary_search_by_key(&node.markup_start?, |element| element.markup_start).ok()?;
-        let span = elements[element + 1..].iter()
-            .take_while(|child| child.markup_start < elements[element].markup_end)
-            .find(|child| child.parent == Some(element) && child.tag == "span" && class_listed(&child.attributes, "num"))?;
-        let raw = coordinates.slice_utf16(span.range.start..span.range.end)?;
-        let printed = trim_js(raw);
-        if printed != number {
-            return None;
-        }
-        let start = span.range.start + utf16_len(&raw[..raw.len() - raw.trim_start_matches(javascript_whitespace).len()]);
-        Some((index, ScalarRange { start, end: start + utf16_len(printed) }))
-    }).collect::<Vec<_>>();
-    for (index, marker) in markers {
-        structure.nodes[index].marker_range = Some(marker);
-    }
-}
-
-/// CAP's BRACKETNUM opening a paragraph is the opinion's own division number only where every
-/// one is a single numeral and they run 1, 2, 3...; any other BRACKETNUM (a headnote key such as
-/// "2. 3." or a marginal catchline) leaves the opinion's paragraphs unnumbered by it.
-pub(super) fn courtlistener_bracketnum_divisions(structure: &mut DocumentStructure) {
-    if structure.nodes.iter().any(|node| node.kind == NodeKind::Paragraph && node.marker_range.is_some()) {
-        return;
-    }
-    let coordinates = ScalarText::new(structure.query_text());
-    let elements = &structure.markup_elements;
-    let mut divisions = Vec::new();
-    for element in elements {
-        if element.tag != "bracketnum" {
-            continue;
-        }
-        let Some(parent) = element.parent.filter(|parent| elements[*parent].tag == "p") else {
-            continue;
-        };
-        let Some(before) = coordinates.slice_utf16(elements[parent].range.start..element.range.start) else {
-            return;
-        };
-        if !before.trim_matches(javascript_whitespace).is_empty() {
-            continue;
-        }
-        let Some(raw) = coordinates.slice_utf16(element.range.start..element.range.end) else {
-            return;
-        };
-        let printed = trim_js(raw);
-        let Some(number) = printed.strip_suffix('.').filter(|number| (1..=3).contains(&number.len())
-            && number.bytes().all(|byte| byte.is_ascii_digit())) else {
-            return;
-        };
-        let Some(node) = structure.nodes.iter().position(|node| node.source == Derivation::Native
-            && node.markup_start == Some(elements[parent].markup_start)
-            && matches!(node.kind, NodeKind::Prose | NodeKind::Paragraph)) else {
-            return;
-        };
-        let start = element.range.start + utf16_len(&raw[..raw.len() - raw.trim_start_matches(javascript_whitespace).len()]);
-        divisions.push((node, number.parse::<usize>().unwrap(), ScalarRange { start, end: start + utf16_len(printed) }));
-    }
-    if divisions.len() < 2 || divisions.iter().enumerate().any(|(index, division)| division.1 != index + 1) {
-        return;
-    }
-    for (index, number, marker) in divisions {
-        let node = &mut structure.nodes[index];
-        node.kind = NodeKind::Paragraph;
-        node.label = Some(format!("{number}"));
-        node.marker_range = Some(marker);
-    }
-}
-
 /// An opinion's divisions printed as paragraphs of their own, "I", "II", "A.": headings, where
 /// the opinion opens its divisions with "I".
 pub(super) fn courtlistener_division_headings(structure: &mut DocumentStructure) {
@@ -3143,57 +2876,6 @@ pub(super) fn courtlistener_source_roles(structure: &mut DocumentStructure) {
     }
 }
 
-pub(super) fn courtlistener_source_parents(structure: &mut DocumentStructure) {
-    let mut owners = HashMap::<usize, Option<usize>>::new();
-    for (index, node) in structure.nodes.iter().enumerate() {
-        if node.source == Derivation::Native && node.kind != NodeKind::Page {
-            if let Some(start) = node.markup_start {
-                owners
-                    .entry(start)
-                    .and_modify(|owner| *owner = None)
-                    .or_insert(Some(index));
-            }
-        }
-    }
-    let mut parents = Vec::new();
-    for (index, node) in structure.nodes.iter().enumerate() {
-        if node.source != Derivation::Native || node.kind == NodeKind::Page {
-            continue;
-        }
-        let Some(element_index) = node.markup_start.and_then(|start| {
-            structure
-                .markup_elements
-                .binary_search_by_key(&start, |element| element.markup_start)
-                .ok()
-        }) else {
-            continue;
-        };
-        let range = structure.query_range(node);
-        let mut parent = structure.markup_elements[element_index].parent;
-        while let Some(element_index) = parent {
-            let element = &structure.markup_elements[element_index];
-            if let Some(owner) = owners.get(&element.markup_start) {
-                if let Some(owner) = owner {
-                    let owner_range = structure.query_range(&structure.nodes[*owner]);
-                    if owner_range.start <= range.start && owner_range.end >= range.end {
-                        let id = &structure.nodes[*owner].id;
-                        if node.parent_id.as_ref() != Some(id) {
-                            parents.push((index, id.clone()));
-                        }
-                    }
-                }
-                // A nearer typed owner is a boundary even if its body excludes
-                // the child's printed marker or its source identity is ambiguous.
-                break;
-            }
-            parent = element.parent;
-        }
-    }
-    for (index, parent) in parents {
-        structure.nodes[index].parent_id = Some(parent);
-    }
-}
-
 /// A CourtListener rendition's reading after derivation: source headings and notes preferred, notes
 /// paired with their references, and every pass over what the rendition supplies.
 pub(super) fn finish(
@@ -3234,12 +2916,6 @@ pub(super) fn finish(
     );
     supplement_courtlistener_printed_notes(structure, printed_notes);
     drop_note_numbered_paragraphs(structure);
-    courtlistener_source_parents(structure);
-    courtlistener_printed_star_pages(structure);
-    courtlistener_slip_notes(structure);
-    courtlistener_opening_pages(structure);
-    courtlistener_resource_paragraph_markers(structure);
-    courtlistener_bracketnum_divisions(structure);
     courtlistener_division_headings(structure);
     courtlistener_source_roles(structure);
 }
@@ -3258,7 +2934,7 @@ pub(super) fn evidence(
     mut recovered_body_blocks: Vec<StructureNode>,
     matched_role_starts: &HashSet<usize>,
 ) -> Vec<(StructureNode, Vec<ScalarRange>)> {
-    if scope.kind == "complete"
+    if matches!(scope.kind, ScopeKind::Complete)
         && matches!(
             scope.markup_serialization,
             MarkupSerialization::HtmlSource | MarkupSerialization::BrowserHtml
@@ -3339,7 +3015,7 @@ pub(super) fn evidence(
         }
     }
     let coordinates = ScalarText::new(text);
-    if scope.kind == "complete" {
+    if matches!(scope.kind, ScopeKind::Complete) {
         markup.map(|markup| {
             courtlistener_printed_note_blocks(markup, elements, &coordinates, rendered_blocks)
         }).unwrap_or_default()

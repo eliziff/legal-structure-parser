@@ -74,14 +74,13 @@ pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furni
         repairs.push((found.start(), found.end(), ""));
     }
     repairs.sort_unstable();
-    let mut units = Units::new(&structure.text);
     let mut reached = 0;
     for (start, end, keep) in repairs {
         if start < reached {
             continue;
         }
         reached = end;
-        let unit = units.at(start);
+        let unit = coordinates.utf16_of_byte(start);
         cuts.push(Cut { start: unit, end: unit + utf16_len(&structure.text[start..end]), keep });
     }
     // A note's call is out of the words too, its place kept: "defendant7 s" reads "defendant s", the note still called there.

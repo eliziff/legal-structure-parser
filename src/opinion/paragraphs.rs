@@ -134,7 +134,7 @@ pub(super) fn hold_leftovers(structure: &mut DocumentStructure, kinds: &mut Kind
     let blank = BLANK.get_or_init(|| Regex::new(r"\n[ \t]*\n").unwrap());
     let plain = kinds.opinion.rendition == "plain_text.txt";
     let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
-    let summaries = kinds.headnotes().flat_map(|(_, text)| places(text)).collect::<HashSet<_>>();
+    let summaries = kinds.headnotes().flat_map(|(_, _, text)| places(text)).collect::<HashSet<_>>();
     let mut found = Vec::new();
     for (start, end) in unheld_stretches(structure, kinds.paragraphs.iter().chain(&kinds.headings).chain(&kinds.notes).chain(&kinds.spans)) {
         let Some(raw) = coordinates.slice_utf16(start..end) else { continue };

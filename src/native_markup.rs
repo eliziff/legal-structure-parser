@@ -21,23 +21,32 @@ use courtlistener::*;
 
 const ORIGIN: &str = "provider-adapter";
 
-#[derive(Clone, Copy)]
-enum DocumentProvider {
+/// The providers whose readers are built in, each by the name its records give: one not built in is no provider.
+#[derive(Clone, Copy, Deserialize, Serialize)]
+pub(crate) enum DocumentProvider {
     #[cfg(feature = "a2aj")]
+    #[serde(rename = "a2aj")]
     A2aj,
     #[cfg(feature = "courtlistener")]
+    #[serde(rename = "courtlistener")]
     CourtListener,
     #[cfg(feature = "tna")]
+    #[serde(rename = "tna")]
     Tna,
     #[cfg(feature = "govinfo")]
+    #[serde(rename = "govinfo")]
     GovInfo,
     #[cfg(feature = "govuk-et")]
+    #[serde(rename = "govuk-et")]
     GovUkEt,
     #[cfg(feature = "hansard")]
+    #[serde(rename = "hansard")]
     Hansard,
     #[cfg(feature = "journal")]
+    #[serde(rename = "journal")]
     Journal,
     #[cfg(feature = "local-pdf")]
+    #[serde(rename = "local-pdf")]
     LocalPdf,
 }
 
@@ -61,28 +70,6 @@ impl DocumentProvider {
             #[cfg(feature = "local-pdf")]
             Self::LocalPdf => "local-pdf",
         }
-    }
-
-    fn from_name(value: &str) -> Option<Self> {
-        Some(match value {
-            #[cfg(feature = "a2aj")]
-            "a2aj" => Self::A2aj,
-            #[cfg(feature = "courtlistener")]
-            "courtlistener" => Self::CourtListener,
-            #[cfg(feature = "tna")]
-            "tna" => Self::Tna,
-            #[cfg(feature = "govinfo")]
-            "govinfo" => Self::GovInfo,
-            #[cfg(feature = "govuk-et")]
-            "govuk-et" => Self::GovUkEt,
-            #[cfg(feature = "hansard")]
-            "hansard" => Self::Hansard,
-            #[cfg(feature = "journal")]
-            "journal" => Self::Journal,
-            #[cfg(feature = "local-pdf")]
-            "local-pdf" => Self::LocalPdf,
-            _ => return None,
-        })
     }
 
     /// CourtListener's renditions, read with its own conventions where its reader is built in.
@@ -110,10 +97,10 @@ enum MarkupSerialization {
     XmlSource,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct NativeMarkupScope {
-    kind: String,
+    kind: ScopeKind,
     excerpt_of: Option<String>,
     #[serde(default)]
     markup_serialization: MarkupSerialization,
@@ -121,16 +108,16 @@ pub struct NativeMarkupScope {
 
 fn default_scope() -> NativeMarkupScope {
     NativeMarkupScope {
-        kind: "complete".to_owned(),
+        kind: ScopeKind::Complete,
         excerpt_of: None,
         markup_serialization: MarkupSerialization::HtmlSource,
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct NativeMarkupInput {
-    provider: String,
+    provider: DocumentProvider,
     id: String,
     url: Option<String>,
     text: String,
@@ -146,9 +133,9 @@ pub struct NativeMarkupInput {
 
 impl NativeMarkupInput {
     /// A provider's record of one document: its text and its markup, nothing else known of it.
-    pub(crate) fn of(provider: &str, id: &str, text: String, markup: String) -> Self {
+    pub(crate) fn of(provider: DocumentProvider, id: &str, text: String, markup: String) -> Self {
         Self {
-            provider: provider.to_owned(),
+            provider,
             id: id.to_owned(),
             url: None,
             text,
@@ -204,7 +191,7 @@ struct RenderedMarkup {
     exclusions: Vec<ScalarRange>,
     cited_authorities: Vec<CitedAuthority>,
     note_references: Vec<(String, Option<String>, ScalarRange)>,
-    source_hash: String,
+    source_hash: Option<String>,
     harvard_casebody: bool,
 }
 
@@ -1886,7 +1873,7 @@ fn render_markup_in_context<'a>(
         exclusions: projected_exclusions,
         cited_authorities,
         note_references,
-        source_hash: format!("{:x}", Sha256::digest(markup.as_bytes())),
+        source_hash: Some(format!("{:x}", Sha256::digest(markup.as_bytes()))),
         harvard_casebody,
     })
 }
@@ -1907,30 +1894,11 @@ pub(super) fn source_heading_exclusion(tag: &str, attributes: &BTreeMap<String, 
         })
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AdapterScope<'a> {
-    kind: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    excerpt_of: Option<&'a str>,
-    markup_serialization: MarkupSerialization,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AdapterRevision<'a> {
-    provider: &'a str,
-    representation_revision: &'a str,
-    citation: Option<&'a str>,
-    page_citations: &'a [String],
-    markup_ancestors: &'a [MarkupAncestor],
-    scope: AdapterScope<'a>,
-    profile: DetectionProfile,
-}
-
 pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructure, EngineError> {
+    // The record as given is the source: everything read from it follows from it.
+    let source_sha256 = legal_structure_model::serialization_sha256(&input);
     let NativeMarkupInput {
-        provider: provider_name,
+        provider,
         id,
         url,
         text: fallback_text,
@@ -1940,8 +1908,6 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         markup_ancestors,
         scope,
     } = input;
-    let provider = DocumentProvider::from_name(&provider_name)
-        .ok_or_else(|| EngineError::source("unsupported native-markup provider"))?;
     let use_markup = markup
         .as_deref()
         .is_some_and(|value| !trim_js(value).is_empty());
@@ -1967,17 +1933,7 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         }
         rendered
     } else {
-        let source_hash = format!(
-            "{:x}",
-            Sha256::digest(
-                markup
-                    .as_deref()
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or(&fallback_text)
-                    .as_bytes(),
-            ),
-        );
-        RenderedMarkup { text: fallback_text, source_hash, ..RenderedMarkup::default() }
+        RenderedMarkup { text: fallback_text, ..RenderedMarkup::default() }
     };
     #[cfg(feature = "courtlistener")]
     let printed_notes = if provider.is_courtlistener() {
@@ -1996,23 +1952,6 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
     } else {
         DetectionProfile::CaseLossy
     };
-    let adapter = AdapterRevision {
-        provider: provider.as_str(),
-        representation_revision: &rendered.source_hash,
-        citation: citation.as_deref(),
-        page_citations: &page_citations,
-        markup_ancestors: &markup_ancestors,
-        scope: AdapterScope {
-            kind: &scope.kind,
-            excerpt_of: scope.excerpt_of.as_deref(),
-            markup_serialization: scope.markup_serialization,
-        },
-        profile,
-    };
-    let adapter_revision = format!(
-        "{:x}",
-        Sha256::digest(serde_json::to_vec(&adapter).map_err(EngineError::source)?)
-    );
     // Exact UTF-16 in final rendered/fallback text, never source markup.
     let text_utf16 = utf16_len(&rendered.text);
     // Each block the markup declares is a node, its element's tag and attributes on it.
@@ -2058,22 +1997,17 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         .map(|range| exclusion(range, &[NodeKind::Paragraph, NodeKind::Heading]))
         .chain(heading_exclusions[body_exclusions.len()..].iter().map(|range| exclusion(range, &[NodeKind::Heading])))
         .collect::<Vec<_>>();
-    let scope_kind = match scope.kind.as_str() {
-        "complete" => ScopeKind::Complete,
-        "excerpt" => ScopeKind::Excerpt,
-        _ => return Err(EngineError::source("invalid native-markup scope")),
-    };
     let mut structure = DocumentStructure::new(id, provider.as_str(), rendered.text, ORIGIN);
     structure.url = url;
     structure.doc_type = Some("cases".to_owned());
-    structure.source_sha256 = Some(adapter_revision);
-    structure.scope = Scope { kind: scope_kind, excerpt_of: scope.excerpt_of };
+    structure.source_sha256 = Some(source_sha256);
+    structure.scope = Scope { kind: scope.kind, excerpt_of: scope.excerpt_of };
     structure.nodes = claims;
     structure.cited_authorities = rendered.cited_authorities;
     if provider.is_courtlistener() {
         structure.markup_elements = rendered.elements;
         structure.markup_ancestors = markup_ancestors;
-        structure.markup_sha256 = Some(rendered.source_hash);
+        structure.markup_sha256 = rendered.source_hash;
     }
     let evidence = Evidence {
         report_start_page: report_start(citation.as_deref()),
@@ -2093,8 +2027,6 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
     #[cfg(feature = "courtlistener")]
     if provider.is_courtlistener() {
         courtlistener::finish(&mut structure, rendered.note_references, &rendered.matched_role_starts, printed_notes, &heading_exclusions, &body_exclusions);
-        // (Its passes drop and re-parent nodes: the levels are the parents' as they now stand.)
-        legal_structure_model::write_levels(&mut structure.nodes).ok();
     }
     structure.refresh_revision().expect("Typed document structure is serializable");
     Ok(structure)
