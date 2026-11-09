@@ -16,7 +16,7 @@
 //! is supported from below by its count's start, and a line two runs read takes the number it reads
 //! as best, and none when they read it alike.
 
-use legal_structure_model::layout::{Line, Page};
+use legal_structure_model::layout::{Line, LineZone};
 use legal_structure_model::NumberingMarker;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -25,19 +25,12 @@ use std::sync::OnceLock;
 const X0_LOW: f64 = -0.5;
 const X0_HIGH: f64 = 1.0;
 
-/// The lines `keep` admits in print order, as (page slot, line slot).
-fn print_order(pages: &[Page], keep: impl Fn(&Line) -> bool) -> Vec<(usize, usize)> {
-    let mut order = Vec::new();
-    let mut slots = (0..pages.len()).collect::<Vec<_>>();
-    slots.sort_by_key(|&slot| pages[slot].index);
-    for page in slots {
-        let mut lines = (0..pages[page].lines.len())
-            .filter(|&line| keep(&pages[page].lines[line]))
-            .collect::<Vec<_>>();
-        lines.sort_by_key(|&line| pages[page].lines[line].reading_order);
-        order.extend(lines.iter().map(|&line| (page, line)));
-    }
-    order
+/// A document's lines in reading order, page by page, each with its zone.
+type Lines<'a> = [(&'a mut Line, LineZone)];
+
+/// The places of the lines `keep` admits.
+fn print_order(lines: &Lines<'_>, keep: impl Fn(&Line, LineZone) -> bool) -> Vec<usize> {
+    (0..lines.len()).filter(|&at| keep(lines[at].0, lines[at].1)).collect()
 }
 
 /// The markers a neighbour at one more or one less supports, within `lines` lines and
@@ -215,7 +208,7 @@ fn replace_label(line: &mut Line, start: usize, end: usize, label: &str) {
 /// Read every gap's claims, settle a line two gaps read (the better fit, none on a tie), and write
 /// the markers that change a line; `spaced` keeps a space after a marker that ran into the next
 /// word. Returns how many lines it repaired.
-fn repair(pages: &mut [Page], order: &[(usize, usize)], gaps: &[Gap], single: bool, spaced: bool) -> usize {
+fn repair(lines: &mut Lines<'_>, order: &[usize], gaps: &[Gap], single: bool, spaced: bool) -> usize {
     let mut best = HashMap::<usize, (usize, usize, String, u32, bool)>::new();
     for (position, start, end, marker, found) in gaps.iter().flat_map(|gap| claims(gap, single)) {
         match best.get_mut(&position) {
@@ -228,8 +221,7 @@ fn repair(pages: &mut [Page], order: &[(usize, usize)], gaps: &[Gap], single: bo
     }
     let mut repaired = 0;
     for (position, (start, end, marker, _, tied)) in best {
-        let (page, line) = order[position];
-        let line = &mut pages[page].lines[line];
+        let line = &mut *lines[order[position]].0;
         if tied || line.text.chars().skip(start).take(end - start).collect::<String>() == marker {
             continue;
         }
@@ -307,19 +299,17 @@ fn misread_note_label(text: &str) -> Option<(usize, usize, Vec<Reading>)> {
 
 /// Restore the note labels recognition dropped digits of or misread within a run of them; returns
 /// how many lines it repaired.
-pub fn repair_label_dropouts(pages: &mut [Page]) -> usize {
-    let order = print_order(pages, |line| !line.text.trim().is_empty());
-    let line = |position: usize| {
-        let (page, line) = order[position];
-        &pages[page].lines[line]
-    };
+pub fn repair_label_dropouts(lines: &mut Lines<'_>) -> usize {
+    let order = print_order(lines, |line, _| !line.text.trim().is_empty());
+    let line = |position: usize| &*lines[order[position]].0;
+    let page = |position: usize| line(position).page_index;
     // A page's first two and last line.
     let mut edges = HashSet::new();
-    for (position, &(page, _)) in order.iter().enumerate() {
-        if position < 2 || order[position - 1].0 != page || order[position - 2].0 != page {
+    for position in 0..order.len() {
+        if position < 2 || page(position - 1) != page(position) || page(position - 2) != page(position) {
             edges.insert(position);
         }
-        if order.get(position + 1).is_none_or(|next| next.0 != page) {
+        if position + 1 == order.len() || page(position + 1) != page(position) {
             edges.insert(position);
         }
     }
@@ -343,7 +333,7 @@ pub fn repair_label_dropouts(pages: &mut [Page]) -> usize {
             .filter(|position| {
                 let candidate = line(*position);
                 !edges.contains(position)
-                    && !matches!(candidate.region_type.as_str(), "header" | "footer")
+                    && !lines[order[*position]].1.edge()
                     && candidate.recognized()
                     && aligned(candidate, &[line(before), line(after)], |line| line.bbox[0])
             })
@@ -355,7 +345,7 @@ pub fn repair_label_dropouts(pages: &mut [Page]) -> usize {
         let values = (value + 1..next).map(|v| (v.to_string(), v.to_string())).collect();
         gaps.push(Gap { lines, values, lone: false });
     }
-    repair(pages, &order, &gaps, true, false)
+    repair(lines, &order, &gaps, true, false)
 }
 
 // Paragraph and item numbers.
@@ -553,17 +543,12 @@ fn misread_marker(text: &str, family: &Family) -> Option<(usize, usize, Vec<Read
 
 /// Restore the paragraph and item numbers recognition misread within a run of them; returns how
 /// many lines it repaired.
-pub fn repair_paragraph_numbers(pages: &mut [Page]) -> usize {
+pub fn repair_paragraph_numbers(lines: &mut Lines<'_>) -> usize {
     // A line that can open a numbered paragraph: no running head or foot, no note.
-    let order = print_order(pages, |line| {
-        line.note_region_mode.is_empty()
-            && !matches!(line.region_type.as_str(), "header" | "footer" | "footnote")
-            && !line.text.trim().is_empty()
+    let order = print_order(lines, |line, zone| {
+        !zone.edge() && !matches!(zone, LineZone::Note(_)) && !line.text.trim().is_empty()
     });
-    let line = |position: usize| {
-        let (page, line) = order[position];
-        &pages[page].lines[line]
-    };
+    let line = |position: usize| &*lines[order[position]].0;
     if !(0..order.len()).any(|position| line(position).recognized()) {
         return 0;
     }
@@ -654,5 +639,5 @@ pub fn repair_paragraph_numbers(pages: &mut [Page]) -> usize {
             gaps.push(Gap { lines, values, lone: !very });
         }
     }
-    repair(pages, &order, &gaps, false, true)
+    repair(lines, &order, &gaps, false, true)
 }

@@ -2,20 +2,10 @@
 
 use super::*;
 
-pub(super) fn build_pairs<'a>(
-    pages: &'a [Page],
-    protected_citation_spans: &'a BTreeMap<String, Vec<ScalarRange>>,
-    keep: &dyn Fn(&Line) -> bool,
-) -> (Vec<Pair>, Vec<PairLine<'a>>) {
-    let lines = build_lines(pages, protected_citation_spans, keep);
+pub(super) fn build_pairs(lines: &[PairLine<'_>]) -> Vec<Pair> {
     // Source page numbers remain physical; introductory symbols belong to this document's start.
-    let first_page = pages
-        .iter()
-        .filter(|page| page.lines.iter().any(|line| keep(line)))
-        .map(|page| page.number)
-        .min()
-        .unwrap_or(1);
-    let (refs, expected) = extract_refs(&lines);
+    let first_page = lines.iter().map(|line| line.page).min().unwrap_or(1);
+    let (refs, expected) = extract_refs(lines);
     let labels = extract_labels(&lines, &refs, first_page);
     let mut segments: Vec<Vec<Candidate>> = select_segments(&labels, &lines)
         .into_iter()
@@ -301,6 +291,6 @@ pub(super) fn build_pairs<'a>(
         });
     }
 
-    pairs.sort_by_key(|pair| pair.label.pos(&lines));
-    (pairs, lines)
+    pairs.sort_by_key(|pair| pair.label.pos(lines));
+    pairs
 }

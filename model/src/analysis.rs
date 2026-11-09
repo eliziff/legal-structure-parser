@@ -17,15 +17,13 @@ pub struct NotePairing {
 /// beside its services on laid-out text. A parser takes this as a dependency on the model alone, so
 /// editing the engine recompiles the engine and the program that supplies it, not every parser.
 pub trait StructureAnalysis: LayoutAnalysis {
-    /// A laid-out document's notes paired with their references, its lines' citations (by line id, in UTF-16 offsets)
-    /// protected from being read as either, the lines of each `part` (a constituent document or language) paired on
-    /// their own, each note placed in the reader's text by `place` (a line's id and a range of its text in UTF-16).
+    /// A laid-out document's notes paired with their references, its lines given in reading order, the lines of each
+    /// part (a constituent document or language) paired on their own, each note placed in the reader's text by `place`
+    /// (a line's place among `lines` and a range of its text in UTF-16).
     fn pair_footnotes(
         &self,
-        pages: &[legal_layout::Page],
-        protected_citation_spans: &std::collections::BTreeMap<String, Vec<legal_layout::ScalarRange>>,
-        part: &dyn Fn(&legal_layout::Line) -> usize,
-        place: &dyn Fn(&str, usize, usize) -> Option<crate::ScalarRange>,
+        lines: &[legal_layout::NoteLine<'_>],
+        place: &dyn Fn(usize, usize, usize) -> Option<crate::ScalarRange>,
     ) -> NotePairing;
     /// The numbering runs in `text`: its counts of numbers, letters and bullets, and the provision
     /// ladder the instrument grammar reads. With `refinements`, the ladder also reads a section's

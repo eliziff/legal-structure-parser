@@ -330,7 +330,6 @@ static NOT_A_REPORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(
 struct Article {
     id: i64,
     text: String,
-    pages: Vec<String>,
 }
 
 struct Comment {
@@ -344,15 +343,8 @@ struct Comment {
 /// notes are read together, numbered, so a supra or ibid counts for the decision it refers to (at the Safe tier), with
 /// its own pinpoint.
 fn article_commentary(article: &Article) -> (Vec<Comment>, u64) {
-    let pairing = pair_numbered_footnotes(&article.text, &article.pages);
-    let mut notes = String::new();
-    let ranges: Vec<legal_citations::NoteRange> = pairing.notes.iter().map(|note| {
-        if !notes.is_empty() { notes.push_str("\n\n"); }
-        let start = notes.len();
-        notes.push_str(&note.body);
-        legal_citations::NoteRange { number: note.label.trim().parse().unwrap_or(0), start, end: notes.len(),
-            sequence: note.restart_sequence as u32, anchor: None }
-    }).collect();
+    let pairing = pair_numbered_footnotes(&article.text);
+    let (notes, ranges) = pairing.note_text(&article.text);
     // References resolve at the Safe tier, the most conservative: it refuses the links the other tiers risk.
     let citations = legal_citations::extract(&notes, &Options { notes: Some(ranges.clone()),
         split_tier: Some(legal_citations::SplitTier::Safe), ..Options::default() });
@@ -369,15 +361,15 @@ fn article_commentary(article: &Article) -> (Vec<Comment>, u64) {
     }
     let mut paired = 0;
     let comments = pairing.notes.iter().zip(first).filter_map(|(note, cited)| {
-        let page = note.ref_page_index?;
+        let call = note.calls.first()?;
         paired += 1;
-        let proposition = note.proposition.as_deref().map(str::trim).filter(|value| !value.is_empty())?;
+        let proposition = note.properties.get("sentence").map(|value| value.trim()).filter(|value| !value.is_empty())?;
         let (citing, full) = cited?;
         Some(Comment {
             key: full.key.clone()?,
             pinpoints: paragraph_pinpoints(citing),
             proposition: proposition.to_owned(),
-            page: pairing.page_labels.get(page).cloned().flatten(),
+            page: pairing.pages.iter().rfind(|page| page.range.start <= call.start).and_then(|page| page.label.clone()),
         })
     }).collect();
     (comments, paired)
@@ -412,15 +404,11 @@ fn build_commentary(graph: &Connection, options: &GraphOptions, summary: &mut Gr
         VALUES (?, ?, ?, ?, ?)")?;
     parallel(options.threads, move |jobs| {
         let journals = Connection::open_with_flags(&journals_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let mut pages = journals.prepare("SELECT page_label FROM article_pages WHERE article_id = ? ORDER BY page_order")?;
         let mut statement = journals.prepare(&format!("SELECT article_id, text FROM articles WHERE text IS NOT NULL
             AND length(text) > 0 ORDER BY article_id{}", limit.map_or(String::new(), |limit| format!(" LIMIT {limit}"))))?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
-            let id: i64 = row.get(0)?;
-            let pages = pages.query_map([id], |page| Ok(page.get_ref(0)?.as_str().map(str::trim).unwrap_or_default().to_owned()))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            if jobs.send(Article { id, text: row.get(1)?, pages }).is_err() { break; }
+            if jobs.send(Article { id: row.get(0)?, text: row.get(1)? }).is_err() { break; }
         }
         Ok(())
     }, article_commentary, |article, result| {

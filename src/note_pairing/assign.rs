@@ -41,17 +41,10 @@ pub(super) fn select_refs(
         let Some(label) = labels.get(&value) else {
             continue;
         };
-        let table_superscript = candidate.form == "sup"
-            && lines[candidate.line]
-                .region_type
-                .to_lowercase()
-                .contains("table");
+        let table_superscript = candidate.form == "sup" && lines[candidate.line].line.zone == LineZone::Table;
         if candidate.requires_visual_cue && !table_superscript {
-            let label_body = char_slice(
-                &lines[label.line].text,
-                label.end,
-                lines[label.line].text.chars().count(),
-            );
+            let label_body = lines[label.line].tail(label.end);
+
             if !visual_label_cue(&label_body) {
                 continue;
             }

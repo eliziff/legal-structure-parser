@@ -59,7 +59,7 @@ pub(super) fn expected_sites(
             continue;
         }
         let raised = superscript
-            || raised_or_small(line, start, end, *size.get_or_insert_with(|| line_font_size(line.line)));
+            || raised_or_small(line, start, end, *size.get_or_insert_with(|| line.font_size()));
         let glued = start >= 2
             && left.is_some_and(|value| REF_PUNCTUATION.contains(value) || QUOTES.contains(value))
             && (values[start - 2].is_alphabetic() || ")]”’\"'".contains(values[start - 2]))
@@ -285,7 +285,7 @@ pub(super) fn ref_site_penalty(
             && start >= 2
             && values[start - 2].is_ascii_digit()
             && line
-                .citation_spans
+                .citations
                 .iter()
                 .any(|span| line.unit(end) == span.end && line.unit(start) > span.start);
         if !tail_glued {
@@ -752,13 +752,14 @@ pub(super) fn extract_refs(lines: &[PairLine<'_>]) -> (Vec<Candidate>, Vec<Candi
         for captures in paren_ref.captures_iter(&line.text) {
             let whole = captures.get(0).expect("paren ref");
             let digits = captures.get(1).expect("paren digits");
-            let open = line.text[..whole.start()].chars().count();
-            let start = line.text[..digits.start()].chars().count();
-            let end = line.text[..digits.end()].chars().count();
+            let before = &line.text[..whole.start()];
+            let open = line.coordinates.scalar(whole.start());
+            let start = line.coordinates.scalar(digits.start());
+            let end = line.coordinates.scalar(digits.end());
             if start < label_end
                 || (open > 0 && line_chars[open - 1].is_alphanumeric())
-                || section_before.is_match(&char_slice(&line.text, 0, open))
-                || section_number.is_match(&char_slice(&line.text, 0, open))
+                || section_before.is_match(before)
+                || section_number.is_match(before)
                 || line.protected(start, end)
             {
                 continue;

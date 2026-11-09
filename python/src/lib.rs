@@ -8,30 +8,31 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyDictMethods, PyList, PyListMethods};
 use pyo3::IntoPyObjectExt;
 
-#[pyfunction(signature = (text, page_labels, include_context=false))]
+#[pyfunction(signature = (text, include_context=false))]
 fn pair_numbered_footnotes<'py>(
     py: Python<'py>,
     text: &str,
-    page_labels: Vec<String>,
     include_context: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let result = py.detach(|| pair(text, &page_labels));
+    let result = py.detach(|| pair(text));
+    let coordinates = ScalarText::new(text);
     let notes = PyList::empty(py);
     for note in result.notes {
         let item = PyDict::new(py);
+        let body = note.ranges.iter().map(|range| text_slice(&coordinates, range.start, range.end)).collect::<PyResult<Vec<_>>>()?.join(" ");
         item.set_item("label", note.label)?;
-        item.set_item("restart_sequence", note.restart_sequence)?;
-        item.set_item("note_page_index", note.note_page_index)?;
-        item.set_item("ref_page_index", note.ref_page_index)?;
-        item.set_item("body", note.body)?;
+        item.set_item("series", note.series)?;
+        item.set_item("note_page_index", note.page_indexes.first())?;
+        item.set_item("call_page", note.calls.first().and_then(|call| result.pages.iter().rfind(|page| page.range.start <= call.start)).and_then(|page| page.label.clone()))?;
+        item.set_item("body", body.trim())?;
         if include_context {
-            item.set_item("proposition", note.proposition)?;
+            item.set_item("proposition", note.properties.get("sentence"))?;
         }
         notes.append(item)?;
     }
     let output = PyDict::new(py);
     output.set_item("notes", notes)?;
-    output.set_item("pages", result.pages)?;
+    output.set_item("pages", result.pages.len())?;
     Ok(output)
 }
 

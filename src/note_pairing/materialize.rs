@@ -7,13 +7,13 @@ use super::*;
 pub(super) fn materialize(
     pairs: Vec<Pair>,
     lines: &[PairLine<'_>],
-    place: &dyn Fn(&str, usize, usize) -> Option<ScalarRange>,
+    place: &dyn Fn(usize, usize, usize) -> Option<ScalarRange>,
     restarts: usize,
     pairing: &mut NotePairing,
 ) -> usize {
     let continuation_pages: HashSet<u32> = lines
         .iter()
-        .filter(|line| line.note_region_mode == "footnote_continuation")
+        .filter(|line| line.note_mode() == Some(NoteMode::Continuation))
         .map(|line| line.page)
         .collect();
     let mut last_restart = restarts;
@@ -89,21 +89,20 @@ pub(super) fn materialize(
             // the layout called them (a note set as body text or in the footer).
             .filter(|line| {
                 allowed_pages.contains(&line.page)
-                    && (line.region_type == "footnote"
+                    && (line.note_line()
                         || line.idx == label_line.idx
-                        || (!label_line.region_id.is_empty()
-                            && line.region_id == label_line.region_id))
+                        || (label_line.block.is_some() && line.page == label_line.page && line.block == label_line.block))
             })
             .collect();
-        if !pair.endnote && !label_line.region_id.is_empty() {
-            let mut accepted = HashSet::from([label_line.region_id.as_str()]);
+        if let (false, Some(block)) = (pair.endnote, label_line.block) {
+            // The blocks of the label's page the note runs through.
+            let mut accepted = HashSet::from([block]);
             for line in &body_lines {
                 if line.page == label_line.page
-                    && !line.region_id.is_empty()
                     && line.bbox[1] <= label_line.bbox[3]
                     && line.bbox[3] >= label_line.bbox[1]
                 {
-                    accepted.insert(line.region_id.as_str());
+                    accepted.extend(line.block);
                 }
             }
             let mut bounded = Vec::new();
@@ -114,22 +113,20 @@ pub(super) fn materialize(
                     bounded.push(line);
                     continue;
                 }
-                let mut include = accepted.contains(line.region_id.as_str());
+                let mut include = line.block.is_some_and(|block| accepted.contains(&block));
                 if !include && !blocked {
                     if let Some(previous) = prior {
                         let height = previous.height().max(1.0);
                         let gap = line.bbox[1] - previous.bbox[3];
-                        let previous_size = line_font_size(previous.line);
-                        let size = line_font_size(line.line);
+                        let previous_size = previous.font_size();
+                        let size = line.font_size();
                         include = gap <= (3.0_f64).max(height * 0.5)
                             && previous_size > 0.0
                             && (previous_size * 0.75..=previous_size * 1.25).contains(&size);
                     }
                 }
                 if include {
-                    if !line.region_id.is_empty() {
-                        accepted.insert(line.region_id.as_str());
-                    }
+                    accepted.extend(line.block);
                     prior = Some(line);
                     bounded.push(line);
                 } else {
@@ -139,28 +136,27 @@ pub(super) fn materialize(
             body_lines = bounded;
         }
         // The body opens after the label and what sets it off (".", ")", a space) on the label's line.
-        let line_text = label_line.text.as_str();
-        let start_of_body = label_token(line_text, provider_text(label_line))
+        let start_of_body = label_token(label_line.text, provider_text(label_line))
             .filter(|token| token.start == pair.label.start && token.value == pair.label.value)
             .map_or(pair.label.end, |token| token.match_end);
-        let after = char_slice(line_text, start_of_body, line_text.chars().count());
+        let after = label_line.tail(start_of_body);
         let body_start = start_of_body + after.chars().count()
             - after.trim_start_matches(|character: char| character.is_whitespace() || ".)],:;-".contains(character)).chars().count();
         let display = pair.label.note_id();
         // Placed in the reader's text, in UTF-16: the label, the calls, and each body line (the label's from where the body
         // opens).
-        let label_range = place(&label_line.id, label_line.unit(pair.label.start), label_line.unit(pair.label.end))
+        let label_range = place(label_line.at, label_line.unit(pair.label.start), label_line.unit(pair.label.end))
             .filter(|range| range.start < range.end);
         let calls = pair.refs.iter().map(|reference| {
             let line = &lines[reference.line];
-            place(&line.id, line.unit(reference.start), line.unit(reference.end)).filter(|range| range.start < range.end)
+            place(line.at, line.unit(reference.start), line.unit(reference.end)).filter(|range| range.start < range.end)
         }).collect::<Option<Vec<_>>>();
-        let whole = body_lines.iter().any(|line| place(&line.id, 0, utf16_len(&line.text)).is_some_and(|range| range.start < range.end));
+        let whole = body_lines.iter().any(|line| place(line.at, 0, line.coordinates.utf16_len()).is_some_and(|range| range.start < range.end));
         let (Some(label_range), Some(calls), true) = (label_range, calls, whole && (!pair.refs.is_empty() || label_only)) else {
             continue;
         };
         let ranges: Vec<ScalarRange> = body_lines.iter()
-            .filter_map(|line| place(&line.id, if line.id == label_line.id { line.unit(body_start) } else { 0 }, utf16_len(&line.text)))
+            .filter_map(|line| place(line.at, if line.idx == label_line.idx { line.unit(body_start) } else { 0 }, line.coordinates.utf16_len()))
             .filter(|range| range.start < range.end)
             .collect();
         if pair.refs.is_empty() {
@@ -172,7 +168,7 @@ pub(super) fn materialize(
         let id = format!("fnv2-pair-LEGALPDF-document-{:06}", pairing.notes.len() + 1);
         let mut node = StructureNode::new(id, kind, range, NOTE_PAIRING_ORIGIN, Derivation::Heuristic, None);
         node.ranges = ranges;
-        node.line_ids = body_lines.iter().map(|line| line.id.clone()).collect();
+        node.line_ids = body_lines.iter().map(|line| line.id.to_owned()).collect();
         node.page_indexes = body_lines.iter().map(|line| line.page_index).collect::<BTreeSet<_>>().into_iter().collect();
         node.marker_range = Some(label_range);
         node.calls = calls;

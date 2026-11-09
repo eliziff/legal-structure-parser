@@ -230,7 +230,7 @@ pub(super) fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate], first_p
     let paren_style = paren_style(lines);
     let mut candidates = Vec::new();
     for (line_index, line) in lines.iter().enumerate() {
-        if line.suppress_footnote_label || line.edge_folio {
+        if line.label_suppressed || line.edge_folio {
             continue;
         }
         let Some(token) = label_token(&line.text, provider_text(line)) else {
@@ -241,7 +241,7 @@ pub(super) fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate], first_p
             && token.value.is_some_and(|value| {
                 ref_pages.get(&value).is_some_and(|pages| {
                     pages.iter().any(|page| {
-                        line.page.abs_diff(*page) <= 1 || line.note_region_mode == "endnote"
+                        line.page.abs_diff(*page) <= 1 || line.note_mode() == Some(NoteMode::Endnote)
                     })
                 })
             });
@@ -414,7 +414,7 @@ pub(super) fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate], first_p
             score += 0.9;
         }
         // Paragraph layout is a competing witness, not a veto before pairing.
-        if line.paragraph_label_candidate {
+        if line.paragraph_label {
             score -= 0.9;
         }
         let candidate = Candidate {

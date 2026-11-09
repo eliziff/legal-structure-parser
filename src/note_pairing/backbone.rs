@@ -97,7 +97,7 @@ pub(super) fn select_segments(
 pub(super) fn endnote_mode(chain: &[Candidate], lines: &[PairLine<'_>]) -> bool {
     if chain
         .iter()
-        .any(|candidate| lines[candidate.line].note_region_mode == "endnote")
+        .any(|candidate| lines[candidate.line].note_mode() == Some(NoteMode::Endnote))
     {
         return true;
     }

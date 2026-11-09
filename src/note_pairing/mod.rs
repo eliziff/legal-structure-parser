@@ -1,11 +1,10 @@
 use legal_citations::cues;
 use legal_citations::cues::is_counter_noun as counter_noun;
-use legal_structure_model::layout::{self, line_font_size, Diagnostic, Line, Page};
+use legal_structure_model::layout::{self, line_font_size, Diagnostic, LineZone, NoteLine, NoteMode, Span};
 use legal_structure_model::{Derivation, NodeKind, NotePairing, ScalarRange, StructureNode, NOTE_PAIRING_ORIGIN};
 use crate::{select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy};
-use legal_structure_model::{
-    normalize_decimal_digit, normalize_note_symbol, utf16_len, ScalarText,
-};
+use legal_structure_model::{normalize_decimal_digit, normalize_note_symbol, ScalarText};
+use legal_structure_model::text::{is_note_symbol as is_symbol, MAX_SYMBOL_LABEL_LEN as MAX_SYMBOL_RUN};
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Deref;
@@ -29,8 +28,6 @@ use materialize::*;
 const MAX_VALUE: u32 = 999;
 const ENDNOTE_MIN_LABELS: usize = 8;
 const SYMBOL_START_PAGE_LIMIT: u32 = 2;
-const MAX_SYMBOL_RUN: usize = 8;
-const SYMBOLS: &str = "*∗\u{f02a}†‡§¶#";
 const SUPERSCRIPTS: &str = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 const QUOTES: &str = "\"'‘’“”«»";
 const DASHES: &str = "–—-";
@@ -50,9 +47,10 @@ enum Zone {
     Visual,
 }
 
-#[derive(Debug)]
 struct PairLine<'a> {
-    line: &'a Line,
+    line: &'a NoteLine<'a>,
+    /// Its place among the document's lines, and among its part's.
+    at: usize,
     idx: usize,
     page: u32,
     page_index: usize,
@@ -60,51 +58,74 @@ struct PairLine<'a> {
     page_width: f64,
     page_height: f64,
     zone: Zone,
-    /// The citations the line holds, in UTF-16 code units of its text.
-    citation_spans: &'a [ScalarRange],
-    /// Where each of its characters stands in UTF-16, and its end: the pairer reads a line by its characters, as its
-    /// layout does, and places what it finds in UTF-16.
-    units: Vec<usize>,
+    bbox: [f64; 4],
+    spans: &'a [Span],
+    /// The pairer reads a line by its characters, as its layout does, and places what it finds in UTF-16.
+    coordinates: ScalarText<'a>,
     outline_spans: Vec<(usize, usize)>,
     note_column_fit: bool,
     small_font: bool,
     prose_like: bool,
     region_witness_demoted: bool,
     native_superscript_spans: Vec<(usize, usize)>,
+    /// The line is a provider's flattened text, whose notes read as their HTML printed them:
+    /// a label "[1]" or "Footnote 1", a call run into the word before it ("counsel[1]", "job.Footnote 1").
+    provider: bool,
     edge_folio: bool,
     /// The line is the page's furniture, which holds no note's reference.
     furniture: bool,
     note_sequence_restart: bool,
 }
 
-impl PairLine<'_> {
+impl<'a> PairLine<'a> {
     fn height(&self) -> f64 {
         self.bbox[3] - self.bbox[1]
     }
 
-    /// Whether the line stands in its page's note band: a laid-out line (one with a box) its parser
-    /// set as a footnote and gave a note mode. The band is final, so a label on it opens a note
-    /// whether or not a reference to it was read, and the page's body holds that note's reference.
+    /// Whether the line stands in its page's note band: a laid-out line (one with a box) in a band
+    /// of notes. The band is final, so a label on it opens a note whether or not a reference to it
+    /// was read, and the page's body holds that note's reference.
     fn in_note_band(&self) -> bool {
-        self.region_type == "footnote" && !self.note_region_mode.is_empty() && self.height() > 0.0
+        matches!(self.line.zone, LineZone::Note(Some(_))) && self.height() > 0.0
+    }
+
+    /// Whether the line is a note's, in a band or a region read as notes.
+    fn note_line(&self) -> bool {
+        matches!(self.line.zone, LineZone::Note(_))
+    }
+
+    fn note_mode(&self) -> Option<NoteMode> {
+        match self.line.zone {
+            LineZone::Note(mode) => mode,
+            _ => None,
+        }
     }
 
     /// Where a character of the line stands in UTF-16.
     fn unit(&self, at: usize) -> usize {
-        self.units[at.min(self.units.len() - 1)]
+        self.coordinates.utf16(at.min(self.coordinates.len()))
+    }
+
+    /// The line's text from its character `start`.
+    fn tail(&self, start: usize) -> &'a str {
+        self.coordinates.slice(start.min(self.coordinates.len())..self.coordinates.len()).expect("valid scalar range")
+    }
+
+    fn font_size(&self) -> f64 {
+        self.line.layout.map_or(0.0, line_font_size)
     }
 
     fn protected(&self, start: usize, end: usize) -> bool {
         let (from, to) = (self.unit(start), self.unit(end));
-        self.citation_spans
+        self.citations
             .iter()
             .any(|span| from < span.end && to > span.start)
             || overlaps(&self.outline_spans, start, end)
     }
 }
 
-impl Deref for PairLine<'_> {
-    type Target = Line;
+impl<'a> Deref for PairLine<'a> {
+    type Target = NoteLine<'a>;
 
     fn deref(&self) -> &Self::Target {
         self.line
@@ -177,25 +198,12 @@ fn chars(value: &str) -> Vec<char> {
     value.chars().collect()
 }
 
-fn char_slice(value: &str, start: usize, end: usize) -> &str {
-    if value.is_ascii() {
-        return &value[start.min(value.len())..end.min(value.len())];
-    }
-    let text = ScalarText::new(value);
-    text.slice(start.min(text.len())..end.min(text.len()))
-        .expect("valid scalar range")
-}
-
 fn chars_slice(values: &[char], start: usize, end: usize) -> String {
     values
         .iter()
         .skip(start)
         .take(end.saturating_sub(start))
         .collect()
-}
-
-fn is_symbol(character: char) -> bool {
-    SYMBOLS.contains(character)
 }
 
 fn is_superscript(character: char) -> bool {
@@ -218,10 +226,8 @@ fn numeric_value(value: &str) -> Option<u32> {
     (found && (1..=MAX_VALUE).contains(&number)).then_some(number)
 }
 
-/// Whether a line is a provider's flattened text, whose notes read as their HTML printed them:
-/// a label "[1]" or "Footnote 1", a call run into the word before it ("counsel[1]", "job.Footnote 1").
-fn provider_text(line: &Line) -> bool {
-    line.source == "provider_text"
+fn provider_text(line: &PairLine<'_>) -> bool {
+    line.provider
 }
 
 fn overlaps(spans: &[(usize, usize)], start: usize, end: usize) -> bool {
@@ -230,66 +236,22 @@ fn overlaps(spans: &[(usize, usize)], start: usize, end: usize) -> bool {
         .any(|(span_start, span_end)| start < *span_end && end > *span_start)
 }
 
-fn classify_zone(line: &Line) -> Zone {
-    // core._pair_markers presents region_type twice (region/coarse) and a
-    // derived line_type to the canonical pairer. Reconstruct that adapter
-    // contract exactly rather than interpreting note_region_mode here.
-    let footnote = line.region_type == "footnote";
-    let region = line.region_type.to_lowercase();
-    if footnote
-        || ["footnote", "endnote", "reference_content", "note"]
-            .iter()
-            .any(|token| region.contains(token))
-    {
-        Zone::Note
-    } else if ["page_number", "number", "folio"]
-        .iter()
-        .any(|token| region.contains(token))
-    {
-        Zone::Number
-    } else if ["header", "running"]
-        .iter()
-        .any(|token| region.contains(token))
-    {
-        Zone::Header
-    } else if [
-        "image",
-        "figure",
-        "chart",
-        "graphic",
-        "formula",
-        "separator",
-        "table",
-        "photo",
-    ]
-    .iter()
-    .any(|token| region.contains(token))
-    {
-        Zone::Visual
-    } else if [
-        "title",
-        "heading",
-        "byline",
-        "abstract",
-        "toc",
-        "table_of_contents",
-    ]
-    .iter()
-    .any(|token| region.contains(token))
-    {
-        Zone::Title
-    } else {
-        // The canonical adapter supplies "paragraph" as the fallback line
-        // type, so every remaining source region is body text.
-        Zone::Body
+/// The pairer's reading of a line's zone: a note's, the body's, a heading's, a running head's, a
+/// number's, a figure's or table's. A marginal note reads as a note's; a running foot as the body's.
+fn zone_of(zone: LineZone) -> Zone {
+    match zone {
+        LineZone::Note(_) | LineZone::MarginalNote => Zone::Note,
+        LineZone::Body | LineZone::Footer | LineZone::LineLabel => Zone::Body,
+        LineZone::Heading => Zone::Title,
+        LineZone::Header => Zone::Header,
+        LineZone::Folio => Zone::Number,
+        LineZone::Figure | LineZone::Table => Zone::Visual,
     }
 }
 
-fn is_edge_folio(line: &Line) -> bool {
-    matches!(
-        line.region_type.as_str(),
-        "header" | "footer" | "page_number" | "folio"
-    ) && {
+/// Whether a line is a folio at the page's head or foot, or standing on its own: one to four digits.
+fn is_edge_folio(line: &NoteLine<'_>) -> bool {
+    matches!(line.zone, LineZone::Header | LineZone::Footer | LineZone::Folio) && {
         let text = line
             .text
             .trim()
@@ -298,13 +260,6 @@ fn is_edge_folio(line: &Line) -> bool {
         (1..=4).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_digit())
     }
 }
-
-/// Whether a line is the page's furniture that would otherwise read as body: a running foot or a
-/// folio at the foot, a transcript's line label.
-fn is_furniture(line: &Line) -> bool {
-    matches!(line.region_type.as_str(), "footer" | "line_label")
-}
-
 fn prose_like(text: &str) -> bool {
     static LOWER_WORD: OnceLock<Regex> = OnceLock::new();
     let lower_words = LOWER_WORD
@@ -329,69 +284,56 @@ fn median(values: Vec<f64>) -> Option<f64> {
     (!values.is_empty()).then(|| layout::upper_median(values))
 }
 
-fn build_lines<'a>(
-    pages: &'a [Page],
-    protected_citation_spans: &'a BTreeMap<String, Vec<ScalarRange>>,
-    keep: &dyn Fn(&Line) -> bool,
-) -> Vec<PairLine<'a>> {
-    let mut source: Vec<(&Page, &Line)> = pages
-        .iter()
-        .flat_map(|page| page.lines.iter().filter(move |line| keep(line)).map(move |line| (page, line)))
-        .collect();
-    source.sort_by(|(left_page, left_line), (right_page, right_line)| {
-        left_page
-            .index
-            .cmp(&right_page.index)
-            .then_with(|| left_line.reading_order.cmp(&right_line.reading_order))
-            .then_with(|| left_line.id.cmp(&right_line.id))
-    });
+/// The lines of one part, in reading order, each read once for what the pairer asks of it; a
+/// transcript's line labels are left out.
+fn build_lines<'a>(source: &'a [NoteLine<'a>], provider: bool, part: usize) -> Vec<PairLine<'a>> {
     let mut lines: Vec<PairLine<'_>> = source
-        .into_iter()
+        .iter()
         .enumerate()
-        .filter(|(_, (_, line))| !line.exclude_from_body)
+        .filter(|(_, line)| line.part == part)
         .enumerate()
-        .map(|(idx, (source_order, (page, line)))| {
-            let text_len = line.text.chars().count();
+        .filter(|(_, (_, line))| line.zone != LineZone::LineLabel)
+        .enumerate()
+        .map(|(idx, (source_order, (at, line)))| {
+            let coordinates = ScalarText::new(line.text);
+            let text_len = coordinates.len();
+            let spans = line.layout.map_or(&[][..], |layout| layout.spans.as_slice());
             PairLine {
                 line,
+                at,
                 idx,
-                page: page.number,
-                page_index: page.index,
+                page: line.page.number,
+                page_index: line.page.index,
                 order: source_order + 1,
-                page_width: page.width,
-                page_height: page.height,
-                zone: classify_zone(line),
-                citation_spans: protected_citation_spans
-                    .get(&line.id)
-                    .map_or(&[], Vec::as_slice),
-                units: std::iter::once(0).chain(line.text.chars().scan(0, |unit, character| {
-                    *unit += character.len_utf16();
-                    Some(*unit)
-                })).collect(),
+                page_width: line.page.width,
+                page_height: line.page.height,
+                zone: zone_of(line.zone),
+                bbox: line.layout.map_or([0.0; 4], |layout| layout.bbox),
+                spans,
+                coordinates,
                 outline_spans: Vec::new(),
                 note_column_fit: false,
                 small_font: false,
-                prose_like: prose_like(&line.text),
+                prose_like: prose_like(line.text),
                 region_witness_demoted: false,
-                native_superscript_spans: line
-                    .spans
+                native_superscript_spans: spans
                     .iter()
                     .filter(|span| {
                         span.superscript && span.start < span.end && span.end <= text_len
                     })
                     .map(|span| (span.start, span.end))
                     .collect(),
+                provider,
                 edge_folio: is_edge_folio(line),
-                furniture: is_furniture(line),
+                furniture: line.zone == LineZone::Footer,
                 note_sequence_restart: false,
             }
         })
         .collect();
     let mut page_local_one_pages = HashSet::new();
     for line in &mut lines {
-        let page_local_one = line.region_type == "footnote"
-            && line.note_region_mode == "footnote"
-            && legal_structure_model::text::label_prefix(&line.text).is_some_and(|prefix| prefix.label == "1");
+        let page_local_one = line.note_mode() == Some(NoteMode::Footnote)
+            && legal_structure_model::text::label_prefix(line.text).is_some_and(|prefix| prefix.label == "1");
         if page_local_one {
             line.note_sequence_restart =
                 !page_local_one_pages.is_empty() && !page_local_one_pages.contains(&line.page);
@@ -408,7 +350,7 @@ fn build_lines<'a>(
     let note_column = median(
         lines
             .iter()
-            .filter(|line| line.zone == Zone::Note && label_token(&line.text, provider_text(line)).is_some())
+            .filter(|line| line.zone == Zone::Note && label_token(line.text, provider).is_some())
             .map(|line| line.bbox[0])
             .collect(),
     );
@@ -425,22 +367,23 @@ fn build_lines<'a>(
     lines
 }
 
-/// A laid-out document's notes paired with their calls, each a node placed in the reader's text by `place` (a line's id
-/// and a range of its text in UTF-16 code units), with what the pairing found wanting. The lines of each `part` (a constituent document
-/// or language) are paired on their own, the parts in their order: the notes' ids count on across them, and so do their
-/// numberings' restarts. The notes come in the order their labels stand in the reader's text.
+/// A document's notes paired with their calls, each a Footnote (or Endnote) node placed in the reader's text by `place`
+/// (a line's place among `lines` and a range of its text in UTF-16 code units), with what the pairing found wanting.
+/// `lines` stand in reading order; `provider` says they are a provider's flattened text. The lines of each part (a
+/// constituent document or language) are paired on their own, the parts in their order: the notes' ids count on across
+/// them, and so do their numberings' restarts. The notes come in the order their labels stand in the reader's text.
 pub fn pair_footnotes(
-    pages: &[Page],
-    protected_citation_spans: &BTreeMap<String, Vec<ScalarRange>>,
-    part: &dyn Fn(&Line) -> usize,
-    place: &dyn Fn(&str, usize, usize) -> Option<ScalarRange>,
+    lines: &[NoteLine<'_>],
+    provider: bool,
+    place: &dyn Fn(usize, usize, usize) -> Option<ScalarRange>,
 ) -> NotePairing {
-    let parts: BTreeSet<usize> = pages.iter().flat_map(|page| &page.lines).map(part).collect();
+    let parts: BTreeSet<usize> = lines.iter().map(|line| line.part).collect();
     let mut pairing = NotePairing { notes: Vec::new(), diagnostics: Vec::new() };
     let mut restarts = 0;
-    for each in parts {
-        let (pairs, lines) = build_pairs(pages, protected_citation_spans, &|line| part(line) == each);
-        restarts = materialize(pairs, &lines, place, restarts, &mut pairing);
+    for part in parts {
+        let paired = build_lines(lines, provider, part);
+        let pairs = build_pairs(&paired);
+        restarts = materialize(pairs, &paired, place, restarts, &mut pairing);
     }
     pairing.notes.sort_by_key(|note| note.marker_range.map_or((usize::MAX, 0), |label| (label.start, label.end)));
     pairing

@@ -24,8 +24,9 @@ pub trait LayoutAnalysis: Sync {
     fn is_citation_shaped_tail(&self, text: &str) -> bool;
 
     /// Restores the labels recognition misread from the runs they stand in: note labels whose
-    /// leading digits it dropped, from the note chain, and paragraph and item numbers.
-    fn repair_label_dropouts(&self, pages: &mut [Page]);
+    /// leading digits it dropped, from the note chain, and paragraph and item numbers. The lines
+    /// are one document's in reading order, page by page, each with its zone.
+    fn repair_label_dropouts(&self, lines: &mut [(&mut Line, LineZone)]);
 
     /// A body line's bracketed paragraph number ("[12] ..."); a bracketed year ("[2008] 2 S.C.R. 3") numbers no
     /// paragraph.

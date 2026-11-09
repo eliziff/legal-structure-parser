@@ -105,7 +105,7 @@ pub(super) fn gap_repair_claim(
         } else {
             (variants.first().copied()?, "confusable_value_repair")
         };
-        let body = char_slice(&line.text, end, line.text.chars().count())
+        let body = line.tail(end)
             .trim_start_matches(|character: char| " .)]".contains(character))
             .to_owned();
         let score = gap_line_score(line, &body);
@@ -158,7 +158,7 @@ pub(super) fn sequence_position_rekey(
         if residual_set.contains(&value) || value >= residual[0] {
             return Vec::new();
         }
-        let body = char_slice(&line.text, token.end, line.text.chars().count())
+        let body = line.tail(token.end)
             .trim_start_matches(|character: char| " .)]".contains(character))
             .to_owned();
         if body.chars().count() < 4 || cues::layout_is_citation_continuation(&body) {

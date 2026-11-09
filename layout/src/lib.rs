@@ -169,19 +169,90 @@ pub struct Line {
     pub cap_height: f64,
     #[serde(default)]
     pub exclude_from_body: bool,
-    #[serde(default)]
-    pub suppress_footnote_label: bool,
-    /// A competing paragraph-layout witness; pairing may overturn it.
-    #[serde(default)]
-    pub paragraph_label_candidate: bool,
-    #[serde(default)]
-    pub note_region_mode: String,
+    /// The region its source put the line in: a layout model's region, a recognition engine's.
     #[serde(default)]
     pub region_id: String,
+    /// The tag its source put on the line: a structure tree's heading or list item, a layout
+    /// model's or a recognition engine's region label; "unknown" where none.
     #[serde(default = "unknown_region")]
-    pub region_type: String,
+    pub source_tag: String,
     #[serde(default = "native_source")]
     pub source: String,
+}
+
+/// Where a line stands on its page, as the note pairer and the marker repair read it: the decided
+/// role a PDF's reading gives it, or what a text's own reading says.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum LineZone {
+    #[default]
+    Body,
+    /// A heading or a title.
+    Heading,
+    MarginalNote,
+    /// A running head, or a folio or furniture at the head.
+    Header,
+    /// A running foot, or a folio or furniture at the foot.
+    Footer,
+    /// A page's number standing on its own, at neither edge.
+    Folio,
+    /// A transcript's line number, held out of the body.
+    LineLabel,
+    /// A figure, chart, formula or rule.
+    Figure,
+    Table,
+    /// A note's line: in a note band of its kind, or (none) in a region read as notes.
+    Note(Option<NoteMode>),
+}
+
+/// The kind of note band a note's line stands in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NoteMode {
+    Footnote,
+    /// The page's first notes, going on with the last note of the page before.
+    Continuation,
+    Endnote,
+}
+
+impl LineZone {
+    /// Whether the line is the page's head or foot.
+    pub fn edge(self) -> bool {
+        matches!(self, Self::Header | Self::Footer)
+    }
+}
+
+/// A page as the note pairer reads it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NotePage {
+    pub index: usize,
+    pub number: u32,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl NotePage {
+    pub fn of(page: &Page) -> Self {
+        Self { index: page.index, number: page.number, width: page.width, height: page.height }
+    }
+}
+
+/// A line as the note pairer reads it, given in reading order: its text and id, its box and type
+/// where it was laid out, its page and zone, its block (a printed paragraph, numbered on its
+/// page), whether its opening number is no note's label (a heading's, or the body's of a text) or
+/// one a paragraph count numbers (which pairing may overturn), the constituent document or
+/// language it is paired within, and the citations it holds (UTF-16 ranges of its text), which are
+/// neither label nor call.
+#[derive(Debug, Clone, Copy)]
+pub struct NoteLine<'a> {
+    pub id: &'a str,
+    pub text: &'a str,
+    pub layout: Option<&'a Line>,
+    pub page: NotePage,
+    pub zone: LineZone,
+    pub block: Option<usize>,
+    pub label_suppressed: bool,
+    pub paragraph_label: bool,
+    pub part: usize,
+    pub citations: &'a [ScalarRange],
 }
 
 fn is_zero(value: &f64) -> bool {
@@ -230,8 +301,6 @@ pub struct Page {
     pub text_quality: f64,
     #[serde(default)]
     pub printed_label: Option<String>,
-    #[serde(default)]
-    pub printed_label_source: Option<String>,
     #[serde(default)]
     pub printed_label_line_id: Option<String>,
 }

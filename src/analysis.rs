@@ -5,9 +5,8 @@ use crate::{
     AuthoritativeTableCell, CandidateEvidenceV2, CandidateRoleV2, DocumentStructure, EngineError,
     StructureCandidateRun, };
 use legal_citations::cues;
-use legal_structure_model::layout::{Page, ScalarRange};
-use legal_structure_model::{CitationSpan, LayoutAnalysis, StructureAnalysis};
-use std::collections::BTreeMap;
+use legal_structure_model::layout::{Line, LineZone, NoteLine};
+use legal_structure_model::{CitationSpan, LayoutAnalysis, ScalarRange, StructureAnalysis};
 
 pub struct EngineAnalysis;
 
@@ -60,9 +59,9 @@ impl LayoutAnalysis for EngineAnalysis {
         cues::is_citation_shaped_tail(text)
     }
 
-    fn repair_label_dropouts(&self, pages: &mut [Page]) {
-        crate::numbering_repair::repair_label_dropouts(pages);
-        crate::numbering_repair::repair_paragraph_numbers(pages);
+    fn repair_label_dropouts(&self, lines: &mut [(&mut Line, LineZone)]) {
+        crate::numbering_repair::repair_label_dropouts(lines);
+        crate::numbering_repair::repair_paragraph_numbers(lines);
     }
 
     fn printed_paragraph_number(&self, text: &str) -> Option<usize> {
@@ -81,12 +80,10 @@ impl LayoutAnalysis for EngineAnalysis {
 impl StructureAnalysis for EngineAnalysis {
     fn pair_footnotes(
         &self,
-        pages: &[Page],
-        protected_citation_spans: &BTreeMap<String, Vec<ScalarRange>>,
-        part: &dyn Fn(&legal_structure_model::layout::Line) -> usize,
-        place: &dyn Fn(&str, usize, usize) -> Option<legal_structure_model::ScalarRange>,
+        lines: &[NoteLine<'_>],
+        place: &dyn Fn(usize, usize, usize) -> Option<ScalarRange>,
     ) -> legal_structure_model::NotePairing {
-        crate::note_pairing::pair_footnotes(pages, protected_citation_spans, part, place)
+        crate::note_pairing::pair_footnotes(lines, false, place)
     }
 
     fn signature_line(&self, line: &str) -> bool {
@@ -152,7 +149,7 @@ impl StructureAnalysis for EngineAnalysis {
         crate::numbered_paragraphs::paragraph_printings(document)
     }
 
-    fn judgment_paragraphs(&self, text: &str) -> Vec<(usize, Vec<legal_structure_model::ScalarRange>)> {
+    fn judgment_paragraphs(&self, text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
         crate::case_outline::judgment_paragraphs(text)
     }
 }

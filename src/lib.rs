@@ -70,7 +70,7 @@ pub use docx_lint::*;
 pub use docx_numbering::*;
 pub use fingerprint::*;
 #[cfg(feature = "structure-inference")]
-pub use text_notes::{pair_numbered_footnotes, NumberedFootnotePairing, PairedFootnote};
+pub use text_notes::{pair_numbered_footnotes, NumberedFootnotes};
 pub use instrument::*;
 #[cfg(feature = "journal")]
 pub use journal::{journal_document_structure, journal_text_document_structure, JournalPageLabel};

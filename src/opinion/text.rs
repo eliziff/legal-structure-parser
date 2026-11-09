@@ -6,9 +6,7 @@
 //! the page ends that open with the next note's number; note pairing pairs their labels with the calls.
 
 use super::*;
-use crate::note_pairing::pair_footnotes;
-use legal_citations::cues;
-use legal_structure_model::layout::{Line as LaidLine, Page as LaidPage, ScalarRange};
+use legal_structure_model::layout::ScalarRange;
 use std::collections::BTreeMap;
 
 /// The lines between one page number and the next, at the least: a list's numbers come closer than a page.
@@ -617,53 +615,22 @@ fn fill_skips(lines: &[Line<'_>], masked: &[bool], pages: &[(usize, usize)], zon
 
 fn notes_of(lines: &[Line<'_>], zones: &[Vec<Zone>], pages: &[(usize, usize)]) -> Vec<StructureNode> {
     let in_zone = zones.iter().flatten().flat_map(|zone| zone.lines.iter().copied()).collect::<HashSet<_>>();
-    let mut protected = BTreeMap::new();
-    let laid = pages.iter().enumerate().map(|(page_index, &(from, to))| {
-        let page_lines = (from..to).filter(|&at| !lines[at].blank()).map(|at| {
-            let id = format!("l{at}");
-            let body = lines[at].body;
-            if body.bytes().any(|byte| byte.is_ascii_digit()) {
-                let characters = ScalarText::new(body);
-                let spans = cues::layout_protected_spans(body).into_iter()
-                    .map(|span| ScalarRange { start: characters.utf16_of_byte(span.start), end: characters.utf16_of_byte(span.end) })
-                    .collect::<Vec<_>>();
-                if !spans.is_empty() { protected.insert(id.clone(), spans); }
-            }
-            let note = in_zone.contains(&at);
-            LaidLine {
-                id,
-                page_index,
-                page_number: page_index as u32 + 1,
-                source_index: at,
-                reading_order: at,
-                block_index: at,
-                text: body.to_owned(),
-                suppress_footnote_label: !note,
-                note_region_mode: if note { "footnote".to_owned() } else { String::new() },
-                region_type: if note { "footnote" } else { "paragraph" }.to_owned(),
-                source: "text".to_owned(),
-                ..Default::default()
-            }
-        }).collect();
-        LaidPage {
-            id: format!("page-{}", page_index + 1),
-            index: page_index,
-            number: page_index as u32 + 1,
-            lines: page_lines,
-            source: "text".to_owned(),
-            text_quality: 1.0,
-            ..Default::default()
-        }
+    // Each line the pairer reads, by its place among the opinion's lines.
+    let read = pages.iter().enumerate()
+        .flat_map(|(page, &(from, to))| (from..to).filter(|&at| !lines[at].blank()).map(move |at| (page, at)))
+        .collect::<Vec<_>>();
+    let text_lines = read.iter().map(|&(page, at)| crate::text_notes::TextLine {
+        text: lines[at].body,
+        start: lines[at].body_range().start,
+        page,
+        note: in_zone.contains(&at).then_some(legal_structure_model::layout::NoteMode::Footnote),
+        paragraph_label: false,
     }).collect::<Vec<_>>();
-    let place = |line_id: &str, start: usize, end: usize| -> Option<ScalarRange> {
-        let line = &lines[line_id.strip_prefix('l')?.parse::<usize>().ok()?];
-        let origin = line.body_range().start;
-        Some(ScalarRange { start: origin + start, end: origin + end })
-    };
-    let pairing = pair_footnotes(&laid, &protected, &|_| 0, &place);
+    let pairing = crate::text_notes::pair_text_notes(&text_lines, false);
     // Each note's calls, by its label's line.
     let references = pairing.notes.iter().filter_map(|note| {
-        let line = note.line_ids.first()?.strip_prefix('l')?.parse::<usize>().ok()?;
+        let label = note.marker_range?.start;
+        let (_, line) = read[text_lines.partition_point(|line| line.start <= label).checked_sub(1)?];
         Some((line, note.calls.clone()))
     }).collect::<HashMap<_, _>>();
     let mut notes = Vec::<StructureNode>::new();
