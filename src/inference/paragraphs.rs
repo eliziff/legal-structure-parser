@@ -210,6 +210,7 @@ pub(super) fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usiz
     let mut result = std::array::from_fn(|_| Vec::new());
     for line in lines(text) {
         let bytes = line.text.as_bytes();
+        let mut protected = None;
         let mut at = 0;
         while at < bytes.len() {
             let (style, index, digits) = match bytes[at] {
@@ -268,6 +269,15 @@ pub(super) fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usiz
             let sentence = style == MarkerStyle::Bracket
                 && sentence_heading(heading, &text.value[line.byte_start + end..]);
             if formal || sentence {
+                // A reported citation after a case name is no heading with a paragraph joined to it.
+                if protected
+                    .get_or_insert_with(|| crate::analysis::citation_spans(line.text))
+                    .iter()
+                    .any(|span| span.core_range.start <= at && end <= span.core_range.end)
+                {
+                    at = end;
+                    continue;
+                }
                 let score = if formal { 0.6 } else { 0.35 };
                 result[index].push(Marker { formal, sentence, ..Marker::new(line.text[digits..tail].parse().unwrap(), start, text.utf16_of_byte(line.byte_start + end), style, score) });
             }
@@ -412,6 +422,18 @@ pub(super) fn rooted_chain(candidates: &[Marker]) -> (Vec<Marker>, f64) {
     (chain, selected.score)
 }
 
+/// The case profile's count, including its existing recovery of a lost opening or a mid-count excerpt.
+/// Glued labels are evaluated by this same reading, so a count recovered after them can retain them.
+fn paragraph_chain(candidates: &[Marker], style: MarkerStyle) -> Vec<Marker> {
+    let (mut chain, mut score) = rooted_chain(candidates);
+    extend_over_gaps(&mut chain, candidates);
+    lost_root(&mut chain, &mut score, candidates);
+    if style == MarkerStyle::Bracket && chain.is_empty() {
+        excerpt_count(&mut chain, candidates);
+    }
+    chain
+}
+
 /// A count stitched across two lists ("1." to "4." of the agreed facts, then "5." to "8." of the grounds, whose own "1."
 /// to "4." it passed over) reads the list it ended in whole: a member standing right after the number before it, which is
 /// not the count's member, shows the count changed lists there. A bracketed count is left: the run before its member
@@ -508,7 +530,12 @@ fn quoted_runs(candidates: &[Marker]) -> HashSet<usize> {
 /// before a capital or a quotation mark, spaced or not. The count is
 /// read again with them, and where it runs longer the labels it takes join the candidates; the rest are dropped, so
 /// a year's "[2003] OJ" never reaches any other reading.
-pub(super) fn bridge_glued_labels(text: &ScalarText<'_>, candidates: &mut Vec<Marker>, chain: &mut Vec<Marker>, score: &mut f64) {
+pub(super) fn bridge_glued_labels(
+    text: &ScalarText<'_>,
+    candidates: &mut Vec<Marker>,
+    chain: &mut Vec<Marker>,
+    until: usize,
+) {
     let held = candidates.iter().map(|value| value.start).collect::<HashSet<_>>();
     // A note's call is never the count's next number where it stands, so endnotes need no pairing here: a decision
     // numbering its notes as its paragraphs ("I. Introduction [1] The appellant …" beside "[1] 2012 CM 3009.") would
@@ -566,15 +593,15 @@ pub(super) fn bridge_glued_labels(text: &ScalarText<'_>, candidates: &mut Vec<Ma
     if glued.is_empty() {
         return;
     }
-    let pool = candidates.iter().chain(&glued).cloned().collect::<Vec<_>>();
-    let (longer, longer_score) = rooted_chain(&pool);
+    let pool = candidates.iter().chain(&glued)
+        .filter(|marker| marker.start < until).cloned().collect::<Vec<_>>();
+    let longer = paragraph_chain(&pool, MarkerStyle::Bracket);
     if longer.len() <= chain.len() {
         return;
     }
     let used = longer.iter().map(|value| value.start).collect::<HashSet<_>>();
     candidates.extend(glued.into_iter().filter(|value| used.contains(&value.start)));
     *chain = longer;
-    *score = longer_score;
 }
 
 pub(super) fn sole_chain(chain: &[Marker], candidates: &[Marker]) -> bool {
@@ -1229,26 +1256,20 @@ pub(super) fn detect_paragraphs(
             // the notes. A paragraph quoting another decision's "[1]" to "[3]" opens no such count.
             let list = note_list_start(text, &candidates).unwrap_or(usize::MAX);
             let mut before = candidates.iter().filter(|marker| marker.start < list).cloned().collect::<Vec<_>>();
-            let (mut chain, mut score) = rooted_chain(&before);
+            let mut chain = paragraph_chain(&before, style);
             if style == MarkerStyle::Bracket {
-                bridge_glued_labels(text, &mut before, &mut chain, &mut score);
-                chain.retain(|marker| marker.start < list);
+                bridge_glued_labels(text, &mut before, &mut chain, list);
                 let held = candidates.iter().map(|marker| marker.start).collect::<HashSet<_>>();
                 candidates.extend(before.into_iter().filter(|marker| !held.contains(&marker.start)));
             }
             let counted = candidates.iter().filter(|marker| marker.start < list).cloned().collect::<Vec<_>>();
             pooled.extend(counted.iter().cloned());
-            extend_over_gaps(&mut chain, &counted);
-            lost_root(&mut chain, &mut score, &counted);
-            if style == MarkerStyle::Bracket && chain.is_empty() {
-                excerpt_count(&mut chain, &counted);
-            }
             if style == MarkerStyle::Bare {
                 rooted_on_author(text, &mut chain);
             }
             // Scored on the count it holds, not on where its first link ended: a count carried past a lost "[2]" is
             // as long as it reads.
-            score = chain_score(&chain);
+            let score = chain_score(&chain);
             // A decision of one paragraph numbers it "[1]", and no note call names it.
             let lone = style == MarkerStyle::Bracket && chain.len() == 1 && chain[0].number == 1 && candidates.len() == 1
                 && !text.value[..text.byte_of_utf16(chain[0].start)].contains("[1]");

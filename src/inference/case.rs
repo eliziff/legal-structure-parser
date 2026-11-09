@@ -38,6 +38,60 @@ pub(super) fn detect_case(
     paragraphs
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::{provider_text_document_structure, NodeKind, ProviderTextInput, ProviderTextSourceKind};
+
+    fn paragraphs(text: &str) -> Vec<String> {
+        provider_text_document_structure(ProviderTextInput::new(
+            "2031 ABCA 700",
+            ProviderTextSourceKind::Cases,
+            text,
+        ))
+        .unwrap()
+        .nodes
+        .into_iter()
+        .filter(|node| node.kind == NodeKind::Paragraph)
+        .map(|node| node.label.unwrap())
+        .collect()
+    }
+
+    #[test]
+    fn one_paragraph_decision_keeps_a_reported_citation() {
+        for years in [(2030, 2029), (2029, 2030)] {
+            let text = format!(
+                "REASONS FOR JUDGMENT\n\
+                [1] The court has carefully considered each submission made by the parties at the hearing \
+                and concludes that the appeal must be dismissed for the reasons given in the prior decision:\n\
+                Harbour v. Board, [{}] 1 C.T.C. 140, confirming [{}] 2 C.T.C. 250. \
+                The appeal is dismissed with costs.",
+                years.0, years.1,
+            );
+            assert_eq!(paragraphs(&text), ["1"]);
+        }
+    }
+
+    #[test]
+    fn heading_joined_labels_survive_recovery_of_the_count() {
+        for first in [1, 2, 62] {
+            let body = "The court considered the evidence and the parties' submissions before deciding \
+                whether the notice complied with the governing legislation and the requirements of procedural fairness.";
+            let text = format!(
+                "[{first}] {body}\n\
+                Should the Proposed Panelists attend the hearing, permitting their cross-examination by the Applicant? \
+                [{}] {body}\n[{}] {body}",
+                first + 1,
+                first + 2,
+            );
+            assert_eq!(
+                paragraphs(&text),
+                (first..=first + 2).map(|number| number.to_string()).collect::<Vec<_>>(),
+                "count opening at {first}",
+            );
+        }
+    }
+}
+
 /// A provider text's paragraphs with its note list after them, paired by note pairing's plain-text
 /// mode: the list may open at the last "[1] …" or "Footnote 1" line after the paragraphs' last
 /// number (with a "Footnotes" heading just above it), and the paragraphs' numbered lines are labels
