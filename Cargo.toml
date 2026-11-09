@@ -13,11 +13,10 @@ members = ["features", "layout", "locator", "model", "python", "query"]
 default-members = ["."]
 resolver = "2"
 
-# common-law-cite is a repository of its own, pinned here; a checkout beside it overrides the pin with a
-# [patch] in its own Cargo configuration (as Beaver's does), never by a path into another repository.
+# First-party dependencies are the independent main checkouts beside this repository.
 [workspace.dependencies]
-legal-citations = { git = "https://github.com/eliziff/common-law-cite.git", rev = "41d2309f20432fc8d35d41f893e6044602b9a2dc" }
-legal-text = { git = "https://github.com/eliziff/common-law-cite.git", rev = "41d2309f20432fc8d35d41f893e6044602b9a2dc" }
+legal-citations = { path = "../common-law-cite/crates/legal-citations" }
+legal-text = { path = "../common-law-cite/crates/legal-text" }
 
 [features]
 # Every provider adapter is built by default; a jurisdiction's instantiation builds only its own.

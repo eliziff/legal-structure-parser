@@ -1415,7 +1415,7 @@ pub(super) fn detect_paragraphs(
                 && (rooted || first_utf16 <= 1_200 || start <= 0.5)
                 // A rooted count standing alone may be an endorsement of a few short paragraphs ("[1] The motion
                 // judge did not err …", "[2] Accordingly, the appeal is dismissed …").
-                && if rooted {
+                && if rooted && !(hypothesis.style == MarkerStyle::Bracket && hypothesis.markers[0].number > LOST_ROOT_START) {
                     counts.iter().sum::<usize>() >= 20
                 } else if hypothesis.style == MarkerStyle::Bracket {
                     // Bracketed numbers opening their lines are a decision's paragraphs, an excerpt of a few short ones
