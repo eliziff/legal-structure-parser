@@ -342,6 +342,27 @@ fn rooted_on_author(text: &ScalarText<'_>, chain: &mut Vec<Marker>) {
     }
 }
 
+/// An excerpt of a decision opening mid-count ("[42]", "[43]", an authority's cited pages): where no count reads from
+/// near 1, its bracketed numbers each the last plus one, in the text's order, at least two of them.
+fn excerpt_count(chain: &mut Vec<Marker>, candidates: &[Marker]) {
+    let mut sorted = candidates.to_vec();
+    sorted.sort_by_key(|marker| marker.start);
+    let mut best: Vec<Marker> = Vec::new();
+    let mut run: Vec<Marker> = Vec::new();
+    for marker in sorted {
+        if run.last().is_some_and(|last| marker.number != last.number + 1) {
+            run.clear();
+        }
+        run.push(marker);
+        if run.len() > best.len() {
+            best.clone_from(&run);
+        }
+    }
+    if best.len() >= 2 {
+        *chain = best;
+    }
+}
+
 /// The highest number a count whose first numbers its reader lost may go on from.
 const LOST_ROOT_START: u32 = 9;
 
@@ -1211,6 +1232,9 @@ pub(super) fn detect_paragraphs(
             pooled.extend(counted.iter().cloned());
             extend_over_gaps(&mut chain, &counted);
             lost_root(&mut chain, &mut score, &counted);
+            if style == MarkerStyle::Bracket && chain.is_empty() {
+                excerpt_count(&mut chain, &counted);
+            }
             if style == MarkerStyle::Bare {
                 rooted_on_author(text, &mut chain);
             }

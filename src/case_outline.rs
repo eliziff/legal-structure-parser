@@ -76,7 +76,14 @@ pub(crate) fn judgment_paragraphs(text: &str) -> Vec<(usize, Vec<ScalarRange>)> 
     // A count holds four fifths of the numbers from 1 to its last: a number past the highest that does is no
     // paragraph's (a stray "272" among a few low numbers), and a text none of whose numbers do numbers none.
     let numbers: std::collections::BTreeSet<usize> = paragraphs.iter().map(|(number, _)| *number).collect();
-    let reach = numbers.iter().copied().filter(|&number| numbers.range(..=number).count() * 5 >= number * 4).max().unwrap_or(0);
+    let counted = numbers.iter().copied().filter(|&number| numbers.range(..=number).count() * 5 >= number * 4).max();
+    // A text none of whose numbers count from 1 that prints one unbroken run of them is an excerpt opening mid-count
+    // ("[42]", "[43]"): its run is its count.
+    let excerpt = || {
+        let (first, last) = (*numbers.first()?, *numbers.last()?);
+        (numbers.len() >= 2 && last - first + 1 == numbers.len()).then_some(last)
+    };
+    let reach = counted.or_else(excerpt).unwrap_or(0);
     paragraphs.retain(|(number, _)| *number <= reach);
     // A few numbers starting over and over are lists in unnumbered reasons: the relief sought, an affidavit's, the issues.
     if reach <= 12 && paragraphs.iter().filter(|(number, _)| *number == 1).count() >= 3 {
