@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 pub struct PropositionUnit {
     pub id: String,
     pub kind: String,
-    pub ordinal: f64,
+    pub ordinal: usize,
     pub text: String,
     #[serde(default)]
-    pub footnote_refs: Vec<(f64, f64)>,
+    pub footnote_refs: Vec<(u64, usize)>,
 }
 
 /// How much of the text a note's proposition is.
@@ -56,19 +56,14 @@ pub struct FootnotePropositions {
     pub anchors: Vec<(u64, usize)>,
 }
 
-fn safe_integer(value: f64) -> bool {
-    value.fract() == 0.0 && value.abs() <= 9_007_199_254_740_991.0
-}
-
 /// Each note's proposition in the body units (the model's one reading of it): with `context` sentence, the sentence its
 /// call ends or stands in; else the passage since the call before it.
 pub fn footnote_propositions(units: &[PropositionUnit], context: QuoteContext) -> FootnotePropositions {
     let mut body = (0..units.len()).filter(|&index| units[index].kind == "body").collect::<Vec<_>>();
-    body.sort_by(|&a, &b| units[a].ordinal.total_cmp(&units[b].ordinal).then_with(|| units[a].id.cmp(&units[b].id)));
+    body.sort_by(|&a, &b| units[a].ordinal.cmp(&units[b].ordinal).then_with(|| units[a].id.cmp(&units[b].id)));
     let texts = body.iter().map(|&index| units[index].text.as_str()).collect::<Vec<_>>();
     let calls = body.iter().enumerate().flat_map(|(at, &index)| units[index].footnote_refs.iter()
-        .filter(|&&(id, offset)| safe_integer(id) && id > 0.0 && safe_integer(offset) && offset >= 0.0)
-        .map(move |&(id, offset)| (at, id as u64, offset as usize))).collect::<Vec<_>>();
+        .filter(|&&(id, _)| id > 0).map(move |&(id, offset)| (at, id, offset))).collect::<Vec<_>>();
     let read = legal_structure_model::propositions::propositions(&texts, &calls);
     let mut body_starts = vec![None; units.len()];
     let parts = body.iter().zip(&read.unit_starts).map(|(&index, &start)| {

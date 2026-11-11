@@ -22,7 +22,6 @@ mod printed_statute;
 mod quote_location;
 #[cfg(feature = "document-query")]
 mod quote_verification;
-mod reading_order;
 
 #[cfg(all(feature = "citator", feature = "document-query"))]
 pub use journal_titles::{
@@ -48,7 +47,7 @@ pub use quote_location::{
 #[cfg(feature = "quote-verification")]
 pub use quote_verification::*;
 mod brief;
-pub use brief::{brief_citation_order, brief_text, BriefCitation, BriefCitationOrder, BriefText, BriefUnit};
+pub use brief::{brief_citation_order, brief_text, BriefCitation, BriefCitationOrder, BriefText};
 mod propositions;
 pub use propositions::{footnote_propositions, FootnotePropositions, PropositionUnit, QuoteContext};
 
