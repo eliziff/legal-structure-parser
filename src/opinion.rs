@@ -34,7 +34,7 @@ use crate::{
     analyze_native_markup, hierarchy, javascript_whitespace, trim_javascript_whitespace as trim_js, utf16_len, Derivation, DocumentStructure,
     MarkupElement, NativeMarkupInput, NodeKind, PrimaryRole, ScalarRange, ScalarText, StructureNode,
 };
-pub use legal_structure_model::opinion::{FrontLine, OpinionCitation, OpinionHeadnote, OpinionReading, PageSeries, Pin, RecordGap};
+pub use legal_structure_model::opinion::{OpinionCitation, OpinionReading, PageSeries, Pin, RecordGap};
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -167,8 +167,10 @@ fn reads(node: &StructureNode, grammar: &str) -> bool {
     node.kind == NodeKind::Span && node.grammar.as_deref() == Some(grammar)
 }
 
-/// A headnote, syllabus point or summary paragraph the text holds: its words as read, its kind (`kind`, as
-/// `OpinionHeadnote::kind` names them).
+/// A headnote, syllabus point or summary paragraph: its words as read, its kind (`kind`: `headnotes`, `syllabus`,
+/// `summary`, `arguments`, `history`, `posture`, `procedural_history`, `cross_reference`, `correction`, `seealso`, `note`
+/// (a reporter's or editor's), `held`, `catchword`, `topics`, `topic_index`, `papers`), where the text holds it; one the
+/// record holds apart from the text (the cluster's, another rendition's) stands at the text's start, holding none of it.
 fn headnote_node(kind: &str, text: String, range: ScalarRange) -> StructureNode {
     let mut headnote = span("headnote", range.start, range.end);
     headnote.role = Some(PrimaryRole::Headnote);
@@ -187,8 +189,11 @@ fn front_name(role: PrimaryRole) -> Option<&'static str> {
     FRONT_ROLES.iter().find(|(known, _)| *known == role).map(|(_, name)| *name)
 }
 
-/// A line of the front matter the text holds: its words as read, its role the structure's where it names one, else the
-/// opinion's own (`role`, as `FrontLine::role` names them).
+/// A line of the front matter: its words as read, its role the structure's where it names one, else the opinion's own
+/// (`role`: `court`, `docket`, `date`, `judges`, `counsel`, `caption`, `author`, `title`, `citation` (the case's own),
+/// `disposition`, `case_name`, `case_name_full`, `date_filed`, `other_dates`, `nature_of_suit`, `lower_court`,
+/// `publication`, `subject`, `addressee`, `contents`, `closing`, `joinder` and the cluster's other fields), where the text
+/// holds it; one the record holds apart from the text stands at the text's start, holding none of it.
 fn front_node(role: &str, text: String, range: ScalarRange) -> StructureNode {
     let mut line = span("front", range.start, range.end);
     line.display_value = Some(text);
@@ -232,25 +237,22 @@ pub fn spans<'a>(structure: &'a DocumentStructure, grammar: &'a str) -> impl Ite
     structure.nodes.iter().filter(move |node| node.origin_id == ORIGIN && reads(node, grammar))
 }
 
-/// Every headnote's kind, number as printed apart from its words, and words: those the text holds, in its order, then those
-/// the record holds apart from it.
+/// Every headnote's kind, number as printed apart from its words (its label), and words, in the structure's order.
 pub fn headnotes(structure: &DocumentStructure) -> impl Iterator<Item = (&str, Option<&str>, &str)> {
-    headnotes_of(spans(structure, "headnote"), reading(structure))
+    spans(structure, "headnote").map(headnote_of)
 }
 
-fn headnotes_of<'a>(spans: impl Iterator<Item = &'a StructureNode>, reading: &'a OpinionReading) -> impl Iterator<Item = (&'a str, Option<&'a str>, &'a str)> {
-    spans.map(|headnote| (headnote.properties.get("kind").map_or("", String::as_str), None, headnote.display_value.as_deref().unwrap_or("")))
-        .chain(reading.headnotes.iter().map(|headnote| (headnote.kind.as_str(), headnote.number.as_deref(), headnote.text.as_str())))
+fn headnote_of(headnote: &StructureNode) -> (&str, Option<&str>, &str) {
+    (headnote.properties.get("kind").map_or("", String::as_str), headnote.label.as_deref(), headnote.display_value.as_deref().unwrap_or(""))
 }
 
-/// Every front line's role and words: those the text holds, in its order, then those the record holds apart from it.
+/// Every front line's role and words, in the structure's order.
 pub fn front_lines(structure: &DocumentStructure) -> impl Iterator<Item = (&str, &str)> {
-    front_lines_of(spans(structure, "front"), reading(structure))
+    spans(structure, "front").map(front_line_of)
 }
 
-fn front_lines_of<'a>(spans: impl Iterator<Item = &'a StructureNode>, reading: &'a OpinionReading) -> impl Iterator<Item = (&'a str, &'a str)> {
-    spans.map(|line| (role_of(line), line.display_value.as_deref().unwrap_or("")))
-        .chain(reading.front.iter().map(|line| (line.role.as_str(), line.text.as_str())))
+fn front_line_of(line: &StructureNode) -> (&str, &str) {
+    (role_of(line), line.display_value.as_deref().unwrap_or(""))
 }
 
 /// What one pass leaves for later ones beside the structure: the titles other renditions mark, the openings of blocks they set
@@ -461,28 +463,23 @@ impl Kinds {
         self.coordinates
     }
 
-    /// A headnote: a span where the text holds it, the record's reading where its words stand apart.
+    /// A headnote, where the text holds it or, at the text's start holding none of it, where its words stand apart.
     fn headnote(&mut self, kind: &str, text: String, range: Option<ScalarRange>) {
-        match range {
-            Some(range) => self.spans.push(headnote_node(kind, text, range)),
-            None => self.opinion.headnotes.push(OpinionHeadnote { kind: kind.to_owned(), number: None, text }),
-        }
+        self.spans.push(headnote_node(kind, text, range.unwrap_or(ScalarRange { start: 0, end: 0 })));
     }
 
-    /// A line of the front matter: a span where the text holds it, the record's reading where its words stand apart.
+    /// A line of the front matter, where the text holds it or, at the text's start holding none of it, where its words
+    /// stand apart.
     fn front(&mut self, role: &str, text: String, range: Option<ScalarRange>) {
-        match range {
-            Some(range) => self.spans.push(front_node(role, text, range)),
-            None => self.opinion.front.push(FrontLine { role: role.to_owned(), text }),
-        }
+        self.spans.push(front_node(role, text, range.unwrap_or(ScalarRange { start: 0, end: 0 })));
     }
 
     fn headnotes(&self) -> impl Iterator<Item = (&str, Option<&str>, &str)> {
-        headnotes_of(self.spans_of("headnote"), &self.opinion)
+        self.spans_of("headnote").map(headnote_of)
     }
 
     fn front_lines(&self) -> impl Iterator<Item = (&str, &str)> {
-        front_lines_of(self.spans_of("front"), &self.opinion)
+        self.spans_of("front").map(front_line_of)
     }
 
     fn spans_of<'a>(&'a self, grammar: &'a str) -> impl Iterator<Item = &'a StructureNode> {
@@ -849,8 +846,8 @@ fn complete(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut 
             kinds.front("citation", squeezed(&capture[1]), None);
         }
     }
-    kinds.opinion.headnotes.extend(topic_index(plain));
-    kinds.opinion.headnotes.extend(rendition("html_columbia.html").map(embedded_topics).unwrap_or_default());
+    kinds.spans.extend(topic_index(plain));
+    kinds.spans.extend(rendition("html_columbia.html").map(embedded_topics).unwrap_or_default());
     if kinds.parts.is_empty() {
         kinds.parts.push(read_part(record.opinion_type.clone().unwrap_or_else(|| "opinion".to_owned()), record.author.clone(), 0, utf16_len(&structure.text)));
     }

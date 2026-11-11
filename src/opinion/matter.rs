@@ -322,11 +322,7 @@ pub(super) fn name_dates(kinds: &mut Kinds) {
             name_role(line, kind);
         }
     }
-    for line in kinds.opinion.front.iter_mut().filter(|line| line.role == "date") {
-        if let Some(kind) = named(&line.text) {
-            line.role = kind.to_owned();
-        }
-    }
+
 }
 
 /// A cover's summary over a text: what a board's decision prints between "Decided by Board" and the charge, and what an
@@ -358,17 +354,15 @@ pub(super) fn cover_matter(structure: &mut DocumentStructure, kinds: &mut Kinds)
 }
 
 /// The topic index New Mexico's texts end on: "Topic Index for ...", a code and its subject to the line.
-pub(super) fn topic_index(plain: &str) -> Vec<OpinionHeadnote> {
+pub(super) fn topic_index(plain: &str) -> Vec<StructureNode> {
     static ENTRY: OnceLock<Regex> = OnceLock::new();
     let Some(from) = plain.find("Topic Index for") else { return Vec::new() };
     let entry = ENTRY.get_or_init(|| Regex::new(r"(?m)^[ \t]*([A-Z]{2}(?:-[A-Z]{2,4})?)[ \t]{2,}(\S.*?)[ \t]*$").unwrap());
-    entry.captures_iter(&plain[from..]).map(|capture| OpinionHeadnote {
-        kind: "topic_index".to_owned(), number: Some(capture[1].to_owned()), text: squeezed(&capture[2]),
-    }).collect()
+    entry.captures_iter(&plain[from..]).map(|capture| numbered_headnote("topic_index", &capture[1], squeezed(&capture[2]))).collect()
 }
 
 /// A Columbia note's list of the case's topics: "Headnotes 1. Juries, 35 C.J., Section 240; 2. Juries, ...".
-pub(super) fn embedded_topics(markup: &str) -> Vec<OpinionHeadnote> {
+pub(super) fn embedded_topics(markup: &str) -> Vec<StructureNode> {
     static LIST: OnceLock<Regex> = OnceLock::new();
     static ITEM: OnceLock<Regex> = OnceLock::new();
     let Some(list) = LIST.get_or_init(|| Regex::new(r"Headnotes\s+1\.\s[^<]{10,}").unwrap()).find(markup) else { return Vec::new() };
@@ -376,8 +370,16 @@ pub(super) fn embedded_topics(markup: &str) -> Vec<OpinionHeadnote> {
     let starts = items.captures_iter(list.as_str()).map(|capture| (capture.get(0).unwrap().start(), capture.get(0).unwrap().end(), capture[1].to_owned())).collect::<Vec<_>>();
     starts.iter().enumerate().map(|(index, (_, from, number))| {
         let to = starts.get(index + 1).map_or(list.as_str().len(), |next| next.0);
-        OpinionHeadnote { kind: "topics".to_owned(), number: Some(number.clone()), text: squeezed(&list.as_str()[*from..to]) }
+        numbered_headnote("topics", number, squeezed(&list.as_str()[*from..to]))
     }).collect()
+}
+
+/// A headnote the record holds apart from the text under a number printed apart from its words (a topic index's code, a
+/// list's item number): at the text's start, holding none of it, its number its label.
+fn numbered_headnote(kind: &str, number: &str, text: String) -> StructureNode {
+    let mut headnote = headnote_node(kind, text, ScalarRange { start: 0, end: 0 });
+    headnote.label = Some(number.to_owned());
+    headnote
 }
 
 /// A syllabus or headnotes the source does not mark: the paragraphs under a heading of that name.

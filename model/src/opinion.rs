@@ -1,7 +1,7 @@
-//! A court opinion's readings that have no place in its text: the printings its pages belong to, its outcome and kind, the
-//! headnotes and front lines the record holds apart from the text, and what the record shows is missing. The structure's
-//! nodes hold the rest: its pages, paragraphs, notes, headings and parts, and as spans (`NodeKind::Span`) the readings that
-//! stand in its text.
+//! A court opinion's readings that are no node of it: the printings its pages belong to, its outcome and kind, and what the
+//! record shows is missing. The structure's nodes hold the rest: its pages, paragraphs, notes, headings and parts, and as
+//! spans (`NodeKind::Span`) its other readings, its headnotes and front lines among them (one the record holds apart from
+//! the text stands at the text's start, holding none of it).
 
 use serde::{Deserialize, Serialize};
 
@@ -15,12 +15,6 @@ pub struct OpinionReading {
     /// Each page numbering and the printing it belongs to.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub page_series: Vec<PageSeries>,
-    /// The headnotes, syllabus points and summary paragraphs the text does not hold: the cluster's, another rendition's.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub headnotes: Vec<OpinionHeadnote>,
-    /// The front lines the text does not hold: the cluster's fields, another rendition's head.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub front: Vec<FrontLine>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub record_gaps: Vec<RecordGap>,
     /// What the court did: `affirmed`, `reversed`, `remanded`, `vacated`, `dismissed`, `denied`, `granted`, `modified`.
@@ -29,28 +23,6 @@ pub struct OpinionReading {
     /// `court-opinion` or `attorney-general-opinion`, as the text reads, whatever the record's type says.
     #[serde(default)]
     pub document_kind: String,
-}
-
-/// One headnote, syllabus point or summary paragraph the record holds apart from the text: its words alone.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct OpinionHeadnote {
-    /// `headnotes`, `syllabus`, `summary`, `arguments`, `history`, `posture`, `procedural_history`, `cross_reference`,
-    /// `correction`, `seealso`, `note` (a reporter's or editor's), `held`, `catchword`, `topics`, `topic_index`, `papers`.
-    pub kind: String,
-    /// The number it stands under where that is printed apart from its words: a topic index's code, a list's item number.
-    /// A number its words open on, "[3]" or "3.", is read from them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub number: Option<String>,
-    pub text: String,
-}
-
-/// A line of the case's front matter the record holds apart from the text: `court`, `docket`, `date`, `judges`, `counsel`,
-/// `caption`, `author`, `title`, `citation` (the case's own), `disposition`, `case_name`, `case_name_full`, `date_filed`,
-/// `other_dates`, `nature_of_suit`, `lower_court`, `publication`, `subject`, `addressee`, `contents`, `closing`, `joinder`.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct FrontLine {
-    pub role: String,
-    pub text: String,
 }
 
 /// Something the record itself shows is not all here.
