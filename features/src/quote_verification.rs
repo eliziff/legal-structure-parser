@@ -309,6 +309,37 @@ pub fn marked_quote_spans(text: &str) -> Vec<MarkedQuoteSpan> {
         .collect()
 }
 
+/// A citation of a text, outside its marked quotations, that pinpoints paragraphs: its lookup key and every paragraph
+/// it names, a range written out (one reversed or spanning more than 59 past its first, as written).
+#[cfg(feature = "citator")]
+#[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+pub struct CitedParagraphs {
+    pub key: String,
+    pub paragraphs: Vec<String>,
+}
+
+/// Offsets in UTF-16 units, as the text's quotations are marked.
+#[cfg(feature = "citator")]
+pub fn cited_paragraphs(text: &str) -> Result<Vec<CitedParagraphs>, String> {
+    use legal_structure::citations::{api, OffsetUnit, Options, PinpointKind};
+    let request = api::ExtractRequest { text: text.to_owned(), markup_text: None,
+        options: Options { resolve: false, ..Options::default() }, offset_unit: OffsetUnit::Utf16 };
+    let quoted = marked_quotes(text);
+    Ok(api::extract(&request).map_err(|error| error.to_string())?.citations.into_iter()
+        .filter(|citation| !quoted.iter().any(|quote| citation.span.start >= quote.start && citation.span.end <= quote.end))
+        .filter_map(|citation| {
+            let written = citation.pinpoints.iter().filter(|pinpoint| pinpoint.kind == PinpointKind::Paragraph)
+                .map(|pinpoint| pinpoint.last.as_ref().map_or_else(|| pinpoint.first.clone(), |last| format!("{}–{last}", pinpoint.first)))
+                .collect::<Vec<_>>();
+            (!written.is_empty()).then(|| CitedParagraphs {
+                key: citation.key.unwrap_or_else(|| legal_structure::citation_lookup_key(&citation.span.text)),
+                paragraphs: legal_structure::expand_labels(&written, "paragraph", 59).into_iter().zip(&written)
+                    .flat_map(|(numbers, written)| numbers.unwrap_or_else(|| vec![written.clone()])).collect(),
+            })
+        }).collect())
+}
+
 fn letter_or_number(character: char) -> bool {
     let mut buffer = [0; 4];
     regex(r"[\p{L}\p{N}]", &CONTENT).is_match(character.encode_utf8(&mut buffer))
