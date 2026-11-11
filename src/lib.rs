@@ -1,18 +1,17 @@
 
 #[cfg(feature = "structure-inference")]
-mod analysis;
+pub mod analysis;
 #[cfg(feature = "structure-inference")]
 pub mod hierarchy;
 #[cfg(feature = "structure-inference")]
-mod numbered_paragraphs;
+pub mod numbered_paragraphs;
 #[cfg(feature = "structure-inference")]
-pub use numbered_paragraphs::paragraph_printings;
 #[cfg(feature = "structure-inference")]
 mod layout_cues;
 #[cfg(feature = "structure-inference")]
-mod transcript;
+pub mod transcript;
 #[cfg(feature = "structure-inference")]
-mod numbering_repair;
+pub mod numbering_repair;
 #[cfg(feature = "structure-inference")]
 pub mod note_pairing;
 #[cfg(feature = "structure-inference")]
@@ -48,7 +47,7 @@ mod numeric_sequence;
 mod provider_text;
 mod tables;
 #[cfg(feature = "structure-inference")]
-pub use analysis::{EngineAnalysis, STRUCTURE_ANALYSIS};
+pub use analysis::STRUCTURE_ANALYSIS;
 #[cfg(feature = "citator")]
 pub use citator::*;
 #[cfg(all(feature = "citator", feature = "document-query"))]
@@ -91,7 +90,7 @@ pub use text::{
 
 pub use legal_structure_model::{
     CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, CandidateRoleV2, DetectionProfile, EngineError,
-    LayoutAnalysis, Origin, ResolutionRuleV2, ScalarRange, Scope, ScopeKind, StructureAnalysis, StructureCandidateRun,
+    LayoutAnalysis, Origin, ResolutionRuleV2, ScalarRange, Scope, ScopeKind, StructureCandidateRun,
     StructureMarkerCandidate, UnitRole, DOCUMENT_STRUCTURE_SCHEMA,
 };
 pub const ENGINE_SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_ENGINE_SHA256");
@@ -168,14 +167,14 @@ fn labelled_node(kind: NodeKind, label: String, start: usize, end: usize) -> Str
 mod inference;
 
 #[cfg(feature = "structure-inference")]
-mod candidates;
+pub mod candidates;
 mod derive;
 #[cfg(feature = "structure-inference")]
 mod statute_outline;
 #[cfg(feature = "structure-inference")]
 pub use statute_outline::statute_provision_spans;
 #[cfg(feature = "structure-inference")]
-mod case_outline;
+pub mod case_outline;
 #[cfg(feature = "structure-inference")]
 pub use case_outline::{judgment_division, judgment_end, reasons_go_on, LIST_NUMBERS};
 pub use judgment::{date_line, figure_caption};

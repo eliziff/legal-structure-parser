@@ -1,16 +1,15 @@
-//! This engine's detection and the citation grammar, supplied to parsers that are built
-//! on the model crate alone and so are not recompiled when the engine changes.
+//! The citation grammar's services on laid-out text, and this engine as the layout crate's `LayoutAnalysis`, which
+//! extraction reads through legal-pdf-core so that an engine edit leaves extraction's key alone.
 
-use crate::{
-    AuthoritativeTableCell, CandidateEvidenceV2, CandidateRoleV2, DocumentStructure, EngineError,
-    StructureCandidateRun, };
 use legal_citations::cues;
-use legal_structure_model::layout::{Line, LineZone, NoteLine};
-use legal_structure_model::{CitationSpan, LayoutAnalysis, ScalarRange, StructureAnalysis};
+use legal_structure_model::layout::{Line, LineZone};
+use legal_structure_model::{CitationSpan, LayoutAnalysis, NumberingMarker};
+
+pub use cues::{is_citation_shaped_tail, layout_has_citation_cue as has_citation_cue, layout_has_citation_signal as has_citation_signal};
 
 pub struct EngineAnalysis;
 
-/// The structure engine, for a program to hand to the parsers it links.
+/// The structure engine, for a program to hand to legal-pdf-core's extraction.
 pub static STRUCTURE_ANALYSIS: EngineAnalysis = EngineAnalysis;
 
 impl LayoutAnalysis for EngineAnalysis {
@@ -18,11 +17,7 @@ impl LayoutAnalysis for EngineAnalysis {
         crate::ENGINE_SOURCE_SHA256
     }
 
-    fn numbering_marker(
-        &self,
-        marker: &str,
-        previous: Option<&legal_structure_model::NumberingMarker>,
-    ) -> Option<legal_structure_model::NumberingMarker> {
+    fn numbering_marker(&self, marker: &str, previous: Option<&NumberingMarker>) -> Option<NumberingMarker> {
         crate::candidates::numbering_marker(marker, previous)
     }
 
@@ -31,16 +26,7 @@ impl LayoutAnalysis for EngineAnalysis {
     }
 
     fn protected_citation_spans(&self, text: &str) -> Vec<(usize, usize)> {
-        let document = legal_citations::text::ScalarText::new(text);
-        cues::layout_protected_spans(text)
-            .into_iter()
-            .map(|span| {
-                (
-                    document.utf16_of_byte(span.start),
-                    document.utf16_of_byte(span.end),
-                )
-            })
-            .collect()
+        protected_citation_spans(text)
     }
 
     fn heading_text_plausible(&self, text: &str) -> bool {
@@ -48,20 +34,19 @@ impl LayoutAnalysis for EngineAnalysis {
     }
 
     fn has_citation_cue(&self, text: &str) -> bool {
-        cues::layout_has_citation_cue(text)
+        has_citation_cue(text)
     }
 
     fn has_citation_signal(&self, text: &str) -> bool {
-        cues::layout_has_citation_signal(text)
+        has_citation_signal(text)
     }
 
     fn is_citation_shaped_tail(&self, text: &str) -> bool {
-        cues::is_citation_shaped_tail(text)
+        is_citation_shaped_tail(text)
     }
 
     fn repair_label_dropouts(&self, lines: &mut [(&mut Line, LineZone)]) {
-        crate::numbering_repair::repair_label_dropouts(lines);
-        crate::numbering_repair::repair_paragraph_numbers(lines);
+        crate::numbering_repair::repair_numbering(lines);
     }
 
     fn printed_paragraph_number(&self, text: &str) -> Option<usize> {
@@ -77,88 +62,20 @@ impl LayoutAnalysis for EngineAnalysis {
     }
 }
 
-impl StructureAnalysis for EngineAnalysis {
-    fn pair_footnotes(
-        &self,
-        lines: &[NoteLine<'_>],
-        place: &dyn Fn(usize, usize, usize) -> Option<ScalarRange>,
-    ) -> legal_structure_model::NotePairing {
-        crate::note_pairing::pair_footnotes(lines, false, place)
-    }
-
-    fn signature_line(&self, line: &str) -> bool {
-        crate::judgment::signature_line(line)
-    }
-
-    fn author_line(&self, line: &str) -> bool {
-        crate::judgment::author_line(line)
-    }
-
-    fn end_matter(&self, line: &str) -> bool {
-        crate::judgment::end_matter(line)
-    }
-
-    fn date_line(&self, line: &str) -> bool {
-        crate::judgment::date_line(line)
-    }
-
-    fn disposition_line(&self, line: &str) -> bool {
-        crate::judgment::disposition_line(line)
-    }
-
-    fn history_note(&self, line: &str) -> bool {
-        crate::statute::history_note(line)
-    }
-
-    fn marginal_note_shaped(&self, line: &str) -> bool {
-        crate::statute::marginal_note_shaped(line)
-    }
-
-    fn detect_structure_candidate_runs(&self, text: &str, refinements: bool) -> Vec<StructureCandidateRun> {
-        crate::detect_structure_candidate_runs(text, refinements)
-    }
-
-    fn resolve_candidates(
-        &self,
-        runs: &[StructureCandidateRun],
-        evidence: &[CandidateEvidenceV2],
-    ) -> Result<Vec<CandidateRoleV2>, EngineError> {
-        crate::candidates::resolve_candidates(runs, evidence)
-    }
-
-    fn analyze_instrument(
-        &self,
-        text: String,
-        document_id: String,
-        table_cells: &[AuthoritativeTableCell],
-        reconstruct_lineation: bool,
-    ) -> Result<DocumentStructure, EngineError> {
-        crate::analyze_instrument(text, document_id, table_cells, reconstruct_lineation)
-    }
-
-    fn analyze_docx(
-        &self,
-        document_id: String,
-        paragraphs: Vec<String>,
-        table_cells: &[AuthoritativeTableCell],
-    ) -> Result<DocumentStructure, EngineError> {
-        crate::analyze_docx(document_id, paragraphs, table_cells)
-    }
-
-    fn paragraph_printings(&self, document: &DocumentStructure) -> Vec<(usize, Vec<usize>)> {
-        crate::numbered_paragraphs::paragraph_printings(document)
-    }
-
-    fn judgment_paragraphs(&self, text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
-        crate::case_outline::judgment_paragraphs(text)
-    }
+/// The spans of a laid-out line a citation protects, in UTF-16 offsets.
+pub fn protected_citation_spans(text: &str) -> Vec<(usize, usize)> {
+    let document = legal_citations::text::ScalarText::new(text);
+    cues::layout_protected_spans(text)
+        .into_iter()
+        .map(|span| (document.utf16_of_byte(span.start), document.utf16_of_byte(span.end)))
+        .collect()
 }
 
 /// Every citation in `text`, each with its style of cause, pinpoints and parentheticals: where the
 /// citation grammar finds them, without the metadata, short-form resolution and name references
 /// extraction adds, which no structure reading uses (measured: the structure gold, the footnote
 /// benchmark and the A2AJ census unchanged; 3-5x faster on documents dense with citations).
-pub(crate) fn citation_spans(text: &str) -> Vec<CitationSpan> {
+pub fn citation_spans(text: &str) -> Vec<CitationSpan> {
     legal_citations::find::find_occurrences(text, &legal_citations::Options::default())
         .into_iter()
         .map(|citation| CitationSpan {

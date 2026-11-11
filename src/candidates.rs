@@ -319,7 +319,7 @@ struct ResolvedCandidate<'a> {
 
 /// Each candidate of `runs` resolved, in text order, to the unit it opens, if any, and whether its
 /// number counts (`counted_markers`).
-pub(crate) fn resolve_candidates(
+pub fn resolve_candidates(
     runs: &[StructureCandidateRun],
     evidence: &[CandidateEvidenceV2],
 ) -> Result<Vec<CandidateRoleV2>, EngineError> {
@@ -672,7 +672,7 @@ fn marker_family(
     readings.into_iter().find(|(count, _)| !matches!(count, inference::Count::Roman { .. })).map(|(count, value)| read(count, value))
 }
 
-pub(crate) fn numbering_marker(
+pub fn numbering_marker(
     marker: &str,
     previous: Option<&legal_structure_model::NumberingMarker>,
 ) -> Option<legal_structure_model::NumberingMarker> {

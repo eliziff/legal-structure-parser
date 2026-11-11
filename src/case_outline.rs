@@ -66,7 +66,7 @@ pub fn judgment_division(line: &str) -> bool {
 /// A judgment's numbered paragraphs as a provider's text of it reads, every printing an entry: a decision printed
 /// again whole after its reasons (its translation set after them) is read the same way, a count that holds four
 /// fifths of the first's numbers being that decision again and not a list after its reasons.
-pub(crate) fn judgment_paragraphs(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
+pub fn judgment_paragraphs(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
     let mut paragraphs = printings(text);
     // A count holds four fifths of the numbers from 1 to its last: a number past the highest that does is no
     // paragraph's (a stray "272" among a few low numbers), and a text none of whose numbers do numbers none.

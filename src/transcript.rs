@@ -7,6 +7,11 @@ use std::sync::OnceLock;
 /// ("Speaker 1:"), or a name before a colon ("MR. SMITH:", "THE COURT:", "MS JONES (Counsel):", "Me BRISTOW :"); and a
 /// name's after a "Q." or "A." ("Q.   MR. PHILLIPS:"). A caption's, a memo's or a form's own labels ("BETWEEN:", "RE:",
 /// "APPEARANCES:", "BY MR. X:", "REPORTED BY:", "Email:") name no speaker.
+/// The speaker label opening a transcript's line, if any.
+pub fn speaker_label(text: &str) -> Option<(usize, usize)> {
+    speaker_labels(text).into_iter().next()
+}
+
 pub fn speaker_labels(text: &str) -> Vec<(usize, usize)> {
     static LABEL: OnceLock<Regex> = OnceLock::new();
     static NAME: OnceLock<Regex> = OnceLock::new();

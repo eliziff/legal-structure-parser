@@ -487,6 +487,32 @@ pub struct DocumentStructure {
 }
 
 impl DocumentStructure {
+    /// Each paragraph number the structure labels ("par12"), once, with the nodes printing it, the first in the text
+    /// first: a parallel report prints a paragraph once per language, side by side, so its printings are those on a
+    /// page of the first, or, where the report sets its languages or decisions one after the other, those the parser
+    /// marks as printing it again; the same number on other pages is another count's (a list of the issues in the other
+    /// language), and the number is the first's.
+    pub fn paragraph_printings(&self) -> Vec<(usize, Vec<usize>)> {
+        let translated = |index: usize| self.nodes[index].grammar.as_deref() == Some("translation");
+        let mut by_number = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+        for (index, node) in self.nodes.iter().enumerate().filter(|(_, node)| node.kind == NodeKind::Paragraph) {
+            let number = node.label.as_deref().and_then(|n| n.parse::<usize>().ok());
+            if let Some(number) = number {
+                by_number.entry(number).or_default().push(index);
+            }
+        }
+        by_number
+            .into_iter()
+            .map(|(number, mut printings)| {
+                printings.sort_by_key(|&index| self.query_range(&self.nodes[index]).start);
+                let first: std::collections::HashSet<usize> = self.nodes[printings[0]].page_indexes.iter().copied().collect();
+                let lead = printings[0];
+                printings.retain(|&index| index == lead || translated(index) || self.nodes[index].page_indexes.iter().any(|page| first.contains(page)));
+                (number, printings)
+            })
+            .collect()
+    }
+
     /// A node of the structure as a reader takes it (`NodeReading`).
     pub fn reading<'a>(&self, node: &'a StructureNode) -> NodeReading<'a> {
         NodeReading { node, ranges: self.query_ranges(node), span: self.query_range(node), fragment: node.fragment(),

@@ -321,6 +321,12 @@ fn misread_note_label(text: &str) -> Option<(usize, usize, Vec<Reading>)> {
 
 /// Restore the note labels recognition dropped digits of or misread within a run of them; returns
 /// how many lines it repaired.
+/// A laid-out document's note labels and paragraph numbers recognition dropped or misread, put back.
+pub fn repair_numbering(lines: &mut Lines<'_>) {
+    repair_label_dropouts(lines);
+    repair_paragraph_numbers(lines);
+}
+
 pub fn repair_label_dropouts(lines: &mut Lines<'_>) -> usize {
     let order = print_order(lines, |line, _| !line.text.trim().is_empty());
     let line = |position: usize| &*lines[order[position]].0;

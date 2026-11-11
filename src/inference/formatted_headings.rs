@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
-use legal_structure_model::{LayoutAnalysis, ScalarRange};
+use legal_structure_model::ScalarRange;
 use legal_structure_model::document::{Derivation, DocumentStructure, NodeKind, StructureNode};
 use legal_structure_model::text::{javascript_whitespace, trim_javascript_whitespace, utf16_len, ScalarText};
 use regex::Regex;
@@ -166,20 +166,19 @@ pub(crate) fn supplement_source_formatted_headings(
                 title_text.trim_matches(['"', '\u{201c}', '\u{201d}']).trim_end_matches('.')
             } else { title_text };
             let citation_text = possessive.replace_all(title_text, "$1");
-            let analysis = &crate::analysis::STRUCTURE_ANALYSIS;
             // Keep the shared dated-title guard: an argument/filed date is
             // metadata, even when source typography capitalizes its words.
             if !enumerated && grammar.chars().last().is_some_and(|character| character.is_ascii_digit())
-                && !analysis.heading_text_plausible(grammar) { return false; }
+                && !crate::layout_cues::heading_text_plausible(grammar) { return false; }
             let uppercase = title_text.chars().filter(|character| character.is_alphabetic())
                 .all(char::is_uppercase);
             // An isolated enumerated issue title can name the statute at issue;
             // a capitalized name initial alone is not a reporter/neutral cite.
-            (enumerated || ((!analysis.has_citation_cue(&citation_text) || uppercase)
-                    && !analysis.has_citation_signal(&citation_text)))
+            (enumerated || ((!crate::analysis::has_citation_cue(&citation_text) || uppercase)
+                    && !crate::analysis::has_citation_signal(&citation_text)))
                 && ((heading_level(&title_text.split_whitespace().collect::<Vec<_>>(), enumerated)
                         && (enumerated || heading_title_case(&words)))
-                    || analysis.heading_text_plausible(grammar))
+                    || crate::layout_cues::heading_text_plausible(grammar))
                 && !(!enumerated && value.ends_with('.') && words.len() == 1)
         };
         let separator = |value: &str| value.chars().all(|character|
