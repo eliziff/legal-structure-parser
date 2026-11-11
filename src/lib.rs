@@ -77,7 +77,7 @@ use legal_structure_model::text;
 pub use legal_structure_model::AuthoritativeTableCell;
 /// The laid-out pages and lines note pairing reads, for programs that hand it lines of their own.
 pub use legal_structure_model::layout;
-pub use locator::{collapse_labels, normalize_compact_numbered_section_locator, normalize_section_locator, parse_ordinal};
+pub use locator::{collapse_labels, expand_labels, normalize_compact_numbered_section_locator, normalize_section_locator, parse_ordinal};
 pub mod statute;
 #[cfg(feature = "native-markup")]
 pub use native_markup::{analyze_native_markup, NativeMarkupInput};

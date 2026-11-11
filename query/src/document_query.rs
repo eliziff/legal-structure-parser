@@ -57,6 +57,25 @@ pub struct Passage<'a> {
     pub text: String,
 }
 
+/// What a passage is cited by: a page, paragraph, provision or note by the label it prints, and its link fragment.
+#[derive(Serialize)]
+pub struct Locator {
+    pub kind: NodeKind,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fragment: Option<String>,
+}
+
+/// A table cell a row of the text shows: the part of the row's span it holds, by its table's name and its address.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RowCell {
+    pub start: usize,
+    pub end: usize,
+    pub table_name: String,
+    pub address: String,
+}
+
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentLookupStatus {
@@ -104,6 +123,12 @@ pub struct DocumentTextWindowRow<'a> {
     pub end_char: usize,
     pub truncated_start: bool,
     pub truncated_end: bool,
+    /// The smallest block holding the row's span, what the span is cited by (`DocumentQuery::locator`), and the
+    /// table cells the row shows.
+    pub block: Option<Passage<'a>>,
+    pub locator: Option<Locator>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cells: Vec<RowCell>,
 }
 
 #[derive(Serialize)]
@@ -382,7 +407,30 @@ impl DocumentQuery {
         limit: usize,
     ) -> DocumentTextWindow<'a> {
         let scalar = self.text(document);
-        self.text_window_with_text(document, &scalar, offset, start_char, limit)
+        let mut window = self.text_window_with_text(document, &scalar, offset, start_char, limit);
+        self.describe_rows(document, &mut window);
+        window
+    }
+
+    /// Each row's block, locator and table cells, read where its span stands.
+    fn describe_rows<'a>(&self, document: &'a DocumentStructure, window: &mut DocumentTextWindow<'a>) {
+        if window.rows.is_empty() {
+            return;
+        }
+        let cells = self.table_cells(document);
+        let text = self.text(document);
+        for row in &mut window.rows {
+            let [start, end] = row.span;
+            let block = self.smallest_containing(document, start, end);
+            row.locator = self.locator_of(document, start, end, block.map(|index| &document.nodes[index]));
+            row.block = block.map(|index| self.materialize(document, index, &text));
+            row.cells = cells.iter().flat_map(|cell| cell.ranges.iter().filter_map(move |range| {
+                let (from, to) = (range.start.max(start), range.end.min(end));
+                (from < to).then(|| RowCell { start: from, end: to,
+                    table_name: cell.table_name.clone().unwrap_or_default(),
+                    address: cell.address.clone().unwrap_or_default() })
+            })).collect();
+        }
     }
 
     fn text_window_with_text<'a>(
@@ -486,6 +534,9 @@ impl DocumentQuery {
                     end_char: shown_end - scalar.utf16_at_byte(line_start).unwrap(),
                     truncated_start,
                     truncated_end,
+                    block: None,
+                    locator: None,
+                    cells: Vec::new(),
                 });
                 last_row = Some((
                     line_number,
@@ -621,6 +672,7 @@ impl DocumentQuery {
             window.next_offset = None;
             window.next_start_char = None;
         }
+        self.describe_rows(document, &mut window);
         window
     }
 
@@ -1055,32 +1107,54 @@ impl DocumentQuery {
             .collect()
     }
 
-    pub fn smallest_containing_block<'a>(
-        &self,
-        document: &'a DocumentStructure,
-        start: usize,
-        end: usize,
-    ) -> Option<Passage<'a>> {
-        let index = self
-            .positions(document)
+    /// The smallest node the query serves that holds `start..end` in one of its ranges.
+    fn smallest_containing(&self, document: &DocumentStructure, start: usize, end: usize) -> Option<usize> {
+        self.positions(document)
             .iter()
             .filter_map(|&index| {
                 let ranges = document.query_ranges(&document.nodes[index]);
                 ranges.iter().any(|range| range.start <= start && range.end >= end)
                     .then_some((index, ranges.iter().map(|range| range.end - range.start).sum::<usize>()))
             })
-            .min_by_key(|(_, length)| *length)?
-            .0;
+            .min_by_key(|(_, length)| *length)
+            .map(|(index, _)| index)
+    }
+
+    pub fn smallest_containing_block<'a>(
+        &self,
+        document: &'a DocumentStructure,
+        start: usize,
+        end: usize,
+    ) -> Option<Passage<'a>> {
+        let index = self.smallest_containing(document, start, end)?;
         Some(self.materialize(document, index, &self.text(document)))
     }
 
     /// The page that holds `start..end`, else the first that shares any of it.
-    pub fn page_at<'a>(&'a self, document: &'a DocumentStructure, start: usize, end: usize) -> Option<legal_structure_model::NodeReading<'a>> {
+    fn page_at<'a>(&'a self, document: &'a DocumentStructure, start: usize, end: usize) -> Option<&'a StructureNode> {
         let page = |holds: &dyn Fn(&ScalarRange) -> bool| self.blocks(document, Some(NodeKind::Page))
             .find(|page| document.query_ranges(page).iter().any(holds));
         page(&|range| range.start <= start && range.end >= end)
             .or_else(|| page(&|range| range.start < end && range.end > start))
-            .map(|page| document.reading(page))
+    }
+
+    /// The legal locator `start..end` is cited by: the node `id` names (else the smallest block holding the span) where
+    /// it is a labelled page, or a paragraph, provision or note that prints its label where it stands; else the
+    /// labelled page holding the span (`page_at`); none where no page is labelled.
+    pub fn locator(&self, document: &DocumentStructure, start: usize, end: usize, id: Option<&str>) -> Option<Locator> {
+        let node = match id {
+            Some(id) => document.nodes.iter().find(|node| node.id == id),
+            None => self.smallest_containing(document, start, end).map(|index| &document.nodes[index]),
+        };
+        self.locator_of(document, start, end, node)
+    }
+
+    fn locator_of(&self, document: &DocumentStructure, start: usize, end: usize, node: Option<&StructureNode>)
+        -> Option<Locator> {
+        let own = node.filter(|node| node.label.is_some() && (node.kind == NodeKind::Page || node.prints_label()
+            && matches!(node.kind, NodeKind::Paragraph | NodeKind::Section | NodeKind::Footnote)));
+        let node = own.or_else(|| self.page_at(document, start, end).filter(|page| page.label.is_some()))?;
+        Some(Locator { kind: node.kind, label: node.label.clone().unwrap_or_default(), fragment: node.fragment() })
     }
 
     /// The page `requested` names ("pdf:3", "printed:iv", "12"): a PDF page by its number, a printed page by its

@@ -140,6 +140,16 @@ pub fn ordinal_range(kind: &str, raw: &str) -> Option<(usize, usize)> {
     Some((first.parse().ok()?, last.parse().ok()?))
 }
 
+/// Each numbered label of `kind` (a paragraph's, page's or line's) as the numbers it names, a run written out ("12–14"
+/// is 12, 13, 14; "paras 142-54" runs to 154): the inverse of `collapse_labels`. None for a label naming no number or
+/// run, or a run reversed or spanning more than `limit` past its first number.
+pub fn expand_labels(labels: &[String], kind: &str, limit: usize) -> Vec<Option<Vec<String>>> {
+    labels.iter().map(|label| {
+        let (first, last) = ordinal_range(kind, label).or_else(|| parse_ordinal(kind, label).map(|number| (number, number)))?;
+        (first <= last && last - first <= limit).then(|| (first..=last).map(|number| number.to_string()).collect())
+    }).collect()
+}
+
 /// A typed note locator as a note's label is written ("fn 3" is "3", "note *" is "*"), lowercased.
 pub fn note_label(raw: &str) -> String {
     let label = bare("footnote", raw).to_lowercase();

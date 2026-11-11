@@ -40,13 +40,15 @@ pub use passage_links::{
 pub use printed_statute::statute_currency;
 #[cfg(feature = "document-query")]
 pub use quote_location::{
-    corrected_quote, editorial_quote, locate_document_quotes, quote_text_comparison,
+    corrected_quote, editorial_quote, locate_document_quotes, quotation_diff, quote_occurrences, quote_text_comparison, QuotationDiff,
     verbatim_repair, CitedPinpoint, LocatedQuote, QuoteBlockKind, QuoteBlockLabel, QuoteComparison,
     QuoteLocation, QuoteLocator, QuoteSource, QuoteToLocate,
 };
 #[cfg(feature = "quote-verification")]
 pub use quote_verification::*;
 pub use reading_order::{document_reading_order, ReadingOrderUnit};
+mod propositions;
+pub use propositions::{footnote_propositions, FootnotePropositions, PropositionUnit, QuoteContext};
 
 /// The digest of this crate's source, beside the engine's (`legal_structure::ENGINE_SOURCE_SHA256`).
 pub const SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_FEATURES_SHA256");

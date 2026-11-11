@@ -8,7 +8,7 @@ use crate::quote_verification::QuoteSupport;
 use legal_structure::{javascript_whitespace as js_space, trim_javascript_whitespace as js_trim, utf16_len, JS_WHITESPACE_CLASS};
 use legal_document_query::{lowercase_words, word_regex, DocumentQuery};
 use legal_structure::parse_ordinal;
-use legal_structure_model::{text::{normalize_blank_whitespace, ScalarCoordinates}, DocumentStructure, NodeKind, ScalarRange, ScalarText, StructureNode};
+use legal_structure_model::{provision_mark, text::{normalize_blank_whitespace, ScalarCoordinates}, DocumentStructure, NodeKind, ScalarRange, ScalarText, StructureNode};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -997,9 +997,11 @@ impl Scopes {
         let mut scopes = Self::default();
         for pinpoint in pinpoints {
             let Some(first) = pinpoint.first.as_deref().filter(|first| !first.is_empty()) else { continue };
+            let mark = provision_mark(Some(&pinpoint.kind));
             let ranges = match pinpoint.kind.as_str() {
-                "section" => {
-                    scopes.sections.push(format!("sec{}", first.chars().filter(|c| !js_space(*c)).collect::<String>()));
+                // A provision by its place as its node's fragment names it: its kind's mark and its label.
+                _ if !mark.is_empty() => {
+                    scopes.sections.push(format!("{mark}{}", first.chars().filter(|c| !js_space(*c)).collect::<String>()));
                     continue;
                 }
                 "paragraph" => &mut scopes.paragraphs,
@@ -1597,16 +1599,70 @@ fn token_texts(text: &str) -> Vec<String> {
 /// Only substantive wording is a difference: case, diacritics, quote and dash variants and compatibility width are
 /// noise.
 fn fold_for_comparison(value: &str) -> String {
-    use unicode_normalization::UnicodeNormalization;
     // ASCII decomposes to itself and has no marks; of it, only blanks and the backtick fold otherwise.
     if value.bytes().all(|byte| byte.is_ascii_graphic() && byte != b'`') { return value.to_ascii_lowercase(); }
-    let decomposed = normalize_blank_whitespace(value).nfkd().collect::<String>();
+    fold_variants(&normalize_blank_whitespace(value))
+}
+/// Diacritics, quote and dash variants, compatibility width and case folded away; spacing kept as written.
+fn fold_variants(value: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let decomposed = value.nfkd().collect::<String>();
     MARKS.replace_all(&decomposed, "").chars().map(|c| match c {
         '"' | '\u{201c}' | '\u{201d}' | '\u{ab}' | '\u{bb}' | '\u{201e}' => '"',
         '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '`' | '\u{b4}' => '\'',
         '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
         c => c,
     }).collect::<String>().to_lowercase()
+}
+
+/// How often, up to twice, `quote` stands in `text` word for word, both folded as only substantive wording differs
+/// (`fold_for_comparison`) and the quotation's own edge punctuation left out: once means verbatim and once.
+pub fn quote_occurrences(text: &str, quote: &str) -> usize {
+    static EDGES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$").unwrap());
+    let text = fold_for_comparison(text);
+    let quote = EDGES.replace_all(&fold_for_comparison(quote), "").into_owned();
+    if quote.is_empty() { return 0; }
+    text.match_indices(&quote).take(2).count()
+}
+
+#[derive(Serialize)]
+pub struct DiffPiece {
+    pub text: String,
+    pub changed: bool,
+}
+#[derive(Serialize)]
+pub struct DiffChange {
+    pub before: String,
+    pub after: String,
+}
+/// An authored quotation and the source's words set side by side: each in pieces, those the other lacks changed, and
+/// each change's words before and after.
+#[derive(Serialize)]
+pub struct QuotationDiff {
+    pub authored: Vec<DiffPiece>,
+    pub source: Vec<DiffPiece>,
+    pub changes: Vec<DiffChange>,
+}
+
+/// The two texts compared by their blanks, words and marks, case, diacritics and quote and dash variants aside.
+pub fn quotation_diff(authored: &str, source: &str) -> QuotationDiff {
+    static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(
+        r"{ws}+|[\p{{L}}\p{{N}}]+(?:['\u{{2019}}][\p{{L}}\p{{N}}]+)*|[^{inner}]", ws = JS_WHITESPACE_CLASS,
+        inner = JS_WHITESPACE_CLASS.trim_start_matches('[').trim_end_matches(']'))).unwrap());
+    let tokens = |text: &str| TOKEN.find_iter(text).map(|found| found.as_str().to_owned()).collect::<Vec<_>>();
+    let (before, after) = (tokens(authored), tokens(source));
+    let opcodes = sequence_opcodes(&before.iter().map(|token| fold_variants(token)).collect::<Vec<_>>(),
+        &after.iter().map(|token| fold_variants(token)).collect::<Vec<_>>());
+    let pieces = |tokens: &[String], side: fn(&(&str, usize, usize, usize, usize)) -> (usize, usize)| opcodes.iter()
+        .filter_map(|op| { let (from, to) = side(op);
+            (from < to).then(|| DiffPiece { text: tokens[from..to].concat(), changed: op.0 != "equal" }) }).collect();
+    QuotationDiff {
+        authored: pieces(&before, |op| (op.1, op.2)),
+        source: pieces(&after, |op| (op.3, op.4)),
+        changes: opcodes.iter().filter(|op| op.0 != "equal").map(|op| DiffChange {
+            before: js_trim(&before[op.1..op.2].concat()).to_owned(), after: js_trim(&after[op.3..op.4].concat()).to_owned() })
+            .collect(),
+    }
 }
 fn editorial_equivalent(value: &str) -> String {
     if DOUBLE_QUOTE_CHARS.contains(value) { return "\"".into(); }
