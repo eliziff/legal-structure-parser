@@ -10,21 +10,22 @@ pub(super) fn detect_case(
     require_report_start: bool,
     excluded: &[ScalarRange],
     courtlistener: bool,
+    loose_markers: &[Marker],
 ) -> Vec<StructureNode> {
     let mut paragraphs = match profile {
         DetectionProfile::CaseContiguousComplete => {
             let complete = clipped_case_paragraphs(
-                detect_paragraphs(text, DetectionProfile::CaseLossy, excluded, courtlistener),
+                detect_paragraphs(text, DetectionProfile::CaseLossy, excluded, courtlistener, loose_markers),
                 excluded,
                 text,
             );
             if !complete.is_empty() && !gapped_paragraphs(&complete) {
                 complete
             } else {
-                detect_paragraphs(text, DetectionProfile::CaseContiguousComplete, excluded, courtlistener)
+                detect_paragraphs(text, DetectionProfile::CaseContiguousComplete, excluded, courtlistener, loose_markers)
             }
         }
-        profile => detect_paragraphs(text, profile, excluded, courtlistener),
+        profile => detect_paragraphs(text, profile, excluded, courtlistener, loose_markers),
     };
     if profile == DetectionProfile::CaseRootedComplete {
         paragraphs = with_endnotes(text, paragraphs);
@@ -215,7 +216,12 @@ pub(super) fn with_endnotes(text: &ScalarText<'_>, mut paragraphs: Vec<Structure
 }
 
 #[derive(Default)]
-pub(super) struct CaseSourceLayout {
+pub(super) struct CaseSourceLayout<'a> {
+    /// The text's lines as the source sets them, each past a form feed that opens it (`case_source_line`).
+    source_lines: Vec<Line<'a>>,
+    /// Every paragraph marker the text prints, read loosely (`paragraph_markers`, neither contiguous nor strict): the
+    /// reading the paragraph count starts from.
+    pub(super) markers: Vec<Marker>,
     pub(super) blocks: Vec<StructureNode>,
     pub(super) exclusions: Vec<ScalarRange>,
     note_ranges: Vec<ScalarRange>,
@@ -324,7 +330,7 @@ pub(super) fn case_decimal_subheadings(
     result
 }
 
-pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> CaseSourceLayout {
+pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a ScalarText<'a>) -> CaseSourceLayout<'a> {
     let mut result = CaseSourceLayout::default();
     if evidence.structure.provider != "courtlistener" {
         return result;
@@ -582,7 +588,7 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
         .filter(|claim| claim.kind == NodeKind::Paragraph)
         .filter_map(|claim| Some((claim.range.start, claim.label.as_deref()?.parse::<u32>().ok()?)))
         .collect::<HashSet<_>>();
-    let note_markers = numeric.into_iter()
+    let note_markers = numeric.iter().cloned()
         .filter(|marker| marker.style == MarkerStyle::Bare)
         // An explicit paragraph number cannot also declare a guessed footnote.
         .filter(|marker| !declared_paragraph_markers.contains(&(marker.start, marker.number)))
@@ -673,15 +679,15 @@ pub(super) fn case_source_layout(evidence: &Evidence, text: &ScalarText<'_>) -> 
             result.blocks.push(block);
         }
     }
-    result
+    CaseSourceLayout { source_lines, markers: numeric, ..result }
 }
 
-pub(super) fn detect_case_headings(evidence: &Evidence, text: &ScalarText<'_>, layout: &CaseSourceLayout) -> Vec<StructureNode> {
+pub(super) fn detect_case_headings(evidence: &Evidence, text: &ScalarText<'_>, layout: &CaseSourceLayout<'_>) -> Vec<StructureNode> {
     // This supplement has CourtListener corpus evidence; other providers retain their readers.
     if evidence.structure.provider != "courtlistener" {
         return Vec::new();
     }
-    let nonempty = lines(text).map(|line| case_source_line(text, line))
+    let nonempty = layout.source_lines.iter().copied()
         .enumerate()
         .filter(|(_, line)| !line.text.trim().is_empty())
         .collect::<Vec<_>>();
@@ -860,7 +866,7 @@ pub(super) fn detect_case_headings(evidence: &Evidence, text: &ScalarText<'_>, l
 pub(super) fn detect_case_prose(
     evidence: &Evidence,
     text: &ScalarText<'_>,
-    layout: &CaseSourceLayout,
+    layout: &CaseSourceLayout<'_>,
     recovered: &[StructureNode],
 ) -> Vec<StructureNode> {
     // Supplement only unaddressed CourtListener text, leaving every supplied or

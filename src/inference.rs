@@ -179,6 +179,7 @@ fn profile_blocks(evidence: &Evidence, text: &ScalarText<'_>) -> Vec<StructureNo
                 evidence.require_report_start,
                 &exclusions,
                 evidence.structure.provider == "courtlistener",
+                &layout.markers,
             );
             blocks.extend(detect_case_headings(evidence, text, &layout));
             let prose = detect_case_prose(evidence, text, &layout, &blocks);

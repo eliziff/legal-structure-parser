@@ -1242,12 +1242,14 @@ pub(super) fn detect_paragraphs(
     profile: DetectionProfile,
     excluded: &[ScalarRange],
     courtlistener: bool,
+    loose_markers: &[Marker],
 ) -> Vec<StructureNode> {
     let text_length = text.utf16_len();
     let strict = profile != DetectionProfile::CaseLossy;
     let contiguous = profile == DetectionProfile::CaseContiguousComplete;
     let rooted = profile == DetectionProfile::CaseRootedComplete;
-    let markers = paragraph_markers(text, contiguous, courtlistener);
+    // A CourtListener rendition's loose reading is already read, with its source's layout.
+    let markers = if courtlistener && !contiguous && !loose_markers.is_empty() { loose_markers.to_vec() } else { paragraph_markers(text, contiguous, courtlistener) };
     let mut by_style: [Vec<Marker>; 3] = std::array::from_fn(|_| Vec::new());
     for marker in markers {
         if courtlistener {
