@@ -2221,6 +2221,7 @@ pub(super) fn finish(
     );
     supplement_courtlistener_printed_notes(structure, printed_notes);
     label_notes(structure, &text_index);
+    pair_notes(structure, &text_index);
     drop_note_numbered_paragraphs(structure);
     courtlistener_division_headings(structure, &text_index);
     courtlistener_source_roles(structure);
@@ -2347,6 +2348,280 @@ fn label_notes(structure: &mut DocumentStructure, text_index: &ScalarCoordinates
             node.range.start = (start + echo).min(node.range.end);
             if let Some(first) = node.ranges.first_mut() {
                 first.start = (first.start + echo).min(first.end);
+            }
+        }
+    }
+}
+
+/// Each note with all its calls, once every declared pairing is made: a citation's volume the source took for a note joins
+/// the note before; notes only anchors or a word processor's styles mark are read; the marks no note answers are found, and
+/// split a note list set as one block; they then find their notes by label, and a label's notes share its calls. The marks
+/// still unanswered stand as `unmatched-call` spans.
+fn pair_notes(structure: &mut DocumentStructure, text_index: &ScalarCoordinates) {
+    let (mut notes, mut rest): (Vec<_>, Vec<_>) = std::mem::take(&mut structure.nodes).into_iter().partition(|node| node.kind == NodeKind::Footnote);
+    for note in notes.iter_mut().filter(|note| note.ranges.is_empty()) {
+        note.ranges = vec![note.range];
+    }
+    let text = structure.query_text();
+    let coordinates = ScalarText::with_coordinates(text, text_index);
+    let elements = &structure.markup_elements;
+    let joined = join_citation_fragments(&mut notes, &coordinates);
+    for node in rest.iter_mut().chain(notes.iter_mut()) {
+        if let Some(kept) = node.parent_id.as_ref().and_then(|parent| joined.get(parent)) {
+            node.parent_id = Some(kept.clone());
+        }
+    }
+    anchored_notes(elements, &coordinates, utf16_len(text), &mut notes);
+    word_notes(elements, &coordinates, &mut notes);
+    let calls = unmatched_calls(elements, &coordinates, &notes);
+    split_note_lists(&coordinates, &calls, &mut notes);
+    let calls = answer_by_label(&mut notes, calls);
+    share_calls_by_label(&mut notes);
+    bracketed_calls(text, &coordinates, &rest, &mut notes);
+    rest.extend(notes);
+    rest.extend(calls);
+    structure.nodes = rest;
+}
+
+/// A note the markup marks and no block declares, its body one piece.
+fn found_note(label: String, body: ScalarRange, calls: Vec<ScalarRange>, grammar: &str) -> StructureNode {
+    let mut note = super::markup_node(NodeKind::Footnote, label, None);
+    note.id = format!("footnote-{grammar}-{}", body.start);
+    note.grammar = Some(grammar.to_owned());
+    note.range = body;
+    note.ranges = vec![body];
+    note.calls = calls;
+    note
+}
+
+/// A citation that crossed a block, `<a class="footnote">830</a><p>F.Supp. at 1081`: the source took its volume for a note's
+/// number. It is the end of the note before. Each note joined, by the id of the note it joined.
+fn join_citation_fragments(notes: &mut Vec<StructureNode>, coordinates: &ScalarText) -> HashMap<String, String> {
+    let mut joined = HashMap::new();
+    let mut kept = Vec::<StructureNode>::with_capacity(notes.len());
+    for note in std::mem::take(notes) {
+        let number = note.label.as_deref().unwrap_or("").parse::<u32>().ok();
+        let before = kept.iter().rev().find_map(|held| held.label.as_deref().unwrap_or("").parse::<u32>().ok());
+        let fragment = number.zip(before).is_some_and(|(number, before)| number > before + 1)
+            && coordinates.slice_utf16(note.range.start..note.range.end).is_some_and(opens_on_reporter);
+        match kept.last_mut().filter(|_| fragment) {
+            Some(last) => {
+                last.range.end = note.range.end;
+                last.ranges.extend(note.ranges);
+                joined.insert(note.id, last.id.clone());
+            }
+            None => kept.push(note),
+        }
+    }
+    *notes = kept;
+    joined
+}
+
+/// Notes a word processor exported as styled paragraphs, `<p class="MsoFootnoteText">[1] We decide this case ...`: the label opens
+/// the note, and a paragraph of the style with none carries the note before it on.
+fn word_notes(elements: &[MarkupElement], coordinates: &ScalarText, notes: &mut Vec<StructureNode>) {
+    static LABEL: OnceLock<Regex> = OnceLock::new();
+    let label = LABEL.get_or_init(|| Regex::new(r"^\[?(\d{1,3}|\*+)\]?[.)]?\s+\S").unwrap());
+    let held = notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
+    let mut found = Vec::<StructureNode>::new();
+    for element in elements.iter().filter(|element| element.tag == "p" && element.attributes.get("class").is_some_and(|class| class == "MsoFootnoteText")) {
+        let range = element.range;
+        if held.iter().any(|known| known.start < range.end && range.start < known.end) {
+            continue;
+        }
+        let Some(printed) = coordinates.slice_utf16(range.start..range.end).map(trim_js).filter(|printed| !printed.is_empty()) else { continue };
+        match label.captures(printed) {
+            Some(capture) => found.push(found_note(capture[1].to_owned(), range, Vec::new(), "word")),
+            None => if let Some(last) = found.last_mut() {
+                last.range.end = range.end;
+                last.ranges.push(range);
+            },
+        }
+    }
+    notes.append(&mut found);
+    notes.sort_by_key(|note| note.range.start);
+}
+
+/// Notes that are only anchors: a number named by a link from earlier in the text (`<a name="N_1_">1.</a>` and
+/// `<a href="#N_1_">`). Each runs to the next.
+fn anchored_notes(elements: &[MarkupElement], coordinates: &ScalarText, end: usize, notes: &mut Vec<StructureNode>) {
+    static LABEL: OnceLock<Regex> = OnceLock::new();
+    let label = LABEL.get_or_init(|| Regex::new(r"^\[?(?:Footnote |FN ?)?(\d{1,3}|\*+|†|‡)\]?[.:)]?$").unwrap());
+    let mut links = HashMap::<&str, Vec<ScalarRange>>::new();
+    for element in elements.iter().filter(|element| element.tag == "a") {
+        if let Some(target) = element.attributes.get("href").and_then(|href| href.strip_prefix('#')) {
+            links.entry(target).or_default().push(element.range);
+        }
+    }
+    let taken = |range: ScalarRange, notes: &[StructureNode]| notes.iter().any(|note| {
+        note.ranges.iter().chain(&note.calls).any(|known| known.start < range.end.max(range.start + 1) && range.start < known.end)
+    });
+    let mut targets = elements.iter().filter(|element| element.tag == "a").filter_map(|element| {
+        let name = element.attributes.get("name").or_else(|| element.attributes.get("id"))?;
+        let calls = links.get(name.as_str())?;
+        let printed = coordinates.slice_utf16(element.range.start..element.range.end).map(trim_js)?;
+        let number = label.captures(printed)?[1].to_owned();
+        // A note is its own block: the text after it is not its to take.
+        let block = element.parent.map_or(end, |parent| elements[parent].range.end);
+        (calls.iter().any(|call| call.start < element.range.start) && !taken(element.range, notes)).then(|| (element.range, number, calls.clone(), block))
+    }).collect::<Vec<_>>();
+    targets.sort_by_key(|target| target.0.start);
+    let stops = targets.iter().map(|target| target.0.start).collect::<Vec<_>>();
+    for (index, (range, number, calls, block)) in targets.into_iter().enumerate() {
+        let stop = stops.get(index + 1).copied().unwrap_or(end).min(block);
+        let start = range.end.min(stop);
+        notes.push(found_note(number, ScalarRange { start, end: stop }, calls, "anchored"));
+    }
+    notes.sort_by_key(|note| note.range.start);
+}
+
+/// Note calls the source marks and no note answers, each an `unmatched-call` span its label names.
+fn unmatched_calls(elements: &[MarkupElement], coordinates: &ScalarText, notes: &[StructureNode]) -> Vec<StructureNode> {
+    static SYMBOL: OnceLock<Regex> = OnceLock::new();
+    let symbol = SYMBOL.get_or_init(|| Regex::new(r"^\[?(\d{1,3}|\*+|†|‡|\([a-z0-9]\))\]?$").unwrap());
+    let mut answered = notes.iter().flat_map(|note| note.calls.iter().chain(&note.ranges).copied()).collect::<Vec<_>>();
+    answered.sort_by_key(|known| known.end);
+    elements.iter().filter_map(|element| {
+        let linked = element.tag == "a" && element.attributes.get("class").is_some_and(|class| class == "footnote")
+            && !element.attributes.get("href").is_some_and(|href| href.ends_with("_ref"));
+        if !(linked || matches!(element.tag.as_str(), "footnotemark" | "sup")) {
+            return None;
+        }
+        // Colorado's mark is an empty sup after the digits; 10<sup>8</sup> is a power.
+        let before = (0..4).find_map(|short| coordinates.slice_utf16(element.range.start.saturating_sub(4 - short)..element.range.start)).unwrap_or("");
+        let trailing = before.len() - before.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+        let empty = element.range.start == element.range.end && element.attributes.get("class").is_some_and(|class| class == "ldml-superscript");
+        if trailing > 0 && !empty && element.tag == "sup" {
+            return None;
+        }
+        let range = if empty { ScalarRange { start: element.range.start - trailing, end: element.range.end } } else { element.range };
+        let printed = coordinates.slice_utf16(range.start..range.end).map(trim_js)?;
+        let label = symbol.captures(printed)?[1].to_owned();
+        // `<a class="footnote">830</a> F.Supp. at 1081` is a citation's volume.
+        let unlinked = element.tag == "a" && !element.attributes.contains_key("href");
+        if unlinked && (0..12).find_map(|short| coordinates.slice_utf16(range.end..range.end + 12 - short)).is_some_and(opens_on_reporter) {
+            return None;
+        }
+        let known = answered[answered.partition_point(|known| known.end <= range.start)..].iter().take_while(|known| known.start < range.end || known.end <= range.end).any(|known| known.start < range.end);
+        (!known).then(|| {
+            let mut call = StructureNode::new(format!("unmatched-call-{}", range.start), NodeKind::Span, range, crate::ENGINE_ORIGIN, Derivation::Native, None);
+            call.grammar = Some("unmatched-call".to_owned());
+            call.label = Some(label);
+            call
+        })
+    }).collect()
+}
+
+/// The label a call names, bare.
+pub(crate) fn called(call: &StructureNode) -> &str {
+    plain_label(call.label.as_deref().unwrap_or(""))
+}
+
+/// A note whose body runs on through the next notes' numbers, "... 110. Id. 111. See note 86 supra.": a source's list of notes set
+/// as one block. Numbers climbing by ones from the note's own, after a finished sentence, are each a note if the text calls them.
+fn split_note_lists(coordinates: &ScalarText, calls: &[StructureNode], notes: &mut Vec<StructureNode>) {
+    const LEAST_RUN: usize = 2;
+    static NUMBER: OnceLock<Regex> = OnceLock::new();
+    let number = NUMBER.get_or_init(|| Regex::new(r"(?-u:\b)(\d{1,3})\. +\p{Lu}").unwrap());
+    let called = calls.iter().filter_map(|call| called(call).parse::<u32>().ok()).collect::<HashSet<_>>();
+    let mut added = Vec::new();
+    for note in notes.iter_mut().filter(|note| note.ranges.len() == 1) {
+        let Ok(mut next) = note.label.as_deref().unwrap_or("").parse::<u32>().map(|label| label + 1) else { continue };
+        let range = note.ranges[0];
+        let Some(body) = coordinates.slice_utf16(range.start..range.end) else { continue };
+        let mut opens = Vec::new();
+        for capture in number.captures_iter(body) {
+            let whole = capture.get(0).unwrap();
+            let closed = crate::inference::ends_sentence(body[..whole.start()].trim_end(), true);
+            if closed && called.contains(&next) && capture[1].parse::<u32>().is_ok_and(|found| found == next) {
+                opens.push((next, whole.start(), capture.get(1).unwrap().end() + 1));
+                next += 1;
+            }
+        }
+        if opens.len() < LEAST_RUN {
+            continue;
+        }
+        let first = range.start + utf16_len(&body[..opens[0].1]);
+        note.range.end = first;
+        note.ranges[0].end = first;
+        for (index, (label, _, words)) in opens.iter().enumerate() {
+            let stop = opens.get(index + 1).map_or(range.end, |next| range.start + utf16_len(&body[..next.1]));
+            let begin = range.start + utf16_len(&body[..*words]);
+            added.push(found_note(label.to_string(), ScalarRange { start: begin, end: stop }, Vec::new(), "list"));
+        }
+    }
+    if !added.is_empty() {
+        notes.append(&mut added);
+        notes.sort_by_key(|note| note.range.start);
+    }
+}
+
+/// Calls no markup pairs find their notes by label, in order: a note with no call takes the first that names it, and a call
+/// left over joins the first note of its label. The calls no note answers are returned. The opinion answers its leftover
+/// calls so with the notes it brings from elsewhere.
+pub(crate) fn answer_by_label(notes: &mut [StructureNode], mut calls: Vec<StructureNode>) -> Vec<StructureNode> {
+    calls.sort_by_key(|call| call.range.start);
+    for note in notes.iter_mut().filter(|note| note.calls.is_empty()) {
+        if let Some(at) = calls.iter().position(|call| called(call) == plain_label(note.label.as_deref().unwrap_or(""))) {
+            note.calls.push(calls.remove(at).range);
+        }
+    }
+    calls.retain(|call| {
+        let Some(note) = notes.iter_mut().find(|note| plain_label(note.label.as_deref().unwrap_or("")) == called(call)) else { return true };
+        note.calls.push(call.range);
+        false
+    });
+    calls
+}
+
+/// Notes of one label more than once (each opinion's own series) share their calls in order. The opinion shares so again
+/// once other renditions' notes have joined these.
+pub(crate) fn share_calls_by_label(notes: &mut [StructureNode]) {
+    let mut by_label = HashMap::<String, Vec<usize>>::new();
+    for (index, note) in notes.iter().enumerate() {
+        by_label.entry(note.label.as_deref().unwrap_or("").to_owned()).or_default().push(index);
+    }
+    for indices in by_label.values().filter(|indices| indices.len() > 1) {
+        let mut calls = indices.iter().flat_map(|&index| notes[index].calls.iter().copied()).collect::<Vec<_>>();
+        calls.sort_by_key(|call| call.start);
+        // One call found twice, by the engine and through another rendition's copy of its note, a unit or two apart, is one call.
+        calls.dedup_by(|later, kept| later.start <= kept.end + 2);
+        if calls.len() <= indices.len() {
+            // In the text's order each opinion's series follows the last; a note left over, another rendition's copy set at the
+            // end, has no call of its own and takes none.
+            let mut order = indices.clone();
+            order.sort_by_key(|&index| notes[index].range.start);
+            for (position, &index) in order.iter().enumerate() {
+                notes[index].calls = calls.get(position).copied().into_iter().collect();
+            }
+        }
+    }
+}
+
+/// A numbered note with no call takes a bracketed number in the text, "[3]", where the source left its call as words: not one
+/// that opens a block (a paragraph's number) or stands in a note.
+fn bracketed_calls(text: &str, coordinates: &ScalarText, blocks: &[StructureNode], notes: &mut [StructureNode]) {
+    static CALL: OnceLock<Regex> = OnceLock::new();
+    if !notes.iter().any(|note| note.calls.is_empty() && note.label.as_deref().unwrap_or("").bytes().all(|byte| byte.is_ascii_digit())) {
+        return;
+    }
+    let opens = blocks.iter().filter(|block| matches!(block.kind, NodeKind::Paragraph | NodeKind::Prose | NodeKind::Quote | NodeKind::ListItem))
+        .flat_map(|block| [Some(block.range.start), block.marker_range.map(|marker| marker.start)]).flatten().collect::<HashSet<_>>();
+    let mut printed = HashMap::<String, Vec<ScalarRange>>::new();
+    let call = CALL.get_or_init(|| Regex::new(r"\[(\d{1,3})\]").unwrap());
+    for capture in call.captures_iter(text) {
+        let whole = capture.get(0).unwrap();
+        let unit = coordinates.utf16_of_byte(whole.start());
+        if !opens.contains(&unit) && !notes.iter().any(|note| note.ranges.iter().any(|range| range.start <= unit && unit < range.end)) {
+            printed.entry(capture[1].to_owned()).or_default().push(ScalarRange { start: unit, end: unit + utf16_len(whole.as_str()) });
+        }
+    }
+    let used = notes.iter().flat_map(|note| note.calls.iter().map(|call| call.start)).collect::<HashSet<_>>();
+    for note in notes.iter_mut().filter(|note| note.calls.is_empty()) {
+        if let Some(calls) = printed.get_mut(note.label.as_deref().unwrap_or("")) {
+            calls.retain(|call| !used.contains(&call.start));
+            if !calls.is_empty() {
+                note.calls.push(calls.remove(0));
             }
         }
     }

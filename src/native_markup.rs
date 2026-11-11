@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 #[cfg(feature = "courtlistener")]
 mod courtlistener;
 #[cfg(feature = "courtlistener")]
-pub(crate) use courtlistener::{note_opening, opens_on_reporter, plain_label};
+pub(crate) use courtlistener::{answer_by_label, called, note_opening, opens_on_reporter, plain_label, share_calls_by_label};
 #[cfg(feature = "courtlistener")]
 pub(crate) use courtlistener::{cap_front_matter, declared_writing};
 

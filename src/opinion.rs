@@ -31,10 +31,7 @@ use matter::{
     head_lines, name_dates, names_a_digest, printed_headnote_marks, record_gaps, reporter_matter, sentences,
     titled_digest, topic_index,
 };
-use notes::{
-    anchored_notes, answer_calls, flat_notes, join_citation_fragments, share_note_calls,
-    split_note_lists, supply_notes, unmatched_calls, word_notes,
-};
+use notes::{answer_calls, flat_notes, share_calls_by_label, supply_notes};
 use pages::{
     element_pages, label_run, leaves_to_pages, opening_pages, page_number, page_series, printed_mark,
     printed_page_marks, series_of,
@@ -836,7 +833,6 @@ fn complete(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut 
     printed_page_marks(structure, kinds, &record.citations);
     flat_notes(structure, kinds);
     from_cluster(structure, kinds, pending, record);
-    split_note_lists(structure, kinds);
     answer_calls(structure, kinds);
     excise(structure, kinds, std::mem::take(&mut pending.cuts), &mut pending.printed_elsewhere);
     kinds.opinion.citations = record.citations.clone();
@@ -1031,12 +1027,18 @@ fn from_structure(record: &OpinionRecord, name: &str, mut markup: DocumentStruct
 
     // Then each node the opinion reads, taken out of them in their order, by its kind.
     let (mut page_nodes, mut heading_nodes, mut block_nodes, mut note_nodes, mut part_nodes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut unmatched = Vec::new();
     for node in nodes {
         match node.kind {
             NodeKind::Page => page_nodes.push(node),
             NodeKind::Heading => heading_nodes.push(node),
             NodeKind::Paragraph | NodeKind::Prose | NodeKind::Quote => block_nodes.push(node),
             NodeKind::Footnote => note_nodes.push(node),
+            NodeKind::Span if reads(&node, "unmatched-call") => unmatched.push({
+                let mut call = span("unmatched-call", node.range.start, node.range.end);
+                call.label = node.label;
+                call
+            }),
             NodeKind::Section if node.markup_tag.as_deref().is_some_and(|tag| tag == "opinion" || tag.ends_with("_text")) => part_nodes.push(node),
             _ => {}
         }
@@ -1194,15 +1196,15 @@ fn from_structure(record: &OpinionRecord, name: &str, mut markup: DocumentStruct
     }
     paragraphs.sort_by_key(|paragraph| paragraph.range.start);
 
-    let notes = note_nodes.into_iter().map(|mut markup| {
-        // Its label as printed, and its body after any opening that repeats it: the engine's (`native_markup::note_opening`).
+    // Each note as the engine paired it: its label as printed, its body after any opening that repeats it, and all its calls
+    // (`native_markup::courtlistener`).
+    let mut notes = note_nodes.into_iter().map(|mut markup| {
         let label = markup.label.take().unwrap_or_default();
-        let ranges = if markup.ranges.is_empty() { vec![markup.range] } else { std::mem::take(&mut markup.ranges) };
+        let ranges = std::mem::take(&mut markup.ranges);
         let calls = std::mem::take(&mut markup.calls);
         let range = markup.range;
         as_note(taken(markup, NodeKind::Footnote, range, Derivation::Native), label, ranges, calls)
     }).collect::<Vec<_>>();
-    let mut notes = join_citation_fragments(notes, &coordinates);
 
     static PROMOTION: OnceLock<Regex> = OnceLock::new();
     let promotion = PROMOTION.get_or_init(|| Regex::new(r"(?i)\bsame topic\b|\bkey[- ]?number\b").unwrap());
@@ -1215,9 +1217,6 @@ fn from_structure(record: &OpinionRecord, name: &str, mut markup: DocumentStruct
         }
         !advertised && !notes_title(body)
     });
-    anchored_notes(structure, &coordinates, utf16_len(text), &mut notes);
-    word_notes(structure, &coordinates, &mut notes);
-    let unmatched = unmatched_calls(structure, &coordinates, &notes);
 
     let parts = part_nodes.into_iter().map(|markup| {
         let range = structure.query_range(&markup);
@@ -1640,7 +1639,7 @@ fn finish(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut Pe
     page_series(kinds, record);
     close_pages(structure, kinds);
     tidy_paragraphs(structure, kinds, pending);
-    label_notes(structure, kinds);
+    label_notes(kinds);
     enumerated_titles(structure, kinds);
     take_marked_titles(structure, kinds, pending);
     title_headings(structure, kinds);
@@ -1735,8 +1734,9 @@ fn tidy_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending
     printed_headnote_marks(structure, kinds);
 }
 
-fn label_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
-    share_note_calls(structure, kinds);
+/// The notes other texts brought share their labels' calls with the engine's (`native_markup::share_calls_by_label`).
+fn label_notes(kinds: &mut Kinds) {
+    share_calls_by_label(&mut kinds.notes);
     // Notes a source left unlabelled and unnumbered are numbered as they stand.
     if kinds.notes.iter().all(|note| note.label.as_deref().unwrap_or("").is_empty()) {
         for (index, note) in kinds.notes.iter_mut().enumerate() {
