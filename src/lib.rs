@@ -6,7 +6,6 @@ pub mod hierarchy;
 #[cfg(feature = "structure-inference")]
 pub mod numbered_paragraphs;
 #[cfg(feature = "structure-inference")]
-#[cfg(feature = "structure-inference")]
 mod layout_cues;
 #[cfg(feature = "structure-inference")]
 pub mod transcript;
@@ -42,7 +41,6 @@ mod native_markup;
 #[cfg(feature = "opinion")]
 pub mod opinion;
 pub mod judgment;
-mod numeric_sequence;
 #[cfg(feature = "structure-inference")]
 mod provider_text;
 mod tables;
@@ -74,7 +72,6 @@ pub use locator::{bare_label, collapse_labels, expand_labels, normalize_compact_
 pub mod statute;
 #[cfg(feature = "native-markup")]
 pub use native_markup::{analyze_native_markup, NativeMarkupInput};
-pub use numeric_sequence::*;
 #[cfg(feature = "structure-inference")]
 pub use provider_text::{
     provider_text_document_structure, provider_text_outline_reading, windows_1252_punctuation, ProviderPage, ProviderSectionMap, ProviderTextInput,

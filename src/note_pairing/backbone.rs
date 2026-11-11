@@ -1,38 +1,78 @@
 //! The label backbone: the runs of labels that count on, and where a run of endnotes stands.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use legal_structure_model::layout::NoteMode;
 use regex::Regex;
-use crate::numeric_sequence::{select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy};
 use super::{Candidate, PairLine, ENDNOTE_MIN_LABELS};
 
+/// The best-scoring run of numbered labels in reading order, each counting on from one up to 200 before it: a label
+/// opens a run at its score (less a quarter a number past 1, to at most 4, unless a reference supports it), and a step
+/// adds its score, a third more where it counts on by one, less a skipped number's 0.4 on its page or 0.12 across pages
+/// (to at most 4). A label takes the best run of each number on an earlier page, and on its own page before it.
 pub(super) fn select_backbone(
     candidates: &[Candidate],
     lines: &[PairLine<'_>],
 ) -> Vec<Candidate> {
-    let numeric = candidates
-        .iter()
-        .enumerate()
-        .filter_map(|(index, candidate)| {
-            Some(NumericSequenceCandidate {
-                index,
-                value: candidate.value?,
-                position: candidate.pos(lines),
-                page: lines[candidate.line].page,
-                score: candidate.score,
-                start_supported: candidate.flags.ref_supported,
-            })
-        })
-        .collect::<Vec<_>>();
-    if numeric.is_empty() {
-        return Vec::new();
+    let mut order = (0..candidates.len()).filter(|&index| candidates[index].value.is_some()).collect::<Vec<_>>();
+    order.sort_by_key(|&index| (candidates[index].pos(lines), candidates[index].value));
+    let label = |at: usize| &candidates[order[at]];
+    let value = |at: usize| label(at).value.unwrap_or_default();
+    let mut best = vec![f64::NEG_INFINITY; order.len()];
+    let mut parent = vec![None; order.len()];
+    let mut prior_page_best = HashMap::<u32, usize>::new();
+    let mut same_page_best = HashMap::<u32, usize>::new();
+    let mut current_page = None;
+    let mut options = Vec::new();
+    let mut group = 0;
+    while group < order.len() {
+        let position = label(group).pos(lines);
+        let end = (group + 1..order.len()).find(|&at| label(at).pos(lines) != position).unwrap_or(order.len());
+        let page = lines[label(group).line].page;
+        if current_page != Some(page) {
+            for (number, at) in same_page_best.drain() {
+                if prior_page_best.get(&number).is_none_or(|prior| best[at] > best[*prior] + 1e-9) {
+                    prior_page_best.insert(number, at);
+                }
+            }
+            current_page = Some(page);
+        }
+        for at in group..end {
+            let (number, score) = (value(at), label(at).score);
+            best[at] = if label(at).flags.ref_supported { score } else { score + (-0.25 * f64::from(number.saturating_sub(1))).max(-4.0) };
+            options.clear();
+            options.extend((number.saturating_sub(201).max(1)..number).flat_map(|before| {
+                [prior_page_best.get(&before).map(|&at| (at, false)), same_page_best.get(&before).map(|&at| (at, true))].into_iter().flatten()
+            }));
+            options.sort_unstable();
+            for &(previous, same_page) in &options {
+                let gap = number - value(previous) - 1;
+                let penalty = ((if same_page { -0.4 } else { -0.12 }) * f64::from(gap)).max(-4.0);
+                let reached = best[previous] + score + penalty + if gap == 0 { 0.3 } else { 0.0 };
+                if reached > best[at] + 1e-9 {
+                    best[at] = reached;
+                    parent[at] = Some(previous);
+                }
+            }
+        }
+        for at in group..end {
+            if same_page_best.get(&value(at)).is_none_or(|prior| best[at] > best[*prior] + 1e-9) {
+                same_page_best.insert(value(at), at);
+            }
+        }
+        group = end;
     }
-    select_numeric_sequence(numeric, NumericSequencePolicy::FootnoteBackbone)
-        .indices
-        .into_iter()
-        .map(|index| candidates[index].clone())
-        .collect()
+    let tail = (0..order.len()).max_by(|left, right| {
+        best[*left].total_cmp(&best[*right]).then_with(|| label(*right).pos(lines).cmp(&label(*left).pos(lines)))
+    });
+    let mut chain = Vec::new();
+    let mut at = tail;
+    while let Some(index) = at {
+        chain.push(label(index).clone());
+        at = parent[index];
+    }
+    chain.reverse();
+    chain
 }
 
 pub(super) fn trim_unsupported_tail(mut segment: Vec<Candidate>) -> Vec<Candidate> {

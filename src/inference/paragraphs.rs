@@ -5,7 +5,6 @@ use std::sync::Arc;
 use legal_structure_model::{DetectionProfile, ScalarRange};
 use legal_structure_model::document::{NodeKind, StructureNode};
 use legal_structure_model::text::{utf16_len, ScalarText};
-use crate::numeric_sequence::{select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy};
 use super::{decimal_prefix, leading_ascii_space, lines, prose_block, Line, Marker, MarkerStyle};
 use super::headings::{formal_heading, joined_heading_levels, sentence_heading};
 use super::runs::next_boundary;
@@ -419,23 +418,46 @@ pub(super) fn chain_score(chain: &[Marker]) -> f64 {
 /// paragraphs a paragraph quotes take no part (`quoted_runs`).
 pub(super) fn rooted_chain(candidates: &[Marker]) -> (Vec<Marker>, f64) {
     let quoted = quoted_runs(candidates);
-    let selected = select_numeric_sequence(
-        candidates
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| !quoted.contains(index))
-            .map(|(index, marker)| NumericSequenceCandidate {
-                index,
-                value: marker.number,
-                position: (marker.start, 0),
-                page: 0,
-                score: marker.score,
-                start_supported: false,
-            })
-            .collect(),
-        NumericSequencePolicy::RootedConsecutive,
-    );
-    let mut chain: Vec<Marker> = selected.indices.into_iter().map(|index| candidates[index].clone()).collect();
+    let mut order = (0..candidates.len()).filter(|index| !quoted.contains(index)).collect::<Vec<_>>();
+    order.sort_by_key(|&index| (candidates[index].start, candidates[index].number));
+    // Each number's best count from 1 and the number before it there, read in the text's order; a marker takes the best
+    // count of the number before it among the markers that start before it.
+    let mut best = vec![f64::NEG_INFINITY; order.len()];
+    let mut parent = vec![None; order.len()];
+    let mut best_of = HashMap::<u32, usize>::new();
+    let mut group = 0;
+    while group < order.len() {
+        let start = candidates[order[group]].start;
+        let end = (group + 1..order.len()).find(|&at| candidates[order[at]].start != start).unwrap_or(order.len());
+        for at in group..end {
+            let marker = &candidates[order[at]];
+            if marker.number == 1 {
+                best[at] = marker.score;
+            }
+            if let Some(&previous) = marker.number.checked_sub(1).and_then(|number| best_of.get(&number)) {
+                if best[previous] + marker.score + 0.3 > best[at] + 1e-9 {
+                    best[at] = best[previous] + marker.score + 0.3;
+                    parent[at] = Some(previous);
+                }
+            }
+        }
+        for at in group..end {
+            let number = candidates[order[at]].number;
+            if best_of.get(&number).is_none_or(|prior| best[at] > best[*prior] + 1e-9) {
+                best_of.insert(number, at);
+            }
+        }
+        group = end;
+    }
+    let tail = (0..order.len()).filter(|&at| best[at].is_finite()).reduce(|left, right| if best[right] > best[left] + 1e-9 { right } else { left });
+    let score = tail.map_or(0.0, |tail| best[tail]);
+    let mut chain = Vec::new();
+    let mut at = tail;
+    while let Some(index) = at {
+        chain.push(candidates[order[index]].clone());
+        at = parent[index];
+    }
+    chain.reverse();
     whole_list(&mut chain, candidates);
     // The count opens at the last "1" before its "2": an earlier one is a provision or a list in the matter before the
     // reasons.
@@ -445,7 +467,7 @@ pub(super) fn rooted_chain(candidates: &[Marker]) -> (Vec<Marker>, f64) {
             *first = later.clone();
         }
     }
-    (chain, selected.score)
+    (chain, score)
 }
 
 /// The case profile's count, including its existing recovery of a lost opening or a mid-count excerpt.
