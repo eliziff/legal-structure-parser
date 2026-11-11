@@ -327,48 +327,49 @@ pub(crate) fn resolve_candidates(
     let mut provision_starts = runs
         .iter()
         .filter(|run| run.grammar == CandidateGrammar::Hierarchy && run.rooted && run.consecutive)
-        .flat_map(|run| {
-            run.markers
-                .iter()
-                .map(|candidate| candidate.marker_range.start)
-        })
+        .flat_map(|run| run.markers.iter().map(|candidate| candidate.marker_range.start))
         .collect::<HashSet<_>>();
     let evidence_by_candidate = evidence_by_candidate(runs, evidence)?;
-    // A count of numbers printed with their period ("1.", "2.") that the count from 1 reads is the
-    // text's numbered paragraphs, not its sections: a statute prints its sections' numbers bare.
-    // Their sub-items are then lists. A ladder under a Part's or an Exhibit's heading is read by
-    // its first number the count reads, as the count prints it.
-    let counted_labels = runs
+    let shows = |candidate: &StructureMarkerCandidate, observation: CandidateObservationV2| {
+        evidence_by_candidate.get(candidate.id.as_str()).is_some_and(|item| item.observations.contains(&observation))
+    };
+    // A count from 1 is the text's numbered paragraphs only where its numbers stand whole: a statute's,
+    // a by-law's or an agreement's sections divide ("1." over "(1)", "(a)" or "a." carrying prose of
+    // their own), a paragraph does not. A count more than a tenth of whose numbers divide is sections.
+    let starts = runs.iter().flat_map(|run| &run.markers).map(|candidate| (candidate.id.as_str(), candidate.marker_range.start)).collect::<HashMap<_, _>>();
+    let divided = runs
+        .iter()
+        .flat_map(|run| &run.markers)
+        .filter(|candidate| shows(candidate, CandidateObservationV2::BodyProseFlow))
+        .filter_map(|candidate| starts.get(candidate.parent_candidate_id.as_deref()?).copied())
+        .collect::<HashSet<_>>();
+    let counts = runs
         .iter()
         .filter(|run| run.grammar == CandidateGrammar::Numeric && run.rooted && run.consecutive)
-        .flat_map(|run| run.markers.iter().map(|candidate| (candidate.marker_range.start, candidate.label.trim())))
+        .map(|run| (run, 10 * run.markers.iter().filter(|candidate| divided.contains(&candidate.marker_range.start)).count() <= run.markers.len()))
+        .collect::<Vec<_>>();
+    // A whole count of numbers printed with their period ("1.", "2.") is the text's paragraphs; their
+    // sub-items are lists. A ladder under a Part's or an Exhibit's heading is read by its first
+    // number a count reads, as the count prints it.
+    let counted_labels = counts
+        .iter()
+        .flat_map(|(run, whole)| run.markers.iter().map(move |candidate| (candidate.marker_range.start, (candidate.label.trim(), *whole))))
         .collect::<HashMap<_, _>>();
     let period_counted = |run: &StructureCandidateRun| {
         run.grammar == CandidateGrammar::Hierarchy
-            && run.markers.iter().find_map(|candidate| counted_labels.get(&candidate.marker_range.start)).is_some_and(|label| {
-                label.ends_with('.') && label[..label.len() - 1].chars().all(|c| c.is_ascii_digit())
+            && run.markers.iter().find_map(|candidate| counted_labels.get(&candidate.marker_range.start)).is_some_and(|(label, whole)| {
+                *whole && label.ends_with('.') && label[..label.len() - 1].chars().all(|c| c.is_ascii_digit())
             })
     };
     let paragraph_runs = runs
         .iter()
         .filter(|run| period_counted(run))
-        .flat_map(|run| {
-            run.markers
-                .iter()
-                .map(|candidate| candidate.marker_range.start)
-        })
+        .flat_map(|run| run.markers.iter().map(|candidate| candidate.marker_range.start))
         .collect::<HashSet<_>>();
     provision_starts.retain(|start| !paragraph_runs.contains(start));
     // A quotation's numbers are the quoted text's: they open none of this text's sections or
     // paragraphs, and decide nothing about them.
-    let quoted = |candidate: &StructureMarkerCandidate| {
-        evidence_by_candidate
-            .get(candidate.id.as_str())
-            .is_some_and(|item| {
-                item.observations
-                    .contains(&CandidateObservationV2::Quotation)
-            })
-    };
+    let quoted = |candidate: &StructureMarkerCandidate| shows(candidate, CandidateObservationV2::Quotation);
     let quoted_starts = runs
         .iter()
         .flat_map(|run| &run.markers)
@@ -376,22 +377,17 @@ pub(crate) fn resolve_candidates(
         .map(|candidate| candidate.marker_range.start)
         .collect::<HashSet<_>>();
     provision_starts.retain(|start| !quoted_starts.contains(start));
-    // A count from 1 a quarter or more of whose numbers open prose that no section reads, or that
+    // A whole count a quarter or more of whose numbers open prose that no section reads, or that
     // opens on more such paragraphs than a list runs to, is the text's numbered paragraphs: the
     // sections read on its other numbers yield to it, each ladder they stand in whole, and their
     // sub-items are read as lists.
     let opens_prose = |candidate: &&StructureMarkerCandidate| {
         !provision_starts.contains(&candidate.marker_range.start)
             && !quoted(candidate)
-            && evidence_by_candidate
-                .get(candidate.id.as_str())
-                .is_some_and(|item| item.observations.contains(&CandidateObservationV2::BodyProseFlow))
+            && shows(candidate, CandidateObservationV2::BodyProseFlow)
     };
     let mut yielded = HashSet::new();
-    for run in runs
-        .iter()
-        .filter(|run| run.grammar == CandidateGrammar::Numeric && run.rooted && run.consecutive)
-    {
+    for (run, _) in counts.iter().filter(|(_, whole)| *whole) {
         let unread = |candidate: &&StructureMarkerCandidate| !provision_starts.contains(&candidate.marker_range.start);
         let read = run.markers.iter().filter(|candidate| !unread(candidate));
         let opening = run.markers.iter().take_while(unread).filter(opens_prose).count();
