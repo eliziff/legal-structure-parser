@@ -270,26 +270,6 @@ enum Read<'a> {
     Text { inner: bool, words: &'a str },
 }
 
-/// What reading a judgment's lines finds, in their order: the lines it reads as text, the headings, the lists' items and
-/// the front matter's lines, and the catalogue record a provider sets before the decision. The node writer (`Writer`)
-/// writes each; where the paragraphs end needs only the headings (`HeadingStarts`).
-trait CaseLines {
-    fn read(&mut self, _start: usize, _end: usize, _read: Read<'_>) {}
-    fn heading(&mut self, depth: usize, title: String, marker: Option<ScalarRange>, start: usize, end: usize);
-    fn item(&mut self, _depth: usize, _token: &str, _marker: ScalarRange, _end: usize) {}
-    fn front(&mut self, _role: PrimaryRole, _start: usize, _end: usize, _words: &str) {}
-    fn record(&mut self, _end: usize) {}
-}
-
-/// Where the headings a judgment's lines read start: where its paragraphs end.
-struct HeadingStarts(Vec<usize>);
-
-impl CaseLines for HeadingStarts {
-    fn heading(&mut self, _depth: usize, _title: String, _marker: Option<ScalarRange>, start: usize, _end: usize) {
-        self.0.push(start);
-    }
-}
-
 impl Writer {
     fn owner(&self, start: usize) -> Option<String> {
         self.paragraphs.iter().find(|(range, ..)| range.start <= start && start < range.end).map(|(_, id, _)| id.clone())
@@ -310,9 +290,7 @@ impl Writer {
             self.add(NodeKind::Quote, start, end, Some(owner));
         }
     }
-}
 
-impl CaseLines for Writer {
     /// A line starting at `start`, as read: a paragraph's list ends where anything else of it starts, its quotation where
     /// a line no quotation's does. A line after a list that carries on the paragraph's sentence in lower case is the
     /// paragraph's own words.
@@ -390,7 +368,7 @@ impl CaseLines for Writer {
 /// (a line to a paragraph, its headings on lines of their own or run into the paragraph they open), each told to `lines`
 /// as it is read: the headings are the lines between the paragraphs the heading grammar takes as headings, the items the
 /// lines a list's enumerator opens, the front matter's lines its roles.
-fn read_case_lines<L: CaseLines>(units: &[u16], paragraphs: &[(usize, usize, usize)], lines_read: &mut L) {
+fn read_case_lines(units: &[u16], paragraphs: &[(usize, usize, usize)], lines_read: &mut Writer) {
     let newline = u16::from(b'\n');
     let slice = |start: usize, end: usize| String::from_utf16_lossy(&units[start..end]);
     let line_start = |at: usize| units[..at].iter().rposition(|unit| *unit == newline).map_or(0, |at| at + 1);
@@ -399,7 +377,7 @@ fn read_case_lines<L: CaseLines>(units: &[u16], paragraphs: &[(usize, usize, usi
     let mut front_lines = 0;
     // The lines between two paragraphs (or before the first): each a heading where the heading grammar reads it as one,
     // before what follows it; the matter before the reasons ends in the headings that open them.
-    let mut between = |writer: &mut L, list: &mut Levels, start: usize, end: usize, place: Place| {
+    let mut between = |writer: &mut Writer, list: &mut Levels, start: usize, end: usize, place: Place| {
         let mut lines = Vec::new();
         let mut at = start;
         while at < end {
@@ -555,19 +533,11 @@ fn end_at_heading(paragraph: &mut StructureNode, heading_starts: &[usize], units
     paragraph.ranges.retain(|range| range.start < range.end);
 }
 
-/// Where the headings of a judgment's lines start, read around its paragraphs: where its paragraphs end.
-fn heading_starts(units: &[u16], nodes: &[StructureNode]) -> Vec<usize> {
-    let mut starts = HeadingStarts(Vec::new());
-    read_case_lines(units, &paragraph_spans(nodes, units), &mut starts);
-    starts.0
-}
-
-/// A judgment's reading beyond its numbered paragraphs, as nodes (`Writer`) read from its lines (`read_case_lines`): its
-/// headings in their hierarchy, the lists within its paragraphs, the passages they quote and the front matter's lines.
-/// Each paragraph ends where a heading after it opens (`end_at_heading`).
-pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) {
-    let units = structure.text.encode_utf16().collect::<Vec<_>>();
-    let paragraphs = structure.nodes.iter().filter(|node| node.kind == NodeKind::Paragraph)
+/// A judgment's reading beyond its numbered paragraphs (`nodes`), as nodes (`Writer`) read from its lines
+/// (`read_case_lines`): its headings in their hierarchy, the lists within its paragraphs, the passages they quote and
+/// the front matter's lines.
+fn case_nodes(units: &[u16], nodes: &[StructureNode]) -> Vec<StructureNode> {
+    let paragraphs = nodes.iter().filter(|node| node.kind == NodeKind::Paragraph)
         .map(|node| (node.range, node.id.clone(), node.level.unwrap_or(1))).collect::<Vec<_>>();
     let mut writer = Writer {
         levels: paragraphs.iter().map(|(_, id, level)| (id.clone(), *level)).collect(),
@@ -578,9 +548,21 @@ pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) {
         quote: None,
         previous_item: false,
     };
-    read_case_lines(&units, &paragraph_spans(&structure.nodes, &units), &mut writer);
+    read_case_lines(units, &paragraph_spans(nodes, units), &mut writer);
     writer.close_quote();
-    let added = writer.nodes;
+    writer.nodes
+}
+
+/// Where the headings of a judgment's lines start, read around its paragraphs: where its paragraphs end.
+fn heading_starts(units: &[u16], nodes: &[StructureNode]) -> Vec<usize> {
+    case_nodes(units, nodes).iter().filter(|node| node.kind == NodeKind::Heading).map(|node| node.range.start).collect()
+}
+
+/// A judgment's structure with its reading beyond its numbered paragraphs (`case_nodes`), each paragraph ending where
+/// a heading after it opens (`end_at_heading`).
+pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) {
+    let units = structure.text.encode_utf16().collect::<Vec<_>>();
+    let added = case_nodes(&units, &structure.nodes);
     let heading_starts = added.iter().filter(|node| node.kind == NodeKind::Heading).map(|node| node.range.start).collect::<Vec<_>>();
     for paragraph in structure.nodes.iter_mut().filter(|node| node.kind == NodeKind::Paragraph) {
         end_at_heading(paragraph, &heading_starts, &units);
