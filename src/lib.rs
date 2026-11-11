@@ -61,7 +61,7 @@ pub use text_units::text_units;
 #[cfg(all(feature = "citator", feature = "canlii"))]
 pub use canlii::{canlii_case_url, canlii_court_route, canlii_law_url};
 pub use document::{
-    provision_mark, CitedAuthority, Derivation, DocumentStructure, MarkupAncestor,
+    provision_mark, CitedAuthority, Derivation, DocumentStructure, MarkupAncestor, NodeReading,
     ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, PrimaryRole, SourceFragment, StructureNode,
 };
 pub use docx_lint::*;

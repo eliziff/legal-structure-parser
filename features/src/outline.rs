@@ -10,9 +10,7 @@ use serde::Serialize;
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OutlineEntry {
-    /// The node's kind ("heading", "section", "paragraph", "prose", "list_item", "quote", or "span", a line of the front
-    /// matter), or "text": lines no node of the outline holds.
-    kind: &'static str,
+    kind: OutlineKind,
     /// Its depth under its parents, from 0; a line of text one under the node holding it.
     level: usize,
     /// Its number or enumerator as printed: "[12]", "(2)", "PART XXIII", "IV.".
@@ -42,17 +40,36 @@ pub struct OutlineEntry {
     page_index: Option<usize>,
 }
 
+/// What an outline entry is: a node's kind (a span, a line of the front matter), or text, lines no node of the outline
+/// holds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum OutlineKind {
+    Heading,
+    Section,
+    Paragraph,
+    Prose,
+    ListItem,
+    Quote,
+    Span,
+    Text,
+}
+
 /// The outline's name for a node it holds.
-fn entry_kind(node: &StructureNode) -> Option<&'static str> {
+fn entry_kind(node: &StructureNode) -> Option<OutlineKind> {
     if node.role == Some(PrimaryRole::Heading) {
-        return Some("heading");
+        return Some(OutlineKind::Heading);
     }
+    let text = node.role.is_none_or(|role| role == PrimaryRole::Text);
     match node.kind {
-        NodeKind::Heading => node.role.is_none().then_some("heading"),
-        NodeKind::Span => (node.grammar.as_deref() == Some("front")).then_some("span"),
-        NodeKind::Section | NodeKind::Paragraph | NodeKind::Prose | NodeKind::ListItem | NodeKind::Quote => {
-            node.role.is_none_or(|role| role == PrimaryRole::Text).then(|| node.kind.name())
-        }
+        NodeKind::Heading => node.role.is_none().then_some(OutlineKind::Heading),
+        NodeKind::Span => (node.grammar.as_deref() == Some("front")).then_some(OutlineKind::Span),
+        NodeKind::Section => text.then_some(OutlineKind::Section),
+        NodeKind::Paragraph => text.then_some(OutlineKind::Paragraph),
+        NodeKind::Prose => text.then_some(OutlineKind::Prose),
+        NodeKind::ListItem => text.then_some(OutlineKind::ListItem),
+        NodeKind::Quote => text.then_some(OutlineKind::Quote),
         _ => None,
     }
 }
@@ -98,14 +115,14 @@ pub fn document_outline(structure: &DocumentStructure) -> Vec<OutlineEntry> {
                 continue;
             }
             let level = holding.iter().rev().find(|(_, holds)| *holds > start).map_or(0, |(level, _)| level + 1);
-            entries.push(OutlineEntry { kind: "text", level, label: String::new(), title: None, text, start,
+            entries.push(OutlineEntry { kind: OutlineKind::Text, level, label: String::new(), title: None, text, start,
                 end: start + legal_structure::utf16_len(line.trim()), role: None, locator: None, page_index: None });
         }
     };
     for (index, &(node, kind)) in nodes.iter().enumerate() {
         let place = span(node);
         let level = node.level.map_or(0, |level| level.saturating_sub(1));
-        let heading = kind == "heading";
+        let heading = kind == OutlineKind::Heading;
         let label = match node.marker_range {
             Some(marker) if !rendered => words(marker),
             _ if node.kind == NodeKind::Section && !rendered => node.content_start
@@ -127,7 +144,7 @@ pub fn document_outline(structure: &DocumentStructure) -> Vec<OutlineEntry> {
             node.heading_range.filter(|note| !rendered && !within(note)).map(words)
         };
         let mut entry = OutlineEntry { kind, level, label, title, text: String::new(), start: place.start, end: place.end,
-            role: node.role.filter(|_| kind == "span"), locator: node.locator_kind.clone(),
+            role: node.role.filter(|_| kind == OutlineKind::Span), locator: node.locator_kind.clone(),
             page_index: node.page_indexes.first().copied() };
         if rendered {
             entries.push(entry);
