@@ -296,7 +296,7 @@ fn numbers_off_titles(structure: &mut DocumentStructure, kinds: &mut Kinds) {
             return true;
         }
         let sentence = heading.grammar.as_deref() != Some("other-rendition") && text::paragraph_marker(opened).is_some_and(|(number, family)| family == 4 && left_open(number))
-            && text::ended_sentence(opened) && title.split_whitespace().count() >= 5 && !title_cased(title);
+            && crate::inference::ends_sentence(opened, true) && title.split_whitespace().count() >= 5 && !title_cased(title);
         if sentence {
             stubs.push(stub(heading.range.start, heading.range.end));
         }
@@ -419,7 +419,7 @@ fn marker_in_course(raw: &str, number: u32) -> Option<usize> {
         let opens = words.starts_with(|c: char| c.is_uppercase() || matches!(c, '"' | '“'));
         // A named mark also follows a title in capitals, or the author's line at a block's head.
         let after_title = lead.rsplit(char::is_whitespace).next().is_some_and(|word| word.len() >= 2 && word.chars().any(char::is_alphabetic) && !word.chars().any(char::is_lowercase));
-        let placed = text::ended_sentence(lead) || (marked && (after_title || lead.len() < HEAD_OF_BLOCK));
+        let placed = crate::inference::ends_sentence(lead, true) || (marked && (after_title || lead.len() < HEAD_OF_BLOCK));
         (lead.len() < at && (marked || stopped) && placed && opens).then_some(lead.len() + (raw[lead.len()..].len() - raw[lead.len()..].trim_start().len()))
     })
 }
@@ -521,7 +521,7 @@ pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure, kinds: &mut K
     let interleaved = (1..kinds.paragraphs.len().saturating_sub(1)).filter(|&index| {
         let (before, line, after) = (&kinds.paragraphs[index - 1], &kinds.paragraphs[index], &kinds.paragraphs[index + 1]);
         columned && !(line.kind == NodeKind::Quote) && line.label.as_deref().is_none() && printed(line).len() < 60 && printed(line).starts_with(char::is_uppercase)
-            && !text::ended_sentence(printed(before)) && printed(after).starts_with(char::is_lowercase)
+            && !crate::inference::ends_sentence(printed(before), true) && printed(after).starts_with(char::is_lowercase)
     }).collect::<Vec<_>>();
     for &index in interleaved.iter().rev() {
         let line = kinds.paragraphs.remove(index);
@@ -535,7 +535,7 @@ pub(super) fn rejoin_paragraphs(structure: &mut DocumentStructure, kinds: &mut K
     for mut paragraph in std::mem::take(&mut kinds.paragraphs) {
         if let Some(last) = kept.last_mut() {
             let between = |marks: &[usize]| marks.get(marks.partition_point(|mark| *mark < last.range.end)).is_some_and(|mark| *mark < paragraph.range.start);
-            if !between(&titles) && (last.kind == NodeKind::Quote) == (paragraph.kind == NodeKind::Quote) && paragraph.label.is_none() && !text::ended_sentence(printed(last)) && printed(&paragraph).starts_with(char::is_lowercase) {
+            if !between(&titles) && (last.kind == NodeKind::Quote) == (paragraph.kind == NodeKind::Quote) && paragraph.label.is_none() && !crate::inference::ends_sentence(printed(last), true) && printed(&paragraph).starts_with(char::is_lowercase) {
                 if !between(&note_starts) {
                     last.range.end = paragraph.range.end;
                     continue;

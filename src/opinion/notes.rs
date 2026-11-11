@@ -386,7 +386,7 @@ pub(super) fn split_note_lists(structure: &mut DocumentStructure, kinds: &mut Ki
         let mut opens = Vec::new();
         for capture in number.captures_iter(body) {
             let whole = capture.get(0).unwrap();
-            let closed = text::ended_sentence(body[..whole.start()].trim_end());
+            let closed = crate::inference::ends_sentence(body[..whole.start()].trim_end(), true);
             if closed && called.contains(&next) && capture[1].parse::<u32>().is_ok_and(|found| found == next) {
                 opens.push((next, whole.start(), capture.get(1).unwrap().end() + 1));
                 next += 1;

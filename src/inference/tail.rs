@@ -5,9 +5,10 @@
 //!
 //! How a line ends is one concept with one answer for each question it is asked, all of them here but the page reader's
 //! `sentence_ended` (a stop before any closing marks: `legal_layout::ends_on`, as `heading_level` and the case readers
-//! read theirs): `ended` (the closing marks stand alone too, and a semicolon; a note's call after them; an editorial
-//! line), `completed` (`ended`, no abbreviation, initials or reporter's series going on), `closes_sentence` (`ended`, no
-//! capitals, question or bracket it does not open) and `sentence_closed` (a stop, on no one- or two-letter word).
+//! read theirs): `ends_sentence` (the closing marks stand alone too, and a semicolon; a note's call after them; an
+//! editorial line; a colon where the reader asks), `completed` (it ends, no abbreviation, initials or reporter's series
+//! going on), `closes_sentence` (it ends, no capitals, question or bracket it does not open) and `sentence_closed` (it
+//! ends on no one- or two-letter word).
 
 use super::*;
 use crate::judgment::{author_line, date_line, disposition_line, end_matter, figure_caption, signature_line};
@@ -19,9 +20,15 @@ pub(super) fn lower_words(line: &str) -> usize {
     line.split_whitespace().filter(|word| word.starts_with(char::is_lowercase)).count()
 }
 
-/// Whether a line ends as a sentence does: a sentence ends on its stop, a closing quotation mark or parenthesis, or an
-/// editorial line ("[Emphasis added]"), a note's call after it ("… costs awards.”60").
-fn ended(line: &str) -> bool {
+/// Whether a line ends as a sentence does: on a stop (".", ";", "?", "!", "…", and a colon where `colon` says a colon ends
+/// one), or a closing quotation mark, bracket or guillemet after one or standing alone; past a note's call printed after
+/// it ("… costs awards.”60", "… (Vernon Supp. 2002).\n 5"); or an editorial line ("[Emphasis added]"). The one reader
+/// of a sentence's end: the case readers ask it without the colon, the opinion's layout with it (a block introducing a
+/// list is finished as a block).
+pub(crate) fn ends_sentence(line: &str, colon: bool) -> bool {
+    const CLOSERS: [char; 7] = ['"', '\u{201d}', '\u{2019}', '\'', ')', ']', '\u{bb}'];
+    let stop = |line: &str| line.ends_with(['.', ';', '?', '!', '\u{2026}']) || (colon && line.ends_with(':'));
+    let ends = |line: &str| stop(line) || line.ends_with(CLOSERS);
     // (A recognizer reads a stop after a note's call as a bullet: "... injonctive3\u{2022}".)
     let line = line.trim_end();
     if line.ends_with('\u{2022}') {
@@ -31,11 +38,11 @@ fn ended(line: &str) -> bool {
     if cached_regex!(COLON_CALL, r":\[\d{1,3}\]$").is_match(line) {
         return false;
     }
-    let called = line.trim_end_matches(|c: char| c.is_ascii_digit());
+    let called = line.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end();
     // (A stop inside a section's figures is none: "Section 732.1". A year's is: "... in 1974.14".)
     let decimal = called.strip_suffix('.').is_some_and(|rest| (1..=3).contains(&(rest.len() - rest.trim_end_matches(|c: char| c.is_ascii_digit()).len())));
-    let line = if called.ends_with(['.', '?', '!', '"', '\u{201d}', ')']) && !decimal { called } else { line };
-    line.ends_with(['.', ';', '?', '!', '"', '\u{201d}', ')', ']', '\u{2026}', '\u{bb}']) || editorial_line(line)
+    let line = if called.len() < line.len() && ends(called) && !decimal { called } else { line };
+    ends(line) || editorial_line(line)
 }
 
 /// A line stops on an abbreviation its next words complete ("… at para." / "340.", "… c. F-" / "23.", "OJ NO." / "1189 (C.A.)."), or
@@ -68,13 +75,13 @@ fn closes_sentence(line: &str) -> bool {
     let line = line.split_whitespace().next().and_then(|first| line.trim_end().strip_suffix(first)).filter(|rest| !rest.is_empty()).unwrap_or(line);
     let opened = line.matches('(').count() >= line.matches(')').count();
     let capitals = !line.contains(char::is_lowercase) && line.split_whitespace().filter(|word| word.chars().filter(|c| c.is_alphabetic()).count() >= 3).count() >= 2;
-    ended(line) && !capitals && !line.ends_with('?') && !(line.ends_with(')') && opened && !remarked(line))
+    ends_sentence(line, false) && !capitals && !line.ends_with('?') && !(line.ends_with(')') && opened && !remarked(line))
 }
 
 /// Whether text ends a sentence, not a citation ("…; 2 Baudry", "([22]) 1 Masse") or an abbreviation ("p. 3",
 /// "Q. R. 6 Q. B. 237"); a pinpoint ends one ("… at para. 23. 24 The …").
 pub(super) fn sentence_closed(value: &str) -> bool {
-    (value.ends_with(['.', '?', '!', '"', '\u{201d}', ']', '…']) || value.ends_with(".)"))
+    ends_sentence(value, false)
         && value.split_whitespace().last().is_some_and(|word| {
             let word = word.trim_matches(|c: char| !c.is_alphanumeric());
             !(word.chars().all(char::is_alphabetic) && word.chars().count() <= 2)
@@ -154,7 +161,7 @@ struct LineEvidence<'a> {
 impl<'a> LineEvidence<'a> {
     fn read(line: &'a str) -> Self {
         let (value, words) = (line.trim(), line.split_whitespace().collect::<Vec<_>>());
-        let (ended, shortened) = (ended(line), shortened(&words));
+        let (ended, shortened) = (ends_sentence(line, false), shortened(&words));
         let letters = words.last().copied().unwrap_or_default().trim_end_matches('.');
         // (A reporter's series goes on to its page: "(2d)" / "321.".)
         let completed = ended && !shortened && !(letters.contains('.') && letters.chars().all(|c| c.is_alphabetic() || c == '.')) && !cached_regex!(SERIES, r"\(\d*(?:d|th|nd|rd|e)\)$").is_match(value);
@@ -461,7 +468,7 @@ fn closing_at(lines: &[&str]) -> usize {
     // (Nor is a note in brackets prose: "//Le juge Forget (ad hoc)//".)
     let signed = |line: &str| signature_line(line.trim().trim_matches('/')) && lower_words(line.split('(').next().unwrap_or(line)) <= 1 && !line.contains(|c: char| c.is_ascii_digit());
     // (A date may finish a sentence: "... the parties have until" / "April 3, 2026.".)
-    while closed > 1 && (signed(lines[closed - 1]) || date_line(lines[closed - 1]) && ended(lines[closed - 2])) && !named(closed - 1) {
+    while closed > 1 && (signed(lines[closed - 1]) || date_line(lines[closed - 1]) && ends_sentence(lines[closed - 2], false)) && !named(closed - 1) {
         closed -= 1;
     }
     // (The name over a title goes with it: "Claude Roy" / "Vice-président".)
@@ -489,7 +496,7 @@ fn list_goes_on(lines: &[&str], mut cut: usize) -> usize {
             items.read(token);
         }
     }
-    let titled = |at: usize| at + 1 == lines.len() && at > 0 && ended(lines[at - 1]) && !ended(lines[at]);
+    let titled = |at: usize| at + 1 == lines.len() && at > 0 && ends_sentence(lines[at - 1], false) && !ends_sentence(lines[at], false);
     while let Some(token) = lines.get(cut).filter(|_| !titled(cut)).and_then(|line| enumerated(line.trim())).map(|(token, _)| token).filter(|token| items.continues(token)) {
         items.read(token);
         cut += 1;

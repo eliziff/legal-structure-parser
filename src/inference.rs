@@ -13,7 +13,7 @@ use paragraphs::*;
 pub(crate) use paragraphs::run_in_heading;
 mod tail;
 use tail::*;
-pub(crate) use tail::closing_line;
+pub(crate) use tail::{closing_line, ends_sentence};
 mod headings;
 pub(crate) use headings::*;
 mod runs;

@@ -1100,10 +1100,10 @@ fn from_structure(record: &OpinionRecord, name: &str, mut markup: DocumentStruct
             continue;
         }
         if !headings.iter().any(|heading| heading.range.start < range.end && range.start < heading.range.end) && markup.marker_range.is_none() {
-            let after_a_sentence = paragraphs.last().is_none_or(|last: &StructureNode| !(last.kind == NodeKind::Quote) && text::closed_text(slice(last.range)));
+            let after_a_sentence = paragraphs.last().is_none_or(|last: &StructureNode| !(last.kind == NodeKind::Quote) && crate::inference::ends_sentence(slice(last.range), true));
             let opened = trim_js(&printed);
             let whole_title = enumerator_end(opened).is_some_and(|end| title_cased(&opened[end..])) && sentences(opened).len() == 1;
-            let alone = whole_title || after_a_sentence && (!text::ended_sentence(opened) || (opened.ends_with('.') && printed.split_whitespace().count() <= 3));
+            let alone = whole_title || after_a_sentence && (!crate::inference::ends_sentence(opened, true) || (opened.ends_with('.') && printed.split_whitespace().count() <= 3));
             if heading_line(&printed, alone || emphasized_whole(structure, &markup)) {
                 // A number on a title keeps its place; it goes to the text under the title once paragraphs are numbered.
                 let title = text::says_paragraph(opened).then(|| text::past_marker(opened)).filter(|title| !title.is_empty())

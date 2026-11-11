@@ -167,7 +167,7 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
     if low.len() >= 8 && low.len() * 6 >= body.len() {
         found.push(("screen: paragraphs open lower case", format!("{} of {}: {}", low.len(), body.len(), quoted(low[0].range.start, low[0].range.end))));
     }
-    let open = body.windows(2).filter(|pair| !pair[1].properties.contains_key("continues") && !text::ended_sentence(printed(pair[0].range.start, pair[0].range.end)) && printed(pair[1].range.start, pair[1].range.end).starts_with(char::is_lowercase)).collect::<Vec<_>>();
+    let open = body.windows(2).filter(|pair| !pair[1].properties.contains_key("continues") && !crate::inference::ends_sentence(printed(pair[0].range.start, pair[0].range.end), true) && printed(pair[1].range.start, pair[1].range.end).starts_with(char::is_lowercase)).collect::<Vec<_>>();
     if open.len() >= 8 && open.len() * 6 >= body.len() {
         found.push(("screen: sentences split across paragraphs", format!("{} of {}: {}", open.len(), body.len(), quoted(open[0][1].range.start, open[0][1].range.end))));
     }
@@ -246,7 +246,7 @@ pub fn parse_screens(structure: &DocumentStructure, record: &OpinionRecord) -> V
     if bare_sections.len() >= 2 {
         found.push(("screen: sections not held as headings", bare_sections.join(" | ")));
     }
-    if let Some(heading) = headings.iter().find(|heading| heading.display_value.as_deref().unwrap_or("").chars().count() > LONG_TITLE || (heading.display_value.as_deref().unwrap_or("").split_whitespace().count() >= 15 && text::ended_sentence(&heading.display_value.as_deref().unwrap_or("")) && heading.grammar.as_deref() != Some("other-rendition"))) {
+    if let Some(heading) = headings.iter().find(|heading| heading.display_value.as_deref().unwrap_or("").chars().count() > LONG_TITLE || (heading.display_value.as_deref().unwrap_or("").split_whitespace().count() >= 15 && crate::inference::ends_sentence(&heading.display_value.as_deref().unwrap_or(""), true) && heading.grammar.as_deref() != Some("other-rendition"))) {
         found.push(("screen: heading reads as a sentence", heading.display_value.as_deref().unwrap_or("").chars().take(120).collect()));
     }
     // "a. Background" is an outline's letter.

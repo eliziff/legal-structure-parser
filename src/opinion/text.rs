@@ -418,7 +418,7 @@ fn note_zones(lines: &[Line<'_>], masked: &[bool], pages: &[(usize, usize)], pag
         for index in from..to {
             let line = &lines[index];
             if line.blank() {
-                let finished = open.as_ref().is_some_and(|zone| zone.lines.last().is_some_and(|last| ended_sentence(lines[*last].body)));
+                let finished = open.as_ref().is_some_and(|zone| zone.lines.last().is_some_and(|last| crate::inference::ends_sentence(lines[*last].body, true)));
                 if finished || !paged && open.as_ref().is_some_and(|zone| zone.lines.len() > 1) {
                     page.extend(open.take());
                 }
@@ -445,20 +445,20 @@ fn note_zones(lines: &[Line<'_>], masked: &[bool], pages: &[(usize, usize)], pag
                 let bare = !line.body[end..].starts_with(['.', ')', ':']);
                 // A number with nothing under it is a page's; one a sentence runs on through is the sentence's.
                 let nothing = rest.is_empty() && !(index + 1..to).any(|at| !lines[at].blank());
-                let wrapped = ruled.is_none() && rest.starts_with(char::is_lowercase) && previous.is_some_and(|at| !ended_sentence(lines[at].body));
+                let wrapped = ruled.is_none() && rest.starts_with(char::is_lowercase) && previous.is_some_and(|at| !crate::inference::ends_sentence(lines[at].body, true));
                 // The text above this block of notes calls every note in it, not only the first.
                 let listed: Vec<&str> = above.clone().filter(|at| !masked[*at]).map(|at| lines[at].body).collect();
                 let called = calls(&body, number) || calls(&listed, number);
                 // "12 Doc. 217." opens a note where a sentence has ended or a blank stands over it; a wrapped citation does neither.
                 let set_apart = index > 0 && lines[index - 1].blank() && !opens_on_reporter(rest);
-                let citation_wrapped = opens_on_volume(rest) && !called && !set_apart && !previous.is_some_and(|at| ended_sentence(lines[at].body));
+                let citation_wrapped = opens_on_volume(rest) && !called && !set_apart && !previous.is_some_and(|at| crate::inference::ends_sentence(lines[at].body, true));
                 let clear = (clear || (bare && calls(&body, number))) && !nothing && !wrapped && !citation_wrapped;
                 let labelled = label_form(line.body, end);
                 let same_form = |zone: &Zone| zone.symbol.is_none() && zone.label.is_some_and(|(_, opened)| label_form(lines[zone.lines[0]].body, opened) == labelled);
                 let continuing = open.as_ref().is_some_and(same_form) && called;
                 // Directly under the note before it, of its form, nothing between them.
                 let under = |zone: &Zone| same_form(zone) && zone.lines.last().is_some_and(|last| (last + 1..index).all(|at| masked[at] || lines[at].blank()));
-                let adjacent = page.last().is_some_and(under) || open.as_ref().is_some_and(|zone| under(zone) && zone.lines.last().is_some_and(|last| ended_sentence(lines[*last].body)));
+                let adjacent = page.last().is_some_and(under) || open.as_ref().is_some_and(|zone| under(zone) && zone.lines.last().is_some_and(|last| crate::inference::ends_sentence(lines[*last].body, true)));
                 let at_foot = paged && (index - from) * 20 >= (to - from) * 11;
                 let next_follows = (index + 1..(index + 45).min(to)).any(|at| !masked[at] && note_label(lines[at].body).is_some_and(|(label, _)| label == number + 1));
                 clear && (continuing || adjacent || ruled.is_some() || ((low || bare) && !line.body.starts_with('(') && called) || (bare && (at_foot || next_follows)))
@@ -484,7 +484,7 @@ fn note_zones(lines: &[Line<'_>], masked: &[bool], pages: &[(usize, usize)], pag
                 noted = true;
                 body_from = index + 1;
             } else if let Some(zone) = &mut open {
-                let finished = zone.lines.last().is_some_and(|last| ended_sentence(lines[*last].body));
+                let finished = zone.lines.last().is_some_and(|last| crate::inference::ends_sentence(lines[*last].body, true));
                 if (!paged && paragraph_marker(line.body).is_some()) || (finished && text_resumes(line.body)) {
                     page.extend(open.take());
                     ruled = None;
@@ -492,7 +492,7 @@ fn note_zones(lines: &[Line<'_>], masked: &[bool], pages: &[(usize, usize)], pag
                 }
                 zone.lines.push(index);
                 body_from = index + 1;
-                if !paged && ended_sentence(line.body) && line.width() * 10 < width * 9 {
+                if !paged && crate::inference::ends_sentence(line.body, true) && line.width() * 10 < width * 9 {
                     page.extend(open.take());
                 }
             } else if !paged {
@@ -522,7 +522,7 @@ fn drop_strays(lines: &[Line<'_>], zones: &mut [Vec<Zone>]) {
         let bracket = first.chars().next().filter(|c| matches!(c, '(' | '['));
         let words: usize = zone.lines.iter().map(|at| lines[*at].body.split_whitespace().count()).sum();
         // "11 Id." and "20 JX37." say all a note need.
-        let says_something = words >= 3 || (words == 2 && zone.lines.last().is_some_and(|last| ended_sentence(lines[*last].body)));
+        let says_something = words >= 3 || (words == 2 && zone.lines.last().is_some_and(|last| crate::inference::ends_sentence(lines[*last].body, true)));
         if bracket.is_none() && says_something { return false; }
         let marked = bracket.map(|open| format!("{open}{number}{}", if open == '(' { ')' } else { ']' }));
         // "text [3] goes on" calls a note; "as (1) this and (2) that" counts.
@@ -541,13 +541,13 @@ fn own_lines(lines: &[Line<'_>], masked: &[bool], at: usize, limit: usize, width
     for index in at + 1..limit {
         let line = &lines[index];
         if line.blank() {
-            if own.len() > 1 || ended_sentence(lines[at].body) { break; }
+            if own.len() > 1 || crate::inference::ends_sentence(lines[at].body, true) { break; }
             continue;
         }
         if masked[index] { continue; }
         if paragraph_marker(line.body).is_some() { break; }
         own.push(index);
-        if ended_sentence(line.body) && line.width() * 10 < width * 9 { break; }
+        if crate::inference::ends_sentence(line.body, true) && line.width() * 10 < width * 9 { break; }
     }
     own
 }
@@ -568,9 +568,9 @@ fn fill_skips(lines: &[Line<'_>], masked: &[bool], pages: &[(usize, usize)], zon
             let Some((number, end)) = note_label(lines[index].body).filter(|(number, _)| (low + 1..high).contains(number)) else { continue };
             let rest = lines[index].body[end..].trim_start_matches(['.', ')', ':', ']', '/']).trim_start();
             let previous = (first..index).rev().find(|at| !masked[*at] && !lines[*at].blank());
-            let says_more = ended_sentence(lines[index].body) || lines.get(index + 1).is_some_and(|line| !line.blank());
+            let says_more = crate::inference::ends_sentence(lines[index].body, true) || lines.get(index + 1).is_some_and(|line| !line.blank());
             // Between its neighbours "26 Dkt. 53" is a note; only a reporter's name after the number says otherwise.
-            let wrapped = opens_on_reporter(rest) && !previous.is_some_and(|at| ended_sentence(lines[at].body));
+            let wrapped = opens_on_reporter(rest) && !previous.is_some_and(|at| crate::inference::ends_sentence(lines[at].body, true));
             if label_form(lines[index].body, end) == shown && rest.chars().next().is_some_and(|c| !c.is_lowercase()) && says_more && !wrapped && !previous.is_some_and(|at| lines[at].body.ends_with([',', ';'])) {
                 candidates.entry(number).or_default().push((index, end));
             }
@@ -586,7 +586,7 @@ fn fill_skips(lines: &[Line<'_>], masked: &[bool], pages: &[(usize, usize)], zon
             for pair in zone.lines.windows(2) {
                 let body = lines[pair[1]].body;
                 if let Some((label, end)) = note_label(body).filter(|(label, end)| *label == due && label_form(body, *end) == (None, None) && body[*end..].starts_with(char::is_whitespace)) {
-                    if ended_sentence(lines[pair[0]].body) && body[end..].trim_start().starts_with(|c: char| !c.is_lowercase()) {
+                    if crate::inference::ends_sentence(lines[pair[0]].body, true) && body[end..].trim_start().starts_with(|c: char| !c.is_lowercase()) {
                         found.push((pair[1], (label, end)));
                         due += 1;
                     }
@@ -969,10 +969,10 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
         let (before, after) = (previous, body.get(position + 1).copied());
         let stands = before.is_none_or(|p| p + 1 < at || lines[p].width() * 10 < width * 7) && after.is_none_or(|next| next > at + 1 || lines[next].indent != line.indent || spaced);
         // A Roman numeral after a finished sentence opens a section, however tightly it is set.
-        let section = before.is_none_or(|p| ended_sentence(lines[p].body)) && section_line(line.body);
+        let section = before.is_none_or(|p| crate::inference::ends_sentence(lines[p].body, true)) && section_line(line.body);
         let in_head = at < head_end;
         // A short line that follows a finished sentence and is none itself, in a text that has lost its spacing.
-        let isolated = line.width() * 10 < width * 6 && before.is_none_or(|p| p + 1 < at || ended_sentence(lines[p].body)) && !ended_sentence(line.body);
+        let isolated = line.width() * 10 < width * 6 && before.is_none_or(|p| p + 1 < at || crate::inference::ends_sentence(lines[p].body, true)) && !crate::inference::ends_sentence(line.body, true);
         let apart = centered(line) || isolated || section;
         if !numbered.contains_key(&at) && (stands || isolated || section || centered(line)) && heading_line(line.body, apart) && (!in_head || title_line(line.body)) {
             match headings.last_mut().filter(|_| before.is_some() && before == last_heading_line && centered(line)) {
@@ -996,7 +996,7 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
         let number = numbered.get(&at).copied().or_else(|| carried.take());
         let opens = number.is_some() || opens_alone(line.body) || before.is_none_or(|p| {
             let (last, gap) = (&lines[p], at > p + 1);
-            let ended = ended_sentence(last.body);
+            let ended = crate::inference::ends_sentence(last.body, true);
             let short = last.width() * 10 < width * 8;
             let page_turn = lines[p..at].iter().any(|between| between.fed) || masked[p + 1..at].iter().any(|flag| *flag);
             if page_turn && !ended { return false; }
@@ -1018,14 +1018,4 @@ pub(super) fn read(text: &str, page_count: Option<u32>) -> Reading {
     let last_text = paragraphs.last().map_or(0, |paragraph| paragraph.range.end);
     headings.retain(|heading| heading.range.start < last_text);
     Reading { kinds: Kinds { pages, paragraphs, notes, headings, tables, spans: front, ..Kinds::of(text) }, furniture }
-}
-
-pub(super) fn ended_sentence(body: &str) -> bool {
-    body.trim_end_matches(['"', '”', '’', '\'', ')', ']']).ends_with(['.', ':', ';', '?', '!'])
-}
-
-/// A block of text that is finished, a note's call after its last stop included: "... (Vernon Supp. 2002).\n 5".
-pub(super) fn closed_text(body: &str) -> bool {
-    let body = body.trim_end();
-    ended_sentence(body) || ended_sentence(body.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end())
 }
