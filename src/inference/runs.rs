@@ -177,7 +177,7 @@ pub(crate) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
 pub(crate) const BULLETS: &[char] = &[
     '\u{2022}', '\u{25cf}', '\u{25aa}', '\u{25e6}', '\u{2023}', '\u{2043}', '\u{25a0}', '\u{25a1}',
     '\u{25cb}', '\u{27a2}', '\u{2713}', '\u{00b7}', '\u{f0b7}', '\u{f0a7}', '\u{f0d8}', '\u{2013}',
-    '\u{2014}', '-', '*',
+    '\u{2014}', '-', '*', '\u{25ba}',
 ];
 
 /// Items opened by the same bullet at a line's start, one run for each bullet: a glyph and

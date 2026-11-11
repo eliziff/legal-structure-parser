@@ -18,7 +18,6 @@ struct Patterns {
     num: Regex,
     roman: Regex,
     alpha: Regex,
-    bullet: Regex,
 }
 
 fn patterns() -> &'static Patterns {
@@ -29,7 +28,6 @@ fn patterns() -> &'static Patterns {
         num: Regex::new(r"^[(\[]?\d+([.)\]:])?").unwrap(),
         roman: Regex::new(r"^\(?([IVXLCivxlc]{1,6})[.)\]:]").unwrap(),
         alpha: Regex::new(r"^\(?([A-Za-z]{1,2})[.)\]]").unwrap(),
-        bullet: Regex::new(r"^[•·▪–—\-*●○■□►]\s").unwrap(),
     })
 }
 
@@ -90,19 +88,23 @@ pub fn numbering(text: &str, open_letter: Option<char>) -> String {
             }
             return numeral.into();
         }
-        // (A numeral counts to 25, or is 30, 40 or 50.)
-        if legal_structure_model::layout::roman_value(&low).is_some_and(|value| value <= 25 || matches!(value, 30 | 40 | 50)) {
+        // (A numeral counts to 25, or is 30, 40 or 50: the enumerator grammar's numeral, `inference::counts`.)
+        if crate::inference::counts(token).iter().any(|&(count, value)| {
+            matches!(count, crate::inference::Count::Roman { .. }) && (value <= 25 || matches!(value, 30 | 40 | 50))
+        }) {
             return numeral.into();
         }
     }
     if let Some(m) = p.alpha.captures(t).filter(|m| followed(t, m.get(0).unwrap().end())) {
-        let letters: Vec<char> = m[1].chars().collect();
-        if letters.len() == 2 && letters[0] != letters[1] {
-            return String::new();
+        // A letter, or a letter doubled ("aa"), as the enumerator grammar reads one.
+        return match crate::inference::counts(&m[1]).first() {
+            Some((crate::inference::Count::Letter { upper }, _)) => if *upper { "AU" } else { "al" },
+            _ => "",
         }
-        return if letters.iter().all(|c| c.is_lowercase()) { "al" } else { "AU" }.into();
+        .into();
     }
-    if p.bullet.is_match(t) {
+    let mut glyphs = t.chars();
+    if glyphs.next().is_some_and(|glyph| crate::inference::BULLETS.contains(&glyph)) && glyphs.next().is_some_and(char::is_whitespace) {
         return "bullet".into();
     }
     String::new()

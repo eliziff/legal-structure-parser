@@ -645,54 +645,31 @@ fn marker_family(
     if inner.is_empty() || inner.chars().count() > 12 {
         return None;
     }
-    if inner.chars().all(|c| c.is_ascii_digit()) {
-        return Some((Family { wrap, count: "1" }, inner.parse().ok()?));
-    }
-    let parts = inner.split('.').collect::<Vec<_>>();
-    if parts.len() > 1
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
-    {
-        let count = match parts.len() {
-            2 => "1.1",
-            3 => "1.1.1",
-            _ => "1.1.1.1",
+    // The enumerator grammar's readings (`inference::counts`); of a token that is a letter and a numeral, the numeral,
+    // unless it is one letter `letter` says continues its letters. (A marker's numeral counts below 90.)
+    let readings = inference::counts(inner);
+    let read = |count: inference::Count, value: u32| {
+        let count = match count {
+            inference::Count::Decimal => "1",
+            inference::Count::Dotted(2) => "1.1",
+            inference::Count::Dotted(3) => "1.1.1",
+            inference::Count::Dotted(_) => "1.1.1.1",
+            inference::Count::Letter { upper } => if upper { "A" } else { "a" },
+            inference::Count::Roman { upper } => if upper { "I" } else { "i" },
         };
-        return Some((Family { wrap, count }, parts.last()?.parse().ok()?));
-    }
-    let single = inner.chars().count() == 1 && inner.chars().all(|c| c.is_ascii_alphabetic());
-    let letter_value = |c: char| u32::from(c.to_ascii_lowercase()) - u32::from('a') + 1;
-    // (A marker's numeral counts below 90.)
-    if let Some(value) = legal_structure_model::layout::roman_value(inner).filter(|value| *value < 90) {
-        let upper = inner.chars().all(|c| c.is_ascii_uppercase());
-        let lower = inner.chars().all(|c| c.is_ascii_lowercase());
-        if upper || lower {
-            if single {
-                let c = inner.chars().next()?;
-                let alpha = Family {
-                    wrap,
-                    count: if upper { "A" } else { "a" },
-                };
-                if letter(alpha, letter_value(c), insertion.is_some()) {
-                    return Some((alpha, letter_value(c)));
-                }
+        (Family { wrap, count }, value)
+    };
+    let letters = readings.iter().copied().find(|(count, _)| matches!(count, inference::Count::Letter { .. }));
+    let numeral = readings.iter().copied().find(|(count, value)| matches!(count, inference::Count::Roman { .. }) && *value < 90);
+    if let Some((count, value)) = numeral {
+        if let Some((alpha, value)) = letters.filter(|_| inner.chars().count() == 1).map(|(count, value)| read(count, value)) {
+            if letter(alpha, value, insertion.is_some()) {
+                return Some((alpha, value));
             }
-            return Some((
-                Family {
-                    wrap,
-                    count: if upper { "I" } else { "i" },
-                },
-                value,
-            ));
         }
+        return Some(read(count, value));
     }
-    if single {
-        let c = inner.chars().next()?;
-        let count = if c.is_ascii_uppercase() { "A" } else { "a" };
-        return Some((Family { wrap, count }, letter_value(c)));
-    }
-    None
+    readings.into_iter().find(|(count, _)| !matches!(count, inference::Count::Roman { .. })).map(|(count, value)| read(count, value))
 }
 
 pub(crate) fn numbering_marker(

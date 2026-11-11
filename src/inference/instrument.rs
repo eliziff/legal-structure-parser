@@ -81,30 +81,61 @@ pub(crate) fn enum_increment(family: u8, prior: &str, value: &str) -> bool {
         || before.checked_add(1) == Some(after)
 }
 
+/// How an enumerator counts: in digits ("12"), in dotted digits by their parts ("2.3" counts 3 in its second part), in
+/// letters ("b", or a letter doubled past "z": "aa" is 27), or in roman numerals ("iv"), each of either case.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Count {
+    Decimal,
+    Dotted(usize),
+    Letter { upper: bool },
+    Roman { upper: bool },
+}
+
+/// The counts an enumerator's token (its brackets and stop off) reads as, each with its value: the one enumerator
+/// grammar every reader of "(a)", "iv)", "12." and "2.3" reads. A token of letters may read both as letters and as a
+/// numeral ("i", "v", "C", "ii", "xx"), its letters' reading first; which a reader takes, and how far it counts a
+/// numeral, is that reader's. A numeral's case is any capital's in it ("Iv" is IV).
+pub(crate) fn counts(token: &str) -> Vec<(Count, u32)> {
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    if digits(token) {
+        return token.parse().map(|value| vec![(Count::Decimal, value)]).unwrap_or_default();
+    }
+    let parts = token.split('.').collect::<Vec<_>>();
+    if parts.len() > 1 && parts.iter().all(|part| digits(part)) {
+        return parts[parts.len() - 1].parse().map(|value| vec![(Count::Dotted(parts.len()), value)]).unwrap_or_default();
+    }
+    let upper = token.bytes().any(|byte| byte.is_ascii_uppercase());
+    let letter = match token.as_bytes() {
+        [one] if one.is_ascii_alphabetic() => Some(u32::from(one.to_ascii_lowercase() - b'a' + 1)),
+        [left, right] if left.is_ascii_alphabetic() && left.eq_ignore_ascii_case(right) => {
+            Some(26 + u32::from(left.to_ascii_lowercase() - b'a' + 1))
+        }
+        _ => None,
+    };
+    letter
+        .map(|value| (Count::Letter { upper }, value))
+        .into_iter()
+        .chain(roman_value(&token.to_ascii_lowercase()).map(|value| (Count::Roman { upper }, value)))
+        .collect()
+}
+
 pub(crate) fn enum_readings(token: &str) -> [Option<(u8, String)>; 2] {
     if let Some((letter, suffix)) = inserted_letter_token(token) {
         return enum_readings(letter)
             .map(|reading| reading.map(|(family, value)| (family, format!("{value}.{suffix}"))));
     }
-    if token
-        .split('.')
-        .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
-    {
+    let counts = counts(token);
+    if counts.iter().any(|(count, _)| matches!(count, Count::Decimal | Count::Dotted(_))) {
         return [Some((0, token.to_owned())), None];
     }
-    let bytes = token.as_bytes();
-    let alpha = match bytes {
-        [value @ (b'a'..=b'z' | b'A'..=b'Z')] => {
-            Some(u32::from(value.to_ascii_lowercase() - b'a' + 1))
-        }
-        [left @ (b'a'..=b'z' | b'A'..=b'Z'), right] if left.eq_ignore_ascii_case(right) => {
-            Some(26 + u32::from(left.to_ascii_lowercase() - b'a' + 1))
-        }
+    let alpha = counts.iter().find_map(|&(count, value)| match count {
+        Count::Letter { upper } => Some((if upper { 3 } else { 1 }, value)),
         _ => None,
-    };
-    let upper = bytes.iter().any(u8::is_ascii_uppercase);
-    let alpha = alpha.map(|value| (if upper { 3 } else { 1 }, value));
-    let roman = roman_value(token).map(|value| (if upper { 4 } else { 2 }, value));
+    });
+    let roman = counts.iter().find_map(|&(count, value)| match count {
+        Count::Roman { upper } => Some((if upper { 4 } else { 2 }, value)),
+        _ => None,
+    });
     if token.len() > 1 {
         [
             roman
