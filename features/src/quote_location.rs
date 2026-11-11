@@ -6,9 +6,9 @@
 
 use crate::quote_verification::QuoteSupport;
 use legal_structure::{javascript_whitespace as js_space, trim_javascript_whitespace as js_trim, utf16_len, JS_WHITESPACE_CLASS};
-use legal_document_query::DocumentQuery;
+use legal_document_query::{lowercase_words, word_regex, DocumentQuery};
 use legal_structure::parse_ordinal;
-use legal_structure_model::{text::ScalarCoordinates, DocumentStructure, NodeKind, ScalarRange, ScalarText, StructureNode};
+use legal_structure_model::{text::{normalize_blank_whitespace, ScalarCoordinates}, DocumentStructure, NodeKind, ScalarRange, ScalarText, StructureNode};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -29,7 +29,6 @@ const TRAILING: [&str; 8] = [".", ",", ";", ":", "!", "?", "\u{2026}", "..."];
 
 static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(concat!(r"\.\.\.|\[[^\]\[\n]{1,80}\]|",
     r"[\p{L}\p{N}]+(?:['\u{2019}][\p{L}\p{N}]+)*|[\x22\u{201c}\u{201d}\u{2018}\u{2019}]|[^\p{L}\p{N}_\s]")).unwrap());
-static WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\p{L}\p{N}]+(?:['\u{2019}][\p{L}\p{N}]+)*").unwrap());
 static SINGLE_WORD: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[\p{L}\p{N}]+(?:['\u{2019}][\p{L}\p{N}]+)*$").unwrap());
 static PLAIN_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[\p{L}\p{N}]+(?:'[\p{L}\p{N}]+)*$").unwrap());
@@ -134,11 +133,6 @@ impl Reader {
         self.exact.insert(text.to_owned(), value.clone());
         value
     }
-}
-
-/// Lower-cased words, as the plausibility and region checks count them.
-fn quote_words(text: &str) -> Vec<String> {
-    WORD.find_iter(text).map(|found| found.as_str().to_lowercase()).collect()
 }
 
 fn strip_trailing(values: &[String]) -> Vec<String> {
@@ -387,7 +381,7 @@ fn find_phrase(words: &[String], phrase: &[String]) -> Option<usize> {
     }
 }
 fn long_words(source: &str) -> LongWords {
-    let words = quote_words(source);
+    let words = lowercase_words(source);
     let present = words.iter().cloned().collect();
     (words, present)
 }
@@ -589,7 +583,7 @@ fn exact_anchors(key: &str) -> Option<Vec<Anchor>> {
 }
 
 fn content_words(text: &str) -> Vec<String> {
-    quote_words(text).into_iter().filter(|word| !NON_CONTENT.contains(&word.as_str()) && !NON_CONTENT_MORE.contains(&word.as_str())
+    lowercase_words(text).into_iter().filter(|word| !NON_CONTENT.contains(&word.as_str()) && !NON_CONTENT_MORE.contains(&word.as_str())
         && !(utf16_len(word) == 1 && word.chars().all(char::is_alphabetic))).collect()
 }
 /// A partial match is plausible only when enough of the quotation's content words occur in the source.
@@ -652,7 +646,7 @@ impl TextRuns {
 /// digits, case aside.
 fn long_source_region(quote: &str, source: &ScalarText, runs: Option<&TextRuns>, window: usize) -> String {
     let text = source.value;
-    let words = quote_words(quote);
+    let words = lowercase_words(quote);
     let edge = |c: Option<char>| c.is_some_and(|c| is_word_char(c) || c == '_');
     let edges = |start: usize, end: usize| !edge(text[..start].chars().next_back()) && !edge(text[end..].chars().next());
     for phrase in anchor_phrases(&words) {
@@ -813,7 +807,7 @@ impl Reader {
         if end <= start { return String::new(); }
         let raw = &source_region[spans[start].start..spans[end - 1].end];
         let mut fragment = js_trim(&WHITESPACE.replace_all(raw, " ")).to_owned();
-        let first_word = quote_words(quote).into_iter().next();
+        let first_word = lowercase_words(quote).into_iter().next();
         if !first_word.is_some_and(|word| !word.is_empty() && word.chars().all(|c| c.is_ascii_digit())) {
             let stripped = js_trim(&LEADING_NUMBER.replace(&fragment, "")).to_owned();
             if !stripped.is_empty() { fragment = stripped; }
@@ -1105,7 +1099,7 @@ fn holders(place: &str) -> impl Iterator<Item = &str> {
     })
 }
 fn word_count(quote: &str, text: &str) -> usize {
-    let (needle, words) = (quote_words(quote), quote_words(text));
+    let (needle, words) = (lowercase_words(quote), lowercase_words(text));
     if needle.is_empty() || needle.len() > words.len() { return 0; }
     (0..=words.len() - needle.len()).filter(|&i| words[i..i + needle.len()] == needle[..]).count()
 }
@@ -1458,7 +1452,7 @@ impl<'a> Located<'a> {
         if !matches.is_empty() {
             let mut labels = Vec::new();
             // A word or two near words almost anywhere is placed only where it is held, or found once.
-            if quote_words(quote).len() < 3 && !held {
+            if lowercase_words(quote).len() < 3 && !held {
                 let exact = matches.iter().copied().filter(|&(_, c)| word_count(quote, &self.block(&ranges, c).text) > 0)
                     .collect::<Vec<_>>();
                 if word_count(quote, text) == 1 && !exact.is_empty() { matches = exact; labels = self.specific_labels(&matches, &ranges); }
@@ -1492,7 +1486,7 @@ impl<'a> Located<'a> {
             let mut ranges = pair.iter().flat_map(|block| block.ranges.iter().copied()).collect();
             ScalarRange::normalize_union(&mut ranges);
             let text = legal_structure_model::text::membership_text_utf16(&self.source_text, &ranges);
-            if !quote_words(quote).is_empty()
+            if !lowercase_words(quote).is_empty()
                 && self.reader.quote_match_score(quote, &text, 0.0) >= STRONG_MATCH {
                 return format!("pages {}\u{2013}{}", pair[0].label, pair[1].label);
             }
@@ -1517,7 +1511,7 @@ impl<'a> Located<'a> {
             Resolution { location: "uncited_document", score: self.document_score(quote, text), labels: Vec::new(),
                 text: text.to_owned(), cited: None }
         } else { self.resolve(quote, scopes) };
-        let short = quote_words(quote).len() < 3;
+        let short = lowercase_words(quote).len() < 3;
         if short && resolution.location.starts_with("alternate") && resolution.labels.is_empty() {
             resolution = Resolution { location: "unmatched", score: 0.0, labels: Vec::new(), text: String::new(), cited: None };
         }
@@ -1586,7 +1580,6 @@ fn locate_quotes_kept(kept: Option<LocatorState>, document: &DocumentStructure, 
 
 const DOUBLE_QUOTE_CHARS: &str = "\"\u{201c}\u{201d}\u{ab}\u{bb}\u{201e}";
 static MARKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\p{M}+").unwrap());
-static BLANKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[ \t\r\n\x0C\x0B]+").unwrap());
 static LOWER_INITIAL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[([a-z])\]([a-z]+)$").unwrap());
 static BRACKETED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[[^\]]+\]").unwrap());
 static CLOSER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[)\]},.;:!?]$").unwrap());
@@ -1601,17 +1594,13 @@ static PUNCTUATION_TAIL: LazyLock<Regex> = LazyLock::new(||
 fn token_texts(text: &str) -> Vec<String> {
     quote_tokens(text).into_iter().map(|token| token.text).collect()
 }
-/// text.ts normalizeWhitespace: trimmed, runs of blanks (not NBSP) one space.
-fn normalize_whitespace(text: &str) -> String {
-    BLANKS.replace_all(js_trim(text), " ").into_owned()
-}
 /// Only substantive wording is a difference: case, diacritics, quote and dash variants and compatibility width are
 /// noise.
 fn fold_for_comparison(value: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
     // ASCII decomposes to itself and has no marks; of it, only blanks and the backtick fold otherwise.
     if value.bytes().all(|byte| byte.is_ascii_graphic() && byte != b'`') { return value.to_ascii_lowercase(); }
-    let decomposed = normalize_whitespace(value).nfkd().collect::<String>();
+    let decomposed = normalize_blank_whitespace(value).nfkd().collect::<String>();
     MARKS.replace_all(&decomposed, "").chars().map(|c| match c {
         '"' | '\u{201c}' | '\u{201d}' | '\u{ab}' | '\u{bb}' | '\u{201e}' => '"',
         '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '`' | '\u{b4}' => '\'',
@@ -1662,7 +1651,7 @@ fn join_tokens(values: &[String]) -> String {
         previous = value;
         prior_role = role;
     }
-    normalize_whitespace(&result)
+    normalize_blank_whitespace(&result)
 }
 
 /// A word with letters inserted inside it ("employment" written "employ[ee]ment"), the insertion bracketed.
@@ -1790,7 +1779,7 @@ pub struct SourceWords {
 
 impl SourceWords {
     pub fn new(source: &str) -> Self {
-        SourceWords { spans: WORD.find_iter(source).map(|word| (word.start(), word.end())).collect(), keys: Default::default() }
+        SourceWords { spans: word_regex().find_iter(source).map(|word| (word.start(), word.end())).collect(), keys: Default::default() }
     }
     fn keys(&self, source: &str) -> &[String] {
         self.keys.get_or_init(|| self.spans.iter().map(|&(start, end)| fold_for_comparison(&source[start..end])).collect())
@@ -1798,7 +1787,7 @@ impl SourceWords {
 }
 
 fn verbatim_repair_in(authored: &str, source: &str, words: &SourceWords) -> Option<String> {
-    let before = WORD.find_iter(authored).map(|word| fold_for_comparison(word.as_str())).collect::<Vec<_>>();
+    let before = word_regex().find_iter(authored).map(|word| fold_for_comparison(word.as_str())).collect::<Vec<_>>();
     let after = &words.spans;
     if before.is_empty() || after.is_empty() { return None; }
     // Too long to align, sequence_opcodes finds nothing equal.

@@ -6,12 +6,14 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{atomic::Ordering, OnceLock};
 
-pub(super) fn word_regex() -> &'static Regex {
+/// A word: a run of letters and digits, an apostrophe inside it.
+pub fn word_regex() -> &'static Regex {
     static WORD: OnceLock<Regex> = OnceLock::new();
     regex(r"[\p{L}\p{N}]+(?:['\u{2019}][\p{L}\p{N}]+)*", &WORD)
 }
 
-pub(super) fn lowercase_words(value: &str) -> Vec<String> {
+/// The words of `value`, lower-cased.
+pub fn lowercase_words(value: &str) -> Vec<String> {
     word_regex()
         .find_iter(value)
         .map(|word| word.as_str().to_lowercase())
@@ -161,23 +163,7 @@ pub(super) fn quote_text(value: &str) -> String {
     let value = regex(r"\[([A-Za-z])\]([A-Za-z])", &BRACKET_LETTER).replace_all(value, "$1$2");
     let value = regex(r"\[([^\]]+)\]", &BRACKETS).replace_all(&value, "$1");
     let value = regex(r"\.{3}|…", &ELISION).replace_all(&value, " ");
-    let mut normalized = String::with_capacity(value.len());
-    let mut separating = false;
-    for character in value.chars() {
-        if matches!(
-            character,
-            ' ' | '\t' | '\r' | '\n' | '\u{000c}' | '\u{000b}'
-        ) {
-            separating = !normalized.is_empty();
-        } else {
-            if separating {
-                normalized.push(' ');
-            }
-            normalized.push(character);
-            separating = false;
-        }
-    }
-    normalized
+    crate::text::normalize_blank_whitespace(&value)
 }
 
 pub(super) fn indexed_phrase_spans(

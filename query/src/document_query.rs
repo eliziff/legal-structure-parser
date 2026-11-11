@@ -17,7 +17,7 @@ mod source_text;
 mod text_fragment;
 pub use source_text::TextStatistics;
 use search::{quote_text, PhraseOptions, PhraseSpan};
-pub use search::{tokenize_source_text, DocumentWordSpan};
+pub use search::{lowercase_words, tokenize_source_text, word_regex, DocumentWordSpan};
 pub use text_fragment::{
     sentence_end, source_text_fragment_plan, text_fragment_plan, text_fragment_plan_in,
     TextFragmentPage, TextFragmentPlan,
@@ -824,11 +824,7 @@ impl DocumentQuery {
     }
 
     pub fn has_origin(&self, document: &DocumentStructure, origin: Derivation) -> bool {
-        document.nodes.iter().any(|node| {
-            projected(node)
-                && (node.kind == NodeKind::Prose || node.label.is_some())
-                && node.source == origin
-        })
+        self.blocks(document, None).any(|node| node.source == origin)
     }
 
     fn requested_label<'a>(

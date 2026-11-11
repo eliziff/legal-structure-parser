@@ -5,6 +5,7 @@
 
 use legal_structure::{canlii_case_url, canlii_law_url, citation_lookup_key, trim_javascript_whitespace as js_trim, windows_1252_punctuation,
     ProviderPage, ProviderTextInput, ProviderTextSourceKind};
+use legal_structure_model::text::normalize_blank_whitespace;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::borrow::Cow;
@@ -35,11 +36,6 @@ impl Language {
     }
 }
 
-/// JavaScript's String.prototype.trim, then each run of ASCII blanks one space.
-pub fn normalize_whitespace(value: &str) -> String {
-    static BLANKS: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"[ \t\r\n\x0C\x0B]+").expect("blanks"));
-    BLANKS.replace_all(js_trim(value), " ").into_owned()
-}
 
 /// Where a document was read from. The store gives a field as it holds it, its date's day, and its own address as its
 /// page and its publisher's; A2AJ's API gives a field with the Windows-1252 character each C1 control in it stands for,
@@ -295,7 +291,7 @@ impl<'a, C: Columns + ?Sized> Document<'a, C> {
         }
         for column in ["citation_en", "citation2_en", "citation_fr", "citation2_fr"] {
             if self.field(column)?.is_some_and(|own| query.keys.contains(&citation_lookup_key(&own))
-                || query.title.as_ref().is_some_and(|title| normalize_whitespace(&own).to_lowercase() == *title)) {
+                || query.title.as_ref().is_some_and(|title| normalize_blank_whitespace(&own).to_lowercase() == *title)) {
                 return Ok(true);
             }
         }
@@ -329,7 +325,7 @@ impl Answering {
         let keys = std::iter::once(citation_lookup_key(&query.citation)).chain(query.aliases.iter().cloned())
             .filter(|key| !key.is_empty()).collect::<BTreeSet<_>>();
         let address = query.source_url.as_deref().map(js_trim).filter(|value| !value.is_empty()).map(str::to_owned);
-        let title = (keys.is_empty() && address.is_some()).then(|| normalize_whitespace(&query.citation).to_lowercase());
+        let title = (keys.is_empty() && address.is_some()).then(|| normalize_blank_whitespace(&query.citation).to_lowercase());
         if keys.is_empty() && title.is_none() {
             return None;
         }

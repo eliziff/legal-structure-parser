@@ -1,6 +1,6 @@
 use super::search;
 use super::*;
-use crate::{javascript_whitespace, utf16_len};
+use crate::{javascript_whitespace, text::normalize_blank_whitespace, utf16_len};
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
@@ -296,25 +296,6 @@ impl<'a> FragmentText<'a> {
     }
 }
 
-fn normalize_blank_whitespace(value: &str) -> String {
-    let mut normalized = String::with_capacity(value.len());
-    let mut separating = false;
-    for character in js_trim(value).chars() {
-        if matches!(
-            character,
-            ' ' | '\t' | '\r' | '\n' | '\u{000c}' | '\u{000b}'
-        ) {
-            separating = !normalized.is_empty();
-        } else {
-            if separating {
-                normalized.push(' ');
-            }
-            normalized.push(character);
-            separating = false;
-        }
-    }
-    normalized
-}
 
 fn leading_label_length(value: &str) -> usize {
     static LABELS: OnceLock<Vec<Regex>> = OnceLock::new();
@@ -442,10 +423,6 @@ fn adjust_span_edges(text: FragmentText<'_>, original: PhraseSpan) -> PhraseSpan
     }
 }
 
-fn fragment_words(value: &str) -> Vec<String> {
-    search::lowercase_words(value)
-}
-
 fn choose_source_span(text: FragmentText<'_>, quote: &str, words: &[String]) -> Option<PhraseSpan> {
     static BETWEEN_QUOTES: OnceLock<Regex> = OnceLock::new();
     static OPENING_QUOTE: OnceLock<Regex> = OnceLock::new();
@@ -465,7 +442,7 @@ fn choose_source_span(text: FragmentText<'_>, quote: &str, words: &[String]) -> 
                 }
             })
             .collect::<String>();
-        spans = text.phrase_spans(&fragment_words(&separated), PhraseOptions::default());
+        spans = text.phrase_spans(&search::lowercase_words(&separated), PhraseOptions::default());
     }
     if spans.len() == 1 {
         return spans.pop();
@@ -3413,7 +3390,7 @@ fn build_fragment_plan(
     let mut complete = true;
 
     for (quote_index, quote) in quotes.iter().enumerate() {
-        let quote_words = fragment_words(quote);
+        let quote_words = search::lowercase_words(quote);
         let key = quote_words.join(" ");
         if key.is_empty() || !keys.insert(key) {
             continue;
