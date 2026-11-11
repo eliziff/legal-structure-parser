@@ -32,7 +32,7 @@ use matter::{
     titled_digest, topic_index,
 };
 use notes::{
-    anchored_notes, answer_calls, flat_notes, join_citation_fragments, note_label_of, share_note_calls,
+    anchored_notes, answer_calls, flat_notes, join_citation_fragments, share_note_calls,
     split_note_lists, supply_notes, unmatched_calls, word_notes,
 };
 use pages::{
@@ -1195,13 +1195,11 @@ fn from_structure(record: &OpinionRecord, name: &str, mut markup: DocumentStruct
     paragraphs.sort_by_key(|paragraph| paragraph.range.start);
 
     let notes = note_nodes.into_iter().map(|mut markup| {
-        let (label, echo) = note_label_of(&coordinates, &markup);
-        let mut ranges = if markup.ranges.is_empty() { vec![markup.range] } else { std::mem::take(&mut markup.ranges) };
-        if let Some(first) = ranges.first_mut() {
-            first.start = (first.start + echo).min(first.end);
-        }
+        // Its label as printed, and its body after any opening that repeats it: the engine's (`native_markup::note_opening`).
+        let label = markup.label.take().unwrap_or_default();
+        let ranges = if markup.ranges.is_empty() { vec![markup.range] } else { std::mem::take(&mut markup.ranges) };
         let calls = std::mem::take(&mut markup.calls);
-        let range = ScalarRange { start: (markup.range.start + echo).min(markup.range.end), end: markup.range.end };
+        let range = markup.range;
         as_note(taken(markup, NodeKind::Footnote, range, Derivation::Native), label, ranges, calls)
     }).collect::<Vec<_>>();
     let mut notes = join_citation_fragments(notes, &coordinates);

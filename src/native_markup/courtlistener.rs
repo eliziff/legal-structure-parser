@@ -2220,6 +2220,7 @@ pub(super) fn finish(
         body_exclusions,
     );
     supplement_courtlistener_printed_notes(structure, printed_notes);
+    label_notes(structure, &text_index);
     drop_note_numbered_paragraphs(structure);
     courtlistener_division_headings(structure, &text_index);
     courtlistener_source_roles(structure);
@@ -2328,4 +2329,61 @@ pub(super) fn evidence(
 /// A note's label: its marker, or an empty range at its body's start where it prints none.
 fn note_label(note: &crate::StructureNode) -> ScalarRange {
     note.marker_range.unwrap_or(ScalarRange { start: note.range.start, end: note.range.start })
+}
+
+/// Each note labelled as it prints: a symbol's slug read as its symbol, a label the source gives none read off the note's
+/// opening, and an opening that merely repeats the label set apart as the note's marker, its body after it.
+fn label_notes(structure: &mut DocumentStructure, text_index: &ScalarCoordinates) {
+    let coordinates = ScalarText::with_coordinates(structure.query_text(), text_index);
+    let read = structure.nodes.iter().map(|node| (node.kind == NodeKind::Footnote).then(|| {
+        note_opening(coordinates.slice_utf16(node.range.start..node.range.end).unwrap_or(""), node.label.clone().unwrap_or_default())
+    })).collect::<Vec<_>>();
+    for (node, read) in structure.nodes.iter_mut().zip(read) {
+        let Some((label, echo)) = read else { continue };
+        node.label = Some(label);
+        if echo > 0 {
+            let start = node.range.start;
+            node.marker_range.get_or_insert(ScalarRange { start, end: start + echo });
+            node.range.start = (start + echo).min(node.range.end);
+            if let Some(first) = node.ranges.first_mut() {
+                first.start = (first.start + echo).min(first.end);
+            }
+        }
+    }
+}
+
+/// A label as called and as printed compare bare: "(1)", "[1]" and "1" are one note's.
+pub(crate) fn plain_label(label: &str) -> &str {
+    label.trim_matches(['(', ')', '[', ']', '.', ','])
+}
+
+/// Words that open on a reporter's abbreviation: "F.Supp. at 843", "A.2d 12", "O.S.2021".
+pub(crate) fn opens_on_reporter(words: &str) -> bool {
+    static REPORTER: OnceLock<Regex> = OnceLock::new();
+    REPORTER.get_or_init(|| Regex::new(r"^\p{Lu}\p{L}*\.\S").unwrap()).is_match(words.trim_start())
+}
+
+/// A note's label where the source gives none ("", or a symbol's slug), and how much of its opening merely repeats it:
+/// Harvard's ". The court", Lawbox's "1\n. The court", "[1]  The court".
+pub(crate) fn note_opening(body: &str, label: String) -> (String, usize) {
+    static OPENING: OnceLock<Regex> = OnceLock::new();
+    let opening = OPENING.get_or_init(|| Regex::new(r"^\s*(?:[\[(]?(\d{1,3}[a-zA-Z]?|[a-z]|\*+|†|‡|§|[①-⑳])[\])]?\s*[./]?|\.)\s+").unwrap());
+    // CourtListener's slug for a symbol: "-s" a star, "-s-s" two, "-s--2" a star's second use.
+    let label = label.trim().to_owned();
+    let label = if label.starts_with("-s") { "*".repeat(label.split("--").next().unwrap_or("").matches("-s").count()) } else { label };
+    let label = if plain_label(&label).starts_with(['*', '†', '‡']) { plain_label(&label).to_owned() } else { label };
+    let unnamed = label.is_empty() || label.starts_with('-') || label == "None";
+    let Some(capture) = opening.captures(body) else { return (if unnamed { String::new() } else { label }, 0) };
+    let printed = capture.get(1).map(|printed| printed.as_str());
+    // "330 F.Supp. at 843", "43 O.S.2021 § 109.3": a note that opens on a citation, its volume no label.
+    if unnamed && !capture[0].contains(['.', ')', ']']) && opens_on_reporter(&body[capture[0].len()..]) {
+        return (String::new(), 0);
+    }
+    match printed {
+        // A lone letter opens a sentence as readily as a note ("A court ..."), so it is named only if the label says so.
+        Some(printed) if unnamed && !printed.chars().all(char::is_alphabetic) => (printed.to_owned(), utf16_len(&capture[0])),
+        Some(_) if unnamed => (String::new(), 0),
+        Some(printed) if printed != label.trim_matches(['(', ')', '[', ']', '.', '/']) => (label, 0),
+        _ => (label, utf16_len(&capture[0])),
+    }
 }

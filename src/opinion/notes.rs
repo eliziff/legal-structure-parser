@@ -1,4 +1,5 @@
-//! A record's notes beyond what the engine links: labels as printed, anchors, flat notes, and calls matched to bodies.
+//! A record's notes beyond what the engine links: anchors, flat notes, and calls matched to bodies (each note's label is the
+//! engine's, as printed: `native_markup::note_opening`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
@@ -9,16 +10,7 @@ use regex::Regex;
 use crate::trim_javascript_whitespace as trim_js;
 use super::{read_note, reads, span, text, word_starts, Kinds, Pending, ScalarCoordinates};
 use super::headings::notes_title;
-
-/// A label as called and as printed compare bare: "(1)", "[1]" and "1" are one note's.
-pub(super) fn plain_label(label: &str) -> &str {
-    label.trim_matches(['(', ')', '[', ']', '.', ','])
-}
-
-/// A note's printed label, and how much of its body merely repeats it.
-pub(super) fn note_label_of(coordinates: &ScalarText, note: &StructureNode) -> (String, usize) {
-    note_opening(coordinates.slice_utf16(note.range.start..note.range.end).unwrap_or(""), note.label.as_deref().unwrap_or("").to_owned())
-}
+pub(super) use crate::native_markup::{opens_on_reporter, plain_label};
 
 /// Notes another text of the case prints and this reading lacks: another rendition's, or the head matter's, where a
 /// judge's or counsel's note sits ahead of the opinion. One is the same note if a note of ours shares most of its words,
@@ -53,8 +45,8 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds,
     let mut added = HashSet::new();
     let length = structure.text.len();
     for note in other.nodes.iter().filter(|node| node.kind == NodeKind::Footnote) {
-        let (label, echo) = note_label_of(coordinates, note);
-        let body = coordinates.slice_utf16((note.range.start + echo).min(note.range.end)..note.range.end).map(trim_js).unwrap_or("");
+        let label = note.label.clone().unwrap_or_default();
+        let body = coordinates.slice_utf16(note.range.start..note.range.end).map(trim_js).unwrap_or("");
         let words = words_of(body);
         if words.is_empty() || notes_title(body) || !added.insert(body.to_owned()) {
             continue;
@@ -87,12 +79,6 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds,
     }
 }
 
-/// Words that open on a reporter's abbreviation: "F.Supp. at 843", "A.2d 12", "O.S.2021".
-pub(super) fn opens_on_reporter(words: &str) -> bool {
-    static REPORTER: OnceLock<Regex> = OnceLock::new();
-    REPORTER.get_or_init(|| Regex::new(r"^\p{Lu}\p{L}*\.\S").unwrap()).is_match(words.trim_start())
-}
-
 /// A citation that crossed a block, `<a class="footnote">830</a><p>F.Supp. at 1081`: the source took its volume for a note's
 /// number. It is the end of the note before.
 pub(super) fn join_citation_fragments(notes: Vec<StructureNode>, coordinates: &ScalarText) -> Vec<StructureNode> {
@@ -111,31 +97,6 @@ pub(super) fn join_citation_fragments(notes: Vec<StructureNode>, coordinates: &S
         }
     }
     joined
-}
-
-/// A note's label where the source gives none ("", or a symbol's slug), and how much of its opening merely repeats it:
-/// Harvard's ". The court", Lawbox's "1\n. The court", "[1]  The court".
-pub(super) fn note_opening(body: &str, label: String) -> (String, usize) {
-    static OPENING: OnceLock<Regex> = OnceLock::new();
-    let opening = OPENING.get_or_init(|| Regex::new(r"^\s*(?:[\[(]?(\d{1,3}[a-zA-Z]?|[a-z]|\*+|†|‡|§|[①-⑳])[\])]?\s*[./]?|\.)\s+").unwrap());
-    // CourtListener's slug for a symbol: "-s" a star, "-s-s" two, "-s--2" a star's second use.
-    let label = label.trim().to_owned();
-    let label = if label.starts_with("-s") { "*".repeat(label.split("--").next().unwrap_or("").matches("-s").count()) } else { label };
-    let label = if plain_label(&label).starts_with(['*', '†', '‡']) { plain_label(&label).to_owned() } else { label };
-    let unnamed = label.is_empty() || label.starts_with('-') || label == "None";
-    let Some(capture) = opening.captures(body) else { return (if unnamed { String::new() } else { label }, 0) };
-    let printed = capture.get(1).map(|printed| printed.as_str());
-    // "330 F.Supp. at 843", "43 O.S.2021 § 109.3": a note that opens on a citation, its volume no label.
-    if unnamed && !capture[0].contains(['.', ')', ']']) && opens_on_reporter(&body[capture[0].len()..]) {
-        return (String::new(), 0);
-    }
-    match printed {
-        // A lone letter opens a sentence as readily as a note ("A court ..."), so it is named only if the label says so.
-        Some(printed) if unnamed && !printed.chars().all(char::is_alphabetic) => (printed.to_owned(), utf16_len(&capture[0])),
-        Some(_) if unnamed => (String::new(), 0),
-        Some(printed) if printed != label.trim_matches(['(', ')', '[', ']', '.', '/']) => (label, 0),
-        _ => (label, utf16_len(&capture[0])),
-    }
 }
 
 /// Notes a word processor exported as styled paragraphs, `<p class="MsoFootnoteText">[1] We decide this case ...`: the label opens
