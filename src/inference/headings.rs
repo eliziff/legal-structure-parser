@@ -39,10 +39,9 @@ pub(super) fn heading_level(words: &[&str], enumerated: bool) -> bool {
     if !level_opens(words[0]) || closed || called || count(')') > count('(') {
         return false;
     }
-    if last.ends_with(['?', ':']) {
-        return true;
-    }
-    heading_title_case(words) || enumerated || words.len() <= 6
+    // (A sentence ending on a colon introduces what follows: "Bird C.J.B.C. concluded his reasons as follows:", "The
+    // warrant recited that:"; "Reasons for judgment:" heads.)
+    last.ends_with('?') || heading_title_case(words) || enumerated || words.len() <= if last.ends_with(':') { 3 } else { 6 }
 }
 
 pub(super) fn heading_title_case(words: &[&str]) -> bool {
