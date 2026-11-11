@@ -1,6 +1,6 @@
 //! Paragraphs: one to a place, rejoined across a page, numbered, and who speaks them.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::OnceLock;
 use legal_structure_model::ScalarRange;
 use legal_structure_model::document::{DocumentStructure, NodeKind, StructureNode};
@@ -8,7 +8,7 @@ use legal_structure_model::text::{javascript_whitespace, utf16_len, ScalarText};
 use regex::Regex;
 use crate::trim_javascript_whitespace as trim_js;
 use super::{
-    headnote_node, opening_words, places, read_paragraph, read_part, role_of, squeezed, text, unheld_stretches, Kinds,
+    headnote_node, opening_words, places, read_paragraph, read_part, role_of, squeezed, unheld_stretches, Kinds,
     Pending,
 };
 use crate::native_markup::titles;
@@ -72,16 +72,11 @@ pub(super) fn number_paragraphs(structure: &mut DocumentStructure, kinds: &mut K
     join_block_counters(structure, kinds);
     numbers_off_titles(structure, kinds);
     let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
-    // A quotation's numbers are the quotation's.
-    let openings = kinds.paragraphs.iter().enumerate().filter(|(_, paragraph)| !(paragraph.kind == NodeKind::Quote)).filter_map(|(index, paragraph)| {
+    // A quotation's numbers are the quotation's; a paragraph's printed number is the engine's reading (`inference::paragraphs`).
+    let openings = kinds.paragraphs.iter().enumerate().filter(|(_, paragraph)| !(paragraph.kind == NodeKind::Quote) && paragraph.label.is_none()).filter_map(|(index, paragraph)| {
         Some((index, trim_js(coordinates.slice_utf16(paragraph.range.start..paragraph.range.end)?)))
     }).collect::<Vec<_>>();
-    let numbered = text::own_numbers(openings.iter().copied(), 3);
-    let lettered = lettered_paragraphs(&openings, &numbered);
-    for (index, number) in numbered {
-        kinds.paragraphs[index].label.get_or_insert(format!("{number}"));
-    }
-    for (index, label) in lettered {
+    for (index, label) in lettered_paragraphs(&openings) {
         kinds.paragraphs[index].label.get_or_insert(format!("{label}"));
     }
     // A certified question's own number.
@@ -497,14 +492,14 @@ pub(super) fn fill_skipped_numbers(structure: &mut DocumentStructure, kinds: &mu
 }
 
 /// Runs of paragraphs that open "(a)", "(b)" or "(1)", "(2)": their labels as printed, to be cited as such.
-pub(super) fn lettered_paragraphs(openings: &[(usize, &str)], numbered: &HashMap<usize, u32>) -> Vec<(usize, String)> {
+pub(super) fn lettered_paragraphs(openings: &[(usize, &str)]) -> Vec<(usize, String)> {
     static LABEL: OnceLock<Regex> = OnceLock::new();
     let label = LABEL.get_or_init(|| Regex::new(r"^\(([a-z]|\d{1,2})\)\s").unwrap());
     let order = |printed: &str| printed.parse::<u32>().ok().or_else(|| printed.chars().next().map(|c| c as u32 - 'a' as u32 + 1));
     let mut found = Vec::new();
     let mut run = Vec::<(usize, String)>::new();
     let mut last = 0;
-    for (index, opening) in openings.iter().filter(|(index, _)| !numbered.contains_key(index)) {
+    for (index, opening) in openings {
         let Some(printed) = label.captures(opening) else { continue };
         let Some(place) = order(&printed[1]) else { continue };
         if place != last + 1 {

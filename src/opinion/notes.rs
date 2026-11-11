@@ -11,7 +11,7 @@ use crate::trim_javascript_whitespace as trim_js;
 use super::{read_note, reads, word_starts, Kinds, Pending, ScalarCoordinates};
 use crate::native_markup::titles::{self, notes_title};
 use crate::native_markup::{answer_by_label, called, printed_calls};
-pub(super) use crate::native_markup::{opens_on_reporter, plain_label};
+pub(super) use crate::native_markup::plain_label;
 
 /// Notes another text of the case prints and this reading lacks: another rendition's, or the head matter's, where a
 /// judge's or counsel's note sits ahead of the opinion. One is the same note if a note of ours shares most of its words,

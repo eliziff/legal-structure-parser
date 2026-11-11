@@ -8,6 +8,56 @@ use legal_structure_model::text::{javascript_whitespace, utf16_len, ScalarText};
 use regex::Regex;
 use super::{span, squeezed, Kinds, ScalarCoordinates};
 
+/// An overprinted line reads each letter twice: "OORRDDEERR" is "ORDER".
+fn undoubled(line: &str) -> Option<String> {
+    let letters = line.chars().filter(|c| !c.is_whitespace()).collect::<Vec<_>>();
+    (letters.len() >= 6 && letters.len() % 2 == 0 && letters.chunks(2).all(|pair| pair[0] == pair[1])).then(|| {
+        let mut out = String::with_capacity(line.len() / 2);
+        let mut second = false;
+        for c in line.chars() {
+            if c.is_whitespace() { out.push(c); continue; }
+            if !second { out.push(c); }
+            second = !second;
+        }
+        out
+    })
+}
+
+/// A PDF whose font maps its letters 29 places down writes "7KH\x03FRXUW" for "The court", its spaces \x03. Shifted, no letter
+/// falls past "a": a line with such a space and hardly a letter past it is read back, character for character, so every offset
+/// holds; so is a line of one word between shifted lines, which has no space to show it. Justified lines keep plain spaces too.
+/// The engine reads the text only once it is read back (`structure_of`).
+pub(super) fn unshifted(text: &str) -> String {
+    const SHIFT: u32 = 29;
+    let text = &text.split_inclusive('\n').map(|line| undoubled(line).unwrap_or_else(|| line.to_owned())).collect::<String>();
+    if !text.contains('\u{3}') {
+        return text.to_owned();
+    }
+    let past_shift = |line: &str| line.chars().filter(|c| ('b'..='z').contains(c)).count();
+    let lines = text.split_inclusive('\n').collect::<Vec<_>>();
+    let marked = lines.iter().map(|line| line.contains('\u{3}') && past_shift(line) * 20 < line.chars().filter(|c| !c.is_whitespace()).count()).collect::<Vec<_>>();
+    let beside = |index: usize, step: isize| {
+        let mut at = index as isize + step;
+        while let Some(line) = usize::try_from(at).ok().and_then(|at| lines.get(at)) {
+            if !line.trim().is_empty() {
+                return marked[at as usize];
+            }
+            at += step;
+        }
+        false
+    };
+    lines.iter().enumerate().map(|(index, line)| {
+        let lone = !marked[index] && past_shift(line) == 0 && line.chars().any(|c| c.is_ascii_uppercase()) && beside(index, -1) && beside(index, 1);
+        let from = if marked[index] || lone { Some(0) } else { line.find('\u{3}') };
+        let Some(from) = from else { return (*line).to_owned() };
+        let read = line[from..].chars().map(|c| match c as u32 {
+            code @ 0x03..=0x61 if !matches!(c, '\n' | '\r' | '\t' | '\u{c}' | ' ') => char::from_u32(code + SHIFT).unwrap_or(c),
+            _ => c,
+        }).collect::<String>();
+        format!("{}{read}", &line[..from])
+    }).collect()
+}
+
 /// Takes the page marks and the page furniture out of the text and moves every range to match, each furniture line held as
 /// a span where it stood. A word a mark split is joined: where its fragments are not words of this text on their own, or
 /// the whole word is. The text's index is built again over the new text.

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use legal_structure_model::{DetectionProfile, ScalarRange};
-use legal_structure_model::document::{NodeKind, StructureNode};
+use legal_structure_model::document::{Derivation, NodeKind, PrimaryRole, StructureNode};
 use legal_structure_model::text::{utf16_len, ScalarText};
 use crate::Evidence;
 use super::{decimal_prefix, leading_ascii_space, lines, prose_block, Line, Marker, MarkerStyle};
@@ -249,6 +249,15 @@ pub(super) struct SourcePageMarker {
     after_line: usize,
     physical: ScalarRange,
     header: bool,
+    /// A slip opinion's running head carries the number.
+    head: bool,
+}
+
+/// A page's running title, number or stamp, or a margin's line number: no words of the text.
+fn furniture(range: ScalarRange) -> StructureNode {
+    let mut node = StructureNode::new(String::new(), NodeKind::Span, range, crate::ENGINE_ORIGIN, Derivation::Heuristic, None);
+    node.role = Some(PrimaryRole::Furniture);
+    node
 }
 
 pub(super) fn case_decimal_subheadings(
@@ -374,17 +383,41 @@ pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a ScalarText<'
         .collect::<Vec<_>>();
     let body_indent = median(&mut body_indents) as usize;
     let mut first_lines = HashSet::new();
-    let mut running = HashMap::<&str, Vec<usize>>::new();
+    let mut running = HashMap::<&str, Vec<(usize, ScalarRange)>>::new();
+    // A slip opinion heads each sheet with its number beside a running title, on the left and right by turns, the title
+    // repeating sheet to sheet: "2      HENDERSON v. UNITED STATES", "Cite as: 568 U. S. ____ (2013)    3". Each opinion in
+    // it counts from 1 again.
+    let sheet_head = cached_regex!(SHEET_HEAD, r"^(\d{1,3})\s{2,}\S|\S\s{3,}(\d{1,3})$");
+    let masked = |value: &str| {
+        let mut shaped = String::with_capacity(value.len());
+        for character in value.chars() {
+            let character = if character.is_ascii_digit() { '#' } else if character.is_whitespace() { ' ' } else { character };
+            if !(matches!(character, '#' | ' ') && shaped.ends_with(character)) { shaped.push(character); }
+        }
+        shaped
+    };
+    let mut heads = Vec::<(usize, String, usize, &str)>::new();
     for line in &source_lines {
         let value = line.text.trim();
         if value.is_empty() { continue; }
         let physical = physical_page(line.start);
         if first_lines.insert(physical.start) && physical.start > 0 {
-            running.entry(value).or_default().push(line.start);
+            let lead = line.text.len() - line.text.trim_start().len();
+            running.entry(value).or_default().push((line.start, ScalarRange {
+                start: text.utf16_of_byte(line.byte_start + lead), end: text.utf16_of_byte(line.byte_start + lead + value.len()),
+            }));
+            if let Some(number) = sheet_head.captures(value).filter(|_| value.len() <= 100).and_then(|capture| capture.get(1).or_else(|| capture.get(2))) {
+                heads.push((line.start, masked(value), number.start(), number.as_str()));
+            }
         }
     }
-    for starts in running.into_values().filter(|starts| starts.len() >= 3) {
-        result.running_heads.extend(starts);
+    let mut titles = HashMap::<&str, usize>::new();
+    for (_, title, _, _) in &heads { *titles.entry(title.as_str()).or_default() += 1; }
+    let sheet_heads = heads.iter().filter(|(_, title, _, _)| titles[title.as_str()] >= 2)
+        .map(|&(start, _, offset, number)| (start, (offset, number))).collect::<HashMap<_, _>>();
+    for ranges in running.into_values().filter(|ranges| ranges.len() >= 3) {
+        result.running_heads.extend(ranges.iter().map(|(start, _)| *start));
+        result.blocks.extend(ranges.into_iter().map(|(_, range)| furniture(range)));
     }
     let numeric = paragraph_markers(text, false, true);
     let line_by_start = source_lines.iter().enumerate().map(|(index, line)|
@@ -438,6 +471,7 @@ pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a ScalarText<'
         let digits = value[lead..].bytes().take_while(u8::is_ascii_digit).count();
         result.gutter.push(ScalarRange { start: marker.start, end: marker.start + lead + digits });
     }
+    result.blocks.extend(result.gutter.iter().copied().map(furniture));
     let decimal_headings = case_decimal_subheadings(evidence, text, &source_lines, &numeric);
     for scope in monotone_scopes(numeric.iter().filter(|marker| marker.style == MarkerStyle::Dot), 1) {
         if scope.len() < 5 || scope[0].number != 1 || scope[0].start > text.utf16_len() / 5 { continue; }
@@ -479,7 +513,8 @@ pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a ScalarText<'
             let (_, digits) = decimal_prefix(total, 4)?;
             (digits == total.len()).then_some((offset, number))
         });
-        let Some(number) = explicit.map(|(_, number)| number).or_else(|| {
+        let head = sheet_heads.get(&line.start).copied();
+        let Some(number) = explicit.map(|(_, number)| number).or(head.map(|(_, number)| number)).or_else(|| {
             decimal_prefix(number, 4).and_then(|(number, length)|
                 (length == value.trim_matches('-').trim().len()).then_some(number))
         }) else { continue; };
@@ -497,10 +532,12 @@ pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a ScalarText<'
             let stamp = value.starts_with("Case ") && value.contains(" Document ") && value.contains(" Filed ");
             if offset > 0 && (form_feeds.is_empty() || !(footer || stamp && header)) { continue; }
             start = text.utf16_of_byte(line.byte_start + lead + offset);
+        } else if let Some((offset, _)) = head {
+            start = text.utf16_of_byte(line.byte_start + lead + offset);
         }
         let centered = leading_ascii_space(line.text) >= body_indent + 12;
         // Boundary position and a repeated counter support roles; form feeds alone do not.
-        if !(explicit.is_some() || centered || wrapped && (header || footer)) {
+        if !(explicit.is_some() || head.is_some() || centered || wrapped && (header || footer)) {
             continue;
         }
         if !form_feeds.is_empty() && !(header || footer) { continue; }
@@ -511,10 +548,22 @@ pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a ScalarText<'
             after_line: after_line(*line),
             physical,
             header: !form_feeds.is_empty() && header && !footer,
+            head: head.is_some() && explicit.is_none(),
         });
     }
     let page_by_start = pages.iter().map(|page| (page.marker.start, page)).collect::<HashMap<_, _>>();
     let mut accepted_pages = Vec::new();
+    // A page's numbering: a filing stamp's "ecf", a court's own "slip", each opinion of a slip opinion's running heads its own.
+    let page_block = |label: u32, start: usize, end: usize, page: &SourcePageMarker, opinion: usize| {
+        let line = text.slice_utf16(page.line.start..page.line.end).unwrap_or("");
+        let mut block = crate::labelled_node(NodeKind::Page, label.to_string(), start, end);
+        block.marker_range = Some(page.range);
+        block.series = if line.contains(" Document ") && line.contains(" Filed ") { "ecf".to_owned() }
+            else if page.head && opinion > 1 { format!("slip-{opinion}") } else { "slip".to_owned() };
+        block.grammar = Some("furniture".to_owned());
+        block
+    };
+    let mut opinion = 0;
     for header in [false, true] {
         for scope in monotone_scopes(pages.iter().filter(|page| page.header == header).map(|page| &page.marker), 1) {
             if scope.len() < 3 {
@@ -548,9 +597,11 @@ pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a ScalarText<'
                 if held < length && held < 3 { continue; }
                 scope.truncate(held);
             }
+            if scope.iter().any(|marker| page_by_start[&marker.start].head) { opinion += 1; }
             for (position, marker) in scope.iter().enumerate() {
                 let page = page_by_start[&marker.start];
                 result.exclusions.push(page.line);
+                result.blocks.push(furniture(page.line));
                 accepted_pages.push(page);
                 let (start, end) = if form_feeds.is_empty() {
                     let Some(previous) = position.checked_sub(1).map(|index| page_by_start[&scope[index].start]) else {
@@ -558,9 +609,7 @@ pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a ScalarText<'
                         if marker.number != 1 { continue; }
                         let end = page.line.start;
                         if end == 0 { continue; }
-                        let mut block = crate::labelled_node(NodeKind::Page, marker.number.to_string(), 0, end);
-                        block.marker_range = Some(page.range);
-                        result.blocks.push(block);
+                        result.blocks.push(page_block(marker.number, 0, end, page, opinion));
                         continue;
                     };
                     (previous.after_line, page.line.start)
@@ -570,9 +619,7 @@ pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a ScalarText<'
                     (page.physical.start, page.line.start)
                 };
                 if start >= end { continue; }
-                let mut block = crate::labelled_node(NodeKind::Page, marker.number.to_string(), start, end);
-                block.marker_range = Some(page.range);
-                result.blocks.push(block);
+                result.blocks.push(page_block(marker.number, start, end, page, opinion));
             }
         }
     }

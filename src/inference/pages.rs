@@ -174,7 +174,10 @@ pub(super) fn form_feed_pages(evidence: &Evidence, text: &ScalarText<'_>, blocks
             || pages.iter().any(|(page, _, _)| page.start < range.end && range.start < page.end) {
             continue;
         }
-        result.push(crate::labelled_node(NodeKind::Page, label, range.start, range.end));
+        let mut page = crate::labelled_node(NodeKind::Page, label, range.start, range.end);
+        page.series = "sheet".to_owned();
+        page.grammar = Some("break".to_owned());
+        result.push(page);
     }
     result
 }
