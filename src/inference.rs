@@ -10,7 +10,7 @@ macro_rules! cached_regex {
 
 mod paragraphs;
 use paragraphs::*;
-pub(crate) use paragraphs::run_in_heading;
+pub(crate) use paragraphs::{excerpt_run, run_in_heading};
 mod tail;
 use tail::*;
 pub(crate) use tail::closing_line;

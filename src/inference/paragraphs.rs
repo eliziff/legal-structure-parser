@@ -360,12 +360,15 @@ fn rooted_on_author(text: &ScalarText<'_>, chain: &mut Vec<Marker>) {
     }
 }
 
-/// An excerpt of a decision opening mid-count ("[42]", "[43]", an authority's cited pages): where no count reads from
-/// near 1, its bracketed numbers rising in the text's order by one or two (a paragraph the excerpt skips), at least two.
+/// Whether bracketed numbers in the text's order are an excerpt opening mid-count ("[42]", "[43]"): at least two, each
+/// one or two past the last (a paragraph it skips), the first under no introducing colon ("said:" / "[9] …", a quotation).
+pub(crate) fn excerpt_run(numbers: impl IntoIterator<Item = usize>, introduced: bool) -> bool {
+    let numbers = numbers.into_iter().collect::<Vec<_>>();
+    numbers.len() >= 2 && !introduced && numbers.windows(2).all(|pair| (pair[0] + 1..=pair[0] + 2).contains(&pair[1]))
+}
+
+/// Where no count reads from near 1, the longest run of bracketed numbers that is an excerpt's (`excerpt_run`).
 fn excerpt_count(text: &ScalarText<'_>, chain: &mut Vec<Marker>, candidates: &[Marker]) {
-    if candidates.len() < 2 {
-        return;
-    }
     let numbers = candidates.iter().map(|marker| marker.number).collect::<HashSet<_>>();
     if !numbers.iter().any(|number| numbers.contains(&(number + 1)) || numbers.contains(&(number + 2))) {
         return;
@@ -377,8 +380,7 @@ fn excerpt_count(text: &ScalarText<'_>, chain: &mut Vec<Marker>, candidates: &[M
         !citations.iter().any(|span| span.core_range.contains(&start))
     }).cloned().collect::<Vec<_>>();
     sorted.sort_by_key(|marker| marker.start);
-    let mut best: Vec<Marker> = Vec::new();
-    let mut run: Vec<Marker> = Vec::new();
+    let (mut best, mut run) = (Vec::<Marker>::new(), Vec::<Marker>::new());
     for marker in sorted {
         if run.last().is_some_and(|last| !(last.number + 1..=last.number + 2).contains(&marker.number)) {
             run.clear();
@@ -388,7 +390,7 @@ fn excerpt_count(text: &ScalarText<'_>, chain: &mut Vec<Marker>, candidates: &[M
             best.clone_from(&run);
         }
     }
-    if best.len() >= 2 {
+    if excerpt_run(best.iter().map(|marker| marker.number as usize), best.first().is_some_and(|marker| marker.introduced)) {
         *chain = best;
     }
 }

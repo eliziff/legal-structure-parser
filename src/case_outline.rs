@@ -72,19 +72,16 @@ pub(crate) fn judgment_paragraphs(text: &str) -> Vec<(usize, Vec<ScalarRange>)> 
     // paragraph's (a stray "272" among a few low numbers), and a text none of whose numbers do numbers none.
     let numbers: std::collections::BTreeSet<usize> = paragraphs.iter().map(|(number, _)| *number).collect();
     let counted = numbers.iter().copied().filter(|&number| numbers.range(..=number).count() * 5 >= number * 4).max();
-    // A text none of whose numbers count from 1 that prints one run of them, each one or two past the last, is an excerpt
-    // opening mid-count ("[42]", "[43]"): its run is its count. An excerpt brackets its numbers, as the paragraph reader's
-    // excerpt count reads them, and nothing introduces its first (`Marker::introduced`): a run an unnumbered decision
-    // quotes ("deposes:" / "7. THAT …", the chambers judge's "9 I am satisfied …", "said:" / "[9] …") is no count.
+    // A text none of whose numbers count from 1 may be an excerpt opening mid-count (`excerpt_run`): its run is its count.
+    // (A run of bare or stopped numbers an unnumbered decision quotes, "deposes:" / "7. THAT …", is no count.)
     let utf16: Vec<u16> = text.encode_utf16().collect();
     let part = |range: &[u16]| String::from_utf16_lossy(range);
     let excerpt = || {
-        let rising = numbers.iter().zip(numbers.iter().skip(1)).all(|(a, b)| b - a <= 2);
         let starts = paragraphs.iter().filter_map(|(_, ranges)| ranges.first()).map(|range| range.start.min(utf16.len()));
         let blank = |unit: &&u16| char::from_u32(u32::from(**unit)).is_some_and(char::is_whitespace);
         let bracketed = starts.clone().all(|start| utf16[start..].iter().find(|unit| !blank(unit)) == Some(&u16::from(b'[')));
         let introduced = starts.min().is_some_and(|start| utf16[..start].iter().rev().find(|unit| !blank(unit)) == Some(&u16::from(b':')));
-        (numbers.len() >= 2 && rising && bracketed && !introduced).then(|| *numbers.last().expect("two numbers"))
+        (bracketed && crate::inference::excerpt_run(numbers.iter().copied(), introduced)).then(|| *numbers.last().expect("two numbers"))
     };
     let reach = counted.or_else(excerpt).unwrap_or(0);
     paragraphs.retain(|(number, _)| *number <= reach);
