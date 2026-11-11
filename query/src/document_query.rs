@@ -10,7 +10,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{atomic::AtomicBool, OnceLock};
+use std::sync::OnceLock;
 
 mod search;
 mod source_text;
@@ -27,10 +27,6 @@ pub use text_fragment::{
 
 fn regex(pattern: &'static str, cell: &'static OnceLock<Regex>) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("query regex must compile"))
-}
-
-fn regex_parts(parts: &[&str], cell: &'static OnceLock<Regex>) -> &'static Regex {
-    cell.get_or_init(|| Regex::new(&parts.concat()).expect("query regex must compile"))
 }
 
 fn js_regex(pattern: &'static str, cell: &'static OnceLock<Regex>) -> &'static Regex {
@@ -162,6 +158,14 @@ pub struct DocumentTextWindow<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "binding-types", ts(optional))]
     pub range_end_line: Option<usize>,
+}
+
+impl<'a> DocumentTextWindow<'a> {
+    /// A window of no rows over document.
+    fn empty(document: &'a DocumentStructure, status: DocumentTextWindowStatus) -> Self {
+        Self { status, rows: Vec::new(), next_offset: None, next_start_char: None, total_lines: None,
+            document_revision: &document.revision, line_length: None, range_start_line: None, range_end_line: None }
+    }
 }
 
 enum DocumentAddress {
@@ -364,8 +368,8 @@ pub struct DocumentViewer<'a> {
     pub document_revision: &'a str,
 }
 
+#[derive(Default)]
 pub struct DocumentQuery {
-    searched: AtomicBool,
     coordinates: OnceLock<crate::text::ScalarCoordinates>,
     lines: OnceLock<Vec<[usize; 3]>>,
     blocks: OnceLock<Vec<usize>>,
@@ -376,12 +380,6 @@ pub struct DocumentQuery {
     source_page: OnceLock<TextFragmentPage>,
     /// Where the names of legal references end in the document's text (UTF-16, sorted).
     legal_reference_ends: OnceLock<Vec<usize>>,
-}
-
-impl Default for DocumentQuery {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl DocumentQuery {
@@ -408,17 +406,7 @@ impl DocumentQuery {
     }
 
     pub fn new() -> Self {
-        Self {
-            searched: AtomicBool::new(false),
-            coordinates: OnceLock::new(),
-            lines: OnceLock::new(),
-            blocks: OnceLock::new(),
-            search: OnceLock::new(),
-            replay: OnceLock::new(),
-            normalized_fragment_text: OnceLock::new(),
-            source_page: OnceLock::new(),
-            legal_reference_ends: OnceLock::new(),
-        }
+        Self::default()
     }
 
     fn positions<'a>(&'a self, document: &DocumentStructure) -> &'a [usize] {
@@ -483,26 +471,11 @@ impl DocumentQuery {
         let text = document.query_text();
         let text_length = scalar.utf16_len();
         let lines = self.lines(scalar);
-        let empty = |status, total_lines, line_length| DocumentTextWindow {
-            status,
-            rows: Vec::new(),
-            next_offset: None,
-            next_start_char: None,
-            total_lines,
-            document_revision: document.revision.as_str(),
-            line_length,
-            range_start_line: None,
-            range_end_line: None,
-        };
         if offset == 0 {
-            return empty(DocumentTextWindowStatus::InvalidLine, None, None);
+            return DocumentTextWindow::empty(document, DocumentTextWindowStatus::InvalidLine);
         }
         if offset > lines.len() {
-            return empty(
-                DocumentTextWindowStatus::InvalidLine,
-                Some(lines.len()),
-                None,
-            );
+            return DocumentTextWindow { total_lines: Some(lines.len()), ..DocumentTextWindow::empty(document, DocumentTextWindowStatus::InvalidLine) };
         }
 
         let mut line_index = offset - 1;
@@ -512,19 +485,11 @@ impl DocumentQuery {
         let line_start_utf16 = scalar.utf16_at_byte(line_start).unwrap();
         let line_length = scalar.utf16_at_byte(validation_end).unwrap() - line_start_utf16;
         if start_char > line_length {
-            return empty(
-                DocumentTextWindowStatus::InvalidCharacter,
-                None,
-                Some(line_length),
-            );
+            return DocumentTextWindow { line_length: Some(line_length), ..DocumentTextWindow::empty(document, DocumentTextWindowStatus::InvalidCharacter) };
         }
         let requested_utf16 = line_start_utf16 + start_char;
         let Some(requested_byte) = scalar.byte_at_utf16(requested_utf16) else {
-            return empty(
-                DocumentTextWindowStatus::SplitCharacter,
-                None,
-                Some(line_length),
-            );
+            return DocumentTextWindow { line_length: Some(line_length), ..DocumentTextWindow::empty(document, DocumentTextWindowStatus::SplitCharacter) };
         };
 
         let mut rows = Vec::new();
@@ -610,17 +575,7 @@ impl DocumentQuery {
         } else {
             (Some(offset), Some(start_char))
         };
-        DocumentTextWindow {
-            status: DocumentTextWindowStatus::Ready,
-            rows,
-            next_offset,
-            next_start_char,
-            total_lines: None,
-            document_revision: &document.revision,
-            line_length: None,
-            range_start_line: None,
-            range_end_line: None,
-        }
+        DocumentTextWindow { rows, next_offset, next_start_char, ..DocumentTextWindow::empty(document, DocumentTextWindowStatus::Ready) }
     }
 
     pub fn text_range_window<'a>(
@@ -635,17 +590,7 @@ impl DocumentQuery {
         let text = document.query_text();
         let scalar = self.text(document);
         let lines = self.lines(&scalar);
-        let invalid = || DocumentTextWindow {
-            status: DocumentTextWindowStatus::InvalidRange,
-            rows: Vec::new(),
-            next_offset: None,
-            next_start_char: None,
-            total_lines: None,
-            document_revision: &document.revision,
-            line_length: None,
-            range_start_line: None,
-            range_end_line: None,
-        };
+        let invalid = || DocumentTextWindow::empty(document, DocumentTextWindowStatus::InvalidRange);
         if start > end || end > scalar.utf16_len() {
             return invalid();
         }
@@ -1215,11 +1160,7 @@ impl DocumentQuery {
     fn page_address(&self, document: &DocumentStructure, requested: &str) -> DocumentAddressResolution {
         static QUALIFIED: OnceLock<Regex> = OnceLock::new();
         let raw = js_trim(requested);
-        let qualified = regex_parts(
-            &[r"(?iu)^(pdf|printed)", JS_WS, r"*[:=]", JS_WS, r"*(.+)$"],
-            &QUALIFIED,
-        )
-        .captures(raw);
+        let qualified = js_regex(r"(?iu)^(pdf|printed)\s*[:=]\s*(.+)$", &QUALIFIED).captures(raw);
         let wanted = js_trim(qualified.as_ref().map_or(raw, |capture| &capture[2]));
         let pdf = qualified.as_ref().map_or_else(
             || !wanted.is_empty() && wanted.len() <= 6 && wanted.bytes().all(|byte| byte.is_ascii_digit()),
@@ -1511,17 +1452,7 @@ fn parse_address(spec: &str) -> Option<DocumentAddress> {
     if raw.is_empty() {
         return None;
     }
-    if let Some(capture) = regex_parts(
-        &[
-            r"(?iu)^(printed|pdf|page|pg|p)(?-u:\b)",
-            JS_WS,
-            r"*[:.]?",
-            JS_WS,
-            r"*(.+)$",
-        ],
-        &PAGE,
-    )
-    .captures(raw)
+    if let Some(capture) = js_regex(r"(?iu)^(printed|pdf|page|pg|p)(?-u:\b)\s*[:.]?\s*(.+)$", &PAGE).captures(raw)
     {
         let qualifier = capture[1].to_lowercase();
         let value = js_trim(&capture[2]);
@@ -1533,25 +1464,10 @@ fn parse_address(spec: &str) -> Option<DocumentAddress> {
             },
         });
     }
-    if regex_parts(
-        &[
-            r"(?iu)^(?:off|offset)",
-            JS_WS,
-            r"*[:.]?",
-            JS_WS,
-            r"*(\d{1,9})$",
-        ],
-        &OFFSET,
-    )
-    .is_match(raw)
+    if js_regex(r"(?iu)^(?:off|offset)\s*[:.]?\s*(\d{1,9})$", &OFFSET).is_match(raw)
     {
         return Some(DocumentAddress::Offset);
     }
-    let locator = regex_parts(
-        &[r"(?iu)^(?:sec|art|sched)", JS_WS, r"*[:.]", JS_WS, "*"],
-        &SECTION,
-    )
-    .replace(raw, "")
-    .into_owned();
+    let locator = js_regex(r"(?iu)^(?:sec|art|sched)\s*[:.]\s*", &SECTION).replace(raw, "").into_owned();
     Some(DocumentAddress::Section { locator })
 }

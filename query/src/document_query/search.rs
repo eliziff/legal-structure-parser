@@ -4,7 +4,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::{atomic::Ordering, OnceLock};
+use std::sync::OnceLock;
 
 /// A word: a run of letters and digits, an apostrophe inside it.
 pub fn word_regex() -> &'static Regex {
@@ -57,7 +57,7 @@ impl SearchIndex {
                 end: at(found.end()),
             });
             postings
-                .entry(normalized_word_hash(found.as_str()))
+                .entry(word_hash(&found.as_str().to_lowercase()))
                 .or_default()
                 .push((tokens.len() - 1) as u32);
         }
@@ -68,14 +68,6 @@ impl SearchIndex {
 pub(super) fn word_hash(word: &str) -> u64 {
     let mut hash = DefaultHasher::new();
     word.chars().for_each(|character| character.hash(&mut hash));
-    hash.finish()
-}
-
-fn normalized_word_hash(word: &str) -> u64 {
-    let mut hash = DefaultHasher::new();
-    word.chars()
-        .flat_map(char::to_lowercase)
-        .for_each(|character| character.hash(&mut hash));
     hash.finish()
 }
 
@@ -111,13 +103,8 @@ pub(super) struct PhraseSpan {
 }
 
 impl DocumentQuery {
-    pub(super) fn index_with_text(
-        &self,
-        document: &DocumentStructure,
-        _text: &ScalarText<'_>,
-    ) -> &SearchIndex {
-        self.search
-            .get_or_init(|| SearchIndex::new(document.query_text()))
+    pub(super) fn index(&self, document: &DocumentStructure) -> &SearchIndex {
+        self.search.get_or_init(|| SearchIndex::new(document.query_text()))
     }
 
     pub(super) fn phrase_spans_with_text(
@@ -130,19 +117,12 @@ impl DocumentQuery {
         if words.is_empty() {
             return Vec::new();
         }
-        let searched = self.searched.swap(true, Ordering::Relaxed);
-        if !searched
-            && self.search.get().is_none()
-            && options.start.is_none()
-            && options.end.is_none()
-        {
-            return scan_phrase_spans_with_text(document.query_text(), text, words, options);
-        }
-        indexed_phrase_spans(self.index_with_text(document, text), text, words, options)
+        indexed_phrase_spans(self.index(document), text, words, options)
     }
 }
 
-pub(super) fn tokenize_with_scalar(text: &str, scalar: &ScalarText<'_>) -> Vec<DocumentWordSpan> {
+pub fn tokenize_source_text(text: &str) -> Vec<DocumentWordSpan> {
+    let scalar = ScalarText::new(text);
     word_regex()
         .find_iter(text)
         .map(|found| DocumentWordSpan {
@@ -151,10 +131,6 @@ pub(super) fn tokenize_with_scalar(text: &str, scalar: &ScalarText<'_>) -> Vec<D
             end: scalar.utf16_at_byte(found.end()).expect("token boundary"),
         })
         .collect()
-}
-
-pub fn tokenize_source_text(text: &str) -> Vec<DocumentWordSpan> {
-    tokenize_with_scalar(text, &ScalarText::new(text))
 }
 
 pub(super) fn quote_text(value: &str) -> String {
@@ -229,60 +205,6 @@ pub(super) fn indexed_phrase_spans(
             end: last.end,
             first_word: start,
             last_word: start + words.len() - 1,
-        });
-        if spans.len() >= limit {
-            break;
-        }
-    }
-    spans
-}
-
-fn scan_phrase_spans_with_text(
-    text: &str,
-    scalar: &ScalarText<'_>,
-    words: &[String],
-    options: PhraseOptions,
-) -> Vec<PhraseSpan> {
-    let size = words.len();
-    let limit = options.limit.unwrap_or(usize::MAX);
-    let mut ring = vec![("", WordOffset { start: 0, end: 0 }); size];
-    let mut spans = Vec::new();
-    let mut seen = 0;
-    for found in word_regex().find_iter(text) {
-        ring[seen % size] = (
-            found.as_str(),
-            WordOffset {
-                start: scalar.utf16_at_byte(found.start()).expect("token boundary"),
-                end: scalar.utf16_at_byte(found.end()).expect("token boundary"),
-            },
-        );
-        seen += 1;
-        if seen < size
-            || (0..size).any(|offset| {
-                !normalized_word_matches(ring[(seen - size + offset) % size].0, &words[offset])
-            })
-        {
-            continue;
-        }
-        let first = ring[(seen - size) % size].1;
-        let last = ring[(seen - 1) % size].1;
-        if options.start.is_some_and(|start| first.start < start)
-            || options.end.is_some_and(|end| last.start >= end)
-        {
-            continue;
-        }
-        if options.same_line {
-            let start_byte = scalar.byte_at_utf16(first.start).expect("token boundary");
-            let end_byte = scalar.byte_at_utf16(last.end).expect("token boundary");
-            if text[start_byte..end_byte].contains('\n') {
-                continue;
-            }
-        }
-        spans.push(PhraseSpan {
-            start: first.start,
-            end: last.end,
-            first_word: seen - size,
-            last_word: seen - 1,
         });
         if spans.len() >= limit {
             break;

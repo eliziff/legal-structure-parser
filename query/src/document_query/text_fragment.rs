@@ -8,7 +8,6 @@ use super::{js_regex, js_trim, queried_as, DocumentQuery, JS_WS};
 use super::search::{quote_text, PhraseOptions, PhraseSpan};
 use crate::{javascript_whitespace, text::normalize_blank_whitespace, utf16_len};
 use std::rc::Rc;
-use std::sync::atomic::Ordering;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
 
 impl DocumentQuery {
@@ -25,34 +24,8 @@ impl DocumentQuery {
     ) -> TextFragmentPlan {
         let text = self.text(document);
         let source = FragmentText::Document(self, document, &text, page_glues_labels);
-        let base = build_fragment_plan(
-            block_text,
-            source,
-            quotes,
-            pdf,
-            publisher_may_annotate_legal_reference,
-            false,
-            false,
-            page_may_repeat_passages,
-        );
-        if !split_html_source_blocks {
-            return base;
-        }
-        let blocks = build_fragment_plan(
-            block_text,
-            source,
-            quotes,
-            pdf,
-            publisher_may_annotate_legal_reference,
-            true,
-            false,
-            page_may_repeat_passages,
-        );
-        if !blocks.source_safe_complete || crosses_multiple_lettered_breaks(source, &base) {
-            base
-        } else {
-            blocks
-        }
+        plan_in(block_text, source, quotes, pdf, publisher_may_annotate_legal_reference, split_html_source_blocks, false,
+            page_may_repeat_passages)
     }
 
     pub fn range_fragment_plan(
@@ -99,7 +72,6 @@ impl DocumentQuery {
             .collect::<Vec<_>>();
         ScalarRange::normalize_union(&mut ranges);
         let members = ranges;
-        self.searched.store(true, Ordering::Relaxed);
         let words = source.tokens();
         let mut complete = true;
         let mut selections = Vec::new();
@@ -137,9 +109,7 @@ impl DocumentQuery {
         let painted = plan.source_word_intervals.iter().flat_map(|span|
             span.first_word..=span.last_word).collect::<HashSet<_>>();
         plan.source_safe_complete &= required == painted && plan.source_word_intervals.iter().all(|span|
-            members.iter().any(|member| member.start <= span.start && span.end <= member.end)
-                && words.get(span.first_word).is_some_and(|word| word.start == span.start)
-                && words.get(span.last_word).is_some_and(|word| word.end == span.end));
+            members.iter().any(|member| member.start <= span.start && span.end <= member.end));
         Some(plan)
     }
 
@@ -217,7 +187,7 @@ impl<'a> FragmentText<'a> {
 
     fn tokens(self) -> &'a [search::WordOffset] {
         match self {
-            Self::Document(query, document, text, _) => &query.index_with_text(document, text).tokens,
+            Self::Document(query, document, _, _) => &query.index(document).tokens,
             Self::Text(query) => &query.index.tokens,
         }
     }
@@ -1540,9 +1510,6 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         }
     }
 
-    fn line_first_word(&self, word: usize) -> usize {
-        source_line_first_word(self.replay, word)
-    }
 
     /// Whether `piece` opens its paragraph after the printed label its context starts at, so a plan of it is told
     /// apart by that label: a page may print the passage again where the provider's copy does not (a reporter's
@@ -1572,9 +1539,6 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         !self.source_page && has_seam(text)
     }
 
-    fn line_last_word(&self, word: usize) -> usize {
-        source_line_last_word(self.replay, word)
-    }
 
     fn atom_at(&mut self, word: usize) -> Option<LexicalTerm> {
         if let Some(cached) = self.atom_cache.get(&word) {
@@ -1972,8 +1936,8 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         clamp_trailing_context: bool,
     ) -> MaximalCorePiece {
         let words = self.replay.document.tokens();
-        let same_line_first = self.line_first_word(span.first_word);
-        let same_line_last = self.line_last_word(span.last_word);
+        let same_line_first = source_line_first_word(self.replay, span.first_word);
+        let same_line_last = source_line_last_word(self.replay, span.last_word);
         let adjacent_first = if self.split_html_source_blocks {
             let mut first = span.first_word;
             while first > 0 && !self.has_structural_seam(first - 1, first) {
@@ -1981,7 +1945,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             }
             first
         } else if same_line_first > 0 {
-            self.line_first_word(same_line_first - 1)
+            source_line_first_word(self.replay, same_line_first - 1)
         } else {
             same_line_first
         };
@@ -1992,7 +1956,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             }
             last
         } else if same_line_last + 1 < words.len() {
-            self.line_last_word(same_line_last + 1)
+            source_line_last_word(self.replay, same_line_last + 1)
         } else {
             same_line_last
         };
@@ -2106,7 +2070,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                     && piece.first_word > 0
                     && planner.source_furniture(piece.first_word - 1) == Some(FurnitureKind::Label)
                 {
-                    let label = planner.line_first_word(piece.first_word);
+                    let label = source_line_first_word(planner.replay, piece.first_word);
                     let label_prefix = planner.replay.document.slice(
                         planner.replay.document.tokens()[label].start,
                         planner.replay.document.tokens()[piece.first_word].start,
@@ -2143,8 +2107,8 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             return *cached;
         }
         let words = self.replay.document.tokens();
-        let first = self.line_first_word(word);
-        let last = self.line_last_word(word);
+        let first = source_line_first_word(self.replay, word);
+        let last = source_line_last_word(self.replay, word);
         let marker_last = line_start_furniture_last_word(self.replay.document, first, last);
         let line = self
             .replay
@@ -3013,10 +2977,6 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         .map(|directive| self.candidate_for(piece, quote_index, directive))
     }
 
-    fn bare_atomic_replays(&mut self, piece: MaximalCorePiece) -> bool {
-        self.bare_atomic_directive(piece).is_some()
-    }
-
     fn crosses_lossy_pdf_tight_token_seam(&self, piece: MaximalCorePiece) -> bool {
         static ORDINAL_SUFFIX: OnceLock<Regex> = OnceLock::new();
         let words = self.replay.document.tokens();
@@ -3550,7 +3510,7 @@ fn build_selected_fragment_plan(
                     // Its start is read in order: a browser looks for the end only after the start the label finds,
                     // so the end need not be the document's only copy (the headnote repeats it).
                     let (head, tail) = range_pieces?;
-                    let line_first = planner.line_first_word(whole.first_word);
+                    let line_first = source_line_first_word(planner.replay, whole.first_word);
                     let opening = (line_first..whole.first_word)
                         .find(|&word| planner.source_furniture(word) != Some(FurnitureKind::Label))?;
                     if opening == line_first {
@@ -3580,7 +3540,7 @@ fn build_selected_fragment_plan(
                         built.push(planner.candidate_for(whole, quote_index, directive).piece);
                         continue;
                     }
-                    if planner.bare_atomic_replays(whole)
+                    if planner.bare_atomic_directive(whole).is_some()
                         && !planner.crosses_lossy_pdf_tight_token_seam(whole)
                     {
                         built.push(planner.candidate_for(whole, quote_index, directive).piece);
@@ -3634,7 +3594,7 @@ fn build_selected_fragment_plan(
                     desired,
                     &required,
                 ) {
-                    let bare_unique = !pdf || planner.bare_atomic_replays(piece);
+                    let bare_unique = !pdf || planner.bare_atomic_directive(piece).is_some();
                     if !pdf || !planner.crosses_lossy_pdf_tight_token_seam(piece) {
                         if pdf && !bare_unique {
                             risk_words.extend(piece.first_word..=piece.last_word);
@@ -3875,22 +3835,14 @@ pub fn text_fragment_plan(
             .unwrap_or(block_text),
     );
     plan_in(block_text, FragmentText::Text(&document), quotes, pdf, publisher_may_annotate_legal_reference,
-        split_html_source_blocks)
+        split_html_source_blocks, false, false)
 }
 
 /// The plan over a page's own text (`page`, the text a reader shows, as A2AJ Law Web's does): every seam prints as it
 /// does there, so a term may hold one, and a printed label is context like any other word. One directive per block
 /// where that paints the same words.
 pub fn source_text_fragment_plan(block_text: &str, page: &TextFragmentPage, quotes: &[String]) -> TextFragmentPlan {
-    let search = page.search();
-    let source = FragmentText::Text(&search);
-    let base = build_fragment_plan(block_text, source, quotes, false, false, false, true, false);
-    let blocks = build_fragment_plan(block_text, source, quotes, false, false, true, true, false);
-    if !blocks.source_safe_complete || crosses_multiple_lettered_breaks(source, &base) {
-        base
-    } else {
-        blocks
-    }
+    plan_in(block_text, FragmentText::Text(&page.search()), quotes, false, false, true, true, false)
 }
 
 /// text_fragment_plan over a text whose word indexes are already built (`page`), for the plans of many quotations.
@@ -3904,40 +3856,20 @@ pub fn text_fragment_plan_in(
 ) -> TextFragmentPlan {
     let search = page.search();
     plan_in(block_text, FragmentText::Text(&search), quotes, pdf, publisher_may_annotate_legal_reference,
-        split_html_source_blocks)
+        split_html_source_blocks, false, false)
 }
 
-fn plan_in(
-    block_text: &str,
-    source: FragmentText<'_>,
-    quotes: &[String],
-    pdf: bool,
-    publisher_may_annotate_legal_reference: bool,
-    split_html_source_blocks: bool,
-) -> TextFragmentPlan {
-    let base = build_fragment_plan(
-        block_text,
-        source,
-        quotes,
-        pdf,
-        publisher_may_annotate_legal_reference,
-        false,
-        false,
-        false,
-    );
+/// The plan over the whole source, and where `split_html_source_blocks` asks, the plan by the source's blocks in its
+/// place where that one is complete and the whole plan crosses no more than one lettered break.
+fn plan_in(block_text: &str, source: FragmentText<'_>, quotes: &[String], pdf: bool, publisher_may_annotate_legal_reference: bool,
+    split_html_source_blocks: bool, source_page: bool, repeating_page: bool) -> TextFragmentPlan {
+    let build = |blocks: bool| build_fragment_plan(block_text, source, quotes, pdf, publisher_may_annotate_legal_reference, blocks,
+        source_page, repeating_page);
+    let base = build(false);
     if !split_html_source_blocks {
         return base;
     }
-    let blocks = build_fragment_plan(
-        block_text,
-        source,
-        quotes,
-        pdf,
-        publisher_may_annotate_legal_reference,
-        true,
-        false,
-        false,
-    );
+    let blocks = build(true);
     if !blocks.source_safe_complete || crosses_multiple_lettered_breaks(source, &base) {
         base
     } else {
