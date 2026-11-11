@@ -607,7 +607,7 @@ pub struct StandsFor {
     pub citing_level: Option<u8>,
     pub citing_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "binding-types", ts(optional))]
+    #[cfg_attr(feature = "binding-types", ts(optional, type = r#""en" | "fr""#))]
     pub language: Option<String>,
     pub paragraph: Option<i64>,
     pub page_label: Option<String>,

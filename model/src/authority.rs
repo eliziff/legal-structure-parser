@@ -53,6 +53,7 @@ pub struct AuthorityTextUnit {
 pub struct AuthoritySource {
     pub document_id: String,
     pub text_sha256: String,
+    #[cfg_attr(feature = "binding-types", ts(type = r#""source_utf16""#))]
     pub coordinate_space: String,
     pub node_ids: Vec<String>,
     pub line_ids: Vec<String>,
