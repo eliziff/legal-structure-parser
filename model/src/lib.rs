@@ -23,6 +23,7 @@ pub mod document;
 pub mod docx;
 pub mod instrument;
 pub mod opinion;
+pub mod propositions;
 /// Laid-out pages and lines and note pairs, which the document model builds on.
 pub use legal_layout as layout;
 pub use legal_layout::{ScalarRange};

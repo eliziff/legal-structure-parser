@@ -631,6 +631,7 @@ version = "0.1.0"
 dependencies = [
  "legal-layout",
  "legal-text",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

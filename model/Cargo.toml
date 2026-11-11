@@ -16,6 +16,7 @@ binding-types = ["dep:ts-rs", "legal-layout/binding-types"]
 ts-rs = { version = "12", optional = true, features = ["serde-json-impl"] }
 legal-layout = { path = "../layout" }
 legal-text = { workspace = true }
+regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 sha2 = "0.10"
