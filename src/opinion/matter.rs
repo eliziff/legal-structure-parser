@@ -46,11 +46,8 @@ pub(super) fn classed_front(structure: &DocumentStructure, coordinates: &ScalarT
         let class = element.attributes.get("class").map_or("", String::as_str);
         let id = element.attributes.get("id").map_or("", String::as_str);
         let role = match (class, id) {
+            // (A caption's, docket's, date's and court's class is the structure's role already: `courtlistener_source_roles`.)
             ("case_cite", _) => "citation",
-            ("parties", _) => "caption",
-            ("docket", _) => "docket",
-            ("date", _) => "date",
-            ("court", _) => "court",
             (_, "Judge" | "MajorityJudge") => "author",
             (_, "Attorney") if counsel.is_match(&printed) => "counsel",
             _ if prelims.iter().any(|range| range.start <= element.range.start && element.range.end <= range.end) => match front_role(&printed) {

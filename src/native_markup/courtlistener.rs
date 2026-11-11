@@ -2038,73 +2038,6 @@ pub(super) fn native_table_coordinates(structure: &mut DocumentStructure, text_i
     }
 }
 
-pub(super) fn prefer_source_headings(structure: &mut DocumentStructure) {
-    let mut headings = HashMap::new();
-    for node in &structure.nodes {
-        if node.kind == NodeKind::Heading
-            && node.source == Derivation::Native
-            && node.markup_start.is_some()
-            && node.markup_tag.is_some()
-        {
-            let range = structure.query_range(node);
-            unique(&mut headings, (range.start, range.end), Some(node.id.clone()));
-        }
-    }
-    let replacements = structure
-        .nodes
-        .iter()
-        .filter(|node| node.kind == NodeKind::Heading && node.source == Derivation::Heuristic)
-        .filter_map(|node| {
-            let range = structure.query_range(node);
-            let native = headings.get(&(range.start, range.end))?.as_ref()?;
-            Some((node.id.clone(), native.clone()))
-        })
-        .collect::<HashMap<_, _>>();
-    // Resolve exact duplicate inference after IDs are assigned so unrelated
-    // inferred nodes keep their identities. Partial overlaps remain distinct.
-    structure
-        .nodes
-        .retain(|node| !replacements.contains_key(&node.id));
-    for node in &mut structure.nodes {
-        if let Some(native) = node.parent_id.as_ref().and_then(|id| replacements.get(id)) {
-            node.parent_id = Some(native.clone());
-        }
-    }
-}
-
-pub(super) fn prefer_source_note_markers(structure: &mut DocumentStructure) {
-    let mut markers = HashMap::new();
-    for node in &structure.nodes {
-        if node.kind == NodeKind::Footnote
-            && node.source == Derivation::Native
-            && node.markup_start.is_some()
-        {
-            if let Some(marker) = node.marker_range.filter(|range| range.start < range.end) {
-                unique(&mut markers, marker.start, Some(node.id.clone()));
-            }
-        }
-    }
-    let replacements = structure
-        .nodes
-        .iter()
-        .filter(|node| node.kind == NodeKind::Paragraph && node.source == Derivation::Heuristic)
-        .filter_map(|node| {
-            let native = markers.get(&structure.query_range(node).start)?.as_ref()?;
-            Some((node.id.clone(), native.clone()))
-        })
-        .collect::<HashMap<_, _>>();
-    // A declared printed note label is not a guessed paragraph number. Resolve
-    // the conflict after ID assignment without clipping earlier paragraphs.
-    structure
-        .nodes
-        .retain(|node| !replacements.contains_key(&node.id));
-    for node in &mut structure.nodes {
-        if let Some(native) = node.parent_id.as_ref().and_then(|id| replacements.get(id)) {
-            node.parent_id = Some(native.clone());
-        }
-    }
-}
-
 pub(super) fn clip_courtlistener_paragraphs_to_opinions(
     structure: &mut DocumentStructure,
     matched_role_starts: &HashSet<usize>,
@@ -2249,8 +2182,7 @@ pub(super) fn courtlistener_source_roles(structure: &mut DocumentStructure) {
     }
 }
 
-/// A CourtListener rendition's reading after derivation: source headings and notes preferred, notes
-/// paired with their references, and every pass over what the rendition supplies.
+/// A CourtListener rendition's reading after derivation: notes paired with their references, and every pass over what the rendition supplies.
 pub(super) fn finish(
     structure: &mut DocumentStructure,
     note_references: Vec<(String, ScalarRange)>,
@@ -2261,8 +2193,6 @@ pub(super) fn finish(
 ) {
     // The text is fixed through these passes: it is indexed once for all of them.
     let text_index = ScalarCoordinates::new(structure.query_text());
-    prefer_source_headings(structure);
-    prefer_source_note_markers(structure);
     clip_courtlistener_paragraphs_to_opinions(structure, matched_role_starts);
     native_table_coordinates(structure, &text_index);
     let mut references = HashMap::<String, Vec<ScalarRange>>::new();

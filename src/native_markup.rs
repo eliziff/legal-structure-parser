@@ -1741,9 +1741,17 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
     // Where inference reads nothing, in UTF-16 as the CourtListener passes after derivation read it: in the markup's
     // notes no paragraph or heading, and in matter no heading opens in (head matter, a quotation, the parties, or all
     // of a text whose enclosing markup is such matter).
-    let body_exclusions = std::mem::take(&mut rendered.exclusions);
+    let mut body_exclusions = std::mem::take(&mut rendered.exclusions);
+    // A note's printed label the markup declares is the note's, never a paragraph's number inference reads there.
+    if provider.is_courtlistener() {
+        body_exclusions.extend(claims.iter().filter(|node| node.kind == NodeKind::Footnote && node.markup_start.is_some())
+            .filter_map(|node| node.marker_range.filter(|range| range.start < range.end)));
+    }
     let mut heading_exclusions = body_exclusions.clone();
     if provider.is_courtlistener() {
+        // A heading the markup declares is the one heading there: inference reads none again in it.
+        heading_exclusions.extend(claims.iter().filter(|node| node.kind == NodeKind::Heading && node.markup_start.is_some() && node.markup_tag.is_some())
+            .map(|node| node.heading_range.unwrap_or(node.range)));
         heading_exclusions.extend(
             rendered
                 .elements
