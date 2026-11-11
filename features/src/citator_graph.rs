@@ -12,10 +12,10 @@
 //! note-up: the decisions citing it, and the passages, judicial and academic, that say what it stands for.
 //! Offsets and lengths are UTF-16 code units, as Beaver counts them.
 
-use crate::a2aj::{Document, Language, Source, StoreRow, CITATIONS};
+use crate::a2aj::{reporter_pages, Document, Language, Read, Source, StoreRow, CITATIONS, COLUMNS};
 use legal_structure::{
     caselaw_citation_lookup_key, classify_citator_excerpt, pair_numbered_footnotes, provider_text_document_structure,
-    NodeKind, DocumentQuery, ProviderTextInput, ProviderTextSourceKind,
+    NodeKind, DocumentQuery, ProviderTextInput,
 };
 use legal_citations::{Authority, Citation, Form, Options, PinpointKind};
 use regex::Regex;
@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, LazyLock, Mutex};
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 
 pub type GraphResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -132,6 +132,8 @@ struct Case {
     url: Option<String>,
     language: &'static str,
     text: String,
+    /// The store's one reading of the decision, as the engine derives it; none without a citation.
+    input: Option<ProviderTextInput>,
     own: HashSet<String>,
     provider_cited: Vec<String>,
     provider_citing: Vec<String>,
@@ -162,21 +164,7 @@ fn case_edges(case: &Case) -> (Vec<Edge>, u64, u64) {
     let own = total - citations.len() as u64;
     if citations.is_empty() { return (Vec::new(), total, own); }
     // The structure engine's numbered paragraphs, by character range; a citation is in the one holding its start.
-    let paragraphs: Vec<(i64, usize, usize)> = provider_text_document_structure(ProviderTextInput {
-        provider: Some("a2aj".to_owned()),
-        citation: case.citation.clone().unwrap_or_default(),
-        source_kind: ProviderTextSourceKind::Cases,
-        text: case.text.clone(),
-        id: None,
-        url: None,
-        dataset: Some(case.dataset.clone()),
-        name: None,
-        alternate_citation: None,
-        section_map: None,
-        excerpt_of: None,
-        require_report_start: case.dataset.eq_ignore_ascii_case("SCC"),
-        printed_pages: Vec::new(),
-    }).map(|structure| {
+    let paragraphs: Vec<(i64, usize, usize)> = case.input.clone().and_then(|input| provider_text_document_structure(input).ok()).map(|structure| {
         DocumentQuery::new().blocks(&structure, Some(NodeKind::Paragraph))
             .filter(|node| node.parent_id.is_none())
             .filter_map(|node| {
@@ -222,13 +210,10 @@ fn provider_list(document: &Document<StoreRow>, base: &str, language: Language) 
         .collect()).unwrap_or_default())
 }
 
-const CASE_COLUMNS: [&str; 17] = ["dataset", "citation_en", "citation_fr", "citation2_en", "citation2_fr", "name_en",
-    "name_fr", "document_date_en", "document_date_fr", "url_en", "url_fr", "unofficial_text_en", "unofficial_text_fr",
-    "cases_cited_en", "cases_cited_fr", "cases_citing_en", "cases_citing_fr"];
 
 fn build_cases(graph: &Connection, options: &GraphOptions, summary: &mut GraphSummary, started: Instant) -> GraphResult<()> {
     let courts: Vec<String> = options.courts.iter().map(|court| court.trim().to_uppercase()).filter(|court| !court.is_empty()).collect();
-    let query = format!("SELECT id, {} FROM document WHERE doc_type = 'cases'{} ORDER BY dataset, id{}", CASE_COLUMNS.join(", "),
+    let query = format!("SELECT id, {} FROM document WHERE doc_type = 'cases'{} ORDER BY dataset, id{}", COLUMNS.join(", "),
         if courts.is_empty() { String::new() } else { format!(" AND UPPER(dataset) IN ({})", vec!["?"; courts.len()].join(", ")) },
         options.limit.map_or(String::new(), |limit| format!(" LIMIT {limit}")));
     let store_path = options.store.clone();
@@ -246,7 +231,7 @@ fn build_cases(graph: &Connection, options: &GraphOptions, summary: &mut GraphSu
         let (mut seen, mut sequence) = (HashSet::new(), 0);
         while let Some(row) = rows.next()? {
             // Read as the store writes it: an edge's offset is into the store's text.
-            let cells = StoreRow::from_query(row, 1, &CASE_COLUMNS)?;
+            let cells = StoreRow::from_query(row, 1, &COLUMNS)?;
             let document = Document::new(&cells, Source::Store).as_written();
             let language = document.text_language(Language::En)?;
             let Some(body) = document.language_field("unofficial_text", language)? else { counted.lock().unwrap().0 += 1; continue };
@@ -254,13 +239,16 @@ fn build_cases(graph: &Connection, options: &GraphOptions, summary: &mut GraphSu
             let identity = match &url { Some(url) => Some(format!("u:{url}")), None => document.field("citation_en")?.map(|citation| format!("c:{citation}")) };
             if identity.is_some_and(|identity| !seen.insert(identity)) { counted.lock().unwrap().1 += 1; continue; }
             sequence += 1;
+            let store_id: i64 = row.get(0)?;
+            let input = document.read(language, "cases")?
+                .map(|read| Read { printed_pages: reporter_pages(&store_path, store_id, language), ..read }.inputs().0);
             let mut own = HashSet::new();
             for column in CITATIONS {
                 own.extend(document.field(column)?.and_then(|citation| key_of(&citation)));
             }
             let case = Case {
                 sequence,
-                store_id: row.get(0)?,
+                store_id,
                 dataset: document.field("dataset")?.unwrap_or_default(),
                 citation: document.language_field("citation", Language::En)?,
                 name: document.language_field("name", Language::En)?,
@@ -268,6 +256,7 @@ fn build_cases(graph: &Connection, options: &GraphOptions, summary: &mut GraphSu
                 url,
                 language: language.code(),
                 text: body,
+                input,
                 own,
                 provider_cited: provider_list(&document, "cases_cited", language)?,
                 provider_citing: provider_list(&document, "cases_citing", language)?,
@@ -505,26 +494,12 @@ pub fn graph_path(store: &Path) -> PathBuf { store.with_file_name("noteup.sqlite
 
 // ---- Queries -----------------------------------------------------------------------------------------------------
 
-type Stamp = (u64, Option<SystemTime>);
-/// Read-only connections to graphs, kept while their copy of the file is.
-static GRAPHS: Mutex<Vec<(PathBuf, Stamp, Connection)>> = Mutex::new(Vec::new());
+/// Read-only connections to graphs, kept while their copy of the file is: unmapped, as the builder replaces the file.
+static GRAPHS: Mutex<Vec<(PathBuf, crate::a2aj_store::Stamp, Connection)>> = Mutex::new(Vec::new());
 
 /// Runs `work` on a read-only connection to the graph; None where no graph is built.
 fn with_graph<T>(path: &Path, work: impl FnOnce(&Connection) -> GraphResult<T>) -> GraphResult<Option<T>> {
-    let Ok(metadata) = std::fs::metadata(path) else { return Ok(None) };
-    let stamp = (metadata.len(), metadata.modified().ok());
-    let kept = {
-        let mut graphs = GRAPHS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        graphs.retain(|(other, held, _)| other != path || *held == stamp);
-        graphs.iter().position(|(other, ..)| other == path).map(|index| graphs.swap_remove(index).2)
-    };
-    let connection = match kept {
-        Some(connection) => connection,
-        None => Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?,
-    };
-    let result = work(&connection);
-    GRAPHS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push((path.to_owned(), stamp, connection));
-    result.map(Some)
+    crate::a2aj_store::kept(&GRAPHS, path, |path| Ok(crate::a2aj_store::open_read_only(path)?), |connection, _| work(connection))
 }
 
 /// A court's place in the hierarchy, from the citation engine's registry: 5 apex, 4 appellate, 3 superior or

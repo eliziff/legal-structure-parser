@@ -6,7 +6,7 @@ use legal_structure_model::document::{DocumentStructure, NodeKind, StructureNode
 use legal_structure_model::text::{utf16_len, ScalarText};
 use regex::Regex;
 use crate::trim_javascript_whitespace as trim_js;
-use super::{front_lines, in_flow, nodes, paragraphs, reading, spans, squeezed, word_starts, OpinionRecord};
+use super::{front_lines, in_flow, nodes, paragraphs, reading, spans, squeezed, word_key, OpinionRecord};
 use super::headings::notes_title;
 use super::notes::plain_label;
 use super::pages::page_number;
@@ -309,8 +309,7 @@ pub fn quote_miss(structure: &DocumentStructure, target: &'static str, quote: &s
     let bare = TAG.get_or_init(|| Regex::new(r"<[^>]*>").unwrap()).replace_all(quote, " ");
     static ENTITY: OnceLock<Regex> = OnceLock::new();
     let bare = ENTITY.get_or_init(|| Regex::new(r"&#?\w+;").unwrap()).replace_all(&bare, " ");
-    let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
-    let wanted = key(&bare);
+    let wanted = word_key(&bare);
     if wanted.is_empty() {
         return None;
     }
@@ -332,18 +331,18 @@ pub fn quote_miss(structure: &DocumentStructure, target: &'static str, quote: &s
         "note" => nodes(structure, NodeKind::Footnote).any(|note| {
             let body = note.ranges.iter().map(|range| printed(range.start, range.end)).collect::<Vec<_>>().join(" ");
             body.contains(&wanted) || wanted.contains(&body) && !body.is_empty()
-        }) || super::headnotes(structure).any(|(_, _, text)| key(text).contains(&wanted))
+        }) || super::headnotes(structure).any(|(_, _, text)| word_key(text).contains(&wanted))
             || nodes(structure, NodeKind::Footnote).any(|note| plain_label(note.label.as_deref().unwrap_or("")) == wanted.trim_start_matches("footnote ")),
         "heading" => nodes(structure, NodeKind::Heading).any(|heading| {
-            let title = key(&heading.display_value.as_deref().unwrap_or(""));
+            let title = word_key(&heading.display_value.as_deref().unwrap_or(""));
             !title.is_empty() && (title.contains(&wanted) || wanted.contains(&title))
-        }) || front_lines(structure).any(|(role, text)| role == "author" && key(text) == wanted),
+        }) || front_lines(structure).any(|(role, text)| role == "author" && word_key(text) == wanted),
         "paragraph number" => wanted.split(' ').find(|word| word.bytes().all(|byte| byte.is_ascii_digit())).is_none_or(|number| paragraphs(structure).any(|paragraph| paragraph.label.as_deref().as_deref().is_some_and(|printed| printed.trim_matches(['(', ')']) == number))),
         "headnote" => super::headnotes(structure).any(|(_, _, text)| {
-            let text = key(text);
+            let text = word_key(text);
             text.contains(&wanted) || wanted.contains(&text) && !text.is_empty()
         }) || spans(structure, "headnote-mark").next().is_some(),
-        _ => !reading(structure).outcomes.is_empty() || front_lines(structure).any(|(role, text)| role == "disposition" && (key(text).contains(&wanted) || wanted.contains(&key(text)))),
+        _ => !reading(structure).outcomes.is_empty() || front_lines(structure).any(|(role, text)| role == "disposition" && (word_key(text).contains(&wanted) || wanted.contains(&word_key(text)))),
     };
     (!found).then_some(target)
 }

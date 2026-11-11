@@ -706,8 +706,7 @@ fn take_marked_titles(structure: &mut DocumentStructure, kinds: &mut Kinds, pend
         return;
     }
     let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
-    let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
-    let ours = kinds.headings.iter().filter_map(|heading| coordinates.slice_utf16(heading.range.start..heading.range.end)).map(|text| bare_title(&key(text))).collect::<HashSet<_>>();
+    let ours = kinds.headings.iter().filter_map(|heading| coordinates.slice_utf16(heading.range.start..heading.range.end)).map(|text| bare_title(&word_key(text))).collect::<HashSet<_>>();
     let mut wanted = HashMap::<String, Vec<Vec<String>>>::new();
     for title in pending.marked_titles.iter().filter(|title| section_title(title)).map(|title| bare_title(title)).filter(|title| title.len() > 3 && !ours.contains(title)) {
         let words = title.split(' ').map(str::to_owned).collect::<Vec<_>>();
@@ -742,17 +741,16 @@ fn take_marked_titles(structure: &mut DocumentStructure, kinds: &mut Kinds, pend
 /// headings here, "IV." over "Conclusion". Of those not held, the words that stand in this text are titles missed.
 fn witness_headings(structure: &DocumentStructure, kinds: &Kinds, pending: &mut Pending) {
     let Some(witness) = pending.witness.as_mut() else { return };
-    let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
     // A title's paragraph or outline number stays off it here: a rendition may print the mark inside what it marks.
     let unnumbered = |title: String| title.split(' ').skip_while(|word| !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_digit())).collect::<Vec<_>>().join(" ");
-    let keys = kinds.headings.iter().map(|heading| key(&heading.display_value.as_deref().unwrap_or(""))).collect::<Vec<_>>();
+    let keys = kinds.headings.iter().map(|heading| word_key(&heading.display_value.as_deref().unwrap_or(""))).collect::<Vec<_>>();
     let mut ours = keys.iter().map(|title| unnumbered(bare_title(title))).collect::<HashSet<_>>();
     ours.extend(keys.windows(2).map(|pair| unnumbered(bare_title(&format!("{} {}", pair[0], pair[1])))));
     let wanted = pending.marked_titles.iter().filter(|title| section_title(title)).map(|title| unnumbered(bare_title(title))).collect::<HashSet<_>>();
     let mut unheld = wanted.iter().filter(|title| !ours.contains(*title)).collect::<Vec<_>>();
     // In the order of their words, so that one record reads alike on every run.
     unheld.sort_unstable();
-    let text = if unheld.is_empty() { String::new() } else { format!(" {} ", key(&structure.text)) };
+    let text = if unheld.is_empty() { String::new() } else { format!(" {} ", word_key(&structure.text)) };
     witness.titles_not_held = unheld.iter().filter(|title| text.contains(&format!(" {title} "))).map(|title| (*title).clone()).collect();
     witness.heading_witness = [wanted.len() - unheld.len(), witness.titles_not_held.len(), unheld.len() - witness.titles_not_held.len()];
 }
@@ -812,12 +810,8 @@ fn supply_plain_pages(structure: &mut DocumentStructure, kinds: &mut Kinds, plai
     if plain_pages.is_empty() || plain_pages.iter().any(|page| kinds.pages.iter().any(|ours| ours.series == page.series)) {
         return;
     }
-    let shingle = |window: &[(String, usize)]| window.iter().map(|word| word.0.as_str()).collect::<Vec<_>>().join(" ");
     let words = word_starts(&structure.text);
-    let mut index = HashMap::<String, Option<usize>>::new();
-    for (at, window) in words.windows(SHINGLE).enumerate() {
-        index.entry(shingle(window)).and_modify(|place| *place = None).or_insert(Some(at));
-    }
+    let index = shingle_index(&words, SHINGLE);
     let coordinates = ScalarText::with_coordinates(plain, &read.coordinates);
     let places = in_their_order(plain_pages.iter().map(|page| {
         let opening = (0..4).find_map(|short| coordinates.slice_utf16(page.range.start..(page.range.start + 400 - short).min(page.range.end))).unwrap_or("");
@@ -1319,6 +1313,24 @@ fn headnote_numbers(printed: &str) -> Option<Vec<u32>> {
     (!values.is_empty()).then_some(values)
 }
 
+/// A text's words alone, a space between each.
+pub(crate) fn word_key(text: &str) -> String {
+    word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ")
+}
+
+/// A run of words, a space between each.
+fn shingle(window: &[(String, usize)]) -> String {
+    window.iter().map(|word| word.0.as_str()).collect::<Vec<_>>().join(" ")
+}
+
+/// Where each run of `size` words opens, none where the run stands twice or more.
+fn shingle_index(words: &[(String, usize)], size: usize) -> HashMap<String, Option<usize>> {
+    let mut index = HashMap::<String, Option<usize>>::new();
+    for (at, window) in words.windows(size).enumerate() {
+        index.entry(shingle(window)).and_modify(|place| *place = None).or_insert(Some(at));
+    }
+    index
+}
 fn word_starts(text: &str) -> Vec<(String, usize)> {
     let mut words = Vec::new();
     let (mut current, mut start, mut unit) = (String::new(), 0, 0);
@@ -1468,11 +1480,7 @@ fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &m
     if witness || marks.iter().any(|(label, _)| !have.contains_key(label)) || !numbers.is_empty() || !blocks.is_empty() || !schemes.is_empty() {
         let words = word_starts(&structure.text);
         let theirs = word_starts(other.query_text());
-        let shingle = |window: &[(String, usize)]| window.iter().map(|word| word.0.as_str()).collect::<Vec<_>>().join(" ");
-        let mut index = HashMap::<String, Option<usize>>::new();
-        for (at, window) in words.windows(SHINGLE).enumerate() {
-            index.entry(shingle(window)).and_modify(|place| *place = None).or_insert(Some(at));
-        }
+        let index = shingle_index(&words, SHINGLE);
         // The marker's own number is a word of theirs: look just past it.
         let place_of = |start: usize| {
             let first = theirs.partition_point(|word| word.1 < start);
@@ -1544,7 +1552,6 @@ fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &m
             pending.printed_elsewhere.push((named, printed));
         }
     }
-    let key = |text: &str| word_starts(text).into_iter().map(|word| word.0).collect::<Vec<_>>().join(" ");
     // Tagged a heading, or a whole block set apart by centring or emphasis that reads as a title: "ON MOTION FOR REHEARING."
     let set_apart = |node: &StructureNode| node.kind == NodeKind::Paragraph && emphasized_whole(other, node) && { let range = other.query_range(node); theirs_text.slice_utf16(range.start..range.end).is_some_and(|printed| heading_line(printed, true)) };
     let wanted = other.nodes.iter().filter(|node| node.kind == NodeKind::Heading || set_apart(node))
@@ -1556,7 +1563,7 @@ fn supply_from(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &m
     pending.marked_titles.extend(wanted.iter().cloned());
     let mine = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let promoted = kinds.paragraphs.iter().enumerate().filter(|(_, paragraph)| paragraph.label.is_none())
-        .filter(|(_, paragraph)| mine.slice_utf16(paragraph.range.start..paragraph.range.end).is_some_and(|text| wanted.contains(&key(text))))
+        .filter(|(_, paragraph)| mine.slice_utf16(paragraph.range.start..paragraph.range.end).is_some_and(|text| wanted.contains(&word_key(text))))
         .map(|(index, _)| index).collect::<Vec<_>>();
     for index in promoted.into_iter().rev() {
         let paragraph = kinds.paragraphs.remove(index);

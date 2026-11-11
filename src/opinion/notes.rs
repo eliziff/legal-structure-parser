@@ -40,8 +40,7 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds,
     let ours = word_starts(&structure.text);
     let mut ending = HashMap::<String, Option<usize>>::new();
     for (at, window) in ours.windows(SHINGLE).enumerate() {
-        let shingle = window.iter().map(|word| word.0.as_str()).collect::<Vec<_>>().join(" ");
-        ending.entry(shingle).and_modify(|place| *place = None).or_insert(Some(at + SHINGLE - 1));
+        ending.entry(super::shingle(window)).and_modify(|place| *place = None).or_insert(Some(at + SHINGLE - 1));
     }
     let placed = |call: ScalarRange| {
         let before = (0..4).find_map(|short| coordinates.slice_utf16((call.start.saturating_sub(120) + short).min(call.start)..call.start))?;

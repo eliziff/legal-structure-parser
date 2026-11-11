@@ -34,7 +34,7 @@ pub struct ProviderPage {
     pub end: usize,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct ProviderTextInput {
     pub provider: Option<String>,

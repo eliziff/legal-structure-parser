@@ -45,25 +45,36 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Runs `work` on a read-only connection to a store's file (the store, or a file beside it); None where there is no file.
 pub fn with_store<T>(path: &Path, work: impl FnOnce(&Connection, Stamp) -> CoreResult<T>) -> CoreResult<Option<T>> {
+    kept(&CONNECTIONS, path, |path| {
+        let connection = open_read_only(path).map_err(sql)?;
+        // A decision's text runs over many pages: they are read from a mapping of the file, not a call each.
+        connection.execute_batch("PRAGMA mmap_size=2147418112").map_err(sql)?;
+        Ok(connection)
+    }, work)
+}
+
+/// Runs `work` on a read-only connection to a file from `pool`, kept there while its copy of the file is, `open`
+/// opening one where none is; None where there is no file.
+pub(crate) fn kept<T, E>(pool: &Mutex<Vec<(PathBuf, Stamp, Connection)>>, path: &Path, open: impl FnOnce(&Path) -> Result<Connection, E>,
+    work: impl FnOnce(&Connection, Stamp) -> Result<T, E>) -> Result<Option<T>, E> {
     let Some(stamp) = stamp(path) else { return Ok(None) };
     let kept = {
-        let mut connections = lock(&CONNECTIONS);
+        let mut connections = lock(pool);
         connections.retain(|(other, held, _)| other != path || *held == stamp);
         connections.iter().position(|(other, _, _)| other == path).map(|index| connections.swap_remove(index).2)
     };
     let connection = match kept {
         Some(connection) => connection,
-        None => {
-            let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-            let connection = Connection::open_with_flags(path, flags).map_err(sql)?;
-            // A decision's text runs over many pages: they are read from a mapping of the file, not a call each.
-            connection.execute_batch("PRAGMA mmap_size=2147418112").map_err(sql)?;
-            connection
-        }
+        None => open(path)?,
     };
     let result = work(&connection, stamp);
-    lock(&CONNECTIONS).push((path.to_owned(), stamp, connection));
+    lock(pool).push((path.to_owned(), stamp, connection));
     result.map(Some)
+}
+
+/// A read-only connection to a file, as the store and the note-up graph open theirs.
+pub(crate) fn open_read_only(path: &Path) -> rusqlite::Result<Connection> {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
 }
 
 /// The documents derived from a store, kept while JavaScript holds them: an operation's stages ask for the same
