@@ -4,6 +4,7 @@
 
 use crate::reading_order::{document_reading_order, ReadingOrderUnit};
 use serde::{Deserialize, Serialize};
+use legal_structure::utf16_len as utf16;
 use std::collections::HashMap;
 
 /// A unit of a brief as the parsers give it (`AuthorityTextUnit`), the fields read of it.
@@ -46,17 +47,8 @@ pub struct BriefText {
 
 const UNKNOWN_NOTE: u64 = 0xffff_ffff;
 
-fn utf16(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
 fn starts(units: &[BriefUnit]) -> Vec<usize> {
-    let mut offset = 0;
-    units.iter().map(|unit| {
-        let start = offset;
-        offset += utf16(&unit.text) + 2;
-        start
-    }).collect()
+    units.iter().scan(0, |offset, unit| Some(std::mem::replace(offset, *offset + utf16(&unit.text) + 2))).collect()
 }
 
 pub fn brief_text(units: &[BriefUnit]) -> BriefText {

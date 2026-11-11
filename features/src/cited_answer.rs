@@ -11,27 +11,16 @@ pub fn render_cited_blocks(blocks: &[CitedBlock]) -> String {
     for (index, block) in blocks.iter().enumerate() {
         let table = block.text.starts_with('|') && block.text.ends_with('|');
         if index > 0 {
-            out.push_str(if table && blocks[index - 1].text.ends_with('|') {
-                "\n"
-            } else {
-                "\n\n"
-            });
+            out += if table && blocks[index - 1].text.ends_with('|') { "\n" } else { "\n\n" };
         }
         let links = block.citations.join(" ");
         if table {
-            out.push_str(
-                block.text[..block.text.len() - 1]
-                    .trim_end_matches(legal_structure::javascript_whitespace),
-            );
-            out.push(' ');
-            out.push_str(&links.replace('|', "\\|"));
-            out.push_str(" |");
+            let cell = block.text[..block.text.len() - 1].trim_end_matches(legal_structure::javascript_whitespace);
+            out += &format!("{cell} {} |", links.replace('|', "\\|"));
+        } else if links.is_empty() {
+            out += &block.text;
         } else {
-            out.push_str(&block.text);
-            if !links.is_empty() {
-                out.push(' ');
-                out.push_str(&links);
-            }
+            out += &format!("{} {links}", block.text);
         }
     }
     out
