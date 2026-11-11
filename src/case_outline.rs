@@ -73,10 +73,18 @@ pub(crate) fn judgment_paragraphs(text: &str) -> Vec<(usize, Vec<ScalarRange>)> 
     let numbers: std::collections::BTreeSet<usize> = paragraphs.iter().map(|(number, _)| *number).collect();
     let counted = numbers.iter().copied().filter(|&number| numbers.range(..=number).count() * 5 >= number * 4).max();
     // A text none of whose numbers count from 1 that prints one run of them, each one or two past the last, is an excerpt
-    // opening mid-count ("[42]", "[43]"): its run is its count.
+    // opening mid-count ("[42]", "[43]"): its run is its count. An excerpt brackets its numbers, as the paragraph reader's
+    // excerpt count reads them, and nothing introduces its first (`Marker::introduced`): a run an unnumbered decision
+    // quotes ("deposes:" / "7. THAT …", the chambers judge's "9 I am satisfied …", "said:" / "[9] …") is no count.
+    let utf16: Vec<u16> = text.encode_utf16().collect();
+    let part = |range: &[u16]| String::from_utf16_lossy(range);
     let excerpt = || {
         let rising = numbers.iter().zip(numbers.iter().skip(1)).all(|(a, b)| b - a <= 2);
-        (numbers.len() >= 2 && rising).then(|| *numbers.last().expect("two numbers"))
+        let starts = paragraphs.iter().filter_map(|(_, ranges)| ranges.first()).map(|range| range.start.min(utf16.len()));
+        let blank = |unit: &&u16| char::from_u32(u32::from(**unit)).is_some_and(char::is_whitespace);
+        let bracketed = starts.clone().all(|start| utf16[start..].iter().find(|unit| !blank(unit)) == Some(&u16::from(b'[')));
+        let introduced = starts.min().is_some_and(|start| utf16[..start].iter().rev().find(|unit| !blank(unit)) == Some(&u16::from(b':')));
+        (numbers.len() >= 2 && rising && bracketed && !introduced).then(|| *numbers.last().expect("two numbers"))
     };
     let reach = counted.or_else(excerpt).unwrap_or(0);
     paragraphs.retain(|(number, _)| *number <= reach);
@@ -88,8 +96,6 @@ pub(crate) fn judgment_paragraphs(text: &str) -> Vec<(usize, Vec<ScalarRange>)> 
     let mut seen = std::collections::HashSet::new();
     let starts: Vec<usize> = paragraphs.iter().take_while(|(number, _)| seen.insert(*number)).filter_map(|(_, ranges)| ranges.first()).map(|range| range.start).collect();
     if let (Some(&first), Some(&last), true) = (starts.iter().min(), starts.iter().max(), reach <= LIST_NUMBERS) {
-        let utf16: Vec<u16> = text.encode_utf16().collect();
-        let part = |range: &[u16]| String::from_utf16_lossy(range);
         if reasons_go_on(&part(utf16.get(..first).unwrap_or_default()), &part(utf16.get(first..last).unwrap_or_default()), &part(utf16.get(last..).unwrap_or_default())) {
             paragraphs.clear();
         }
