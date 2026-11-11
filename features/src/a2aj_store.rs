@@ -8,8 +8,7 @@ pub use self::lookup::{name_key, Named};
 use crate::AliasGroup;
 type CoreResult<T> = Result<T, String>;
 use crate::a2aj::{
-    self, Answering, Columns, Document, Excerpt, Language, LazyRow, Listing, Metadata, Query, Read,
-    Source, StoreRow,
+    self, Answering, Columns, Document, Excerpt, Language, LazyRow, Listing, Metadata, Query, Read, Source, StoreRow, CITATIONS,
 };
 use legal_structure::{trim_javascript_whitespace as js_trim, DocumentStructure, ProviderTextInput};
 use regex::Regex;
@@ -41,39 +40,24 @@ fn stamp(path: &Path) -> Option<Stamp> {
 static CONNECTIONS: Mutex<Vec<(PathBuf, Stamp, Connection)>> = Mutex::new(Vec::new());
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Runs `work` on a read-only connection to the store; None where there is no store.
-pub fn with_store<T>(
-    path: &Path,
-    work: impl FnOnce(&Connection, Stamp) -> CoreResult<T>,
-) -> CoreResult<Option<T>> {
-    let Some(stamp) = stamp(path) else {
-        return Ok(None);
-    };
+/// Runs `work` on a read-only connection to a store's file (the store, or a file beside it); None where there is no file.
+pub fn with_store<T>(path: &Path, work: impl FnOnce(&Connection, Stamp) -> CoreResult<T>) -> CoreResult<Option<T>> {
+    let Some(stamp) = stamp(path) else { return Ok(None) };
     let kept = {
         let mut connections = lock(&CONNECTIONS);
         connections.retain(|(other, held, _)| other != path || *held == stamp);
-        connections
-            .iter()
-            .position(|(other, _, _)| other == path)
-            .map(|index| connections.swap_remove(index).2)
+        connections.iter().position(|(other, _, _)| other == path).map(|index| connections.swap_remove(index).2)
     };
     let connection = match kept {
         Some(connection) => connection,
         None => {
-            let connection = Connection::open_with_flags(
-                path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )
-            .map_err(sql)?;
+            let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+            let connection = Connection::open_with_flags(path, flags).map_err(sql)?;
             // A decision's text runs over many pages: they are read from a mapping of the file, not a call each.
-            connection
-                .execute_batch("PRAGMA mmap_size=2147418112")
-                .map_err(sql)?;
+            connection.execute_batch("PRAGMA mmap_size=2147418112").map_err(sql)?;
             connection
         }
     };
@@ -99,49 +83,23 @@ fn held<D: Send + Sync + 'static>(kept: &Kept) -> Option<Arc<D>> {
 fn derived<D: Send + Sync + 'static>(key: &(PathBuf, Stamp, String)) -> Option<Found<D>> {
     let cache = lock(&DERIVED);
     let (_, kept) = cache.iter().find(|(other, _)| other == key)?;
-    Some(Found {
-        metadata: kept.metadata.clone(),
-        native: held(&kept.native)?,
-        search: match &kept.search {
-            Some(search) => Some(held(search)?),
-            None => None,
-        },
-    })
+    let search = match &kept.search {
+        Some(search) => Some(held(search)?),
+        None => None,
+    };
+    Some(Found { metadata: kept.metadata.clone(), native: held(&kept.native)?, search })
 }
 
 fn keep<D: Send + Sync + 'static>(key: (PathBuf, Stamp, String), found: &Found<D>) {
-    let kept = |document: &Arc<D>| -> Kept {
-        let document: Arc<dyn Any + Send + Sync> = document.clone();
-        Arc::downgrade(&document)
-    };
+    let kept = |document: &Arc<D>| -> Kept { Arc::downgrade(&(document.clone() as Arc<dyn Any + Send + Sync>)) };
     let mut cache = lock(&DERIVED);
     cache.retain(|(other, kept)| *other != key && kept.native.strong_count() > 0);
-    cache.push((
-        key,
-        Derived {
-            metadata: found.metadata.clone(),
-            native: kept(&found.native),
-            search: found.search.as_ref().map(kept),
-        },
-    ));
+    let derived = Derived { metadata: found.metadata.clone(), native: kept(&found.native), search: found.search.as_ref().map(kept) };
+    cache.push((key, derived));
 }
 
 /// A document's small fields, read with its row: every one but its texts and provisions.
-pub const FIELDS: [&str; 13] = [
-    "doc_type",
-    "dataset",
-    "citation_en",
-    "citation_fr",
-    "citation2_en",
-    "citation2_fr",
-    "name_en",
-    "name_fr",
-    "document_date_en",
-    "document_date_fr",
-    "url_en",
-    "url_fr",
-    "upstream_license",
-];
+const FIELDS: &[&str] = a2aj::COLUMNS.as_slice().split_at(13).0;
 
 /// A document: its metadata, its provisions' document (or its text's, where it has no provisions), and its full text's
 /// document where that is another.
@@ -152,19 +110,13 @@ pub struct Found<D> {
 }
 
 fn derive<D>(input: ProviderTextInput, make: &impl Make<D>) -> CoreResult<Arc<D>> {
-    legal_structure::provider_text_document_structure(input)
-        .map(|structure| Arc::new(make(structure)))
-        .map_err(|error| error.to_string())
+    legal_structure::provider_text_document_structure(input).map(|structure| Arc::new(make(structure))).map_err(|error| error.to_string())
 }
 
 fn readings<D>(read: Read, make: &impl Make<D>) -> CoreResult<Found<D>> {
     let metadata = read.metadata.clone();
     let (native, search) = read.inputs();
-    Ok(Found {
-        native: derive(native, make)?,
-        search: search.map(|search| derive(search, make)).transpose()?,
-        metadata,
-    })
+    Ok(Found { native: derive(native, make)?, search: search.map(|search| derive(search, make)).transpose()?, metadata })
 }
 
 #[derive(Deserialize)]
@@ -179,13 +131,7 @@ pub struct Lookup {
 }
 
 pub fn find(connection: &Connection, lookup: &Lookup) -> CoreResult<Option<i64>> {
-    a2aj_lookup::find(
-        connection,
-        &lookup.citation,
-        lookup.doc_type.as_deref(),
-        lookup.dataset.as_deref(),
-        lookup.source_url.as_deref(),
-    )
+    a2aj_lookup::find(connection, &lookup.citation, lookup.doc_type.as_deref(), lookup.dataset.as_deref(), lookup.source_url.as_deref())
 }
 
 /// The citation of the one decision the store holds under a style of cause, dated in the year asked for, of one of
@@ -195,11 +141,7 @@ pub fn named_case(path: &Path, named: &Named) -> CoreResult<Option<String>> {
     Ok(with_store(path, |connection, _| {
         let mut citations = BTreeSet::new();
         for (_, row) in a2aj_lookup::named_decisions(connection, named)? {
-            citations.extend(
-                Document::new(&row, Source::Store)
-                    .language_field("citation", Language::En)
-                    .map_err(sql)?,
-            );
+            citations.extend(Document::new(&row, Source::Store).language_field("citation", Language::En).map_err(sql)?);
         }
         Ok(one(citations))
     })?
@@ -222,37 +164,19 @@ pub fn named_record(records: &[Value], named: &Named, language: Language) -> Opt
 }
 
 fn one(citations: BTreeSet<String>) -> Option<String> {
-    (citations.len() == 1)
-        .then(|| citations.into_iter().next())
-        .flatten()
+    (citations.len() == 1).then(|| citations.into_iter().next()).flatten()
 }
+
 /// The store's document with an id, derived once while JavaScript holds it.
-fn by_id<D: Send + Sync + 'static>(
-    connection: &Connection,
-    path: &Path,
-    stamp: Stamp,
-    id: i64,
-    language: Language,
-    make: &impl Make<D>,
-) -> CoreResult<Option<Found<D>>> {
+fn by_id<D: Send + Sync + 'static>(connection: &Connection, path: &Path, stamp: Stamp, id: i64, language: Language,
+    make: &impl Make<D>) -> CoreResult<Option<Found<D>>> {
     let key = (path.to_owned(), stamp, format!("{id}\0{}", language.code()));
     if let Some(found) = derived(&key) {
         return Ok(Some(found));
     }
-    let Some(row) = LazyRow::read(connection, id, &FIELDS).map_err(sql)? else {
-        return Ok(None);
-    };
+    let Some(row) = LazyRow::read(connection, id, FIELDS).map_err(sql)? else { return Ok(None) };
     let document = Document::new(&row, Source::Store);
-    let doc_type = a2aj::doc_type(
-        document
-            .field("doc_type")
-            .map_err(sql)?
-            .as_deref()
-            .unwrap_or_default(),
-    );
-    let Some(mut read) = document.read(language, doc_type).map_err(sql)? else {
-        return Ok(None);
-    };
+    let Some(mut read) = document.read(language, document.doc_type().map_err(sql)?).map_err(sql)? else { return Ok(None) };
     read.printed_pages = a2aj::reporter_pages(path, id, read.metadata.language);
     let found = readings(read, make)?;
     keep(key, &found);
@@ -265,37 +189,23 @@ pub fn find_id(path: &Path, lookup: &Lookup) -> CoreResult<Option<i64>> {
 }
 
 /// A document the store holds under a citation.
-pub fn document<D: Send + Sync + 'static>(
-    path: &Path,
-    lookup: &Lookup,
-    make: impl Make<D>,
-) -> CoreResult<Option<Found<D>>> {
+pub fn document<D: Send + Sync + 'static>(path: &Path, lookup: &Lookup, make: impl Make<D>) -> CoreResult<Option<Found<D>>> {
     let language = lookup.language.unwrap_or(Language::En);
     Ok(with_store(path, |connection, stamp| {
-        let Some(id) = find(connection, lookup)? else {
-            return Ok(None);
-        };
+        let Some(id) = find(connection, lookup)? else { return Ok(None) };
         by_id(connection, path, stamp, id, language, &make)
     })?
     .flatten())
 }
 
 /// The store's documents with these ids, of a kind: what experiments sample the store by.
-pub fn documents<D: Send + Sync + 'static>(
-    path: &Path,
-    ids: &[i64],
-    doc_type: &str,
-    language: Language,
-    make: impl Make<D>,
-) -> CoreResult<Option<Vec<(i64, Found<D>)>>> {
+pub fn documents<D: Send + Sync + 'static>(path: &Path, ids: &[i64], doc_type: &str, language: Language, make: impl Make<D>)
+    -> CoreResult<Option<Vec<(i64, Found<D>)>>> {
     with_store(path, |connection, stamp| {
         let mut found = Vec::new();
-        for id in ids {
-            if let Some(document) = by_id(connection, path, stamp, *id, language, &make)?
-                .filter(|found| found.metadata.doc_type == doc_type)
-            {
-                found.push((*id, document));
-            }
+        for &id in ids {
+            let document = by_id(connection, path, stamp, id, language, &make)?;
+            found.extend(document.filter(|found| found.metadata.doc_type == doc_type).map(|document| (id, document)));
         }
         Ok(found)
     })
@@ -303,85 +213,36 @@ pub fn documents<D: Send + Sync + 'static>(
 
 /// One provision of a statute the store holds: None where the store lacks the statute, Some(None) where it lacks the
 /// provision.
-pub fn section<D: Send + Sync + 'static>(
-    path: &Path,
-    lookup: &Lookup,
-    section: &str,
-    excerpt: Excerpt,
-    make: impl Make<D>,
-) -> CoreResult<Option<Option<Arc<D>>>> {
+pub fn section<D: Send + Sync + 'static>(path: &Path, lookup: &Lookup, section: &str, excerpt: Excerpt, make: impl Make<D>)
+    -> CoreResult<Option<Option<Arc<D>>>> {
     let language = lookup.language.unwrap_or(Language::En);
     Ok(with_store(path, |connection, stamp| {
-        let Some(id) = find(connection, lookup)? else {
-            return Ok(None);
-        };
-        let Some(row) = LazyRow::read(connection, id, &FIELDS).map_err(sql)? else {
-            return Ok(None);
-        };
+        let Some(id) = find(connection, lookup)? else { return Ok(None) };
+        let Some(row) = LazyRow::read(connection, id, FIELDS).map_err(sql)? else { return Ok(None) };
         // The store holds the statute where it holds its text, in the language asked for or the other, and citation.
-        let actual = if row
-            .holds(&format!("unofficial_text_{}", language.code()))
-            .map_err(sql)?
-        {
+        let holds = |language: Language| row.holds(&format!("unofficial_text_{}", language.code())).map_err(sql);
+        let actual = if holds(language)? {
             language
-        } else if row
-            .holds(&format!("unofficial_text_{}", language.other().code()))
-            .map_err(sql)?
-        {
+        } else if holds(language.other())? {
             language.other()
         } else {
             return Ok(None);
         };
         let document = Document::new(&row, Source::Store);
-        let doc_type = a2aj::doc_type(
-            document
-                .field("doc_type")
-                .map_err(sql)?
-                .as_deref()
-                .unwrap_or_default(),
-        );
-        let Some(metadata) = document.metadata(actual, doc_type).map_err(sql)? else {
-            return Ok(None);
-        };
-        let text = document
-            .provisions(actual)
-            .map_err(sql)?
-            .and_then(|provisions| provisions.into_iter().find(|(key, _)| key == section))
-            .map(|(_, text)| text)
-            .unwrap_or_default();
+        let Some(metadata) = document.metadata(actual, document.doc_type().map_err(sql)?).map_err(sql)? else { return Ok(None) };
+        let provisions = document.provisions(actual).map_err(sql)?.unwrap_or_default();
+        let text = provisions.into_iter().find(|(key, _)| key == section).map(|(_, text)| text).unwrap_or_default();
         if js_trim(section).is_empty() || js_trim(&text).is_empty() {
             return Ok(Some(None));
         }
-        let key = (
-            path.to_owned(),
-            stamp,
-            serde_json::to_string(&(
-                id,
-                language.code(),
-                section,
-                &excerpt.citation,
-                &excerpt.url,
-                &excerpt.alternate_citation,
-                &excerpt.dataset,
-                &excerpt.name,
-            ))
-            .map_err(|error| error.to_string())?,
-        );
+        let identity = (id, language.code(), section, &excerpt.citation, &excerpt.url, &excerpt.alternate_citation,
+            &excerpt.dataset, &excerpt.name);
+        let key = (path.to_owned(), stamp, serde_json::to_string(&identity).map_err(|error| error.to_string())?);
         if let Some(found) = derived::<D>(&key) {
             return Ok(Some(Some(found.native)));
         }
-        let native = derive(
-            a2aj::provision_input(excerpt, metadata.language, section, text),
-            &make,
-        )?;
-        keep(
-            key,
-            &Found {
-                metadata,
-                native: native.clone(),
-                search: None,
-            },
-        );
+        let native = derive(a2aj::provision_input(excerpt, metadata.language, section, text), &make)?;
+        keep(key, &Found { metadata, native: native.clone(), search: None });
         Ok(Some(Some(native)))
     })?
     .flatten())
@@ -415,20 +276,7 @@ const RANKED_POOL: i64 = 200;
 const CITED_WEIGHT: f64 = 0.1;
 
 /// What a search reads of a document: never its text.
-const SEARCH_COLUMNS: [&str; 12] = [
-    "doc_type",
-    "dataset",
-    "citation_en",
-    "citation_fr",
-    "citation2_en",
-    "citation2_fr",
-    "name_en",
-    "name_fr",
-    "document_date_en",
-    "document_date_fr",
-    "url_en",
-    "url_fr",
-];
+const SEARCH_COLUMNS: &[&str] = FIELDS.split_at(12).0;
 
 /// The store's documents answering a search, as a search lists them; None where there is no store or it has no
 /// full-text indexes. A name search reads the names and citations' own index, every word of a plain query in any
@@ -449,11 +297,7 @@ pub fn search(path: &Path, search: &Search) -> CoreResult<Option<Vec<Listing>>> 
     let names = if search.operators {
         search.expression.clone()
     } else {
-        a2aj::name_words(&search.query)
-            .iter()
-            .map(|word| format!("\"{word}\""))
-            .collect::<Vec<_>>()
-            .join(" ")
+        a2aj::name_words(&search.query).iter().map(|word| format!("\"{word}\"")).collect::<Vec<_>>().join(" ")
     };
     Ok(with_store(path, |connection, _| {
         let mut indexes = connection.prepare_cached(
@@ -505,7 +349,7 @@ pub fn search(path: &Path, search: &Search) -> CoreResult<Option<Vec<Listing>>> 
                 .chain(std::iter::once(Sql::from(pool))).collect();
             let mut statement = connection.prepare_cached(&query).map_err(sql)?;
             let rows = statement.query_map(rusqlite::params_from_iter(bound.iter()), |row| Ok((row.get::<_, i64>(0)?,
-                row.get::<_, f64>(1)?, row.get::<_, Option<i64>>(2)?, StoreRow::from_query(row, 3, &SEARCH_COLUMNS)?))).map_err(sql)?;
+                row.get::<_, f64>(1)?, row.get::<_, Option<i64>>(2)?, StoreRow::from_query(row, 3, SEARCH_COLUMNS)?))).map_err(sql)?;
             let mut rows = rows.collect::<Result<Vec<_>, _>>().map_err(sql)?;
             if ranked {
                 // The index's rank is negative, more negative the better: each citation's log scales it.
@@ -527,9 +371,8 @@ pub fn search(path: &Path, search: &Search) -> CoreResult<Option<Vec<Listing>>> 
         if counted {
             connection.execute_batch("DETACH DATABASE graph").map_err(sql)?;
         }
-        let rows = found?;
         let mut listed = Vec::new();
-        for (_, row) in &rows {
+        for (_, row) in &found? {
             listed.extend(Document::new(row, Source::Store).listing(language).map_err(sql)?);
         }
         Ok(Some(listed))
@@ -552,56 +395,24 @@ pub struct Court {
 /// Every court and jurisdiction in the store, with how many documents each has.
 pub fn courts(path: &Path) -> CoreResult<Option<Vec<Court>>> {
     with_store(path, |connection, _| {
-        let recorded = connection
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE name = 'source_file'",
-                [],
-                |_| Ok(()),
-            )
-            .optional()
-            .map_err(sql)?
-            .is_some();
+        let recorded = connection.query_row("SELECT 1 FROM sqlite_master WHERE name = 'source_file'", [], |_| Ok(()))
+            .optional().map_err(sql)?.is_some();
         let mut files = HashMap::new();
         if recorded {
-            let mut statement = connection
-                .prepare_cached("SELECT doc_type, dataset, sha256, size, revision FROM source_file")
-                .map_err(sql)?;
-            let rows = statement
-                .query_map([], |row| {
-                    Ok((
-                        (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
-                        (
-                            row.get::<_, String>(2)?,
-                            row.get::<_, i64>(3)?,
-                            row.get::<_, String>(4)?,
-                        ),
-                    ))
-                })
-                .map_err(sql)?;
+            let mut statement = connection.prepare_cached("SELECT doc_type, dataset, sha256, size, revision FROM source_file").map_err(sql)?;
+            let rows = statement.query_map([], |row| Ok(((row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+                (row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, String>(4)?)))).map_err(sql)?;
             files = rows.collect::<Result<HashMap<_, _>, _>>().map_err(sql)?;
         }
         let mut statement = connection.prepare_cached(
             "SELECT doc_type, dataset, COUNT(*) AS documents FROM document GROUP BY doc_type, dataset").map_err(sql)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                ))
-            })
+        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)))
             .map_err(sql)?;
         rows.map(|row| {
             let (doc_type, court, documents) = row.map_err(sql)?;
             let file = files.get(&(doc_type.clone(), court.clone()));
-            Ok(Court {
-                doc_type: a2aj::doc_type(&doc_type),
-                court,
-                documents,
-                sha256: file.map(|file| file.0.clone()),
-                size: file.map(|file| file.1),
-                revision: file.map(|file| file.2.clone()),
-            })
+            Ok(Court { doc_type: a2aj::doc_type(&doc_type), court, documents, sha256: file.map(|file| file.0.clone()),
+                size: file.map(|file| file.1), revision: file.map(|file| file.2.clone()) })
         })
         .collect()
     })
@@ -620,64 +431,19 @@ pub struct StoreRead {
 
 /// The documents with these ids, of a kind, each in the language asked for where it has text in it, else in the
 /// other: what experiments read the store's documents by.
-pub fn reads(
-    path: &Path,
-    ids: &[i64],
-    doc_type: &str,
-    language: Language,
-) -> CoreResult<Option<Vec<StoreRead>>> {
-    const COLUMNS: [&str; 17] = [
-        "doc_type",
-        "dataset",
-        "citation_en",
-        "citation_fr",
-        "citation2_en",
-        "citation2_fr",
-        "name_en",
-        "name_fr",
-        "document_date_en",
-        "document_date_fr",
-        "url_en",
-        "url_fr",
-        "unofficial_text_en",
-        "unofficial_text_fr",
-        "unofficial_sections_en",
-        "unofficial_sections_fr",
-        "upstream_license",
-    ];
+pub fn reads(path: &Path, ids: &[i64], doc_type: &str, language: Language) -> CoreResult<Option<Vec<StoreRead>>> {
+    // Its small fields, texts and provisions.
+    const COLUMNS: &[&str] = a2aj::COLUMNS.as_slice().split_at(17).0;
     with_store(path, |connection, _| {
-        let mut statement = connection
-            .prepare_cached(&format!(
-                "SELECT {} FROM document WHERE id = ? AND doc_type = ?",
-                COLUMNS.join(", ")
-            ))
+        let mut statement = connection.prepare_cached(&format!("SELECT {} FROM document WHERE id = ? AND doc_type = ?", COLUMNS.join(", ")))
             .map_err(sql)?;
         let mut found = Vec::new();
-        for id in ids {
-            let Some(row) = statement
-                .query_row(rusqlite::params![id, doc_type], |row| {
-                    StoreRow::from_query(row, 0, &COLUMNS)
-                })
-                .optional()
-                .map_err(sql)?
-            else {
-                continue;
-            };
+        for &id in ids {
+            let row = statement.query_row(rusqlite::params![id, doc_type], |row| StoreRow::from_query(row, 0, COLUMNS));
+            let Some(row) = row.optional().map_err(sql)? else { continue };
             let document = Document::new(&row, Source::Store);
-            let kind = a2aj::doc_type(
-                document
-                    .field("doc_type")
-                    .map_err(sql)?
-                    .as_deref()
-                    .unwrap_or_default(),
-            );
-            if let Some(read) = document.read(language, kind).map_err(sql)? {
-                found.push(StoreRead {
-                    id: *id,
-                    metadata: read.metadata,
-                    text: read.text,
-                    provisions: read.provisions,
-                });
+            if let Some(read) = document.read(language, document.doc_type().map_err(sql)?).map_err(sql)? {
+                found.push(StoreRead { id, metadata: read.metadata, text: read.text, provisions: read.provisions });
             }
         }
         Ok(found)
@@ -685,25 +451,14 @@ pub fn reads(
 }
 
 /// The document an A2AJ API record holds: its metadata and readings, derived once while JavaScript holds them.
-pub fn record<D: Send + Sync + 'static>(
-    record: &Value,
-    language: Language,
-    doc_type: &str,
-    make: impl Make<D>,
-) -> CoreResult<Option<Found<D>>> {
+pub fn record<D: Send + Sync + 'static>(record: &Value, language: Language, doc_type: &str, make: impl Make<D>)
+    -> CoreResult<Option<Found<D>>> {
     use sha2::{Digest, Sha256};
-    let Some(record) = record.as_object() else {
-        return Ok(None);
-    };
+    let Some(record) = record.as_object() else { return Ok(None) };
     let Ok(read) = Document::new(record, Source::Api).read(language, a2aj::doc_type(doc_type));
     let Some(read) = read else { return Ok(None) };
-    let identity = serde_json::to_string(&(&read.metadata, &read.text, &read.provisions))
-        .map_err(|error| error.to_string())?;
-    let key = (
-        PathBuf::new(),
-        (0, None),
-        format!("record\0{:x}", Sha256::digest(identity.as_bytes())),
-    );
+    let identity = serde_json::to_string(&(&read.metadata, &read.text, &read.provisions)).map_err(|error| error.to_string())?;
+    let key = (PathBuf::new(), (0, None), format!("record\0{:x}", Sha256::digest(identity.as_bytes())));
     if let Some(found) = derived(&key) {
         return Ok(Some(found));
     }
@@ -727,51 +482,26 @@ pub struct ProvisionLookup {
 
 /// One provision of a statute, read from the A2AJ API records answering a lookup of it as an excerpt of the statute;
 /// None where no record holds text for it.
-pub fn record_provision<D>(
-    records: &[Value],
-    lookup: &ProvisionLookup,
-    excerpt: Excerpt,
-    make: impl Make<D>,
-) -> CoreResult<Option<Arc<D>>> {
+pub fn record_provision<D>(records: &[Value], lookup: &ProvisionLookup, excerpt: Excerpt, make: impl Make<D>)
+    -> CoreResult<Option<Arc<D>>> {
     let language = lookup.language.unwrap_or(Language::En);
     let doc_type = a2aj::doc_type(lookup.doc_type.as_deref().unwrap_or("cases"));
-    let dataset = lookup
-        .dataset
-        .as_deref()
-        .map(js_trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_lowercase);
-    let candidates = records
-        .iter()
-        .filter_map(Value::as_object)
+    let present = |value: &Option<String>| value.as_deref().map(js_trim).filter(|value| !value.is_empty()).map(str::to_owned);
+    let dataset = present(&lookup.dataset).map(|dataset| dataset.to_lowercase());
+    let mut candidates = records.iter().filter_map(Value::as_object)
         .filter_map(|record| {
             let Ok(read) = Document::new(record, Source::Api).read(language, doc_type);
             read
         })
-        .filter(|read| {
-            dataset
-                .as_ref()
-                .is_none_or(|dataset| read.metadata.dataset.to_lowercase() == *dataset)
-        });
-    let address = lookup
-        .source_url
-        .as_deref()
-        .map(js_trim)
-        .filter(|value| !value.is_empty());
-    let chosen = match address {
-        Some(address) => candidates.into_iter().find(|read| {
-            [&read.metadata.url, &read.metadata.publisher_url]
-                .into_iter()
-                .any(|url| url.as_deref() == Some(address))
-        }),
-        None => candidates.into_iter().next(),
+        .filter(|read| dataset.as_ref().is_none_or(|dataset| read.metadata.dataset.to_lowercase() == *dataset));
+    let chosen = match present(&lookup.source_url) {
+        Some(address) => candidates.find(|read| [&read.metadata.url, &read.metadata.publisher_url].into_iter()
+            .any(|url| url.as_deref() == Some(address.as_str()))),
+        None => candidates.next(),
     };
     let section = js_trim(&lookup.section);
     match chosen {
-        Some(read) if !section.is_empty() => Ok(Some(derive(
-            a2aj::provision_input(excerpt, language, section, read.text),
-            &make,
-        )?)),
+        Some(read) if !section.is_empty() => Ok(Some(derive(a2aj::provision_input(excerpt, language, section, read.text), &make)?)),
         _ => Ok(None),
     }
 }
@@ -784,102 +514,55 @@ pub fn record_listing(record: &Value, language: Language) -> Option<Listing> {
 
 /// The places among A2AJ API records of those that answer a query.
 pub fn record_matches(records: &[Value], query: &Query) -> Vec<usize> {
-    let Some(answering) = Answering::new(query) else {
-        return Vec::new();
-    };
-    records
-        .iter()
-        .enumerate()
-        .filter(|(_, record)| {
-            record.as_object().is_some_and(|record| {
-                let Ok(answers) = Document::new(record, Source::Api).answers(&answering);
-                answers
-            })
-        })
-        .map(|(at, _)| at)
-        .collect()
+    let Some(answering) = Answering::new(query) else { return Vec::new() };
+    let answers = |record: &Value| record.as_object().is_some_and(|record| {
+        let Ok(answers) = Document::new(record, Source::Api).answers(&answering);
+        answers
+    });
+    records.iter().enumerate().filter(|(_, record)| answers(record)).map(|(at, _)| at).collect()
 }
 
 /// A citation's keys for a note-up: every key of the one decision the store holds under it, else its own key.
 pub fn alias_keys(path: &Path, citation: &str) -> CoreResult<Vec<String>> {
     let key = legal_structure::caselaw_citation_lookup_key(citation).map_err(str::to_owned)?;
-    Ok(
-        match alias_groups(path, &[key.clone()])?.into_iter().next() {
-            Some(group) if !group.ambiguous && !group.keys.is_empty() => group.keys,
-            _ => vec![key],
-        },
-    )
+    Ok(match alias_groups(path, &[key.clone()])?.into_iter().next() {
+        Some(group) if !group.ambiguous && !group.keys.is_empty() => group.keys,
+        _ => vec![key],
+    })
 }
 
 /// Each parsed key's exact aliases and authored forms (as the store writes them) in the store's inventory; its own key
 /// alone where no store is installed.
 pub fn alias_groups(path: &Path, keys: &[String]) -> CoreResult<Vec<AliasGroup>> {
-    const FORMS: [&str; 4] = ["citation_en", "citation2_en", "citation_fr", "citation2_fr"];
     let found = with_store(path, |connection, _| {
-        let mut targets = connection
-            .prepare_cached(
-                "SELECT DISTINCT document_id FROM citation_lookup WHERE citation_key = ?",
-            )
-            .map_err(sql)?;
-        let mut aliases = connection
-            .prepare_cached("SELECT citation_key FROM citation_lookup WHERE document_id = ?")
-            .map_err(sql)?;
-        let mut forms = connection
-            .prepare_cached(&format!(
-                "SELECT {} FROM document WHERE id = ?",
-                FORMS.join(", ")
-            ))
-            .map_err(sql)?;
-        keys.iter()
-            .map(|key| {
-                let own = AliasGroup::own(key);
-                let Some(key) = own.keys.first().cloned() else {
-                    return Ok(own);
-                };
-                let ids = targets
-                    .query_map([&key], |row| row.get::<_, i64>(0))
-                    .map_err(sql)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(sql)?;
-                if ids.len() != 1 {
-                    return Ok(AliasGroup {
-                        keys: vec![key],
-                        forms: Vec::new(),
-                        ambiguous: ids.len() > 1,
-                    });
-                }
-                let mut keys = aliases
-                    .query_map([ids[0]], |row| {
-                        row.get_ref(0).map(|value| match value {
-                            ValueRef::Text(bytes) => String::from_utf8_lossy(bytes).into_owned(),
-                            _ => String::new(),
-                        })
-                    })
-                    .map_err(sql)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(sql)?;
-                keys.push(key);
-                // In JavaScript's order: by UTF-16 code units.
-                keys.sort_by(|left, right| left.encode_utf16().cmp(right.encode_utf16()));
-                keys.dedup();
-                let forms = match forms
-                    .query_row([ids[0]], |row| StoreRow::from_query(row, 0, &FORMS))
-                    .optional()
-                    .map_err(sql)?
-                {
-                    Some(row) => a2aj_lookup::fields(
-                        &Document::new(&row, Source::Store).as_written(),
-                        &FORMS,
-                    )?,
-                    None => Vec::new(),
-                };
-                Ok(AliasGroup {
-                    keys,
-                    forms,
-                    ambiguous: false,
-                })
-            })
-            .collect()
+        let mut targets = connection.prepare_cached("SELECT DISTINCT document_id FROM citation_lookup WHERE citation_key = ?").map_err(sql)?;
+        let mut aliases = connection.prepare_cached("SELECT citation_key FROM citation_lookup WHERE document_id = ?").map_err(sql)?;
+        let mut forms = connection.prepare_cached(&format!("SELECT {} FROM document WHERE id = ?", CITATIONS.join(", "))).map_err(sql)?;
+        keys.iter().map(|key| {
+            let own = AliasGroup::own(key);
+            let Some(key) = own.keys.first().cloned() else { return Ok(own) };
+            let ids = targets.query_map([&key], |row| row.get::<_, i64>(0)).and_then(|rows| rows.collect::<Result<Vec<_>, _>>()).map_err(sql)?;
+            if ids.len() != 1 {
+                return Ok(AliasGroup { keys: vec![key], forms: Vec::new(), ambiguous: ids.len() > 1 });
+            }
+            let text = |value: ValueRef| match value {
+                ValueRef::Text(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+                _ => String::new(),
+            };
+            let mut keys = aliases.query_map([ids[0]], |row| row.get_ref(0).map(text))
+                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>()).map_err(sql)?;
+            keys.push(key);
+            // In JavaScript's order: by UTF-16 code units.
+            keys.sort_by(|left, right| left.encode_utf16().cmp(right.encode_utf16()));
+            keys.dedup();
+            let row = forms.query_row([ids[0]], |row| StoreRow::from_query(row, 0, &CITATIONS)).optional().map_err(sql)?;
+            let forms = match row {
+                Some(row) => a2aj_lookup::fields(&Document::new(&row, Source::Store).as_written(), &CITATIONS)?,
+                None => Vec::new(),
+            };
+            Ok(AliasGroup { keys, forms, ambiguous: false })
+        })
+        .collect()
     })?;
     Ok(found.unwrap_or_else(|| keys.iter().map(|key| AliasGroup::own(key)).collect()))
 }

@@ -109,6 +109,9 @@ pub fn doc_type(value: &str) -> &'static str {
     if value == "laws" { "laws" } else { "cases" }
 }
 
+/// A document's citation columns, its own and its alternate in each language.
+pub const CITATIONS: [&str; 4] = ["citation_en", "citation2_en", "citation_fr", "citation2_fr"];
+
 /// A document of A2AJ's as its source gives it.
 pub struct Document<'a, C: ?Sized> {
     columns: &'a C,
@@ -139,6 +142,11 @@ impl<'a, C: Columns + ?Sized> Document<'a, C> {
             Source::Store => value.to_owned(),
             Source::Api => windows_1252_punctuation(value).into_owned(),
         }))
+    }
+
+    /// `cases` or `laws`, as its column names it.
+    pub fn doc_type(&self) -> Result<&'static str, C::Error> {
+        Ok(doc_type(self.field("doc_type")?.as_deref().unwrap_or_default()))
     }
 
     /// A field in a language, else in the other, else unsuffixed.
@@ -290,7 +298,7 @@ impl<'a, C: Columns + ?Sized> Document<'a, C> {
                 return Ok(false);
             }
         }
-        for column in ["citation_en", "citation2_en", "citation_fr", "citation2_fr"] {
+        for column in CITATIONS {
             if self.field(column)?.is_some_and(|own| query.keys.contains(&citation_lookup_key(&own))
                 || query.title.as_ref().is_some_and(|title| normalize_blank_whitespace(&own).to_lowercase() == *title)) {
                 return Ok(true);
@@ -443,35 +451,32 @@ pub fn name_words(text: &str) -> Vec<String> {
 }
 
 #[cfg(feature = "a2aj-store")]
-pub use store::{reporter_pages, LazyRow, StoreRow};
+pub use store::{reporter_pages, LazyRow, StoreRow, COLUMNS};
 
 #[cfg(feature = "a2aj-store")]
 mod store {
     use super::{Columns, Language};
     use legal_structure::{trim_javascript_whitespace as js_trim, ProviderPage};
-    use rusqlite::{types::ValueRef, Connection, OpenFlags, OptionalExtension};
+    use rusqlite::{types::ValueRef, Connection, OptionalExtension};
     use std::borrow::Cow;
     use std::collections::HashMap;
     use std::path::Path;
 
-    /// The store's text columns.
-    const COLUMNS: [&str; 21] = ["doc_type", "dataset", "citation_en", "citation_fr", "citation2_en", "citation2_fr",
-        "name_en", "name_fr", "document_date_en", "document_date_fr", "url_en", "url_fr", "unofficial_text_en",
-        "unofficial_text_fr", "unofficial_sections_en", "unofficial_sections_fr", "cases_cited_en", "cases_cited_fr",
-        "cases_citing_en", "cases_citing_fr", "upstream_license"];
+    /// The store's text columns: a document's small fields first (its license the last of them), then its texts and
+    /// provisions, then its citation lists.
+    pub const COLUMNS: [&str; 21] = ["doc_type", "dataset", "citation_en", "citation_fr", "citation2_en", "citation2_fr",
+        "name_en", "name_fr", "document_date_en", "document_date_fr", "url_en", "url_fr", "upstream_license",
+        "unofficial_text_en", "unofficial_text_fr", "unofficial_sections_en", "unofficial_sections_fr", "cases_cited_en",
+        "cases_cited_fr", "cases_citing_en", "cases_citing_fr"];
 
     /// The pages a report's print gives a document's text, read off its PDF: reporter-pages.sqlite beside the store, a row
     /// (document_id, language, pages) with pages [[number, start, end], ...]. None where the file or the row is absent.
     pub fn reporter_pages(store: &Path, id: i64, language: Language) -> Vec<ProviderPage> {
-        // One connection to each store's file, opened at its first read (a document is read many times a run).
-        static OPEN: std::sync::OnceLock<std::sync::Mutex<HashMap<std::path::PathBuf, Option<Connection>>>> = std::sync::OnceLock::new();
-        let file = store.with_file_name("reporter-pages.sqlite");
-        let mut open = OPEN.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(connection) = open.entry(file.clone())
-            .or_insert_with(|| Connection::open_with_flags(&file, OpenFlags::SQLITE_OPEN_READ_ONLY).ok()) else { return Vec::new() };
-        let pages: Option<String> = connection.prepare_cached("SELECT pages FROM reporter_pages WHERE document_id = ? AND language = ?")
-            .and_then(|mut statement| statement.query_row(rusqlite::params![id, language.code()], |row| row.get(0))).ok();
-        pages.and_then(|pages| serde_json::from_str::<Vec<(i64, usize, usize)>>(&pages).ok()).unwrap_or_default().into_iter()
+        let pages = crate::a2aj_store::with_store(&store.with_file_name("reporter-pages.sqlite"), |connection, _| {
+            Ok(connection.prepare_cached("SELECT pages FROM reporter_pages WHERE document_id = ? AND language = ?")
+                .and_then(|mut statement| statement.query_row(rusqlite::params![id, language.code()], |row| row.get::<_, String>(0))).ok())
+        });
+        pages.ok().flatten().flatten().and_then(|pages| serde_json::from_str::<Vec<(i64, usize, usize)>>(&pages).ok()).unwrap_or_default().into_iter()
             .map(|(number, start, end)| ProviderPage { label: number.to_string(), start, end }).collect()
     }
 

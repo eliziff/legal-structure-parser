@@ -12,7 +12,7 @@
 //! note-up: the decisions citing it, and the passages, judicial and academic, that say what it stands for.
 //! Offsets and lengths are UTF-16 code units, as Beaver counts them.
 
-use crate::a2aj::{Document, Language, Source, StoreRow};
+use crate::a2aj::{Document, Language, Source, StoreRow, CITATIONS};
 use legal_structure::{
     caselaw_citation_lookup_key, classify_citator_excerpt, pair_numbered_footnotes, provider_text_document_structure,
     NodeKind, DocumentQuery, ProviderTextInput, ProviderTextSourceKind,
@@ -255,7 +255,7 @@ fn build_cases(graph: &Connection, options: &GraphOptions, summary: &mut GraphSu
             if identity.is_some_and(|identity| !seen.insert(identity)) { counted.lock().unwrap().1 += 1; continue; }
             sequence += 1;
             let mut own = HashSet::new();
-            for column in ["citation_en", "citation2_en", "citation_fr", "citation2_fr"] {
+            for column in CITATIONS {
                 own.extend(document.field(column)?.and_then(|citation| key_of(&citation)));
             }
             let case = Case {
