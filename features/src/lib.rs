@@ -46,8 +46,10 @@ pub use quote_location::{
 };
 #[cfg(feature = "quote-verification")]
 pub use quote_verification::*;
+#[cfg(feature = "citator")]
 mod brief;
-pub use brief::{brief_citation_order, brief_text, BriefCitation, BriefCitationOrder, BriefText};
+#[cfg(feature = "citator")]
+pub use brief::{brief_authorities, brief_reading, brief_text, BriefAuthorities, BriefReading, BriefSources, BriefText};
 mod propositions;
 pub use propositions::{footnote_propositions, FootnotePropositions, QuoteContext};
 
