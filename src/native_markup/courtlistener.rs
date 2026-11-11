@@ -40,10 +40,11 @@ fn named_elements(elements: &[MarkupElement]) -> HashMap<&str, Option<usize>> {
     named
 }
 
-/// A writing of the opinion's the markup declares: an opinion, its text, a concurrence's or a dissent's, or a block whose
-/// class names one.
-fn declared_writing(element: &MarkupElement) -> bool {
-    ["opinion", "opinion_text", "concurrence_text", "dissent_text"].iter().any(|tag| element.is(tag))
+/// A writing of the opinion's the markup declares: an opinion, any writing's text (CAP's opinion_text, concurrence_text,
+/// dissent_text and the like), or a block whose class names one (Westlaw's co_opinionBlock, LDML's, Decisia's, the opinion class).
+pub(crate) fn declared_writing(element: &MarkupElement) -> bool {
+    element.is("opinion")
+        || element.tag.get(element.tag.len().saturating_sub(5)..).is_some_and(|tail| tail.eq_ignore_ascii_case("_text"))
         || (element.is("div") && element.classes().any(|class| matches!(class, "ldml-opinion" | "de-writing" | "co_opinionBlock")))
         || (["article", "section", "div"].iter().any(|tag| element.is(tag)) && element.has_class("opinion"))
 }
@@ -519,11 +520,14 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
         let mut updates = Vec::new();
         let mut printed_updates = Vec::new();
         let fn_writings = if has_fn_notes {
-            let writing_starts = starts(
-                &["opinion", "opinion_text", "concurrence_text", "dissent_text"],
-                &["co_opinionBlock", "opinion", "ldml-opinion", "de-writing"],
-            );
-            nearest_owners(elements, |element| writing_starts.contains(&element.markup_start))
+            // A writing the markup declares (`declared_writing`) that the reader took as a section.
+            let writing_starts = structure
+                .nodes
+                .iter()
+                .filter(|node| node.source == Derivation::Native && node.kind == NodeKind::Section)
+                .filter_map(|node| node.markup_start)
+                .collect::<HashSet<_>>();
+            nearest_owners(elements, |element| writing_starts.contains(&element.markup_start) && declared_writing(element))
         } else {
             Vec::new()
         };

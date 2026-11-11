@@ -64,8 +64,7 @@ fn previous_page(printed: &str) -> Option<String> {
 /// it in its writing (an opinion part, a Westlaw opinion block, else the text) is page 288. A page a note holds is the note's;
 /// another numbering's page may cover the same text, this numbering's may not.
 pub(super) fn opening_pages(structure: &DocumentStructure, coordinates: &ScalarText, notes: &[ScalarRange], pages: &mut Vec<StructureNode>) {
-    let writings = structure.markup_elements.iter().filter(|element| element.tag == "opinion" || element.tag.ends_with("_text")
-        || element.tag == "div" && element.attributes.get("class").is_some_and(|classes| classes.split_ascii_whitespace().any(|class| class == "co_opinionBlock")))
+    let writings = structure.markup_elements.iter().filter(|element| crate::native_markup::declared_writing(element))
         .map(|element| element.range).collect::<Vec<_>>();
     let writing_of = |at: usize| writings.iter().filter(|writing| writing.start <= at && at < writing.end).map(|writing| writing.start).max().unwrap_or(0);
     let mut firsts = BTreeMap::<(&str, usize), usize>::new();
