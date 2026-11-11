@@ -40,7 +40,8 @@ pub use passage_links::{
 pub use printed_statute::statute_currency;
 #[cfg(feature = "document-query")]
 pub use quote_location::{
-    corrected_quote, editorial_quote, locate_document_quotes, quotation_diff, quote_occurrences, quote_text_comparison, QuotationDiff,
+    character_plan, corrected_quote, editorial_quote, highlight_runs, locate_document_quotes, quotation_diff, quote_occurrences,
+    quote_text_comparison, sequence_opcodes, QuotationDiff,
     verbatim_repair, CitedPinpoint, LocatedQuote, QuoteBlockKind, QuoteBlockLabel, QuoteComparison,
     QuoteLocation, QuoteLocator, QuoteSource, QuoteToLocate,
 };

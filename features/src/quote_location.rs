@@ -304,8 +304,8 @@ fn bracket_suffix_in(quoted: &[String], aliases: &HashMap<String, String>, sourc
     (0..=words.len() - needle.len()).any(|at| words[at..at + needle.len()] == needle[..])
 }
 
-/// Python difflib's matching blocks without junk, as sequence-diff.mjs computes them: the longest common run first,
-/// then each side of it, as (tag, a0, a1, b0, b1).
+/// Python difflib's matching blocks without junk: the longest common run first, then each side of it, as (tag, a0, a1,
+/// b0, b1). The one sequence diff: the quotation diff, Word's tracked corrections and a quotation's character plan read it.
 pub fn sequence_opcodes<T: PartialEq>(left: &[T], right: &[T]) -> Vec<(&'static str, usize, usize, usize, usize)> {
     if left.len().saturating_mul(right.len()) > MAX_SEQUENCE_WORK {
         return vec![("replace", 0, left.len(), 0, right.len())];
@@ -354,6 +354,125 @@ pub fn sequence_opcodes<T: PartialEq>(left: &[T], right: &[T]) -> Vec<(&'static 
         j = next_j + size;
     }
     result
+}
+/// The fewest inserted and deleted UTF-16 units that turn `text` into `target`, as (start, length, replacement) edits in
+/// ascending order: a unit LCS, each gap between matched units one edit. A side longer than 200 units is replaced whole;
+/// equal texts plan nothing. The ALR macro's plan (ALR_Rules.bas ALR_PlanTextEdits, Option Compare Binary): its
+/// tie-breaks, and its units as VBA's Len and Mid$ count them.
+fn minimal_edit_plan(text: &[u16], target: &[u16]) -> Vec<(usize, usize, String)> {
+    if text == target {
+        return Vec::new();
+    }
+    let (a, b) = (text.len(), target.len());
+    if a > 200 || b > 200 {
+        return vec![(0, a, String::from_utf16_lossy(target))];
+    }
+    let width = b + 1;
+    let mut longest = vec![0u32; (a + 1) * width];
+    for i in (0..a).rev() {
+        for j in (0..b).rev() {
+            longest[i * width + j] = if text[i] == target[j] {
+                longest[(i + 1) * width + j + 1] + 1
+            } else {
+                longest[(i + 1) * width + j].max(longest[i * width + j + 1])
+            };
+        }
+    }
+    let mut plan = Vec::new();
+    let (mut i, mut j, mut gap) = (0, 0, None::<(usize, usize)>);
+    while i < a || j < b {
+        if i < a && j < b && text[i] == target[j] {
+            if let Some((from, at)) = gap.take() {
+                plan.push((from, i - from, String::from_utf16_lossy(&target[at..j])));
+            }
+            i += 1;
+            j += 1;
+            continue;
+        }
+        gap.get_or_insert((i, j));
+        if i < a && j < b {
+            if longest[(i + 1) * width + j] >= longest[i * width + j + 1] { i += 1 } else { j += 1 }
+        } else if i < a {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    if let Some((from, at)) = gap {
+        plan.push((from, a - from, String::from_utf16_lossy(&target[at..])));
+    }
+    plan
+}
+
+/// The characters that differ between `text` and `target`, as (start, length, replacement) edits in UTF-16: the ALR
+/// macro's plan, and where that plan replaces a long text whole (its 200-unit cutoff), the character alignment of the
+/// sequence diff, so a highlight still shows which letters differ.
+pub fn character_plan(text: &str, target: &str) -> Vec<(usize, usize, String)> {
+    let units = text.encode_utf16().collect::<Vec<_>>();
+    let plan = minimal_edit_plan(&units, &target.encode_utf16().collect::<Vec<_>>());
+    if !(plan.len() == 1 && plan[0].0 == 0 && plan[0].1 == units.len() && !text.is_empty() && !target.is_empty()) {
+        return plan;
+    }
+    let (left, right) = (text.chars().collect::<Vec<_>>(), target.chars().collect::<Vec<_>>());
+    let offset = |index: usize| left[..index].iter().map(|c| c.len_utf16()).sum::<usize>();
+    sequence_opcodes(&left, &right)
+        .into_iter()
+        .filter(|(tag, ..)| *tag != "equal")
+        .map(|(_, a0, a1, b0, b1)| (offset(a0), offset(a1) - offset(a0), right[b0..b1].iter().collect()))
+        .collect()
+}
+
+/// `text` (at `base`, in UTF-16) as runs (start, end, edited), marking what `plan` changes: the characters an edit removes
+/// or replaces; the characters an edit brackets (an editorial target writes an authored word the source does not have
+/// as "[word]"); and for any other edit that only inserts, the space at that point (a missing word), else the character
+/// after it, or the last character at the text's end. Runs cover `text` in order.
+pub fn highlight_runs(text: &str, plan: &[(usize, usize, String)], base: usize) -> Vec<(usize, usize, bool)> {
+    let units = text.encode_utf16().collect::<Vec<_>>();
+    let length = units.len();
+    let mut edited = vec![false; length];
+    let mut fill = |from: usize, to: usize| {
+        for slot in &mut edited[from.min(length)..to.min(length).max(from.min(length))] {
+            *slot = true;
+        }
+    };
+    let mut edits = plan.iter().collect::<Vec<_>>();
+    edits.sort_by_key(|edit| edit.0);
+    let mut marks = Vec::new();
+    for (index, (start, edit_length, replacement)) in edits.iter().enumerate() {
+        let at = start.saturating_sub(base);
+        if *edit_length > 0 {
+            fill(at, at + edit_length);
+            continue;
+        }
+        let close = replacement.ends_with('[')
+            .then(|| edits[index + 1..].iter().find(|(_, _, text)| text.starts_with(']')))
+            .flatten();
+        if let Some((close, _, _)) = close {
+            fill(at, close.saturating_sub(base));
+            continue;
+        }
+        if replacement.starts_with(']') && edits[..index].iter().any(|(_, _, text)| text.ends_with('[')) {
+            continue;
+        }
+        if length > 0 {
+            let space = at > 0 && at <= length && char::from_u32(u32::from(units[at - 1])).is_some_and(js_space);
+            marks.push(if space { at - 1 } else if at < length { at } else { length - 1 });
+        }
+    }
+    for at in marks {
+        edited[at] = true;
+    }
+    let mut runs = Vec::new();
+    let mut i = 0;
+    while i < length {
+        let mut j = i + 1;
+        while j < length && edited[j] == edited[i] {
+            j += 1;
+        }
+        runs.push((base + i, base + j, edited[i]));
+        i = j;
+    }
+    runs
 }
 fn matched_size<T: PartialEq>(left: &[T], right: &[T]) -> usize {
     sequence_opcodes(left, right).into_iter().filter(|(tag, ..)| *tag == "equal").map(|(_, a0, a1, ..)| a1 - a0).sum()
