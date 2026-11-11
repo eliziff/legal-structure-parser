@@ -47,7 +47,6 @@ mod numeric_sequence;
 mod provider_text;
 mod tables;
 #[cfg(feature = "structure-inference")]
-pub use analysis::STRUCTURE_ANALYSIS;
 #[cfg(feature = "citator")]
 pub use citator::*;
 #[cfg(all(feature = "citator", feature = "document-query"))]
@@ -90,7 +89,7 @@ pub use text::{
 
 pub use legal_structure_model::{
     CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, CandidateRoleV2, DetectionProfile, EngineError,
-    LayoutAnalysis, Origin, ResolutionRuleV2, ScalarRange, Scope, ScopeKind, StructureCandidateRun,
+    Origin, ResolutionRuleV2, ScalarRange, Scope, ScopeKind, StructureCandidateRun,
     StructureMarkerCandidate, UnitRole, DOCUMENT_STRUCTURE_SCHEMA,
 };
 pub const ENGINE_SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_ENGINE_SHA256");

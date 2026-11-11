@@ -42,7 +42,7 @@ pub mod text;
 pub use analysis::{NotePairing, NOTE_PAIRING_ORIGIN};
 pub use assembly::{assemble_in_place, write_levels};
 pub use authority::{AuthoritySource, AuthorityTextUnit, SourceMapping};
-pub use legal_layout::{ablated, CitationSpan, LayoutAnalysis, NumberingMarker, PARTY_ROLES};
+pub use legal_layout::{ablated, CitationSpan, NumberingMarker, PARTY_ROLES};
 pub use definitions::{DefinedTerm, DefinitionOccurrence};
 pub use document::{
     provision_mark, CitedAuthority, Derivation, DocumentStructure, MarkupAncestor, NodeReading,

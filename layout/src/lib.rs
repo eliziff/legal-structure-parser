@@ -5,10 +5,8 @@
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
 
-mod analysis;
 mod measures;
 mod stats;
-pub use analysis::*;
 pub use measures::*;
 pub use stats::*;
 
