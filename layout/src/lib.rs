@@ -32,6 +32,7 @@ pub const PARTY_ROLES: &str = concat!(
 );
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct ScalarRange {
     pub start: usize,
@@ -61,6 +62,7 @@ impl ScalarRange {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct Word {
     pub id: String,
     pub text: String,
@@ -69,13 +71,16 @@ pub struct Word {
     pub end: usize,
     /// A rule is drawn under the word: painted in the PDF, or dark on a recognized page's image.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<bool>", optional))]
     pub underlined: bool,
     /// A rule is drawn through the word, as a blackline strikes deleted text.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<bool>", optional))]
     pub struck: bool,
     /// The word's stroke weight in the page's 300 dpi render, as its line's `weight` is measured;
     /// 0 where not measured. A bold word in a line of plain words (a run-in title) shows here.
     #[serde(default, skip_serializing_if = "is_zero")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<f64>", optional))]
     pub weight: f64,
 }
 
@@ -83,10 +88,13 @@ pub struct Word {
 pub const INVISIBLE: u32 = 32;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct Span {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub mcid: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub structure_role: Option<String>,
     pub id: String,
     pub text: String,
@@ -108,6 +116,7 @@ pub struct Span {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DetachedReference {
     pub note_id: String,
     pub selected_text: String,
@@ -117,6 +126,7 @@ pub struct DetachedReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct OcrMarkerEvidence {
     /// A physical association only; this does not classify a paragraph or note.
     pub body_line_id: Option<String>,
@@ -124,18 +134,23 @@ pub struct OcrMarkerEvidence {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct OcrEvidence {
     pub confidence: f64,
     pub recovered: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<[f64; 2]>>", optional))]
     pub baseline: Vec<[f64; 2]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<[f64; 2]>>", optional))]
     pub boundary: Vec<[f64; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub marker: Option<OcrMarkerEvidence>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct Line {
     pub id: String,
     pub page_index: usize,
@@ -152,20 +167,24 @@ pub struct Line {
     #[serde(default)]
     pub detached_references: Vec<DetachedReference>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub ocr: Option<OcrEvidence>,
     /// The dark share of the line's box in the page's 300 dpi render, where the page was rendered
     /// (a scan whose text layer is kept); 0 where not measured. Weight evidence for a text layer
     /// whose fonts carry no flags.
     #[serde(default, skip_serializing_if = "is_zero")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<f64>", optional))]
     pub ink: f64,
     /// The median horizontal run of dark pixels through the line's box in that render, in units of
     /// the box's height: the stems' thickness, which bold type sets wider; 0 where not measured.
     #[serde(default, skip_serializing_if = "is_zero")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<f64>", optional))]
     pub weight: f64,
     /// The height of the line's capitals and ascenders over its baseline in that render, in points:
     /// its type's size where a recognized page names none (a box's height swings with descenders
     /// and capitals); 0 where not measured.
     #[serde(default, skip_serializing_if = "is_zero")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<f64>", optional))]
     pub cap_height: f64,
     #[serde(default)]
     pub exclude_from_body: bool,
@@ -280,6 +299,7 @@ impl Line {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct Region {
     pub id: String,
     pub page_index: usize,
@@ -291,6 +311,7 @@ pub struct Region {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct Page {
     pub id: String,
     pub index: usize,
@@ -317,6 +338,7 @@ const fn one() -> f64 {
 /// page no text could be read from (OCR_REQUIRED), a column order still uncertain, a note band read from weak geometry,
 /// a note's label or reference left unpaired.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct Diagnostic {
     pub code: String,
     #[serde(default)]
