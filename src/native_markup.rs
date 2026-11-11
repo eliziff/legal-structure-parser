@@ -23,6 +23,7 @@ const ORIGIN: &str = "provider-adapter";
 
 /// The providers whose readers are built in, each by the name its records give: one not built in is no provider.
 #[derive(Clone, Copy, Deserialize, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub(crate) enum DocumentProvider {
     #[cfg(feature = "a2aj")]
     #[serde(rename = "a2aj")]
@@ -89,6 +90,7 @@ impl DocumentProvider {
 }
 
 #[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 enum MarkupSerialization {
     #[default]
@@ -98,6 +100,7 @@ enum MarkupSerialization {
 }
 
 #[derive(Deserialize, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct NativeMarkupScope {
     kind: ScopeKind,
@@ -115,6 +118,7 @@ fn default_scope() -> NativeMarkupScope {
 }
 
 #[derive(Deserialize, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct NativeMarkupInput {
     provider: DocumentProvider,

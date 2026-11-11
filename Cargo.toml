@@ -41,6 +41,8 @@ native-markup = ["structure-inference"]
 # A CourtListener record read whole (`opinion`).
 opinion = ["courtlistener", "native-markup"]
 journal = []
+# The TypeScript declarations of its types the engine serves (native/legal-structure-node's export-types).
+binding-types = ["dep:ts-rs", "legal-structure-model/binding-types", "legal-document-query?/binding-types", "legal-citations?/binding-types"]
 
 [dependencies]
 legal-structure-model = { path = "model" }
@@ -52,6 +54,7 @@ regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 sha2 = "0.10"
+ts-rs = { version = "12", optional = true, features = ["serde-json-impl"] }
 
 [build-dependencies]
 sha2 = "0.10"

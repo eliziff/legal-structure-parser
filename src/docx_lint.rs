@@ -16,6 +16,7 @@ const MAX_FINDINGS: usize = 200;
 const EXCERPT_LENGTH: usize = 160;
 
 #[derive(Clone, Copy, Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DocxLintCode {
     CrossReferenceMissing,
@@ -27,6 +28,7 @@ pub enum DocxLintCode {
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum DocxLintSeverity {
     Error,
@@ -34,6 +36,7 @@ pub enum DocxLintSeverity {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxLintFinding {
     pub code: DocxLintCode,
     pub severity: DocxLintSeverity,
@@ -44,6 +47,7 @@ pub struct DocxLintFinding {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxLintReferenceChecks {
     pub references: usize,
     pub resolved: usize,
@@ -51,22 +55,26 @@ pub struct DocxLintReferenceChecks {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxLintAttachmentChecks {
     pub references: usize,
     pub resolved: usize,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxLintCount {
     pub anchors: usize,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxLintDefinitionCount {
     pub definitions: usize,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxLintChecks {
     pub cross_references: DocxLintReferenceChecks,
     pub attachments: DocxLintAttachmentChecks,
@@ -75,6 +83,7 @@ pub struct DocxLintChecks {
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxLintReport {
     pub paragraphs: usize,
     pub checks: DocxLintChecks,

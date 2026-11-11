@@ -14,6 +14,7 @@ use std::sync::OnceLock;
 const ORIGIN: &str = "provider-adapter";
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderTextSourceKind {
     Cases,
@@ -26,6 +27,7 @@ pub type ProviderSectionMap = Vec<(String, String)>;
 /// A page a printed report gives the text: the number it prints and the stretch of the text it holds, in Unicode scalars
 /// as the store of pages records it.
 #[derive(Clone, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct ProviderPage {
     pub label: String,
     pub start: usize,
@@ -33,6 +35,7 @@ pub struct ProviderPage {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct ProviderTextInput {
     pub provider: Option<String>,
     pub citation: String,

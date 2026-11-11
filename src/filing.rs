@@ -8,6 +8,7 @@ use std::sync::LazyLock;
 
 /// The parties a cover prints under one role.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct PartyGroup {
     /// "Applicant", "Moving Party", "Intervener".
     pub role: String,
@@ -17,16 +18,19 @@ pub struct PartyGroup {
 /// Whose document it is: "of the Applicant" is the role `Applicant` with its article; "of Jane
 /// Smith" is the party as printed.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct FiledBy {
     pub party: String,
     pub article: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FilingCover {
     pub party_groups: Vec<PartyGroup>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub filed_by: Option<FiledBy>,
 }
 

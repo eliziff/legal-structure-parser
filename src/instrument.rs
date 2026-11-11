@@ -188,6 +188,7 @@ fn instrument_lineation_recoveries(text: &str) -> impl Iterator<Item = String> +
 
 #[cfg(feature = "structure-inference")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ProvisionReferenceShape {
     Numeric,
@@ -197,6 +198,7 @@ pub(crate) enum ProvisionReferenceShape {
 
 #[cfg(feature = "structure-inference")]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProvisionReference {
     pub(crate) start: usize,
@@ -210,6 +212,7 @@ pub(crate) struct ProvisionReference {
     pub(crate) alias_key: String,
     pub(crate) external: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub(crate) continuation_of: Option<usize>,
 }
 

@@ -12,6 +12,7 @@ use std::io::BufRead;
 const ORIGIN: &str = "provider-adapter";
 
 #[derive(Clone, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct JournalPageLabel {
     #[serde(rename = "page_label")]
     pub label: String,
@@ -19,6 +20,7 @@ pub struct JournalPageLabel {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 struct Page {
     article_id: Option<Value>,
     text: String,
@@ -30,6 +32,7 @@ struct Page {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 struct PageRegion {
     order: Option<f64>,
     #[serde(rename = "type")]
@@ -41,6 +44,7 @@ struct PageRegion {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 struct PageLine {
     codex_text_order: Option<usize>,
     #[serde(default)]
@@ -48,6 +52,7 @@ struct PageLine {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 struct Annotation {
     pair_id: Option<String>,
     pair_status: Option<String>,

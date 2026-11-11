@@ -45,6 +45,7 @@ const MARKUP: [&str; 6] = ["html_with_citations.html", "xml_harvard.xml", "html_
 
 /// What the engine is asked to read: the record as CourtListener stores it, every rendition with the case's own fields.
 #[derive(Default, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(default)]
 pub struct OpinionRecord {
     pub id: String,
@@ -270,6 +271,7 @@ pub(crate) struct Pending {
 /// What a record's other renditions and texts witness against the reading, for a census over a corpus to tally. No part of
 /// the structure: the product never asks for it (`witnessed_opinion_structure`).
 #[derive(Debug, Default, serde::Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct Witness {
     /// Renditions of this record that hold another opinion's text, and were not read.
     pub other_opinion: Vec<String>,

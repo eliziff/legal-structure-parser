@@ -13,7 +13,9 @@ use paragraphs::*;
 pub(crate) use paragraphs::run_in_heading;
 mod tail;
 use tail::*;
-pub(crate) use tail::{closing_line, ends_sentence};
+pub(crate) use tail::closing_line;
+#[cfg(feature = "opinion")]
+pub(crate) use tail::ends_sentence;
 mod headings;
 pub(crate) use headings::*;
 mod runs;

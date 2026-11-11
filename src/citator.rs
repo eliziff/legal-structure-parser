@@ -6,28 +6,37 @@ pub use legal_citations::excerpt::{classify_citator_excerpt, ExcerptClassificati
 pub use legal_citations as citations;
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct ProviderCitationMatch {
     pub text: String,
     pub start: usize,
     pub end: usize,
     pub family: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub jurisdiction: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub year: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub court: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub number: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub volume: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub reporter: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub page: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CitationTextSpan {
     pub text: String,
@@ -36,6 +45,7 @@ pub struct CitationTextSpan {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CitationPinpoint {
     pub text: String,
@@ -44,10 +54,12 @@ pub struct CitationPinpoint {
     pub kind: &'static str,
     pub first: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub last: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CitationOccurrence {
     pub text: String,
@@ -56,20 +68,25 @@ pub struct CitationOccurrence {
     pub styled_citation: CitationTextSpan,
     pub core_citation: CitationTextSpan,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub format: Option<Format>,
     pub pinpoints: Vec<CitationPinpoint>,
     /// The pinpoints as written, with the words that introduce them: "at para 105".
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub pinpoint_phrase: Option<CitationTextSpan>,
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub short_form: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub explicit_short_form: Option<String>,
     pub reasons: Vec<&'static str>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AuthorityReferenceOccurrence {
     pub text: String,
@@ -78,9 +95,11 @@ pub struct AuthorityReferenceOccurrence {
     pub token: CitationTextSpan,
     pub pinpoints: Vec<CitationPinpoint>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub pinpoint_phrase: Option<CitationTextSpan>,
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub note_number: Option<usize>,
 }
 
@@ -210,6 +229,7 @@ pub fn citation_lookup_key(text: &str) -> String {
 /// year and court. A volume's bracketed year is taken as the decision's: allowing the year before let the 1993 Haig v
 /// Canada name the 1992 one.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct ReporterDecision {
     pub name: String,
     pub year: i32,
