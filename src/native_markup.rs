@@ -1304,9 +1304,7 @@ fn render_markup_in_context<'a>(
         if !self_closing {
             tag_stack.push(tag.clone());
             if provider.is_courtlistener()
-                && (footnote_body
-                    || contains_ascii_word(attribute(&attributes, "class"), "footnotes", true)
-                    || footnote_id(attribute(&attributes, "id")))
+                && (footnote_body || contains_ascii_word(attribute(&attributes, "class"), "footnotes", true))
             {
                 open_excluded.push(OpenRange {
                     tag: tag.clone(),
@@ -1854,9 +1852,10 @@ fn courtlistener_opinion_page_scope(elements: &[MarkupElement], element: &Markup
         .then(|| (owner.range.end, format!("native-markup-{}", owner.markup_start)))
 }
 
-/// An id that names a note: "fn-3", "footnote_2", "fn3", "ftn3". What it names is out of the opinion's paragraphs and
-/// headings on any element; it is a note's body only on a block that can hold one (`courtlistener_footnote_body`), as a
-/// superscript label inside a note may carry the note's own id (`<sup id="fn3">`).
+/// An id that names a note: "fn-3", "footnote_2", "fn3", "ftn3". On a block that holds a note (an aside, div, li or
+/// section, `courtlistener_footnote_body`) it makes the block a note's body, out of the opinion's paragraphs and headings.
+/// On an inline element it says nothing: CourtListener's renditions set such ids on the calls in the opinion's text
+/// (`<sup id="fn3">`, `<a id="fn-3">`), which the call readers read.
 fn footnote_id(id: &str) -> bool {
     static ID: OnceLock<Regex> = OnceLock::new();
     ID.get_or_init(|| Regex::new(r"(?i)^(?:(?:fn|footnote)[_-]|fn\d|ftn\d)").unwrap()).is_match(id)
