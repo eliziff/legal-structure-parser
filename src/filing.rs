@@ -3,11 +3,11 @@
 //! AUTHORITIES OF THE APPLICANT"), and what a front-matter line of a judgment is.
 use crate::trim_javascript_whitespace as trim;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
 /// The parties a cover prints under one role.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct PartyGroup {
     /// "Applicant", "Moving Party", "Intervener".
