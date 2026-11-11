@@ -18,6 +18,8 @@ a2aj-store = ["a2aj-reader", "document-query", "dep:rusqlite"]
 # The note-up graph built from the local A2AJ store (src/citator_graph.rs, the citator-graph bin).
 citator-graph = ["citator", "document-query", "a2aj-store", "structure-inference"]
 quote-verification = ["document-query"]
+# The TypeScript declarations of its types the engine serves (native/legal-structure-node's export-types).
+binding-types = ["dep:ts-rs", "legal-structure/binding-types", "legal-structure-model/binding-types", "legal-document-query?/binding-types", "legal-citations?/binding-types"]
 
 [dependencies]
 legal-structure = { path = "..", default-features = false }
@@ -29,6 +31,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 sha2 = "0.10"
 unicode-normalization = "0.1"
+ts-rs = { version = "12", optional = true, features = ["serde-json-impl"] }
 rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
 url = { version = "2.5", optional = true }
 # A CourtListener page's markup parsed as a browser parses it (courtlistener_page.rs), as legal-citations reads HTML.

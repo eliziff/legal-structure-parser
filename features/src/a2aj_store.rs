@@ -168,6 +168,7 @@ fn readings<D>(read: Read, make: &impl Make<D>) -> CoreResult<Found<D>> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Lookup {
     pub citation: String,
@@ -388,6 +389,7 @@ pub fn section<D: Send + Sync + 'static>(
 
 /// What a search asks of the store. The full-text index's query comes built (searchQuery.ts builds every search's).
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Search {
     query: String,
@@ -535,6 +537,7 @@ pub fn search(path: &Path, search: &Search) -> CoreResult<Option<Vec<Listing>>> 
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Court {
     doc_type: &'static str,
@@ -606,6 +609,7 @@ pub fn courts(path: &Path) -> CoreResult<Option<Vec<Court>>> {
 
 /// A document of the store as the engine reads it, by its id.
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct StoreRead {
     id: i64,
     #[serde(flatten)]
@@ -711,6 +715,7 @@ pub fn record<D: Send + Sync + 'static>(
 /// The records answering a lookup of a statute's provision that one is read from: of the collection asked for, at the
 /// address asked for, else the first.
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProvisionLookup {
     language: Option<Language>,

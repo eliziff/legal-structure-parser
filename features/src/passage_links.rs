@@ -17,6 +17,7 @@ pub use crate::courtlistener_page::{CourtListenerAnchor, CourtListenerCluster, C
 
 /// A PDF of the source a reader may be sent to instead of its page.
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct VerifiedPdf {
     pub url: String,
@@ -25,6 +26,7 @@ pub struct VerifiedPdf {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PassageLinkRequest {
     pub url: String,
@@ -39,6 +41,7 @@ pub struct PassageLinkRequest {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PassageLink {
     pub target: String,
@@ -47,6 +50,7 @@ pub struct PassageLink {
 
 /// A passage of an A2AJ document, for the link it is routed to (`source_link`).
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SourceLinkRequest {
     /// The publisher's page A2AJ names for the document, where it names one.
@@ -75,6 +79,7 @@ pub struct SourceLinkRequest {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct SourceLocator {
     pub kind: String,
     pub label: String,

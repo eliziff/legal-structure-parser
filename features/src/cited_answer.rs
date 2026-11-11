@@ -1,6 +1,7 @@
 //! Presentation of authored text with deterministic, already-planned citations.
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct CitedBlock {
     pub text: String,
     pub citations: Vec<String>,

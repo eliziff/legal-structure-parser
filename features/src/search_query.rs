@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 const NEVER: &str = "__beaver_no_search_match__";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum SearchNode {
     Term { value: String, prefix: bool },
@@ -195,6 +196,7 @@ impl<'a> Parser<'a> {
     }
 }
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct SearchQuery {
     pub node: SearchNode,
     pub valid: bool,

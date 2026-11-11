@@ -198,6 +198,7 @@ pub fn reporter_indexed(connection: &Connection, key: &str) -> Result<bool, Stri
 
 /// A decision asked for by its style of cause, its year and the courts that may have decided it (any where none).
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct Named {
     pub name: String,
     pub year: String,

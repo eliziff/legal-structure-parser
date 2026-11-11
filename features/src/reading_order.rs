@@ -4,6 +4,7 @@ use std::collections::HashMap;
 /// A document unit and positions within it, all using the caller's offset unit.
 /// Positions need not be citations; ordering depends only on document anchors.
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct ReadingOrderUnit {
     pub kind: String,
     pub footnote_id: Option<usize>,

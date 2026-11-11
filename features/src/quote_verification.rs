@@ -18,6 +18,7 @@ const COPY_STOP_WORDS: &str = "a an and are as at be but by for from has have if
 static CONTENT: OnceLock<Regex> = OnceLock::new();
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct VisibleEvidenceText {
     pub evidence_id: String,
@@ -37,6 +38,7 @@ struct MarkedQuote {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct MarkedQuoteSpan {
     pub text: String,
     pub start: usize,

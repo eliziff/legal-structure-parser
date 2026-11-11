@@ -937,6 +937,7 @@ impl Reader {
 }
 
 #[derive(Clone, Copy, Serialize, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum QuoteBlockKind {
     Paragraph,
@@ -956,6 +957,7 @@ impl QuoteBlockKind {
 /// Where a quotation was found: a block's kind and the label it prints ("12" of a paragraph or a page, "3–5" of a run
 /// of them, "5(2)" of a provision).
 #[derive(Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct QuoteBlockLabel {
     pub kind: QuoteBlockKind,
     pub label: String,
@@ -982,6 +984,7 @@ impl QuoteBlockLabel {
 /// How a source's locators are read: a provider's text by every block its structure labels; a PDF by what it prints,
 /// its numbered paragraphs, provisions and page numbers; a statute's PDF likewise, its provisions the parse's sections.
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum QuoteSource {
     Text,
@@ -1143,6 +1146,7 @@ impl Scopes {
 /// A pinpoint of the citation a quotation is for, as the citation engine read it: its kind ("paragraph", "page",
 /// "section") and its first locator and the last of a range.
 #[derive(Clone, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct CitedPinpoint {
     pub kind: String,
     #[serde(default)]
@@ -1152,6 +1156,7 @@ pub struct CitedPinpoint {
 }
 
 #[derive(Clone, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct QuoteToLocate {
     pub quote: String,
     #[serde(default)]
@@ -1164,6 +1169,7 @@ pub struct QuoteToLocate {
 /// A located quotation's part in the passage it was found in: the region of the passage, the source's words for the
 /// quotation, and the quotation corrected to them.
 #[derive(Serialize, Default)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct QuoteCorrection {
     pub region: String,
@@ -1172,6 +1178,7 @@ pub struct QuoteCorrection {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct CitedPartialMatch {
     pub score: f64,
@@ -1184,6 +1191,7 @@ pub struct CitedPartialMatch {
 /// Where a quotation is in its source: `location` is "unmatched" where it is not found. `perfect`: found word for
 /// word where the citation sends a reader.
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct QuoteLocation {
     pub location: String,
@@ -1201,6 +1209,7 @@ pub struct QuoteLocation {
 
 /// A quotation's place in its source and how its words differ from the source's there.
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct LocatedQuote {
     #[serde(rename = "match")]
     pub found: QuoteLocation,
@@ -1745,11 +1754,13 @@ pub fn quote_occurrences(text: &str, quote: &str) -> usize {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DiffPiece {
     pub text: String,
     pub changed: bool,
 }
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DiffChange {
     pub before: String,
     pub after: String,
@@ -1757,6 +1768,7 @@ pub struct DiffChange {
 /// An authored quotation and the source's words set side by side: each in pieces, those the other lacks changed, and
 /// each change's words before and after.
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct QuotationDiff {
     pub authored: Vec<DiffPiece>,
     pub source: Vec<DiffPiece>,
@@ -1983,12 +1995,14 @@ fn verbatim_repair_in(authored: &str, source: &str, words: &SourceWords) -> Opti
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct QuoteComparisonMatch {
     pub start: usize,
     pub end: usize,
     pub text: String,
 }
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct QuoteChange {
     pub kind: &'static str,
     pub authored: String,
@@ -1997,6 +2011,7 @@ pub struct QuoteChange {
 /// Where the quotation's words are in the source (UTF-16 offsets), the source passage it is compared with
 /// (`candidateOnly`: a close passage, not the quoted words found), the quotation rewritten to it, and what differs.
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct QuoteComparison {
     pub matches: Vec<QuoteComparisonMatch>,

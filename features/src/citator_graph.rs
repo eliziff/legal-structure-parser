@@ -50,6 +50,7 @@ pub struct GraphOptions {
 
 /// What a build read and wrote; also the graph's `meta` table.
 #[derive(Default, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct GraphSummary {
     pub cases_indexed: u64,
     pub rows_skipped_no_text: u64,
@@ -546,6 +547,7 @@ pub fn court_level(code: &str) -> Option<u8> {
 }
 
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NoteUpRequest {
     pub citation: String,
@@ -560,6 +562,7 @@ pub struct NoteUpRequest {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NoteUpEntry {
     pub citation: Option<String>,
@@ -578,6 +581,7 @@ pub struct NoteUpEntry {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderCiting {
     pub citing_in_corpus: i64,
@@ -585,6 +589,7 @@ pub struct ProviderCiting {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StandsFor {
     pub source_kind: &'static str,
@@ -597,6 +602,7 @@ pub struct StandsFor {
     pub citing_level: Option<u8>,
     pub citing_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub language: Option<String>,
     pub paragraph: Option<i64>,
     pub page_label: Option<String>,
@@ -608,6 +614,7 @@ pub struct StandsFor {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NoteUp {
     /// Every citing decision matched, not just the page returned.
@@ -750,6 +757,7 @@ pub fn note_up(store: &Path, request: &NoteUpRequest) -> GraphResult<Option<Note
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AuthorityMetric {
     pub citing_cases: i64,

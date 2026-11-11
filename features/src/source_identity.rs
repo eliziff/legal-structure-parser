@@ -2,6 +2,7 @@ use serde::Serialize;
 
 /// The exact lookup keys and authored forms of one source in a store's inventory.
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct AliasGroup {
     pub keys: Vec<String>,
     pub forms: Vec<String>,

@@ -7,6 +7,7 @@ use legal_structure::{
 use serde::Serialize;
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OutlineEntry {
     /// The node's kind ("heading", "section", "paragraph", "prose", "list_item", "quote", or "span", a line of the front
@@ -16,22 +17,28 @@ pub struct OutlineEntry {
     level: usize,
     /// Its number or enumerator as printed: "[12]", "(2)", "PART XXIII", "IV.".
     #[serde(skip_serializing_if = "String::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<String>", optional))]
     label: String,
     /// A heading's words; a provision's marginal note.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     title: Option<String>,
     /// Its own words, up to the first entry under it, without the source's emphasis marks: a line to each paragraph.
     #[serde(skip_serializing_if = "String::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<String>", optional))]
     text: String,
     /// Its span in the document's query text; a provision's opens with its marginal note.
     start: usize,
     end: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     role: Option<PrimaryRole>,
     /// A provision's kind as its marker reads it: "section", "part", "schedule", ...
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     locator: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     page_index: Option<usize>,
 }
 

@@ -11,6 +11,7 @@ use std::sync::LazyLock;
 
 /// A unit of a brief: its body text or a note's, with the calls of notes it holds (note id, UTF-16 offset).
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct PropositionUnit {
     pub id: String,
@@ -23,6 +24,7 @@ pub struct PropositionUnit {
 
 /// How much of the text a note's proposition is.
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum QuoteContext {
     Passage,
@@ -30,6 +32,7 @@ pub enum QuoteContext {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct PropositionPart {
     /// The unit's place among those given, and the part of its text the proposition holds.
     pub unit: usize,
@@ -38,6 +41,7 @@ pub struct PropositionPart {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Proposition {
     pub footnote_id: u64,
@@ -50,6 +54,7 @@ pub struct Proposition {
 /// The body text's propositions, where each body unit starts in it (its units in order, each followed by a line
 /// break; none for a note's unit), and every call of a note in it by where it stands.
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FootnotePropositions {
     pub propositions: Vec<Proposition>,

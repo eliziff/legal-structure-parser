@@ -60,6 +60,7 @@ pub struct CourtListenerCluster {
 /// matter, `attorneys`...), `note` (a footnote) or `call` (a note's call); `at` a byte of the page's text. `unique`: the
 /// page prints that id once.
 #[derive(Clone, Debug, serde::Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct CourtListenerAnchor {
     pub id: String,
     pub kind: &'static str,

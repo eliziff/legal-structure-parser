@@ -14,6 +14,7 @@ use std::convert::Infallible;
 use std::sync::LazyLock;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     En,
@@ -301,6 +302,7 @@ impl<'a, C: Columns + ?Sized> Document<'a, C> {
 
 /// What a document must answer to: a citation (by its key and the keys of its other forms), a collection, an address.
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
     pub citation: String,
@@ -335,6 +337,7 @@ impl Answering {
 }
 
 #[derive(Clone, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Metadata {
     pub doc_type: &'static str,
@@ -351,6 +354,7 @@ pub struct Metadata {
 
 /// A document as the engine reads it.
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct Read {
     pub metadata: Metadata,
     pub text: String,
@@ -375,6 +379,7 @@ impl Read {
 
 /// What a provision's excerpt carries of the statute it comes from.
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Excerpt {
     pub citation: String,
@@ -415,6 +420,7 @@ fn input(metadata: &Metadata, text: String, provisions: Option<Vec<(String, Stri
 
 /// A document as a search lists it.
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Listing {
     pub dataset: String,

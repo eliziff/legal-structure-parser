@@ -15,6 +15,7 @@ static BLANKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("{}+", leg
 
 /// A search of the index's names for an article titled `title`, in FTS5's query syntax.
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct JournalTitleSearch {
     pub title: String,
     pub query: String,
@@ -22,6 +23,7 @@ pub struct JournalTitleSearch {
 
 /// A name a title's search found, in the order the searches found them.
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct JournalTitleHit {
     pub title: String,
