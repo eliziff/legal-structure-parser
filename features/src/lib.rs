@@ -49,7 +49,7 @@ pub use quote_verification::*;
 mod brief;
 pub use brief::{brief_citation_order, brief_text, BriefCitation, BriefCitationOrder, BriefText};
 mod propositions;
-pub use propositions::{footnote_propositions, FootnotePropositions, PropositionUnit, QuoteContext};
+pub use propositions::{footnote_propositions, FootnotePropositions, QuoteContext};
 
 /// The digest of this crate's source, beside the engine's (`legal_structure::ENGINE_SOURCE_SHA256`).
 pub const SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_FEATURES_SHA256");

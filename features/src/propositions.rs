@@ -1,20 +1,8 @@
 //! What a footnote's quotations are checked against (the ALR Quote Verifier's "quote context"): its proposition, read by
 //! the model's one proposition reader. Offsets count UTF-16 units, as the host's text does.
 
+use legal_structure_model::AuthorityTextUnit;
 use serde::{Deserialize, Serialize};
-
-/// A unit of a brief: its body text or a note's, with the calls of notes it holds (note id, UTF-16 offset).
-#[derive(Deserialize)]
-#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-pub struct PropositionUnit {
-    pub id: String,
-    pub kind: String,
-    pub ordinal: usize,
-    pub text: String,
-    #[serde(default)]
-    pub footnote_refs: Vec<(u64, usize)>,
-}
 
 /// How much of the text a note's proposition is.
 #[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -58,12 +46,12 @@ pub struct FootnotePropositions {
 
 /// Each note's proposition in the body units (the model's one reading of it): with `context` sentence, the sentence its
 /// call ends or stands in; else the passage since the call before it.
-pub fn footnote_propositions(units: &[PropositionUnit], context: QuoteContext) -> FootnotePropositions {
+pub fn footnote_propositions(units: &[AuthorityTextUnit], context: QuoteContext) -> FootnotePropositions {
     let mut body = (0..units.len()).filter(|&index| units[index].kind == "body").collect::<Vec<_>>();
-    body.sort_by(|&a, &b| units[a].ordinal.cmp(&units[b].ordinal).then_with(|| units[a].id.cmp(&units[b].id)));
+    body.sort_by(|&a, &b| units[a].ordinal.cmp(&units[b].ordinal).then_with(|| units[a].key.cmp(&units[b].key)));
     let texts = body.iter().map(|&index| units[index].text.as_str()).collect::<Vec<_>>();
     let calls = body.iter().enumerate().flat_map(|(at, &index)| units[index].footnote_refs.iter()
-        .filter(|&&(id, _)| id > 0).map(move |&(id, offset)| (at, id, offset))).collect::<Vec<_>>();
+        .filter(|&&(id, _)| id > 0).map(move |&(id, offset)| (at, id as u64, offset))).collect::<Vec<_>>();
     let read = legal_structure_model::propositions::propositions(&texts, &calls);
     let mut body_starts = vec![None; units.len()];
     let parts = body.iter().zip(&read.unit_starts).map(|(&index, &start)| {
