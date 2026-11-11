@@ -2,6 +2,7 @@ use super::*;
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct TextStatistics {
     pub occurrences: usize,
     pub words: usize,

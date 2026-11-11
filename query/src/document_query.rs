@@ -51,6 +51,7 @@ const READ_LINE_UTF16_LIMIT: usize = READ_OUTPUT_UTF16_BUDGET - 1_000;
 /// A node the query found, read (its ranges, span and fragment), and its text as the query reads it: its membership in
 /// the document's query text.
 #[derive(Clone, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct Passage<'a> {
     #[serde(flatten)]
     pub reading: legal_structure_model::NodeReading<'a>,
@@ -59,15 +60,18 @@ pub struct Passage<'a> {
 
 /// What a passage is cited by: a page, paragraph, provision or note by the label it prints, and its link fragment.
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct Locator {
     pub kind: NodeKind,
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub fragment: Option<String>,
 }
 
 /// A table cell a row of the text shows: the part of the row's span it holds, by its table's name and its address.
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct RowCell {
     pub start: usize,
@@ -77,6 +81,7 @@ pub struct RowCell {
 }
 
 #[derive(Clone, Copy, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentLookupStatus {
     Found,
@@ -86,6 +91,7 @@ pub enum DocumentLookupStatus {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentLookup<'a> {
     pub status: DocumentLookupStatus,
@@ -97,6 +103,7 @@ pub struct DocumentLookup<'a> {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocumentRangeLookup<'a> {
     pub selected: Vec<Passage<'a>>,
     pub before: Vec<Passage<'a>>,
@@ -104,6 +111,7 @@ pub struct DocumentRangeLookup<'a> {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentTextWindowStatus {
     Ready,
@@ -114,6 +122,7 @@ pub enum DocumentTextWindowStatus {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentTextWindowRow<'a> {
     pub line_number: usize,
@@ -128,10 +137,12 @@ pub struct DocumentTextWindowRow<'a> {
     pub block: Option<Passage<'a>>,
     pub locator: Option<Locator>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<RowCell>>", optional))]
     pub cells: Vec<RowCell>,
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentTextWindow<'a> {
     pub status: DocumentTextWindowStatus,
@@ -139,13 +150,17 @@ pub struct DocumentTextWindow<'a> {
     pub next_offset: Option<usize>,
     pub next_start_char: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub total_lines: Option<usize>,
     pub document_revision: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub line_length: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub range_start_line: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub range_end_line: Option<usize>,
 }
 
@@ -156,6 +171,7 @@ enum DocumentAddress {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DocumentAddressResolution {
     Found { spans: Vec<ScalarRange> },
@@ -168,6 +184,7 @@ pub enum DocumentAddressResolution {
 }
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum FollowDirection {
     None,
@@ -178,6 +195,7 @@ pub enum FollowDirection {
 
 /// A caller locator or an already-resolved source node; these namespaces stay distinct.
 #[derive(Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum GraphScopeSeed {
     Locator(String),
@@ -185,6 +203,7 @@ pub enum GraphScopeSeed {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct GraphScope<'a> {
     pub seed: Passage<'a>,
     pub nodes: Vec<GraphScopeNode<'a>>,
@@ -196,23 +215,28 @@ pub struct GraphScope<'a> {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct GraphScopeOmission {
     /// Index in the document graph, reported once even when encountered on multiple hops.
     pub edge_index: usize,
     pub edge: InstrumentCrossReferenceEdge,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub source_node_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub target_node_id: Option<String>,
     pub missing_endpoints: Vec<&'static str>,
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct GraphScopeNode<'a> {
     #[serde(flatten)]
     pub block: Passage<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub units: Option<Vec<Passage<'a>>>,
 }
 
@@ -305,6 +329,7 @@ fn projected_positions(document: &DocumentStructure) -> Vec<usize> {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentViewerSlice<'a> {
     pub start: usize,
@@ -314,12 +339,15 @@ pub struct DocumentViewerSlice<'a> {
     pub primary: Option<legal_structure_model::NodeReading<'a>>,
     /// The slice is a heading the structure reads, not a block of text.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<bool>", optional))]
     pub heading: bool,
     /// The marker its primary node prints ("(2)", "[12]"), emphasis marks aside, and where in `text` (UTF-16) the words
     /// after it begin: 0 where the text does not open on it.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub marker: Option<String>,
     #[serde(skip_serializing_if = "is_zero")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<usize>", optional))]
     pub body: usize,
 }
 
@@ -328,6 +356,7 @@ fn is_zero(value: &usize) -> bool {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentViewer<'a> {
     pub slices: Vec<DocumentViewerSlice<'a>>,

@@ -21,6 +21,7 @@ pub fn lowercase_words(value: &str) -> Vec<String> {
 }
 
 #[derive(Clone, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocumentWordSpan {
     pub word: String,
     pub start: usize,
@@ -89,6 +90,7 @@ fn normalized_word_matches(word: &str, normalized: &str) -> bool {
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub(super) struct PhraseOptions {
     pub start: Option<usize>,
@@ -99,6 +101,7 @@ pub(super) struct PhraseOptions {
 }
 
 #[derive(Clone, Copy, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub(super) struct PhraseSpan {
     pub start: usize,

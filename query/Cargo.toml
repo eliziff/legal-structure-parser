@@ -6,7 +6,12 @@ license = "MIT"
 description = "Queries over a derived legal document: blocks, addresses, passages and text fragments"
 repository = "https://github.com/eliziff/legal-structure-parser"
 
+[features]
+# The TypeScript declarations of its types the engine serves (native/legal-structure-node's export-types).
+binding-types = ["dep:ts-rs", "legal-structure-model/binding-types"]
+
 [dependencies]
+ts-rs = { version = "12", optional = true, features = ["serde-json-impl"] }
 legal-structure-model = { path = "../model" }
 legal-locator = { path = "../locator" }
 regex = "1.11"

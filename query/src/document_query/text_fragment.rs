@@ -1407,6 +1407,7 @@ struct BuiltPiece {
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TextFragmentWordInterval {
     pub quote_index: usize,
@@ -1417,6 +1418,7 @@ pub struct TextFragmentWordInterval {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct TextFragmentPlan {
     pub directives: Vec<String>,
