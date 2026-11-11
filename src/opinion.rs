@@ -31,7 +31,7 @@ use matter::{
     head_lines, name_dates, names_a_digest, printed_headnote_marks, record_gaps, reporter_matter, sentences,
     titled_digest, topic_index,
 };
-use notes::{answer_calls, flat_notes, share_calls_by_label, supply_notes};
+use notes::{answer_calls, flat_notes, supply_notes};
 use pages::{
     element_pages, label_run, leaves_to_pages, opening_pages, page_number, page_series, printed_mark,
     printed_page_marks, series_of,
@@ -1734,9 +1734,7 @@ fn tidy_paragraphs(structure: &mut DocumentStructure, kinds: &mut Kinds, pending
     printed_headnote_marks(structure, kinds);
 }
 
-/// The notes other texts brought share their labels' calls with the engine's (`native_markup::share_calls_by_label`).
 fn label_notes(kinds: &mut Kinds) {
-    share_calls_by_label(&mut kinds.notes);
     // Notes a source left unlabelled and unnumbered are numbered as they stand.
     if kinds.notes.iter().all(|note| note.label.as_deref().unwrap_or("").is_empty()) {
         for (index, note) in kinds.notes.iter_mut().enumerate() {

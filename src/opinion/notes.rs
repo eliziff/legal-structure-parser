@@ -10,8 +10,8 @@ use regex::Regex;
 use crate::trim_javascript_whitespace as trim_js;
 use super::headings::notes_title;
 use super::{read_note, reads, text, word_starts, Kinds, Pending, ScalarCoordinates};
-use crate::native_markup::{answer_by_label, called};
-pub(super) use crate::native_markup::{opens_on_reporter, plain_label, share_calls_by_label};
+use crate::native_markup::{answer_by_label, called, printed_calls};
+pub(super) use crate::native_markup::{opens_on_reporter, plain_label};
 
 /// Notes another text of the case prints and this reading lacks: another rendition's, or the head matter's, where a
 /// judge's or counsel's note sits ahead of the opinion. One is the same note if a note of ours shares most of its words,
@@ -80,20 +80,21 @@ pub(super) fn supply_notes(structure: &mut DocumentStructure, kinds: &mut Kinds,
     }
 }
 
-/// The calls the engine left unanswered find the notes this reading brought from elsewhere by label
-/// (`native_markup::answer_by_label`); and where no note answers, the numbered paragraphs past the last call that run through
-/// their labels are the notes, set as text.
+/// Where no note answers the calls the engine left, the numbered paragraphs past the last call that run through their labels
+/// are the notes, set as text. Then the notes this reading holds from every text answer the calls by the engine's rules: by
+/// label (`native_markup::answer_by_label`), and an uncalled numbered note by a call printed as words (`printed_calls`).
 pub(super) fn answer_calls(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     static OPENING: OnceLock<Regex> = OnceLock::new();
     let (calls, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut kinds.spans).into_iter().partition(|span| reads(span, "unmatched-call"));
     kinds.spans = rest;
-    let mut calls = answer_by_label(&mut kinds.notes, calls);
-    let mut wanted = calls.iter().filter_map(|call| called(call).parse::<u32>().ok()).collect::<Vec<_>>();
+    let labels = kinds.notes.iter().map(|note| plain_label(note.label.as_deref().unwrap_or("")).to_owned()).collect::<HashSet<_>>();
+    let unanswered = calls.iter().filter(|call| !labels.contains(called(call))).collect::<Vec<_>>();
+    let mut wanted = unanswered.iter().filter_map(|call| called(call).parse::<u32>().ok()).collect::<Vec<_>>();
     wanted.sort_unstable();
     wanted.dedup();
     // A note list's own markers open their paragraphs: the last call is the last in the text's run.
-    let opens = |call: &&StructureNode| kinds.paragraphs.binary_search_by_key(&call.range.start, |paragraph| paragraph.range.start).is_ok();
-    let mut last_call = calls.iter().filter(|call| !opens(call)).map(|call| call.range.end).max().unwrap_or(0);
+    let opens = |call: &&&StructureNode| kinds.paragraphs.binary_search_by_key(&call.range.start, |paragraph| paragraph.range.start).is_ok();
+    let mut last_call = unanswered.iter().filter(|call| !opens(call)).map(|call| call.range.end).max().unwrap_or(0);
     // A list under a notes title needs no call at all.
     static TITLE: OnceLock<Regex> = OnceLock::new();
     let title = TITLE.get_or_init(|| Regex::new(r"(?mi)^[ \t]*(?:(?:foot|end)?notes?|escolios?)[ \t]*:?[ \t]*$").unwrap()).find_iter(&structure.text).last();
@@ -145,23 +146,22 @@ pub(super) fn answer_calls(structure: &mut DocumentStructure, kinds: &mut Kinds)
         }
         if found.len() * 2 >= wanted.len().min(found.len() + 1) {
             for (number, start, end) in found {
-                let label = number.to_string();
-                let references = calls.iter().filter(|call| called(call) == label).map(|call| call.range).collect();
-                kinds.notes.push(read_note(label, start, end, vec![ScalarRange { start, end }], references));
+                kinds.notes.push(read_note(number, start, end, vec![ScalarRange { start, end }], Vec::new()));
             }
-            let answered = kinds.notes.iter().map(|note| plain_label(note.label.as_deref().unwrap_or(""))).collect::<HashSet<_>>();
-            calls.retain(|call| !answered.contains(called(call)));
             kinds.notes.sort_by_key(|note| note.range.start);
         }
     }
+    let calls = answer_by_label(&mut kinds.notes, calls);
     kinds.spans.extend(calls);
+    let opens = kinds.paragraphs.iter().map(|paragraph| paragraph.range.start).collect::<HashSet<_>>();
+    let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
+    printed_calls(&structure.text, &coordinates, &opens, &mut kinds.notes);
 }
 
-/// Notes set flat in the text, each under its own "Footnote 1:" or "[Note 1]", with the calls that name them ("[FN1]",
-/// "[Note 1]"). A source's one note round all of them gives way to them.
+/// Notes set flat in the text, each under its own "Footnote 1:" or "[Note 1]" (the calls that name them, "[FN1]", are the
+/// engine's `printed_calls`). A source's one note round all of them gives way to them.
 pub(super) fn flat_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     static LABEL: OnceLock<Regex> = OnceLock::new();
-    static CALL: OnceLock<Regex> = OnceLock::new();
     let label = LABEL.get_or_init(|| Regex::new(r"(?m)^[ \t]*(?:(?:Footnote|FN) ?(\d{1,3}|\*+)(?: ?[:.]|[ \t]+\p{Lu}|[ \t]*$)|\[(?:Note|FN) ?(\d{1,3})\])").unwrap());
     let opened = label.captures_iter(&structure.text).filter_map(|capture| {
         let whole = capture.get(0)?;
@@ -171,9 +171,6 @@ pub(super) fn flat_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
         return;
     }
     let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
-    let calls = CALL.get_or_init(|| Regex::new(r"\[(?:FN ?|fn\.? ?|Note )(\d{1,3})\]").unwrap()).captures_iter(&structure.text)
-        .filter(|capture| !opened.iter().any(|open| open.0 <= capture.get(0).unwrap().start() && capture.get(0).unwrap().start() < open.1))
-        .map(|capture| { let whole = capture.get(0).unwrap(); (capture[1].to_owned(), coordinates.utf16_of_byte(whole.start()), utf16_len(whole.as_str())) }).collect::<Vec<_>>();
     let starts = opened.iter().map(|open| coordinates.utf16_of_byte(open.1)).collect::<Vec<_>>();
     // A note set flat ends with its own paragraph, ahead of the next note or not: the opinion goes on below it. A plain text's
     // lines wrap, so its paragraphs end at a blank line; a paragraph's own mark ends one anywhere. Under a "Footnotes" line
@@ -200,8 +197,7 @@ pub(super) fn flat_notes(structure: &mut DocumentStructure, kinds: &mut Kinds) {
             continue;
         }
         kinds.notes.retain(|note| !(note.range.start <= start && start < note.range.end));
-        let references = calls.iter().filter(|call| call.0 == number).map(|call| ScalarRange { start: call.1, end: call.1 + call.2 }).collect();
-        kinds.notes.push(read_note(number, start, stop, vec![ScalarRange { start, end: stop }], references));
+        kinds.notes.push(read_note(number, start, stop, vec![ScalarRange { start, end: stop }], Vec::new()));
     }
     kinds.notes.sort_by_key(|note| note.range.start);
 }

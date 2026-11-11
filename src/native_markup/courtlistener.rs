@@ -9,7 +9,7 @@ use legal_structure_model::text::{utf16_len, ScalarText};
 use regex::Regex;
 use crate::text::trim_javascript_whitespace as trim_js;
 use super::{
-    ancestors, courtlistener_ldml_bracketed_marker, courtlistener_ldml_note, decode_entities, element_at, element_node,
+    ancestors, courtlistener_ldml_note, decode_entities, element_at, element_node,
     footnote_identity, javascript_whitespace, leading_footnote_marker, markup_tag_end, parse_tag, short_number,
     MarkupSerialization, NativeMarkupScope,
 };
@@ -139,243 +139,6 @@ pub(super) fn courtlistener_numbered_note_markers(
         .into_iter()
         .filter_map(|(start, marker)| Some((start, marker?)))
         .collect()
-}
-
-pub(super) fn supplement_courtlistener_declared_note_references(
-    structure: &mut DocumentStructure,
-    text_index: &ScalarCoordinates,
-    matched_role_starts: &HashSet<usize>,
-) {
-    if !structure.nodes.iter().any(|node| node.kind == NodeKind::Footnote) {
-        return;
-    }
-    let updates = {
-        let elements = &structure.markup_elements;
-        let matched = |element: &MarkupElement| matched_role_starts.contains(&element.markup_start);
-        let ldml_reference = |element: &MarkupElement| element.tag == "sup" && element.has_class("ldml-superscript") && matched(element);
-        let has_ldml_references = elements.iter().any(ldml_reference);
-        let has_numbered_references = elements.iter().any(|element| element.tag == "footnote_reference");
-        let has_references = elements.iter().any(|element| element.tag == "footnote_reference" || element.is("footnotereference"));
-        if !has_ldml_references && !has_references && !elements.iter().any(|element| element.tag == "footnotemark") {
-            return;
-        }
-        let opinion_owner = |index: usize| ancestors(elements, index).find(|&at| elements[at].tag == "opinion");
-        let in_note = |index: usize| ancestors(elements, index).any(|at| elements[at].tag == "footnote");
-        // Each opinion's notes by label, in source order: a label can repeat ("*", or a numbering restarted).
-        let mut owners = HashMap::<(usize, &str), Vec<usize>>::new();
-        for (index, element) in elements.iter().enumerate().filter(|(_, element)| element.tag == "footnote") {
-            let (Some(opinion), Some(label)) = (opinion_owner(index), element.attributes.get("label").map(|label| trim_js(label))) else {
-                continue;
-            };
-            if !label.is_empty() {
-                owners.entry((opinion, label)).or_default().push(index);
-            }
-        }
-        // Each note node by the markup it starts at.
-        let notes = structure
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| node.kind == NodeKind::Footnote)
-            .filter_map(|(index, node)| Some((node.markup_start?, index)))
-            .collect::<HashMap<_, _>>();
-        let mut direct_targets = HashMap::<&str, Option<usize>>::new();
-        if has_references {
-            let mut identities = HashMap::<&str, Option<usize>>::new();
-            for (index, element) in elements.iter().enumerate() {
-                if let Some(id) = element.attributes.get("id").filter(|id| !id.is_empty()) {
-                    unique(&mut identities, id.as_str(), Some(index));
-                }
-            }
-            for (note, node) in structure.nodes.iter().enumerate().filter(|(_, node)| node.source == Derivation::Native && node.kind == NodeKind::Footnote) {
-                let Some(index) = node.markup_start.and_then(|start| element_at(elements, start)) else {
-                    continue;
-                };
-                let element = &elements[index];
-                let Some(id) = element.attributes.get("id") else {
-                    continue;
-                };
-                if identities.get(id.as_str()).copied().flatten() == Some(index)
-                    && node.markup_tag.as_deref().is_some_and(|tag| element.is(tag))
-                {
-                    unique(&mut direct_targets, id.as_str(), Some(note));
-                }
-            }
-        }
-        let coordinates = ScalarText::with_coordinates(structure.query_text(), text_index);
-        let mut numbered_targets = HashMap::<&str, Option<usize>>::new();
-        if has_numbered_references {
-            for element in elements.iter().filter(|element| element.tag == "footnote_number") {
-                let Some((label, range)) = printed(&coordinates, element.range).filter(|(label, _)| courtlistener_footnote_number(label).is_some()) else {
-                    continue;
-                };
-                let target = element
-                    .parent
-                    .filter(|&parent| elements[parent].tag == "footnote_body" && matched(&elements[parent]) && matched(element))
-                    .and_then(|parent| notes.get(&elements[parent].markup_start).copied())
-                    .filter(|&note| structure.nodes[note].marker_range == Some(range));
-                // Repeated declarations, including an unqualified second body, cannot establish a unique whole-field
-                // reference relationship.
-                unique(&mut numbered_targets, label, target);
-            }
-        }
-        let is_ldml = |element: &MarkupElement, class: &str| element.tag == "div" && element.has_class(class);
-        let mut decision_owners = Vec::<Option<usize>>::new();
-        let mut writing_owners = Vec::<Option<usize>>::new();
-        let mut writings = HashMap::<usize, Option<usize>>::new();
-        let mut footers = HashMap::<usize, Option<usize>>::new();
-        if has_ldml_references {
-            for (index, element) in elements.iter().enumerate() {
-                let owner = |owners: &[Option<usize>], class: &str| {
-                    element.parent.and_then(|parent| if is_ldml(&elements[parent], class) { Some(parent) } else { owners[parent] })
-                };
-                let decision = owner(&decision_owners, "ldml-decision");
-                writing_owners.push(owner(&writing_owners, "ldml-opinion"));
-                decision_owners.push(decision);
-                if let Some(decision) = decision {
-                    // Even an unmatched or indirect second declaration is ambiguous.
-                    if is_ldml(element, "ldml-opinion") {
-                        unique(&mut writings, decision, Some(index));
-                    } else if is_ldml(element, "ldml-notes") {
-                        unique(&mut footers, decision, Some(index));
-                    }
-                }
-            }
-        }
-        let ldml_scope = |decision: usize| {
-            let writing = writings.get(&decision).copied().flatten()?;
-            let footer = footers.get(&decision).copied().flatten()?;
-            (elements[writing].parent == Some(decision)
-                && elements[footer].parent == Some(decision)
-                && elements[writing].markup_end <= elements[footer].markup_start
-                && [decision, writing, footer].iter().all(|&index| matched(&elements[index])))
-            .then_some((writing, footer))
-        };
-        let mut ldml_targets = HashMap::<(usize, &str), Option<usize>>::new();
-        if has_ldml_references {
-            let native_owners = structure
-                .nodes
-                .iter()
-                .filter(|node| node.source == Derivation::Native && node.kind == NodeKind::Footnote)
-                .filter_map(|node| Some((node.markup_start?, (NodeKind::Footnote, node.range.start, node.range.end))))
-                .collect::<HashMap<_, _>>();
-            for (index, element) in elements.iter().enumerate() {
-                if !courtlistener_ldml_note(element) {
-                    continue;
-                }
-                let Some(decision) = decision_owners[index] else {
-                    continue;
-                };
-                let Some((_, marker)) = courtlistener_declared_note_marker(elements, index, &coordinates, &native_owners) else {
-                    continue;
-                };
-                let Some(label) = coordinates.slice_utf16(marker.start..marker.end).filter(|label| courtlistener_ldml_bracketed_marker(label)) else {
-                    continue;
-                };
-                let target = ldml_scope(decision).and_then(|(_, footer)| {
-                    let note = notes.get(&element.markup_start).copied()?;
-                    let body = &structure.nodes[note];
-                    (element.parent == Some(footer)
-                        && writing_owners[index].is_none()
-                        && matched(element)
-                        && native_owners.contains_key(&element.markup_start)
-                        && body.marker_range == Some(marker)
-                        && body.range.start == marker.end
-                        && body.range.end == element.range.end
-                        && body.calls.is_empty()
-                        && elements[index + 1..]
-                            .iter()
-                            .take_while(|child| child.markup_start < element.markup_end)
-                            .any(|child| ldml_reference(child) && child.range == marker))
-                    .then_some(note)
-                });
-                // Count literal labels even when a body cannot supply a qualified Note.
-                unique(&mut ldml_targets, (decision, label), target);
-            }
-        }
-        // A label's marks outside the notes, by opinion, in source order: where an opinion repeats a label, its marks pair
-        // with its notes in order, the k-th mark with the k-th note, when they count the same.
-        let mark = |index: usize| {
-            let element = &elements[index];
-            (element.tag == "footnotemark" && !in_note(index)).then(|| Some((opinion_owner(index)?, printed(&coordinates, element.range)?))).flatten()
-        };
-        let mut mark_counts = HashMap::<(usize, &str), usize>::new();
-        for (opinion, (label, _)) in (0..elements.len()).filter_map(mark) {
-            *mark_counts.entry((opinion, label)).or_default() += 1;
-        }
-        let mut marks_seen = HashMap::<(usize, &str), usize>::new();
-        let mut updates = Vec::new();
-        for (index, element) in elements.iter().enumerate() {
-            if ldml_reference(element) {
-                if ["id", "name", "href", "anchoridref"].iter().any(|key| element.attributes.contains_key(*key))
-                    || elements.get(index + 1).is_some_and(|child| child.markup_start < element.markup_end)
-                {
-                    continue;
-                }
-                let Some(decision) = decision_owners[index] else {
-                    continue;
-                };
-                let Some((writing, _)) = ldml_scope(decision) else {
-                    continue;
-                };
-                let blocked = ancestors(elements, index).any(|at| {
-                    let ancestor = &elements[at];
-                    matches!(ancestor.tag.as_str(), "blockquote" | "table" | "nav" | "script" | "style" | "a")
-                        || [
-                            "ldml-note", "ldml-notes", "ldml-referencenote", "ldml-referencechain", "ldml-refname", "ldml-cite",
-                            "ldml-headmatter", "ldml-header", "ldml-quotation",
-                        ]
-                        .iter()
-                        .any(|class| ancestor.has_class(class))
-                });
-                if writing_owners[index] != Some(writing) || blocked {
-                    continue;
-                }
-                let Some(label) = coordinates.slice_utf16(element.range.start..element.range.end).filter(|label| courtlistener_ldml_bracketed_marker(label)) else {
-                    continue;
-                };
-                if let Some(note) = ldml_targets.get(&(decision, label)).copied().flatten() {
-                    // This is an inferred printed-marker pair, not an explicit source link.
-                    updates.push((note, element.range));
-                }
-            } else if element.tag == "footnote_reference" || element.is("footnotereference") {
-                let Some((label, range)) = printed(&coordinates, element.range).filter(|(label, _)| !label.is_empty()) else {
-                    continue;
-                };
-                let target = if element.tag == "footnote_reference" {
-                    matched(element).then(|| numbered_targets.get(label).copied().flatten()).flatten()
-                } else {
-                    element.attributes.get("anchoridref").and_then(|target| direct_targets.get(target.as_str())).copied().flatten()
-                };
-                if let Some(note) = target {
-                    updates.push((note, range));
-                }
-            } else if let Some((opinion, (label, range))) = mark(index) {
-                let ordinal = {
-                    let seen = marks_seen.entry((opinion, label)).or_default();
-                    *seen += 1;
-                    *seen - 1
-                };
-                let owner = owners.get(&(opinion, label)).and_then(|owned| match owned.len() {
-                    1 => Some(owned[0]),
-                    count if mark_counts.get(&(opinion, label)) == Some(&count) => owned.get(ordinal).copied(),
-                    _ => None,
-                });
-                if let Some(&note) = owner.and_then(|owner| notes.get(&elements[owner].markup_start)) {
-                    updates.push((note, range));
-                }
-            }
-        }
-        updates
-    };
-    for (index, range) in updates {
-        // IDREF markers retain only their own actual unique ID, if any. Label-only same-opinion relationships supply no
-        // source fragment.
-        let note = &mut structure.nodes[index];
-        if !note.calls.contains(&range) {
-            note.calls.push(range);
-        }
-    }
 }
 
 pub(super) fn clip_courtlistener_pre_note_bodies(structure: &mut DocumentStructure, text_index: &ScalarCoordinates) {
@@ -2195,8 +1958,13 @@ pub(super) fn finish(
     let text_index = ScalarCoordinates::new(structure.query_text());
     clip_courtlistener_paragraphs_to_opinions(structure, matched_role_starts);
     native_table_coordinates(structure, &text_index);
+    // The links to an anchor: a link's `#target`, and a reference's `anchoridref` (CAP's).
     let mut references = HashMap::<String, Vec<ScalarRange>>::new();
-    for (target, range) in note_references {
+    let coordinates = ScalarText::with_coordinates(structure.query_text(), &text_index);
+    let idrefs = structure.markup_elements.iter().filter(|element| element.is("footnotereference")).filter_map(|element| {
+        Some((element.attributes.get("anchoridref")?.clone(), printed(&coordinates, element.range).filter(|(label, _)| !label.is_empty())?.1))
+    }).collect::<Vec<_>>();
+    for (target, range) in note_references.into_iter().chain(idrefs) {
         references.entry(target).or_default().push(range);
     }
     // Each note the markup declares its calls, by its anchor where one node alone holds that anchor.
@@ -2212,7 +1980,6 @@ pub(super) fn finish(
         }
     }
     supplement_courtlistener_bookmarked_notes(structure, &text_index, &sibling_note_markers);
-    supplement_courtlistener_declared_note_references(structure, &text_index, matched_role_starts);
     clip_courtlistener_pre_note_bodies(structure, &text_index);
     crate::inference::supplement_source_formatted_headings(
         structure,
@@ -2221,7 +1988,7 @@ pub(super) fn finish(
     );
     supplement_courtlistener_printed_notes(structure, printed_notes);
     label_notes(structure, &text_index);
-    pair_notes(structure, &text_index);
+    pair_notes(structure, &text_index, references);
     drop_note_numbered_paragraphs(structure);
     courtlistener_division_headings(structure, &text_index);
     courtlistener_source_roles(structure);
@@ -2353,11 +2120,12 @@ fn label_notes(structure: &mut DocumentStructure, text_index: &ScalarCoordinates
     }
 }
 
-/// Each note with all its calls, once every declared pairing is made: a citation's volume the source took for a note joins
-/// the note before; notes only anchors or a word processor's styles mark are read; the marks no note answers are found, and
-/// split a note list set as one block; they then find their notes by label, and a label's notes share its calls. The marks
-/// still unanswered stand as `unmatched-call` spans.
-fn pair_notes(structure: &mut DocumentStructure, text_index: &ScalarCoordinates) {
+/// Each note with all its calls, once the anchors and bookmarks are paired: a citation's volume the source took for a note
+/// joins the note before; notes only the links no note took or a word processor's styles mark are read; every other mark
+/// (Harvard's footnotemark, CAP's footnote_reference, LDML's and any superscript, a footnote link) finds its note by label
+/// (`answer_by_label`), after it splits a note list set as one block; a numbered note still uncalled takes a "[N]" the text
+/// prints (`printed_calls`). The marks no note answers stand as `unmatched-call` spans.
+fn pair_notes(structure: &mut DocumentStructure, text_index: &ScalarCoordinates, links: HashMap<String, Vec<ScalarRange>>) {
     let (mut notes, mut rest): (Vec<_>, Vec<_>) = std::mem::take(&mut structure.nodes).into_iter().partition(|node| node.kind == NodeKind::Footnote);
     for note in notes.iter_mut().filter(|note| note.ranges.is_empty()) {
         note.ranges = vec![note.range];
@@ -2371,13 +2139,14 @@ fn pair_notes(structure: &mut DocumentStructure, text_index: &ScalarCoordinates)
             node.parent_id = Some(kept.clone());
         }
     }
-    anchored_notes(elements, &coordinates, utf16_len(text), &mut notes);
+    anchored_notes(elements, &coordinates, utf16_len(text), &links, &mut notes);
     word_notes(elements, &coordinates, &mut notes);
     let calls = unmatched_calls(elements, &coordinates, &notes);
     split_note_lists(&coordinates, &calls, &mut notes);
     let calls = answer_by_label(&mut notes, calls);
-    share_calls_by_label(&mut notes);
-    bracketed_calls(text, &coordinates, &rest, &mut notes);
+    let opens = rest.iter().filter(|block| matches!(block.kind, NodeKind::Paragraph | NodeKind::Prose | NodeKind::Quote | NodeKind::ListItem))
+        .flat_map(|block| [Some(block.range.start), block.marker_range.map(|marker| marker.start)]).flatten().collect::<HashSet<_>>();
+    printed_calls(text, &coordinates, &opens, &mut notes);
     rest.extend(notes);
     rest.extend(calls);
     structure.nodes = rest;
@@ -2442,23 +2211,17 @@ fn word_notes(elements: &[MarkupElement], coordinates: &ScalarText, notes: &mut 
     notes.sort_by_key(|note| note.range.start);
 }
 
-/// Notes that are only anchors: a number named by a link from earlier in the text (`<a name="N_1_">1.</a>` and
-/// `<a href="#N_1_">`). Each runs to the next.
-fn anchored_notes(elements: &[MarkupElement], coordinates: &ScalarText, end: usize, notes: &mut Vec<StructureNode>) {
+/// Notes that are only anchors: a number the links no note's anchor took name, from earlier in the text
+/// (`<a name="N_1_">1.</a>` and `<a href="#N_1_">`). Each runs to the next.
+fn anchored_notes(elements: &[MarkupElement], coordinates: &ScalarText, end: usize, links: &HashMap<String, Vec<ScalarRange>>, notes: &mut Vec<StructureNode>) {
     static LABEL: OnceLock<Regex> = OnceLock::new();
     let label = LABEL.get_or_init(|| Regex::new(r"^\[?(?:Footnote |FN ?)?(\d{1,3}|\*+|†|‡)\]?[.:)]?$").unwrap());
-    let mut links = HashMap::<&str, Vec<ScalarRange>>::new();
-    for element in elements.iter().filter(|element| element.tag == "a") {
-        if let Some(target) = element.attributes.get("href").and_then(|href| href.strip_prefix('#')) {
-            links.entry(target).or_default().push(element.range);
-        }
-    }
     let taken = |range: ScalarRange, notes: &[StructureNode]| notes.iter().any(|note| {
         note.ranges.iter().chain(&note.calls).any(|known| known.start < range.end.max(range.start + 1) && range.start < known.end)
     });
     let mut targets = elements.iter().filter(|element| element.tag == "a").filter_map(|element| {
         let name = element.attributes.get("name").or_else(|| element.attributes.get("id"))?;
-        let calls = links.get(name.as_str())?;
+        let calls = links.get(name)?;
         let printed = coordinates.slice_utf16(element.range.start..element.range.end).map(trim_js)?;
         let number = label.captures(printed)?[1].to_owned();
         // A note is its own block: the text after it is not its to take.
@@ -2475,16 +2238,17 @@ fn anchored_notes(elements: &[MarkupElement], coordinates: &ScalarText, end: usi
     notes.sort_by_key(|note| note.range.start);
 }
 
-/// Note calls the source marks and no note answers, each an `unmatched-call` span its label names.
+/// The note marks no anchor answered, each an `unmatched-call` span its label names: Harvard's footnotemark, CAP's
+/// footnote_reference ("[fn3]"), a superscript, a footnote link.
 fn unmatched_calls(elements: &[MarkupElement], coordinates: &ScalarText, notes: &[StructureNode]) -> Vec<StructureNode> {
     static SYMBOL: OnceLock<Regex> = OnceLock::new();
-    let symbol = SYMBOL.get_or_init(|| Regex::new(r"^\[?(\d{1,3}|\*+|†|‡|\([a-z0-9]\))\]?$").unwrap());
+    let symbol = SYMBOL.get_or_init(|| Regex::new(r"^\[?(?:fn)?(\d{1,3}|\*+|†|‡|\([a-z0-9]\))\]?$").unwrap());
     let mut answered = notes.iter().flat_map(|note| note.calls.iter().chain(&note.ranges).copied()).collect::<Vec<_>>();
     answered.sort_by_key(|known| known.end);
     elements.iter().filter_map(|element| {
         let linked = element.tag == "a" && element.attributes.get("class").is_some_and(|class| class == "footnote")
             && !element.attributes.get("href").is_some_and(|href| href.ends_with("_ref"));
-        if !(linked || matches!(element.tag.as_str(), "footnotemark" | "sup")) {
+        if !(linked || matches!(element.tag.as_str(), "footnotemark" | "footnote_reference" | "sup") || element.is("footnotereference")) {
             return None;
         }
         // Colorado's mark is an empty sup after the digits; 10<sup>8</sup> is a power.
@@ -2556,64 +2320,64 @@ fn split_note_lists(coordinates: &ScalarText, calls: &[StructureNode], notes: &m
     }
 }
 
-/// Calls no markup pairs find their notes by label, in order: a note with no call takes the first that names it, and a call
-/// left over joins the first note of its label. The calls no note answers are returned. The opinion answers its leftover
-/// calls so with the notes it brings from elsewhere.
+/// Which note a mark answers, by label. The one note of a label takes every mark naming it. A label's several notes (each
+/// opinion's own series, or another rendition's copy) share their calls and its marks in the text's order, one apiece, a call
+/// found twice a unit or two apart being one; where the marks outnumber them, each note with none takes the next and the rest
+/// join the first. The marks no note's label names are returned. The opinion answers so again once other texts' notes join.
 pub(crate) fn answer_by_label(notes: &mut [StructureNode], mut calls: Vec<StructureNode>) -> Vec<StructureNode> {
     calls.sort_by_key(|call| call.range.start);
-    for note in notes.iter_mut().filter(|note| note.calls.is_empty()) {
-        if let Some(at) = calls.iter().position(|call| called(call) == plain_label(note.label.as_deref().unwrap_or(""))) {
-            note.calls.push(calls.remove(at).range);
-        }
-    }
-    calls.retain(|call| {
-        let Some(note) = notes.iter_mut().find(|note| plain_label(note.label.as_deref().unwrap_or("")) == called(call)) else { return true };
-        note.calls.push(call.range);
-        false
-    });
-    calls
-}
-
-/// Notes of one label more than once (each opinion's own series) share their calls in order. The opinion shares so again
-/// once other renditions' notes have joined these.
-pub(crate) fn share_calls_by_label(notes: &mut [StructureNode]) {
     let mut by_label = HashMap::<String, Vec<usize>>::new();
     for (index, note) in notes.iter().enumerate() {
-        by_label.entry(note.label.as_deref().unwrap_or("").to_owned()).or_default().push(index);
+        by_label.entry(plain_label(note.label.as_deref().unwrap_or("")).to_owned()).or_default().push(index);
     }
-    for indices in by_label.values().filter(|indices| indices.len() > 1) {
-        let mut calls = indices.iter().flat_map(|&index| notes[index].calls.iter().copied()).collect::<Vec<_>>();
-        calls.sort_by_key(|call| call.start);
-        // One call found twice, by the engine and through another rendition's copy of its note, a unit or two apart, is one call.
-        calls.dedup_by(|later, kept| later.start <= kept.end + 2);
-        if calls.len() <= indices.len() {
-            // In the text's order each opinion's series follows the last; a note left over, another rendition's copy set at the
-            // end, has no call of its own and takes none.
-            let mut order = indices.clone();
-            order.sort_by_key(|&index| notes[index].range.start);
-            for (position, &index) in order.iter().enumerate() {
-                notes[index].calls = calls.get(position).copied().into_iter().collect();
+    let (named, left): (Vec<_>, Vec<_>) = calls.into_iter().partition(|call| by_label.contains_key(called(call)));
+    let mut marks = HashMap::<String, Vec<ScalarRange>>::new();
+    for call in named {
+        marks.entry(called(&call).to_owned()).or_default().push(call.range);
+    }
+    for (label, mut indices) in by_label {
+        indices.sort_by_key(|&index| notes[index].range.start);
+        let marks = marks.remove(&label).unwrap_or_default();
+        if let [only] = indices[..] {
+            notes[only].calls.extend(marks);
+            continue;
+        }
+        let mut shared = indices.iter().flat_map(|&index| notes[index].calls.iter().copied()).chain(marks.iter().copied()).collect::<Vec<_>>();
+        shared.sort_by_key(|call| call.start);
+        shared.dedup_by(|later, kept| later.start <= kept.end + 2);
+        if shared.len() <= indices.len() {
+            for (position, &index) in indices.iter().enumerate() {
+                notes[index].calls = shared.get(position).copied().into_iter().collect();
+            }
+            continue;
+        }
+        let mut marks = marks.into_iter();
+        for &index in &indices {
+            if notes[index].calls.is_empty() {
+                notes[index].calls.extend(marks.next());
             }
         }
+        notes[indices[0]].calls.extend(marks);
     }
+    left
 }
 
-/// A numbered note with no call takes a bracketed number in the text, "[3]", where the source left its call as words: not one
-/// that opens a block (a paragraph's number) or stands in a note.
-fn bracketed_calls(text: &str, coordinates: &ScalarText, blocks: &[StructureNode], notes: &mut [StructureNode]) {
+/// A numbered note with no call takes a call the text prints as words, "[3]", "[FN3]", "[Note 3]": not one that `opens` a
+/// block (a paragraph's number), stands in a note, or opens one (its own label).
+pub(crate) fn printed_calls(text: &str, coordinates: &ScalarText, opens: &HashSet<usize>, notes: &mut [StructureNode]) {
     static CALL: OnceLock<Regex> = OnceLock::new();
     if !notes.iter().any(|note| note.calls.is_empty() && note.label.as_deref().unwrap_or("").bytes().all(|byte| byte.is_ascii_digit())) {
         return;
     }
-    let opens = blocks.iter().filter(|block| matches!(block.kind, NodeKind::Paragraph | NodeKind::Prose | NodeKind::Quote | NodeKind::ListItem))
-        .flat_map(|block| [Some(block.range.start), block.marker_range.map(|marker| marker.start)]).flatten().collect::<HashSet<_>>();
     let mut printed = HashMap::<String, Vec<ScalarRange>>::new();
-    let call = CALL.get_or_init(|| Regex::new(r"\[(\d{1,3})\]").unwrap());
+    let call = CALL.get_or_init(|| Regex::new(r"\[(?:FN ?|fn\.? ?|Note )?(\d{1,3})\]").unwrap());
     for capture in call.captures_iter(text) {
         let whole = capture.get(0).unwrap();
         let unit = coordinates.utf16_of_byte(whole.start());
-        if !opens.contains(&unit) && !notes.iter().any(|note| note.ranges.iter().any(|range| range.start <= unit && unit < range.end)) {
-            printed.entry(capture[1].to_owned()).or_default().push(ScalarRange { start: unit, end: unit + utf16_len(whole.as_str()) });
+        let end = unit + utf16_len(whole.as_str());
+        let in_note = notes.iter().any(|note| (end..=end + 2).contains(&note.range.start) || note.ranges.iter().any(|range| range.start <= unit && unit < range.end));
+        if !opens.contains(&unit) && !in_note {
+            printed.entry(capture[1].to_owned()).or_default().push(ScalarRange { start: unit, end });
         }
     }
     let used = notes.iter().flat_map(|note| note.calls.iter().map(|call| call.start)).collect::<HashSet<_>>();
