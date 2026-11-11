@@ -1,6 +1,7 @@
 //! A2AJ's documents, read by the engine: Beaver's local A2AJ store (a2aj.sqlite, which a2ajInstall.ts installs), found
 //! by citation key, searched and inventoried, and the records A2AJ's API answers with. Each document is read by
-//! legal_structure_features::a2aj and derived here; JavaScript is given its metadata and documents, never its text.
+//! legal_structure_features::a2aj and derived here into the host's document (`make`); JavaScript is given its metadata
+//! and documents, never its text.
 
 use self::lookup::{self as a2aj_lookup, datasets, sql};
 pub use self::lookup::{name_key, Named};
@@ -10,11 +11,12 @@ use crate::a2aj::{
     self, Answering, Columns, Document, Excerpt, Language, LazyRow, Listing, Metadata, Query, Read,
     Source, StoreRow,
 };
-use legal_structure::{trim_javascript_whitespace as js_trim, ProviderTextInput};
+use legal_structure::{trim_javascript_whitespace as js_trim, DocumentStructure, ProviderTextInput};
 use regex::Regex;
 use rusqlite::{types::ValueRef, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Weak};
@@ -22,17 +24,9 @@ use std::time::SystemTime;
 
 pub mod lookup;
 
-/// An A2AJ source compiled by the shared parser, independent of Node/PDF hosts.
-pub struct SourceDocument {
-    pub structure: legal_structure::DocumentStructure,
-    pub query: Arc<legal_structure::DocumentQuery>,
-    pub quotes: Arc<Mutex<crate::QuoteLocator>>,
-}
-impl SourceDocument {
-    pub fn structure(&self) -> &legal_structure::DocumentStructure {
-        &self.structure
-    }
-}
+/// What the host makes a derived structure into: its own document, which the store keeps while the host holds it.
+pub trait Make<D>: Fn(DocumentStructure) -> D {}
+impl<D, F: Fn(DocumentStructure) -> D> Make<D> for F {}
 
 /// Which copy of a store a connection or a document came from: a store replaced in its place is another copy.
 pub type Stamp = (u64, Option<SystemTime>);
@@ -90,35 +84,44 @@ pub fn with_store<T>(
 
 /// The documents derived from a store, kept while JavaScript holds them: an operation's stages ask for the same
 /// decision in each of its forms, and each asks the store again.
+type Kept = Weak<dyn Any + Send + Sync>;
 struct Derived {
     metadata: Metadata,
-    native: Weak<SourceDocument>,
-    search: Option<Weak<SourceDocument>>,
+    native: Kept,
+    search: Option<Kept>,
 }
 static DERIVED: Mutex<Vec<((PathBuf, Stamp, String), Derived)>> = Mutex::new(Vec::new());
 
-fn derived(key: &(PathBuf, Stamp, String)) -> Option<Found> {
+fn held<D: Send + Sync + 'static>(kept: &Kept) -> Option<Arc<D>> {
+    kept.upgrade()?.downcast().ok()
+}
+
+fn derived<D: Send + Sync + 'static>(key: &(PathBuf, Stamp, String)) -> Option<Found<D>> {
     let cache = lock(&DERIVED);
     let (_, kept) = cache.iter().find(|(other, _)| other == key)?;
     Some(Found {
         metadata: kept.metadata.clone(),
-        native: kept.native.upgrade()?,
+        native: held(&kept.native)?,
         search: match &kept.search {
-            Some(search) => Some(search.upgrade()?),
+            Some(search) => Some(held(search)?),
             None => None,
         },
     })
 }
 
-fn keep(key: (PathBuf, Stamp, String), found: &Found) {
+fn keep<D: Send + Sync + 'static>(key: (PathBuf, Stamp, String), found: &Found<D>) {
+    let kept = |document: &Arc<D>| -> Kept {
+        let document: Arc<dyn Any + Send + Sync> = document.clone();
+        Arc::downgrade(&document)
+    };
     let mut cache = lock(&DERIVED);
     cache.retain(|(other, kept)| *other != key && kept.native.strong_count() > 0);
     cache.push((
         key,
         Derived {
             metadata: found.metadata.clone(),
-            native: Arc::downgrade(&found.native),
-            search: found.search.as_ref().map(Arc::downgrade),
+            native: kept(&found.native),
+            search: found.search.as_ref().map(kept),
         },
     ));
 }
@@ -142,30 +145,24 @@ pub const FIELDS: [&str; 13] = [
 
 /// A document: its metadata, its provisions' document (or its text's, where it has no provisions), and its full text's
 /// document where that is another.
-pub struct Found {
+pub struct Found<D> {
     pub metadata: Metadata,
-    pub native: Arc<SourceDocument>,
-    pub search: Option<Arc<SourceDocument>>,
+    pub native: Arc<D>,
+    pub search: Option<Arc<D>>,
 }
 
-fn derive(input: ProviderTextInput) -> CoreResult<Arc<SourceDocument>> {
+fn derive<D>(input: ProviderTextInput, make: &impl Make<D>) -> CoreResult<Arc<D>> {
     legal_structure::provider_text_document_structure(input)
-        .map(|structure| {
-            Arc::new(SourceDocument {
-                structure,
-                query: Arc::new(legal_structure::DocumentQuery::new()),
-                quotes: Default::default(),
-            })
-        })
+        .map(|structure| Arc::new(make(structure)))
         .map_err(|error| error.to_string())
 }
 
-fn readings(read: Read) -> CoreResult<Found> {
+fn readings<D>(read: Read, make: &impl Make<D>) -> CoreResult<Found<D>> {
     let metadata = read.metadata.clone();
     let (native, search) = read.inputs();
     Ok(Found {
-        native: derive(native)?,
-        search: search.map(derive).transpose()?,
+        native: derive(native, make)?,
+        search: search.map(|search| derive(search, make)).transpose()?,
         metadata,
     })
 }
@@ -229,13 +226,14 @@ fn one(citations: BTreeSet<String>) -> Option<String> {
         .flatten()
 }
 /// The store's document with an id, derived once while JavaScript holds it.
-fn by_id(
+fn by_id<D: Send + Sync + 'static>(
     connection: &Connection,
     path: &Path,
     stamp: Stamp,
     id: i64,
     language: Language,
-) -> CoreResult<Option<Found>> {
+    make: &impl Make<D>,
+) -> CoreResult<Option<Found<D>>> {
     let key = (path.to_owned(), stamp, format!("{id}\0{}", language.code()));
     if let Some(found) = derived(&key) {
         return Ok(Some(found));
@@ -255,7 +253,7 @@ fn by_id(
         return Ok(None);
     };
     read.printed_pages = a2aj::reporter_pages(path, id, read.metadata.language);
-    let found = readings(read)?;
+    let found = readings(read, make)?;
     keep(key, &found);
     Ok(Some(found))
 }
@@ -266,28 +264,33 @@ pub fn find_id(path: &Path, lookup: &Lookup) -> CoreResult<Option<i64>> {
 }
 
 /// A document the store holds under a citation.
-pub fn document(path: &Path, lookup: &Lookup) -> CoreResult<Option<Found>> {
+pub fn document<D: Send + Sync + 'static>(
+    path: &Path,
+    lookup: &Lookup,
+    make: impl Make<D>,
+) -> CoreResult<Option<Found<D>>> {
     let language = lookup.language.unwrap_or(Language::En);
     Ok(with_store(path, |connection, stamp| {
         let Some(id) = find(connection, lookup)? else {
             return Ok(None);
         };
-        by_id(connection, path, stamp, id, language)
+        by_id(connection, path, stamp, id, language, &make)
     })?
     .flatten())
 }
 
 /// The store's documents with these ids, of a kind: what experiments sample the store by.
-pub fn documents(
+pub fn documents<D: Send + Sync + 'static>(
     path: &Path,
     ids: &[i64],
     doc_type: &str,
     language: Language,
-) -> CoreResult<Option<Vec<(i64, Found)>>> {
+    make: impl Make<D>,
+) -> CoreResult<Option<Vec<(i64, Found<D>)>>> {
     with_store(path, |connection, stamp| {
         let mut found = Vec::new();
         for id in ids {
-            if let Some(document) = by_id(connection, path, stamp, *id, language)?
+            if let Some(document) = by_id(connection, path, stamp, *id, language, &make)?
                 .filter(|found| found.metadata.doc_type == doc_type)
             {
                 found.push((*id, document));
@@ -299,12 +302,13 @@ pub fn documents(
 
 /// One provision of a statute the store holds: None where the store lacks the statute, Some(None) where it lacks the
 /// provision.
-pub fn section(
+pub fn section<D: Send + Sync + 'static>(
     path: &Path,
     lookup: &Lookup,
     section: &str,
     excerpt: Excerpt,
-) -> CoreResult<Option<Option<Arc<SourceDocument>>>> {
+    make: impl Make<D>,
+) -> CoreResult<Option<Option<Arc<D>>>> {
     let language = lookup.language.unwrap_or(Language::En);
     Ok(with_store(path, |connection, stamp| {
         let Some(id) = find(connection, lookup)? else {
@@ -362,15 +366,13 @@ pub fn section(
             ))
             .map_err(|error| error.to_string())?,
         );
-        if let Some(found) = derived(&key) {
+        if let Some(found) = derived::<D>(&key) {
             return Ok(Some(Some(found.native)));
         }
-        let native = derive(a2aj::provision_input(
-            excerpt,
-            metadata.language,
-            section,
-            text,
-        ))?;
+        let native = derive(
+            a2aj::provision_input(excerpt, metadata.language, section, text),
+            &make,
+        )?;
         keep(
             key,
             &Found {
@@ -679,7 +681,12 @@ pub fn reads(
 }
 
 /// The document an A2AJ API record holds: its metadata and readings, derived once while JavaScript holds them.
-pub fn record(record: &Value, language: Language, doc_type: &str) -> CoreResult<Option<Found>> {
+pub fn record<D: Send + Sync + 'static>(
+    record: &Value,
+    language: Language,
+    doc_type: &str,
+    make: impl Make<D>,
+) -> CoreResult<Option<Found<D>>> {
     use sha2::{Digest, Sha256};
     let Some(record) = record.as_object() else {
         return Ok(None);
@@ -696,7 +703,7 @@ pub fn record(record: &Value, language: Language, doc_type: &str) -> CoreResult<
     if let Some(found) = derived(&key) {
         return Ok(Some(found));
     }
-    let found = readings(read)?;
+    let found = readings(read, &make)?;
     keep(key, &found);
     Ok(Some(found))
 }
@@ -715,11 +722,12 @@ pub struct ProvisionLookup {
 
 /// One provision of a statute, read from the A2AJ API records answering a lookup of it as an excerpt of the statute;
 /// None where no record holds text for it.
-pub fn record_provision(
+pub fn record_provision<D>(
     records: &[Value],
     lookup: &ProvisionLookup,
     excerpt: Excerpt,
-) -> CoreResult<Option<Arc<SourceDocument>>> {
+    make: impl Make<D>,
+) -> CoreResult<Option<Arc<D>>> {
     let language = lookup.language.unwrap_or(Language::En);
     let doc_type = a2aj::doc_type(lookup.doc_type.as_deref().unwrap_or("cases"));
     let dataset = lookup
@@ -755,9 +763,10 @@ pub fn record_provision(
     };
     let section = js_trim(&lookup.section);
     match chosen {
-        Some(read) if !section.is_empty() => Ok(Some(derive(a2aj::provision_input(
-            excerpt, language, section, read.text,
-        ))?)),
+        Some(read) if !section.is_empty() => Ok(Some(derive(
+            a2aj::provision_input(excerpt, language, section, read.text),
+            &make,
+        )?)),
         _ => Ok(None),
     }
 }
