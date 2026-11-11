@@ -214,615 +214,6 @@ pub(super) fn clip_courtlistener_pre_note_bodies(structure: &mut DocumentStructu
     }
 }
 
-pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut DocumentStructure, text_index: &ScalarCoordinates, sibling_markers: &HashMap<usize, (String, ScalarRange)>) {
-    if !structure.nodes.iter().any(|node| node.kind == NodeKind::Footnote) {
-        return;
-    }
-    let (updates, printed_updates) = {
-        let elements = &structure.markup_elements;
-        let has_fn_notes = elements.iter().any(|element| element.tag == "div" && element.has_class("fn-footnote"));
-        let reference_span = |element: &MarkupElement| element.is("sup") || (element.is("span") && element.has_class("MsoFootnoteReference"));
-        if !has_fn_notes
-            && !elements.iter().any(|element| {
-                (element.is("a") && element.attributes.get("name").is_some_and(|name| name.starts_with("_ftn")))
-                    || (element.is("sup")
-                        && element.attributes.get("id").is_some_and(|id| id.starts_with("fn") || id.starts_with("op") || id.starts_with("co_fnRef_")))
-                    || (element.is("span") && element.has_class("MsoFootnoteReference"))
-                    || (element.is("div") && element.attributes.get("id").is_some_and(|id| id.starts_with("ftn")))
-            })
-        {
-            return;
-        }
-        let reference_spans = elements.iter().enumerate().filter(|(_, element)| reference_span(element)).map(|(index, _)| index).collect::<Vec<_>>();
-        let identities = named_elements(elements);
-        let note_starts = structure.nodes.iter().filter(|node| node.kind == NodeKind::Footnote).filter_map(|node| node.markup_start).collect::<HashSet<_>>();
-        let note_owner = |index: usize| ancestors(elements, index).map(|at| elements[at].markup_start).find(|start| note_starts.contains(start));
-        let parent_tag = |index: usize, tag: &str| ancestors(elements, index).find(|&at| elements[at].is(tag));
-        let coordinates = ScalarText::with_coordinates(structure.query_text(), text_index);
-        // Where an element prints `expected`, bare or bracketed.
-        let printed_range = |index: usize, expected: &str| {
-            printed(&coordinates, elements[index].range)
-                .filter(|(printed, _)| *printed == expected || *printed == format!("[{expected}]"))
-                .map(|(_, range)| range)
-        };
-        // The writings the markup declares and the reader took as sections: an opinion's own (its tag, or Westlaw's and
-        // the opinion class), and a writing within one (its text, a concurrence's or dissent's, LDML's or Decisia's).
-        let section = |node: &&StructureNode, tags: &[&str], classes: &[&str]| {
-            node.source == Derivation::Native
-                && node.kind == NodeKind::Section
-                && (node.markup_tag.as_deref().is_some_and(|tag| tags.contains(&tag))
-                    || node.markup_attributes.get("class").is_some_and(|names| names.split_ascii_whitespace().any(|class| classes.contains(&class))))
-        };
-        let starts = |tags: &[&str], classes: &[&str]| {
-            structure.nodes.iter().filter(|node| section(node, tags, classes)).filter_map(|node| node.markup_start).collect::<HashSet<_>>()
-        };
-        // Source ownership, rather than Word's formatting sections, bounds an anonymous pair. A nested native opinion starts
-        // a distinct owner; an element under none is its outermost ancestor's.
-        let opinion_starts = starts(&["opinion"], &["co_opinionBlock", "opinion"]);
-        let mut document_owners = Vec::with_capacity(elements.len());
-        for (index, element) in elements.iter().enumerate() {
-            let owner = if opinion_starts.contains(&element.markup_start) { index } else { element.parent.map_or(index, |parent| document_owners[parent]) };
-            document_owners.push(owner);
-        }
-        let anonymous_markers = reference_spans
-            .iter()
-            .copied()
-            .filter(|&index| {
-                let element = &elements[index];
-                let superscript = element.is("sup");
-                if parent_tag(index, "a").is_some()
-                    || ancestors(elements, index).any(|at| elements[at].has_class("MsoFootnoteReference") || (superscript && elements[at].is("sup")))
-                {
-                    return false;
-                }
-                std::iter::once(element)
-                    .chain(elements[index + 1..].iter().take_while(|child| child.markup_start < element.markup_end))
-                    .enumerate()
-                    .all(|(position, child)| {
-                        !child.is("a")
-                            && !["id", "href", "name"].iter().any(|key| child.attributes.contains_key(*key))
-                            && (!superscript || position == 0 || (!child.is("sup") && !child.has_class("MsoFootnoteReference")))
-                    })
-            })
-            .collect::<Vec<_>>();
-        let mut native_body_counts = HashMap::<(usize, &str), usize>::new();
-        for node in structure.nodes.iter().filter(|node| node.source == Derivation::Native && node.kind == NodeKind::Footnote) {
-            if let (Some(index), Some(label)) = (node.markup_start.and_then(|start| element_at(elements, start)), node.label.as_deref()) {
-                *native_body_counts.entry((document_owners[index], label)).or_default() += 1;
-            }
-        }
-        let mut updates = Vec::new();
-        let mut printed_updates = Vec::new();
-        let fn_writings = if has_fn_notes {
-            // A writing the markup declares (`declared_writing`) that the reader took as a section.
-            let writing_starts = structure
-                .nodes
-                .iter()
-                .filter(|node| node.source == Derivation::Native && node.kind == NodeKind::Section)
-                .filter_map(|node| node.markup_start)
-                .collect::<HashSet<_>>();
-            nearest_owners(elements, |element| writing_starts.contains(&element.markup_start) && declared_writing(element))
-        } else {
-            Vec::new()
-        };
-        // A superscript number, read as a note's label.
-        let numeric_marker = |index: usize| {
-            if elements[index].tag != "sup" {
-                return None;
-            }
-            let (printed, _) = printed(&coordinates, elements[index].range).filter(|(printed, _)| short_number(printed))?;
-            Some((footnote_identity(printed, "", None)?, printed_range(index, printed)?, printed))
-        };
-        // Decisia's notes (div.fn-footnote): the superscript number that opens each, where it agrees with what the note declares.
-        let mut fn_markers = HashMap::new();
-        if has_fn_notes {
-            let fn_notes = structure
-                .nodes
-                .iter()
-                .filter(|node| {
-                    node.kind == NodeKind::Footnote
-                        && node.source == Derivation::Native
-                        && node.markup_tag.as_deref() == Some("div")
-                        && node.markup_attributes.get("class").is_some_and(|names| names.split_ascii_whitespace().any(|class| class == "fn-footnote"))
-                })
-                .filter_map(|node| Some((node.markup_start?, node)))
-                .collect::<HashMap<_, _>>();
-            for &index in &anonymous_markers {
-                let Some((owner, node)) = note_owner(index).and_then(|owner| Some((owner, *fn_notes.get(&owner)?))) else {
-                    continue;
-                };
-                let Some((identity, range, printed)) = numeric_marker(index) else {
-                    continue;
-                };
-                let declared_otherwise = ["data-label", "label", "n"].iter().any(|key| {
-                    node.markup_attributes
-                        .get(*key)
-                        .filter(|raw| !trim_js(raw).is_empty())
-                        .is_some_and(|raw| footnote_identity(raw, "", None).is_none_or(|declared| declared.label != identity.label))
-                });
-                if coordinates.slice_utf16(node.range.start..range.start).is_some_and(|prefix| trim_js(prefix).is_empty())
-                    && (node.marker_range.is_none() || node.marker_range == Some(range))
-                    && !declared_otherwise
-                {
-                    unique(&mut fn_markers, owner, Some((identity, range, printed)));
-                }
-            }
-        }
-        let mut fn_body_counts = HashMap::new();
-        if has_fn_notes {
-            for node in structure.nodes.iter().filter(|node| node.kind == NodeKind::Footnote && node.source == Derivation::Native) {
-                let Some(start) = node.markup_start else {
-                    continue;
-                };
-                let label = fn_markers.get(&start).and_then(Option::as_ref).map_or(node.label.as_deref(), |(identity, _, _)| identity.label.as_deref());
-                if let (Some(index), Some(label)) = (element_at(elements, start), label) {
-                    *fn_body_counts.entry((fn_writings[index], label)).or_insert(0usize) += 1;
-                }
-            }
-        }
-        for (note_index, note) in structure.nodes.iter().enumerate().filter(|(_, node)| node.kind == NodeKind::Footnote) {
-            let node = note;
-            if let Some((identity, marker, printed)) = node.markup_start.and_then(|start| fn_markers.get(&start)).and_then(Option::as_ref) {
-                let Some(body_index) = node.markup_start.and_then(|start| element_at(elements, start)) else {
-                    continue;
-                };
-                let label = identity.label.as_deref().unwrap_or_default();
-                if note_label(note).start != note_label(note).end && note.marker_range != Some(*marker) {
-                    continue;
-                }
-                let mut references = Vec::new();
-                let container = ancestors(elements, body_index).find(|&at| elements[at].has_class("fn-container"));
-                if let Some(container) = container.filter(|_| note.calls.is_empty() && fn_body_counts.get(&(fn_writings[body_index], label)) == Some(&1)) {
-                    for &index in &anonymous_markers {
-                        if elements[index].markup_end > elements[container].markup_start
-                            || note_owner(index).is_some()
-                            || fn_writings[index] != fn_writings[body_index]
-                        {
-                            continue;
-                        }
-                        // Without a supplied writing, only its actual enclosing source container corroborates an anonymous
-                        // reference.
-                        if fn_writings[body_index].is_none()
-                            && !elements[container].parent.is_some_and(|parent| ancestors(elements, index).any(|at| at == parent))
-                        {
-                            continue;
-                        }
-                        if let Some((_, range, _)) = numeric_marker(index).filter(|(reference, _, _)| reference.label.as_deref() == Some(label)) {
-                            references.push(range);
-                        }
-                    }
-                }
-                printed_updates.push((note_index, *marker, label.to_owned(), (*printed).to_owned(), references));
-                continue;
-            }
-            if let Some((label, range)) = node
-                .markup_start
-                .and_then(|start| sibling_markers.get(&start))
-            {
-                if node.label.as_ref() != Some(label)
-                    || note.marker_range != Some(*range)
-                    || !note.calls.is_empty()
-                {
-                    continue;
-                }
-                let Some(body_index) = element_at(elements, node.markup_start.unwrap())
-                else {
-                    continue;
-                };
-                let Some(parent) = elements[body_index].parent else {
-                    continue;
-                };
-                let number = label.as_str();
-                let mut markers = elements.iter().enumerate().filter_map(|(index, element)| {
-                    let number_index = element.parent?;
-                    let number_element = &elements[number_index];
-                    let id = element.attributes.get("id")?;
-                    let opaque = id.strip_prefix("co_footnote_")?;
-                    (element.tag == "span"
-                        && !opaque.is_empty()
-                        && number_element.tag == "div"
-                        && number_element.has_class("co_footnoteNumber")
-                        && number_element.parent == Some(parent)
-                        && identities.get(id.as_str()).copied().flatten() == Some(index)
-                        && printed_range(index, number) == Some(*range))
-                    .then_some(opaque)
-                });
-                let Some(opaque) = markers.next() else {
-                    continue;
-                };
-                if markers.next().is_some() {
-                    continue;
-                }
-                let prefix = format!("co_fnRef_{opaque}_ID");
-                let mut references = reference_spans.iter().filter_map(|&index| {
-                    let reference = &elements[index];
-                    let id = reference.attributes.get("id")?;
-                    let suffix = id.strip_prefix(&prefix)?;
-                    let range = printed_range(index, number)?;
-                    (reference.tag == "sup"
-                        && !suffix.is_empty()
-                        && identities.get(id.as_str()).copied().flatten() == Some(index)
-                        && note_owner(index).is_none()
-                        && reference.markup_end <= node.markup_start?)
-                        .then_some(range)
-                });
-                let reference = references.next();
-                if references.next().is_none() {
-                    if let Some(reference) = reference {
-                        // The literal opaque identity links the superscript to
-                        // its sibling label, without inventing an href or body ID.
-                        updates.push((note_index, None, Some(reference)));
-                    }
-                }
-                continue;
-            }
-            if note_label(note).start != note_label(note).end {
-                continue;
-            }
-            if node.anchor.is_none()
-                && (node.markup_tag.as_deref() == Some("footnote_body")
-                    || (node.markup_tag.as_deref() == Some("div")
-                        && node.markup_attributes.get("class").is_some_and(|classes| {
-                            classes
-                                .split_ascii_whitespace()
-                                .any(|class| class == "footnote")
-                        })))
-            {
-                let Some(number) = node.label.as_deref().filter(|number| {
-                    *number == "*"
-                        || (short_number(number))
-                }) else {
-                    continue;
-                };
-                let mut markers = elements.iter().enumerate().filter_map(|(index, element)| {
-                    let id = element.attributes.get("id")?;
-                    let scoped_label = id
-                        .strip_prefix("op")
-                        .and_then(|value| value.split_once('-'));
-                    (element.tag == "sup"
-                        && (id.strip_prefix("fn") == Some(number)
-                            || scoped_label.is_some_and(|(opinion, label)| {
-                                node.markup_tag.as_deref() == Some("div")
-                                    && !opinion.is_empty()
-                                    && opinion.bytes().all(|byte| byte.is_ascii_digit())
-                                    && label.strip_prefix("fn") == Some(number)
-                            }))
-                        && identities.get(id.as_str()).copied().flatten() == Some(index)
-                        && note_owner(index) == node.markup_start
-                        && printed_range(index, number)
-                            .is_some_and(|range| range.start == note.range.start))
-                    .then_some(index)
-                });
-                let Some(marker_index) = markers.next() else {
-                    continue;
-                };
-                if markers.next().is_some() {
-                    continue;
-                }
-                let marker = &elements[marker_index];
-                let Some(label_range) = printed_range(marker_index, number) else {
-                    continue;
-                };
-                if !marker.is("sup")
-                    || node.markup_start.is_none()
-                    || note_owner(marker_index) != node.markup_start
-                    || label_range.start != note.range.start
-                    || !coordinates
-                        .slice_utf16(label_range.end..note.range.end)
-                        .is_some_and(|body| body.chars().any(char::is_alphabetic))
-                {
-                    continue;
-                }
-                updates.push((note_index, Some(label_range), None));
-                if !note.calls.is_empty() {
-                    continue;
-                }
-                let forward_href = format!("#{}", marker.attributes["id"]);
-                if elements
-                    .iter()
-                    .filter(|element| {
-                        element.is("a")
-                            && element.attributes.get("href") == Some(&forward_href)
-                    })
-                    .count()
-                    != 1
-                {
-                    continue;
-                }
-                let mut pairs = elements.iter().enumerate().filter_map(|(index, backlink)| {
-                    if !backlink.is("a")
-                        || backlink.parent != Some(marker_index)
-                        || printed_range(index, number) != Some(label_range)
-                    {
-                        return None;
-                    }
-                    let reference_id = backlink.attributes.get("href")?.strip_prefix('#')?;
-                    let reference_index = identities.get(reference_id).copied().flatten()?;
-                    let reference = &elements[reference_index];
-                    let range = printed_range(reference_index, number)?;
-                    if !reference.is("sup")
-                        || note_owner(reference_index).is_some()
-                        || reference.markup_end > node.markup_start?
-                        || elements
-                            .iter()
-                            .enumerate()
-                            .filter(|(index, element)| {
-                                element.is("a")
-                                    && element.parent == Some(reference_index)
-                                    && element.attributes.get("href") == Some(&forward_href)
-                                    && printed_range(*index, number) == Some(range)
-                            })
-                            .count()
-                            != 1
-                    {
-                        return None;
-                    }
-                    Some(range)
-                });
-                let pair = pairs.next();
-                if pairs.next().is_none() {
-                    // IDs belong to the actual superscripts, not the idless
-                    // note container. Preserve that source ownership while
-                    // adding the reciprocal semantic reference.
-                    updates.last_mut().unwrap().2 = pair;
-                }
-                continue;
-            }
-            let Some(body_id) = node.anchor.as_deref() else {
-                continue;
-            };
-            let Some(number) = body_id.strip_prefix("ftn").filter(|number| {
-                short_number(number)
-            }) else {
-                continue;
-            };
-            let Some(owner_index) = identities.get(body_id).copied().flatten() else {
-                continue;
-            };
-            let owner = &elements[owner_index];
-            if !owner.is("div")
-                || node.markup_start != Some(owner.markup_start)
-            {
-                continue;
-            }
-            let body_name = format!("_{body_id}");
-            let reference_name = format!("_ftnref{number}");
-            let owner_scope = document_owners[owner_index];
-            if node.source == Derivation::Native
-                && node.label.as_deref() == Some(number)
-                && owner.attributes.get("id").map(String::as_str) == Some(body_id)
-                && !identities.contains_key(body_name.as_str())
-                && !identities.contains_key(reference_name.as_str())
-                && node
-                    .label
-                    .as_deref()
-                    .is_some_and(|label| native_body_counts.get(&(owner_scope, label)) == Some(&1))
-            {
-                let printed = format!("[{number}]");
-                let marker_range = |index| {
-                    let range = printed_range(index, number)?;
-                    (coordinates.slice_utf16(range.start..range.end) == Some(printed.as_str()))
-                        .then_some(range)
-                };
-                let mut labels = anonymous_markers.iter().filter_map(|&index| {
-                    let range = printed_range(index, number)?;
-                    let printed_label = if elements[index].is("sup") {
-                        number
-                    } else {
-                        printed.as_str()
-                    };
-                    (coordinates.slice_utf16(range.start..range.end) == Some(printed_label)
-                        && note_owner(index) == Some(owner.markup_start)
-                        && document_owners[index] == owner_scope
-                        && range.start == note.range.start)
-                        .then_some(range)
-                });
-                if let Some(label_range) = labels.next().filter(|range| {
-                    coordinates
-                        .slice_utf16(range.end..note.range.end)
-                        .is_some_and(|body| body.chars().any(char::is_alphabetic))
-                }) {
-                    if labels.next().is_some() {
-                        continue;
-                    }
-                    // A printed label is independent of whether the
-                    // corresponding reference is absent or already known.
-                    updates.push((note_index, Some(label_range), None));
-                    if !note.calls.is_empty() {
-                        continue;
-                    }
-                    let mut references = anonymous_markers.iter().filter_map(|&index| {
-                        if !elements[index].is("span")
-                            || !elements[index].has_class("MsoFootnoteReference")
-                        {
-                            return None;
-                        }
-                        let range = marker_range(index)?;
-                        (note_owner(index).is_none() && document_owners[index] == owner_scope)
-                            .then_some((index, range))
-                    });
-                    if let Some((index, range)) = references.next() {
-                        if references.next().is_none()
-                            && elements[index].markup_end <= owner.markup_start
-                        {
-                            // The semantic pair has no source fragment.
-                            updates.last_mut().unwrap().2 = Some(range);
-                        }
-                    }
-                    continue;
-                }
-            }
-            let Some(body_bookmark_index) = identities.get(body_name.as_str()).copied().flatten()
-            else {
-                continue;
-            };
-            let body_bookmark = &elements[body_bookmark_index];
-            if !body_bookmark.is("a")
-                || body_bookmark.range.start != body_bookmark.range.end
-                || body_bookmark.attributes.contains_key("href")
-                || body_bookmark.attributes.get("name") != Some(&body_name)
-                || note_owner(body_bookmark_index) != Some(owner.markup_start)
-            {
-                continue;
-            }
-            let Some(paragraph) = body_bookmark.parent else {
-                continue;
-            };
-            if !elements[paragraph].is("p") {
-                continue;
-            }
-            let printed = number;
-            let mut labels = elements.iter().enumerate().filter_map(|(index, element)| {
-                if !element.is("a")
-                    || element.parent != Some(paragraph)
-                    || note_owner(index) != Some(owner.markup_start)
-                {
-                    return None;
-                }
-                let mut superscripts =
-                    elements.iter().enumerate().filter_map(|(sup_index, sup)| {
-                        (sup.is("sup")
-                            && parent_tag(sup_index, "a") == Some(index))
-                        .then(|| printed_range(sup_index, printed))
-                        .flatten()
-                        .filter(|range| range.start == note.range.start)
-                    });
-                let superscript = superscripts.next();
-                if superscripts.next().is_some() {
-                    return None;
-                }
-                let range = superscript.or_else(|| {
-                    elements[paragraph].has_class("MsoFootnoteText")
-                        .then(|| printed_range(index, printed))
-                        .flatten()
-                })?;
-                Some((index, element, range))
-            });
-            let Some((label_index, label, label_range)) = labels.next() else {
-                continue;
-            };
-            if labels.next().is_some() {
-                continue;
-            }
-            if body_bookmark.markup_end > label.markup_start
-                || body_bookmark.range.start != label_range.start
-                || label_range.start != note.range.start
-                || !coordinates
-                    .slice_utf16(label_range.end..note.range.end)
-                    .is_some_and(|body| body.chars().any(char::is_alphabetic))
-            {
-                continue;
-            }
-            // The leading declared label is independent of a reference's
-            // printed text or href. Keep a conflict without losing the label.
-            updates.push((note_index, Some(label_range), None));
-            if !note.calls.is_empty() {
-                continue;
-            }
-            let Some(reference_bookmark_index) =
-                identities.get(reference_name.as_str()).copied().flatten()
-            else {
-                continue;
-            };
-            let reference_bookmark = &elements[reference_bookmark_index];
-            if !reference_bookmark.is("a")
-                || reference_bookmark.range.start != reference_bookmark.range.end
-                || reference_bookmark.attributes.contains_key("href")
-                || reference_bookmark.attributes.get("name") != Some(&reference_name)
-                || note_owner(reference_bookmark_index).is_some()
-            {
-                continue;
-            }
-            let Some(reference_paragraph) = parent_tag(reference_bookmark_index, "p") else {
-                continue;
-            };
-            let Some((prefix, target)) = label
-                .attributes
-                .get("href")
-                .and_then(|href| href.rsplit_once('#'))
-            else {
-                continue;
-            };
-            if prefix.is_empty() || target != reference_name {
-                continue;
-            }
-            if printed_range(label_index, printed) != Some(label_range) {
-                continue;
-            }
-            let mut matches = reference_spans
-                .iter()
-                .filter_map(|&span_index| {
-                    if note_owner(span_index).is_some() {
-                        return None;
-                    }
-                    let reference_index = parent_tag(span_index, "a")?;
-                    let reference = &elements[reference_index];
-                    let range = printed_range(span_index, &printed)?;
-                    (reference
-                        .attributes
-                        .get("href")
-                        .and_then(|href| href.rsplit_once('#'))
-                        == Some((prefix, body_name.as_str()))
-                        && printed_range(reference_index, &printed) == Some(range)
-                        && reference_bookmark.markup_end <= reference.markup_start
-                        && reference.markup_end <= owner.markup_start
-                        && reference_bookmark.range.start == range.start
-                        && parent_tag(reference_index, "p") == Some(reference_paragraph))
-                    .then_some((reference_index, range))
-                })
-                .collect::<Vec<_>>();
-            matches.sort_unstable_by_key(|(index, range)| (*index, range.start, range.end));
-            matches.dedup();
-            if matches.len() != 1 {
-                continue;
-            }
-            // Reciprocal bookmarks support the semantic pair without claiming
-            // that the preserved absolute href is the current source URI.
-            updates.last_mut().unwrap().2 = Some(matches[0].1);
-        }
-        (updates, printed_updates)
-    };
-    for (index, label_range, reference) in updates {
-        let note = &mut structure.nodes[index];
-        if let Some(label_range) = label_range {
-            note.marker_range = Some(label_range);
-            note.range.start = label_range.end;
-            note.ranges.retain_mut(|range| {
-                range.start = range.start.max(label_range.end);
-                range.start < range.end
-            });
-        }
-        if let Some(reference_range) = reference {
-            note.calls.push(reference_range);
-        }
-    }
-    let mut markers = HashMap::new();
-    for (index, marker, label, printed, references) in printed_updates {
-        let note = &mut structure.nodes[index];
-        note.marker_range = Some(marker);
-        markers.insert(note.id.clone(), (marker, label, printed));
-        if !references.is_empty() {
-            note.calls = references;
-        }
-    }
-    // The body is already supplied. Attach its printed marker/reference
-    // evidence without moving its range, identity or existing stronger links.
-    if !markers.is_empty() {
-        for node in &mut structure.nodes {
-            if let Some((marker, label, printed)) = markers.get(&node.id) {
-                node.marker_range = Some(*marker);
-                node.label = Some(label.clone());
-                let aliases = node.aliases.get_or_insert_with(Vec::new);
-                for alias in [printed.clone(), format!("footnote {printed}")] {
-                    if !aliases.contains(&alias) {
-                        aliases.push(alias);
-                    }
-                }
-            }
-        }
-    }
-}
-
 pub(super) fn courtlistener_declared_note_marker(
     elements: &[MarkupElement],
     index: usize,
@@ -1950,7 +1341,7 @@ pub(super) fn finish(
     structure: &mut DocumentStructure,
     note_references: Vec<(String, ScalarRange)>,
     matched_role_starts: &HashSet<usize>,
-    (printed_notes, sibling_note_markers): (Vec<(StructureNode, Vec<ScalarRange>)>, HashMap<usize, (String, ScalarRange)>),
+    printed_notes: Vec<(StructureNode, Vec<ScalarRange>)>,
     heading_exclusions: &[ScalarRange],
     body_exclusions: &[ScalarRange],
 ) {
@@ -1958,28 +1349,40 @@ pub(super) fn finish(
     let text_index = ScalarCoordinates::new(structure.query_text());
     clip_courtlistener_paragraphs_to_opinions(structure, matched_role_starts);
     native_table_coordinates(structure, &text_index);
-    // The links to an anchor: a link's `#target`, and a reference's `anchoridref` (CAP's).
-    let mut references = HashMap::<String, Vec<ScalarRange>>::new();
-    let coordinates = ScalarText::with_coordinates(structure.query_text(), &text_index);
-    let idrefs = structure.markup_elements.iter().filter(|element| element.is("footnotereference")).filter_map(|element| {
-        Some((element.attributes.get("anchoridref")?.clone(), printed(&coordinates, element.range).filter(|(label, _)| !label.is_empty())?.1))
-    }).collect::<Vec<_>>();
-    for (target, range) in note_references.into_iter().chain(idrefs) {
-        references.entry(target).or_default().push(range);
-    }
-    // Each note the markup declares its calls, by its anchor where one node alone holds that anchor.
-    let mut anchor_counts = HashMap::<String, usize>::new();
-    for node in &structure.nodes {
-        if let Some(anchor) = &node.anchor {
-            *anchor_counts.entry(anchor.clone()).or_default() += 1;
+    // Each link to an anchor (a link's `#target`, CAP's `anchoridref`) calls the note that anchor names, or the note that holds
+    // the element it names (Word's `<a href="#_ftn1">` its note's bookmark), from outside that note. The links no note takes
+    // are left to name notes only a bookmark marks (`bookmarked_notes`).
+    let (calls, references) = {
+        let coordinates = ScalarText::with_coordinates(structure.query_text(), &text_index);
+        let elements = &structure.markup_elements;
+        let idrefs = elements.iter().filter(|element| element.is("footnotereference")).filter_map(|element| {
+            Some((element.attributes.get("anchoridref")?.clone(), printed(&coordinates, element.range).filter(|(label, _)| !label.is_empty())?.1))
+        }).collect::<Vec<_>>();
+        let named = named_elements(elements);
+        let mut anchors = HashMap::<&str, Option<usize>>::new();
+        for (index, node) in structure.nodes.iter().enumerate() {
+            if let Some(anchor) = &node.anchor {
+                unique(&mut anchors, anchor.as_str(), Some(index));
+            }
         }
-    }
-    for node in structure.nodes.iter_mut().filter(|node| node.kind == NodeKind::Footnote && node.source == Derivation::Native) {
-        if let Some(calls) = node.anchor.as_deref().filter(|anchor| anchor_counts.get(*anchor) == Some(&1)).and_then(|anchor| references.remove(anchor)) {
-            node.calls = calls;
+        let notes = structure.nodes.iter().enumerate().filter(|(_, node)| node.kind == NodeKind::Footnote).filter_map(|(index, node)| Some((node.markup_start?, index))).collect::<HashMap<_, _>>();
+        let mut calls = Vec::new();
+        let mut left = HashMap::<String, Vec<ScalarRange>>::new();
+        for (target, range) in note_references.into_iter().chain(idrefs) {
+            let note = anchors.get(target.as_str()).copied().flatten().filter(|&index| structure.nodes[index].kind == NodeKind::Footnote).or_else(|| {
+                let at = named.get(target.as_str()).copied().flatten()?;
+                std::iter::once(at).chain(ancestors(elements, at)).find_map(|at| notes.get(&elements[at].markup_start).copied())
+            }).filter(|&index| !(structure.nodes[index].range.start <= range.start && range.end <= structure.nodes[index].range.end));
+            match note {
+                Some(index) => calls.push((index, range)),
+                None => left.entry(target).or_default().push(range),
+            }
         }
+        (calls, left)
+    };
+    for (index, range) in calls {
+        structure.nodes[index].calls.push(range);
     }
-    supplement_courtlistener_bookmarked_notes(structure, &text_index, &sibling_note_markers);
     clip_courtlistener_pre_note_bodies(structure, &text_index);
     crate::inference::supplement_source_formatted_headings(
         structure,
@@ -1987,8 +1390,7 @@ pub(super) fn finish(
         body_exclusions,
     );
     supplement_courtlistener_printed_notes(structure, printed_notes);
-    label_notes(structure, &text_index);
-    pair_notes(structure, &text_index, references);
+    read_notes(structure, &text_index, references);
     drop_note_numbered_paragraphs(structure);
     courtlistener_division_headings(structure, &text_index);
     courtlistener_source_roles(structure);
@@ -2007,7 +1409,7 @@ pub(super) fn evidence(
     rendered_exclusions: &mut Vec<ScalarRange>,
     mut recovered_body_blocks: Vec<StructureNode>,
     matched_role_starts: &HashSet<usize>,
-) -> (Vec<(StructureNode, Vec<ScalarRange>)>, HashMap<usize, (String, ScalarRange)>) {
+) -> Vec<(StructureNode, Vec<ScalarRange>)> {
     let coordinates = ScalarText::new(text);
     if matches!(scope.kind, ScopeKind::Complete)
         && matches!(
@@ -2087,11 +1489,10 @@ pub(super) fn evidence(
             }
         }
     }
-    let printed_notes = match markup.filter(|_| matches!(scope.kind, ScopeKind::Complete)) {
+    match markup.filter(|_| matches!(scope.kind, ScopeKind::Complete)) {
         Some(markup) => courtlistener_printed_note_blocks(markup, elements, &coordinates, rendered_blocks),
         None => Vec::new(),
-    };
-    (printed_notes, sibling_note_markers)
+    }
 }
 
 /// A note's label: its marker, or an empty range at its body's start where it prints none.
@@ -2099,55 +1500,69 @@ fn note_label(note: &crate::StructureNode) -> ScalarRange {
     note.marker_range.unwrap_or(ScalarRange { start: note.range.start, end: note.range.start })
 }
 
-/// Each note labelled as it prints: a symbol's slug read as its symbol, a label the source gives none read off the note's
-/// opening, and an opening that merely repeats the label set apart as the note's marker, its body after it.
-fn label_notes(structure: &mut DocumentStructure, text_index: &ScalarCoordinates) {
-    let coordinates = ScalarText::with_coordinates(structure.query_text(), text_index);
-    let read = structure.nodes.iter().map(|node| (node.kind == NodeKind::Footnote).then(|| {
-        note_opening(coordinates.slice_utf16(node.range.start..node.range.end).unwrap_or(""), node.label.clone().unwrap_or_default())
-    })).collect::<Vec<_>>();
-    for (node, read) in structure.nodes.iter_mut().zip(read) {
-        let Some((label, echo)) = read else { continue };
-        node.label = Some(label);
-        if echo > 0 {
-            let start = node.range.start;
-            node.marker_range.get_or_insert(ScalarRange { start, end: start + echo });
-            node.range.start = (start + echo).min(node.range.end);
-            if let Some(first) = node.ranges.first_mut() {
-                first.start = (first.start + echo).min(first.end);
-            }
-        }
-    }
-}
-
-/// Each note with all its calls, once the anchors and bookmarks are paired: a citation's volume the source took for a note
-/// joins the note before; notes only the links no note took or a word processor's styles mark are read; every other mark
-/// (Harvard's footnotemark, CAP's footnote_reference, LDML's and any superscript, a footnote link) finds its note by label
-/// (`answer_by_label`), after it splits a note list set as one block; a numbered note still uncalled takes a "[N]" the text
-/// prints (`printed_calls`). The marks no note answers stand as `unmatched-call` spans.
-fn pair_notes(structure: &mut DocumentStructure, text_index: &ScalarCoordinates, links: HashMap<String, Vec<ScalarRange>>) {
-    let (mut notes, mut rest): (Vec<_>, Vec<_>) = std::mem::take(&mut structure.nodes).into_iter().partition(|node| node.kind == NodeKind::Footnote);
-    for note in notes.iter_mut().filter(|note| note.ranges.is_empty()) {
-        note.ranges = vec![note.range];
-    }
+/// Each note read once, as it prints and as it is called, after the anchors and bookmarks are paired. Its label is as it
+/// prints (`note_opening`): a symbol's slug read as its symbol, a label the source gives none read off its opening, an opening
+/// that merely repeats the label set apart as its marker. A number past the next that opens on a reporter's abbreviation,
+/// `<a class="footnote">830</a><p>F.Supp. at 1081`, is a citation's volume the source took for a note's number: no note,
+/// the end of the one before. A body running on through the next numbers the marks call is that many notes
+/// (`listed_notes`). Notes only a bookmark marks are read (`bookmarked_notes`). Every other mark (`note_marks`) finds its note
+/// by label (`answer_by_label`), and a numbered note still uncalled takes a call printed as words (`printed_calls`); the marks
+/// no note answers stand as `unmatched-call` spans.
+fn read_notes(structure: &mut DocumentStructure, text_index: &ScalarCoordinates, links: HashMap<String, Vec<ScalarRange>>) {
+    let (notes, mut rest): (Vec<_>, Vec<_>) = std::mem::take(&mut structure.nodes).into_iter().partition(|node| node.kind == NodeKind::Footnote);
     let text = structure.query_text();
     let coordinates = ScalarText::with_coordinates(text, text_index);
     let elements = &structure.markup_elements;
-    let joined = join_citation_fragments(&mut notes, &coordinates);
-    for node in rest.iter_mut().chain(notes.iter_mut()) {
+    let marks = note_marks(elements, &coordinates);
+    let called = marks.iter().filter_map(|(label, _)| label.parse::<u32>().ok()).collect::<HashSet<_>>();
+    let mut read = Vec::<StructureNode>::with_capacity(notes.len());
+    let mut joined = HashMap::new();
+    for mut note in notes {
+        if note.ranges.is_empty() {
+            note.ranges = vec![note.range];
+        }
+        let (label, echo) = note_opening(coordinates.slice_utf16(note.range.start..note.range.end).unwrap_or(""), note.label.take().unwrap_or_default());
+        if echo > 0 {
+            let start = note.range.start;
+            note.marker_range.get_or_insert(ScalarRange { start, end: start + echo });
+            note.range.start = (start + echo).min(note.range.end);
+            note.ranges[0].start = (note.ranges[0].start + echo).min(note.ranges[0].end);
+        }
+        let before = read.iter().rev().find_map(|held| held.label.as_deref().unwrap_or("").parse::<u32>().ok());
+        let volume = label.parse::<u32>().ok().zip(before).is_some_and(|(number, before)| number > before + 1)
+            && coordinates.slice_utf16(note.range.start..note.range.end).is_some_and(opens_on_reporter);
+        if let Some(last) = read.last_mut().filter(|_| volume) {
+            last.range.end = note.range.end;
+            last.ranges.extend(note.ranges);
+            joined.insert(note.id, last.id.clone());
+            continue;
+        }
+        note.label = Some(label);
+        let listed = listed_notes(&mut note, &coordinates, &called);
+        read.push(note);
+        read.extend(listed);
+    }
+    for node in rest.iter_mut().chain(read.iter_mut()) {
         if let Some(kept) = node.parent_id.as_ref().and_then(|parent| joined.get(parent)) {
             node.parent_id = Some(kept.clone());
         }
     }
-    anchored_notes(elements, &coordinates, utf16_len(text), &links, &mut notes);
-    word_notes(elements, &coordinates, &mut notes);
-    let calls = unmatched_calls(elements, &coordinates, &notes);
-    split_note_lists(&coordinates, &calls, &mut notes);
-    let calls = answer_by_label(&mut notes, calls);
+    bookmarked_notes(elements, &coordinates, utf16_len(text), &links, &mut read);
+    let mut answered = read.iter().flat_map(|note| note.calls.iter().chain(&note.ranges).copied()).collect::<Vec<_>>();
+    answered.sort_by_key(|known| known.end);
+    let calls = marks.into_iter().filter(|(_, range)| {
+        !answered[answered.partition_point(|known| known.end <= range.start)..].iter().take_while(|known| known.start < range.end || known.end <= range.end).any(|known| known.start < range.end)
+    }).map(|(label, range)| {
+        let mut call = StructureNode::new(format!("unmatched-call-{}", range.start), NodeKind::Span, range, crate::ENGINE_ORIGIN, Derivation::Native, None);
+        call.grammar = Some("unmatched-call".to_owned());
+        call.label = Some(label);
+        call
+    }).collect();
+    let calls = answer_by_label(&mut read, calls);
     let opens = rest.iter().filter(|block| matches!(block.kind, NodeKind::Paragraph | NodeKind::Prose | NodeKind::Quote | NodeKind::ListItem))
         .flat_map(|block| [Some(block.range.start), block.marker_range.map(|marker| marker.start)]).flatten().collect::<HashSet<_>>();
-    printed_calls(text, &coordinates, &opens, &mut notes);
-    rest.extend(notes);
+    printed_calls(text, &coordinates, &opens, &mut read);
+    rest.extend(read);
     rest.extend(calls);
     structure.nodes = rest;
 }
@@ -2163,59 +1578,50 @@ fn found_note(label: String, body: ScalarRange, calls: Vec<ScalarRange>, grammar
     note
 }
 
-/// A citation that crossed a block, `<a class="footnote">830</a><p>F.Supp. at 1081`: the source took its volume for a note's
-/// number. It is the end of the note before. Each note joined, by the id of the note it joined.
-fn join_citation_fragments(notes: &mut Vec<StructureNode>, coordinates: &ScalarText) -> HashMap<String, String> {
-    let mut joined = HashMap::new();
-    let mut kept = Vec::<StructureNode>::with_capacity(notes.len());
-    for note in std::mem::take(notes) {
-        let number = note.label.as_deref().unwrap_or("").parse::<u32>().ok();
-        let before = kept.iter().rev().find_map(|held| held.label.as_deref().unwrap_or("").parse::<u32>().ok());
-        let fragment = number.zip(before).is_some_and(|(number, before)| number > before + 1)
-            && coordinates.slice_utf16(note.range.start..note.range.end).is_some_and(opens_on_reporter);
-        match kept.last_mut().filter(|_| fragment) {
-            Some(last) => {
-                last.range.end = note.range.end;
-                last.ranges.extend(note.ranges);
-                joined.insert(note.id, last.id.clone());
-            }
-            None => kept.push(note),
+/// The notes a body set as one block holds past its own, "... 110. Id. 111. See note 86 supra.": numbers climbing by ones
+/// from the note's own, each after a finished sentence and `called` by a mark. Two at least; the note ends where they begin.
+fn listed_notes(note: &mut StructureNode, coordinates: &ScalarText, called: &HashSet<u32>) -> Vec<StructureNode> {
+    const LEAST_RUN: usize = 2;
+    static NUMBER: OnceLock<Regex> = OnceLock::new();
+    let number = NUMBER.get_or_init(|| Regex::new(r"(?-u:\b)(\d{1,3})\. +\p{Lu}").unwrap());
+    let Ok(mut next) = note.label.as_deref().unwrap_or("").parse::<u32>().map(|label| label + 1) else { return Vec::new() };
+    let [range] = note.ranges[..] else { return Vec::new() };
+    let Some(body) = coordinates.slice_utf16(range.start..range.end) else { return Vec::new() };
+    let mut opens = Vec::new();
+    for capture in number.captures_iter(body) {
+        let whole = capture.get(0).unwrap();
+        if called.contains(&next) && capture[1].parse::<u32>().is_ok_and(|found| found == next) && crate::inference::ends_sentence(body[..whole.start()].trim_end(), true) {
+            opens.push((next, whole.start(), capture.get(1).unwrap().end() + 1));
+            next += 1;
         }
     }
-    *notes = kept;
-    joined
-}
-
-/// Notes a word processor exported as styled paragraphs, `<p class="MsoFootnoteText">[1] We decide this case ...`: the label opens
-/// the note, and a paragraph of the style with none carries the note before it on.
-fn word_notes(elements: &[MarkupElement], coordinates: &ScalarText, notes: &mut Vec<StructureNode>) {
-    static LABEL: OnceLock<Regex> = OnceLock::new();
-    let label = LABEL.get_or_init(|| Regex::new(r"^\[?(\d{1,3}|\*+)\]?[.)]?\s+\S").unwrap());
-    let held = notes.iter().flat_map(|note| note.ranges.iter().copied()).collect::<Vec<_>>();
-    let mut found = Vec::<StructureNode>::new();
-    for element in elements.iter().filter(|element| element.tag == "p" && element.attributes.get("class").is_some_and(|class| class == "MsoFootnoteText")) {
-        let range = element.range;
-        if held.iter().any(|known| known.start < range.end && range.start < known.end) {
-            continue;
-        }
-        let Some(printed) = coordinates.slice_utf16(range.start..range.end).map(trim_js).filter(|printed| !printed.is_empty()) else { continue };
-        match label.captures(printed) {
-            Some(capture) => found.push(found_note(capture[1].to_owned(), range, Vec::new(), "word")),
-            None => if let Some(last) = found.last_mut() {
-                last.range.end = range.end;
-                last.ranges.push(range);
-            },
-        }
+    if opens.len() < LEAST_RUN {
+        return Vec::new();
     }
-    notes.append(&mut found);
-    notes.sort_by_key(|note| note.range.start);
+    let at = |byte: usize| range.start + utf16_len(&body[..byte]);
+    note.range.end = at(opens[0].1);
+    note.ranges[0].end = note.range.end;
+    opens.iter().enumerate().map(|(index, (label, _, words))| {
+        let stop = opens.get(index + 1).map_or(range.end, |next| at(next.1));
+        found_note(label.to_string(), ScalarRange { start: at(*words), end: stop }, Vec::new(), "list")
+    }).collect()
 }
 
-/// Notes that are only anchors: a number the links no note's anchor took name, from earlier in the text
-/// (`<a name="N_1_">1.</a>` and `<a href="#N_1_">`). Each runs to the next.
-fn anchored_notes(elements: &[MarkupElement], coordinates: &ScalarText, end: usize, links: &HashMap<String, Vec<ScalarRange>>, notes: &mut Vec<StructureNode>) {
+/// Notes only a bookmark marks: a number the links no note's anchor took name, from earlier in the text (`<a name="N_1_">1.</a>`
+/// and `<a href="#N_1_">`, Word's `<a name="_ftn1" href="#_ftnref1">[1]</a>`). Each runs to the next, within its own block;
+/// a word processor's note (`p.MsoFootnoteText`) runs on through the paragraphs of its style that open on no label.
+fn bookmarked_notes(elements: &[MarkupElement], coordinates: &ScalarText, end: usize, links: &HashMap<String, Vec<ScalarRange>>, notes: &mut Vec<StructureNode>) {
     static LABEL: OnceLock<Regex> = OnceLock::new();
+    static OPENS: OnceLock<Regex> = OnceLock::new();
     let label = LABEL.get_or_init(|| Regex::new(r"^\[?(?:Footnote |FN ?)?(\d{1,3}|\*+|†|‡)\]?[.:)]?$").unwrap());
+    let opens = OPENS.get_or_init(|| Regex::new(r"^\[?(\d{1,3}|\*+)\]?[.)]?\s+\S").unwrap());
+    let styled = elements.iter().enumerate().filter(|(_, element)| element.is("p") && element.has_class("MsoFootnoteText")).map(|(index, _)| index).collect::<Vec<_>>();
+    let block_end = |parent: usize| match styled.binary_search(&parent) {
+        Ok(at) => styled[at + 1..].iter().take_while(|&&next| {
+            coordinates.slice_utf16(elements[next].range.start..elements[next].range.end).map(trim_js).is_some_and(|printed| !opens.is_match(printed))
+        }).last().map_or(elements[parent].range.end, |&last| elements[last].range.end),
+        Err(_) => elements[parent].range.end,
+    };
     let taken = |range: ScalarRange, notes: &[StructureNode]| notes.iter().any(|note| {
         note.ranges.iter().chain(&note.calls).any(|known| known.start < range.end.max(range.start + 1) && range.start < known.end)
     });
@@ -2224,8 +1630,7 @@ fn anchored_notes(elements: &[MarkupElement], coordinates: &ScalarText, end: usi
         let calls = links.get(name)?;
         let printed = coordinates.slice_utf16(element.range.start..element.range.end).map(trim_js)?;
         let number = label.captures(printed)?[1].to_owned();
-        // A note is its own block: the text after it is not its to take.
-        let block = element.parent.map_or(end, |parent| elements[parent].range.end);
+        let block = element.parent.map_or(end, block_end);
         (calls.iter().any(|call| call.start < element.range.start) && !taken(element.range, notes)).then(|| (element.range, number, calls.clone(), block))
     }).collect::<Vec<_>>();
     targets.sort_by_key(|target| target.0.start);
@@ -2233,25 +1638,23 @@ fn anchored_notes(elements: &[MarkupElement], coordinates: &ScalarText, end: usi
     for (index, (range, number, calls, block)) in targets.into_iter().enumerate() {
         let stop = stops.get(index + 1).copied().unwrap_or(end).min(block);
         let start = range.end.min(stop);
-        notes.push(found_note(number, ScalarRange { start, end: stop }, calls, "anchored"));
+        notes.push(found_note(number, ScalarRange { start, end: stop }, calls, "bookmarked"));
     }
     notes.sort_by_key(|note| note.range.start);
 }
 
-/// The note marks no anchor answered, each an `unmatched-call` span its label names: Harvard's footnotemark, CAP's
-/// footnote_reference ("[fn3]"), a superscript, a footnote link.
-fn unmatched_calls(elements: &[MarkupElement], coordinates: &ScalarText, notes: &[StructureNode]) -> Vec<StructureNode> {
+/// The note marks the markup prints, each with the label it names: Harvard's footnotemark, CAP's footnote_reference
+/// ("[fn3]") and footnotereference, a superscript, a footnote link. A power (10<sup>8</sup>) and a citation's volume
+/// (`<a class="footnote">830</a> F.Supp.`) are none; Colorado's mark is an empty superscript after its digits.
+fn note_marks(elements: &[MarkupElement], coordinates: &ScalarText) -> Vec<(String, ScalarRange)> {
     static SYMBOL: OnceLock<Regex> = OnceLock::new();
     let symbol = SYMBOL.get_or_init(|| Regex::new(r"^\[?(?:fn)?(\d{1,3}|\*+|†|‡|\([a-z0-9]\))\]?$").unwrap());
-    let mut answered = notes.iter().flat_map(|note| note.calls.iter().chain(&note.ranges).copied()).collect::<Vec<_>>();
-    answered.sort_by_key(|known| known.end);
     elements.iter().filter_map(|element| {
         let linked = element.tag == "a" && element.attributes.get("class").is_some_and(|class| class == "footnote")
             && !element.attributes.get("href").is_some_and(|href| href.ends_with("_ref"));
         if !(linked || matches!(element.tag.as_str(), "footnotemark" | "footnote_reference" | "sup") || element.is("footnotereference")) {
             return None;
         }
-        // Colorado's mark is an empty sup after the digits; 10<sup>8</sup> is a power.
         let before = (0..4).find_map(|short| coordinates.slice_utf16(element.range.start.saturating_sub(4 - short)..element.range.start)).unwrap_or("");
         let trailing = before.len() - before.trim_end_matches(|c: char| c.is_ascii_digit()).len();
         let empty = element.range.start == element.range.end && element.attributes.get("class").is_some_and(|class| class == "ldml-superscript");
@@ -2261,63 +1664,17 @@ fn unmatched_calls(elements: &[MarkupElement], coordinates: &ScalarText, notes: 
         let range = if empty { ScalarRange { start: element.range.start - trailing, end: element.range.end } } else { element.range };
         let printed = coordinates.slice_utf16(range.start..range.end).map(trim_js)?;
         let label = symbol.captures(printed)?[1].to_owned();
-        // `<a class="footnote">830</a> F.Supp. at 1081` is a citation's volume.
         let unlinked = element.tag == "a" && !element.attributes.contains_key("href");
         if unlinked && (0..12).find_map(|short| coordinates.slice_utf16(range.end..range.end + 12 - short)).is_some_and(opens_on_reporter) {
             return None;
         }
-        let known = answered[answered.partition_point(|known| known.end <= range.start)..].iter().take_while(|known| known.start < range.end || known.end <= range.end).any(|known| known.start < range.end);
-        (!known).then(|| {
-            let mut call = StructureNode::new(format!("unmatched-call-{}", range.start), NodeKind::Span, range, crate::ENGINE_ORIGIN, Derivation::Native, None);
-            call.grammar = Some("unmatched-call".to_owned());
-            call.label = Some(label);
-            call
-        })
+        Some((label, range))
     }).collect()
 }
 
 /// The label a call names, bare.
 pub(crate) fn called(call: &StructureNode) -> &str {
     plain_label(call.label.as_deref().unwrap_or(""))
-}
-
-/// A note whose body runs on through the next notes' numbers, "... 110. Id. 111. See note 86 supra.": a source's list of notes set
-/// as one block. Numbers climbing by ones from the note's own, after a finished sentence, are each a note if the text calls them.
-fn split_note_lists(coordinates: &ScalarText, calls: &[StructureNode], notes: &mut Vec<StructureNode>) {
-    const LEAST_RUN: usize = 2;
-    static NUMBER: OnceLock<Regex> = OnceLock::new();
-    let number = NUMBER.get_or_init(|| Regex::new(r"(?-u:\b)(\d{1,3})\. +\p{Lu}").unwrap());
-    let called = calls.iter().filter_map(|call| called(call).parse::<u32>().ok()).collect::<HashSet<_>>();
-    let mut added = Vec::new();
-    for note in notes.iter_mut().filter(|note| note.ranges.len() == 1) {
-        let Ok(mut next) = note.label.as_deref().unwrap_or("").parse::<u32>().map(|label| label + 1) else { continue };
-        let range = note.ranges[0];
-        let Some(body) = coordinates.slice_utf16(range.start..range.end) else { continue };
-        let mut opens = Vec::new();
-        for capture in number.captures_iter(body) {
-            let whole = capture.get(0).unwrap();
-            let closed = crate::inference::ends_sentence(body[..whole.start()].trim_end(), true);
-            if closed && called.contains(&next) && capture[1].parse::<u32>().is_ok_and(|found| found == next) {
-                opens.push((next, whole.start(), capture.get(1).unwrap().end() + 1));
-                next += 1;
-            }
-        }
-        if opens.len() < LEAST_RUN {
-            continue;
-        }
-        let first = range.start + utf16_len(&body[..opens[0].1]);
-        note.range.end = first;
-        note.ranges[0].end = first;
-        for (index, (label, _, words)) in opens.iter().enumerate() {
-            let stop = opens.get(index + 1).map_or(range.end, |next| range.start + utf16_len(&body[..next.1]));
-            let begin = range.start + utf16_len(&body[..*words]);
-            added.push(found_note(label.to_string(), ScalarRange { start: begin, end: stop }, Vec::new(), "list"));
-        }
-    }
-    if !added.is_empty() {
-        notes.append(&mut added);
-        notes.sort_by_key(|note| note.range.start);
-    }
 }
 
 /// Which note a mark answers, by label. The one note of a label takes every mark naming it. A label's several notes (each
