@@ -178,6 +178,10 @@ pub struct Line {
     pub source_tag: String,
     #[serde(default = "native_source")]
     pub source: String,
+    /// The line's type size (`line_font_size`), read once where a reader takes the pages (`read_sizes`); not stored
+    /// with them.
+    #[serde(skip)]
+    pub size: f64,
 }
 
 /// Where a line stands on its page, as the note pairer and the marker repair read it: the decided
@@ -370,6 +374,13 @@ pub fn line_font_size(line: &Line) -> f64 {
             (seen > target).then_some(*size)
         })
         .unwrap_or(0.0)
+}
+
+/// Each line's type size, read once (`Line::size`) for the readers that measure lines by it.
+pub fn read_sizes(pages: &mut [Page]) {
+    for line in pages.iter_mut().flat_map(|page| &mut page.lines) {
+        line.size = line_font_size(line);
+    }
 }
 
 

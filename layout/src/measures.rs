@@ -2,7 +2,7 @@
 //! share of a line set bold or italic, its commonest face, the page's typical line, a recognized
 //! page's off-grid sizes; and roman numerals read and written.
 
-use crate::{line_font_size, median, quantile, Line, Page};
+use crate::{median, quantile, Line, Page};
 use std::collections::HashMap;
 
 /// Whether a line's text ends on one of `stops`, any of `closers` (the closing marks that may follow a stop) and its
@@ -59,7 +59,7 @@ pub fn off_grid_sizes<'a>(lines: impl IntoIterator<Item = &'a Line>) -> usize {
     let mut characters: HashMap<i64, usize> = HashMap::new();
     for line in lines {
         let count = line.text.trim().chars().count();
-        let size = line_font_size(line);
+        let size = line.size;
         if count > 0 && size > 0.0 {
             *characters.entry((size * 10.0).round() as i64).or_default() += count;
         }
