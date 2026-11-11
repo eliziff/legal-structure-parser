@@ -283,39 +283,6 @@ pub struct NodeReading<'a> {
     pub prints_label: bool,
 }
 
-/// The members of a JSON object as serde_json writes it, compact: each `"key":value`, in order.
-fn object_members(object: &[u8]) -> Vec<&[u8]> {
-    let mut members = Vec::new();
-    let (mut depth, mut quoted, mut escaped, mut start) = (0usize, false, false, 1usize);
-    for (at, &byte) in object.iter().enumerate() {
-        if quoted {
-            match byte {
-                _ if escaped => escaped = false,
-                b'\\' => escaped = true,
-                b'"' => quoted = false,
-                _ => {}
-            }
-            continue;
-        }
-        match byte {
-            b'"' => quoted = true,
-            b'{' | b'[' => depth += 1,
-            b'}' | b']' => {
-                depth -= 1;
-                if depth == 0 && at > start {
-                    members.push(&object[start..at]);
-                }
-            }
-            b',' if depth == 1 => {
-                members.push(&object[start..at]);
-                start = at + 1;
-            }
-            _ => {}
-        }
-    }
-    members
-}
-
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CitedAuthority {
     pub citation: String,
@@ -411,7 +378,7 @@ pub struct DocumentStructure {
     pub doc_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub profile: Option<DetectionProfile>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub revision: String,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -498,29 +465,15 @@ impl DocumentStructure {
         }
     }
 
-    /// Identity of the complete queryable representation, excluding the prior digest itself: the
-    /// digest of the structure's JSON without its revision, its last member standing where the
-    /// revision stood (as serde_json's value tree, keeping order, removes a key). The structure is
-    /// written once and its top-level members reordered, never built as a value tree.
+    /// Identity of the complete queryable representation: the digest of the structure's JSON written without a
+    /// revision (an empty one is not written), straight into the digest.
     pub fn refresh_revision(&mut self) -> Result<(), serde_json::Error> {
         use sha2::{Digest, Sha256};
         let prior = std::mem::take(&mut self.revision);
-        let written = serde_json::to_vec(&*self);
-        self.revision = prior;
-        let written = written?;
-        let mut members = object_members(&written);
-        if let Some(at) = members.iter().position(|member| member.starts_with(br#""revision":"#)) {
-            members.swap_remove(at);
-        }
         let mut digest = Sha256::new();
-        digest.update(b"{");
-        for (k, member) in members.iter().enumerate() {
-            if k > 0 {
-                digest.update(b",");
-            }
-            digest.update(member);
-        }
-        digest.update(b"}");
+        let written = serde_json::to_writer(&mut digest, &*self);
+        self.revision = prior;
+        written?;
         self.revision = format!("{:x}", digest.finalize());
         Ok(())
     }

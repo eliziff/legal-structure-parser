@@ -33,7 +33,6 @@ pub use filing::{filing_cover, FiledBy, FilingCover, PartyGroup};
 use legal_structure_model::document;
 mod docx_lint;
 mod docx_numbering;
-use legal_structure_model::fingerprint;
 mod instrument;
 #[cfg(feature = "structure-inference")]
 mod instrument_contents;
@@ -67,7 +66,6 @@ pub use document::{
 };
 pub use docx_lint::*;
 pub use docx_numbering::*;
-pub use fingerprint::*;
 #[cfg(feature = "structure-inference")]
 pub use text_notes::{pair_numbered_footnotes, NumberedFootnotes};
 pub use instrument::*;

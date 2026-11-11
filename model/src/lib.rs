@@ -8,12 +8,19 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 
+/// The SHA-256 of a value's JSON, in hex, written straight into the digest: the key every cache of the stack uses.
+pub fn serialization_sha256(value: &impl Serialize) -> String {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    serde_json::to_writer(&mut digest, value).expect("a value of the model serializes");
+    format!("{:x}", digest.finalize())
+}
+
 mod analysis;
 mod assembly;
 pub mod definitions;
 pub mod document;
 pub mod docx;
-pub mod fingerprint;
 pub mod instrument;
 pub mod opinion;
 /// Laid-out pages and lines and note pairs, which the document model builds on.
@@ -34,7 +41,6 @@ pub use docx::{
     DocxCrossReferenceStatus, DocxNumberAnchor, DocxNumberingDuplicate, DocxNumberingGap,
     DocxNumberingResult, DocxStructureFacts,
 };
-pub use fingerprint::{document_fingerprint, serialization_sha256, DigestWriter, DocumentFingerprint, DocumentFingerprintCounts};
 pub use instrument::{
     InstrumentContentsEntry, InstrumentContentsOutline, InstrumentContentsReading,
     InstrumentContentsRefusal, InstrumentCrossReferenceCounts, InstrumentCrossReferenceEdge,
