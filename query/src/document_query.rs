@@ -315,6 +315,16 @@ pub struct DocumentViewerSlice<'a> {
     /// The slice is a heading the structure reads, not a block of text.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub heading: bool,
+    /// The marker its primary node prints ("(2)", "[12]"), emphasis marks aside, and where in `text` (UTF-16) the words
+    /// after it begin: 0 where the text does not open on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub marker: Option<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    pub body: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(Serialize)]
@@ -759,7 +769,19 @@ impl DocumentQuery {
             }
             let primary = primary.map(|index| anchors.remove(index));
             let slice_end = starts[index + 1];
-            let slice_text = js_trim(scalar.slice_utf16(start..slice_end).unwrap_or_default());
+            let raw = scalar.slice_utf16(start..slice_end).unwrap_or_default();
+            let slice_text = js_trim(raw);
+            // The primary's printed marker, where it stands in the slice; the source's text is the query's.
+            let leading = crate::utf16_len(&raw[..raw.len() - raw.trim_start_matches(crate::javascript_whitespace).len()]);
+            let marker = primary.filter(|_| document.rendered_text.is_none()).and_then(|node| node.marker_range)
+                .filter(|marker| start <= marker.start && marker.start < marker.end && marker.end <= slice_end);
+            let body = marker.filter(|marker| marker.start == start + leading).map_or(0, |marker| {
+                let after = scalar.slice_utf16(marker.end..slice_end).unwrap_or_default();
+                marker.end - start - leading
+                    + crate::utf16_len(&after[..after.len() - after.trim_start_matches(crate::javascript_whitespace).len()])
+            });
+            let marker = marker.and_then(|marker| scalar.slice_utf16(marker.start..marker.end))
+                .map(|printed| js_trim(printed).trim_matches(['*', '_']).to_owned()).filter(|printed| !printed.is_empty());
             if !slice_text.is_empty() || primary.is_some() || !anchors.is_empty() {
                 slices.push(DocumentViewerSlice {
                     start,
@@ -768,6 +790,8 @@ impl DocumentQuery {
                     anchors: anchors.into_iter().map(|anchor| document.reading(anchor)).collect(),
                     heading: primary.is_none() && headings.contains(&start),
                     primary: primary.map(|anchor| document.reading(anchor)),
+                    marker,
+                    body: body.min(crate::utf16_len(slice_text)),
                 });
             }
         }

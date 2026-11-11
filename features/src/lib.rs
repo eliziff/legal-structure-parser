@@ -47,7 +47,8 @@ pub use quote_location::{
 };
 #[cfg(feature = "quote-verification")]
 pub use quote_verification::*;
-pub use reading_order::{document_reading_order, ReadingOrderUnit};
+mod brief;
+pub use brief::{brief_citation_order, brief_text, BriefCitation, BriefCitationOrder, BriefText, BriefUnit};
 mod propositions;
 pub use propositions::{footnote_propositions, FootnotePropositions, PropositionUnit, QuoteContext};
 

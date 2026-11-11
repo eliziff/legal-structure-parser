@@ -45,22 +45,9 @@ pub enum SectionLocator {
 
 /// A citation's section locator read once ("s. 5 (2)", "section IV", "sec5(2)", "General Provisions").
 pub fn section_locator(locator: &str) -> Option<SectionLocator> {
-    static PREFIX: OnceLock<Regex> = OnceLock::new();
-    static CANONICAL_PREFIX: OnceLock<Regex> = OnceLock::new();
     static HEADING: OnceLock<Regex> = OnceLock::new();
     static NON_TITLE: OnceLock<Regex> = OnceLock::new();
-    let value = js_trim(locator);
-    let without_prefix = PREFIX
-        .get_or_init(|| {
-            Regex::new(&[r"(?iu)^(?:sections?|ss?\.?)", JS_WS, "+"].concat())
-                .expect("valid section prefix grammar")
-        })
-        .replace(value, "");
-    let without_prefix = CANONICAL_PREFIX
-        .get_or_init(|| {
-            Regex::new(r"(?iu)^sec([\p{L}\p{N}])").expect("valid canonical section grammar")
-        })
-        .replace(&without_prefix, "$1");
+    let without_prefix = section_words_off(locator);
     if let Some(label) = numbered_section_label(&compact_provision_label(&without_prefix)) {
         return Some(SectionLocator::Section(label));
     }
@@ -78,6 +65,36 @@ pub fn section_locator(locator: &str) -> Option<SectionLocator> {
         .replace_all(&lowercase, " ");
     let title = js_trim(&normalized);
     (!title.is_empty()).then(|| SectionLocator::Title(title.to_owned()))
+}
+
+/// A section locator with the words it may open on taken off: "s. 5 (2)", "section IV", "sec5(2)" are "5 (2)", "IV",
+/// "5(2)"; "secSchedule 1" is "Schedule 1".
+fn section_words_off(locator: &str) -> String {
+    static PREFIX: OnceLock<Regex> = OnceLock::new();
+    static CANONICAL_PREFIX: OnceLock<Regex> = OnceLock::new();
+    let without_prefix = PREFIX
+        .get_or_init(|| {
+            Regex::new(&[r"(?iu)^(?:sections?|ss?\.?)", JS_WS, "+"].concat())
+                .expect("valid section prefix grammar")
+        })
+        .replace(js_trim(locator), "");
+    CANONICAL_PREFIX
+        .get_or_init(|| Regex::new(r"(?iu)^sec([\p{L}\p{N}])").expect("valid canonical section grammar"))
+        .replace(&without_prefix, "$1")
+        .into_owned()
+}
+
+/// A typed locator of a kind as the label it names is written, the words it may open on taken off: "para. 12" and
+/// "par12" are "12", "pp. 4-6" is "4-6", "fn 3" is "3", a provision's "s. 5(2)" and "sec5(2)" are "5(2)".
+pub fn bare_label(kind: &str, raw: &str) -> String {
+    match kind {
+        "section" => match section_locator(raw) {
+            Some(SectionLocator::Section(label)) => label,
+            _ => js_trim(&section_words_off(raw)).to_owned(),
+        },
+        "paragraph" | "page" | "line" | "footnote" => bare(kind, raw),
+        _ => js_trim(raw).to_owned(),
+    }
 }
 
 /// A numbered section's place ("sec33.1(2)") from its compact label, whitespace already out; empty where it is none.
