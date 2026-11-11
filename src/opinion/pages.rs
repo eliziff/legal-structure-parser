@@ -42,11 +42,9 @@ pub(super) fn page_number(label: &str) -> Option<u32> {
     legal_structure_model::layout::roman_value(label).filter(|_| label.bytes().all(|byte| byte.is_ascii_uppercase()))
 }
 
+/// A markup page's numbering, as the markup reader read it from the mark; a mark that names none is the reporter's.
 pub(super) fn series_of(node: &StructureNode) -> String {
-    if let Some(index) = ["citation-index", "data-citation-index"].iter().find_map(|name| node.markup_attributes.get(*name)) {
-        return format!("reporter-{index}");
-    }
-    node.markup_attributes.get("pagescheme").cloned().unwrap_or_else(|| "reporter".to_owned())
+    if node.series.is_empty() { "reporter".to_owned() } else { node.series.clone() }
 }
 
 /// The page printed before a page: 289 before 290, and an inserted page's own run, 595 before 595a and 595a before 595b.

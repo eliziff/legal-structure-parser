@@ -745,7 +745,7 @@ fn witness_headings(structure: &DocumentStructure, kinds: &Kinds, pending: &mut 
 /// Marks found by their words keep their order: one out of it found the words somewhere else, a caption restated.
 fn in_their_order(places: Vec<Option<usize>>) -> Vec<Option<usize>> {
     let found = places.iter().enumerate().filter_map(|(at, place)| Some((at, u32::try_from((*place)?).ok()?))).collect::<Vec<_>>();
-    let kept = text::climbing_run(&found).into_iter().map(|mark| mark.0).collect::<HashSet<_>>();
+    let kept = crate::numbering_repair::climbing(&found).into_iter().map(|mark| mark.0).collect::<HashSet<_>>();
     places.into_iter().enumerate().map(|(at, place)| place.filter(|_| kept.contains(&at))).collect()
 }
 
@@ -972,18 +972,19 @@ fn element_of<'a>(structure: &'a DocumentStructure, node: &StructureNode) -> Opt
     Some((at, &structure.markup_elements[at]))
 }
 
-/// What a headnote node is: its element's or an ancestor's kind.
+/// What a headnote node is: the headnote field of CAP's front matter its element or an ancestor is, by its data-type or
+/// else its tag (`cap_front_matter`).
 fn headnote_kind(structure: &DocumentStructure, node: &StructureNode) -> String {
-    let mut at = element_of(structure, node).map(|(at, _)| at);
-    while let Some(index) = at {
-        let element = &structure.markup_elements[index];
-        let typed = element.attributes.get("data-type").map(String::as_str).unwrap_or(element.tag.as_str());
-        if let Some(kind) = ["syllabus", "summary", "headnotes", "history", "seealso", "correction", "arguments", "legal"].iter().find(|kind| typed == **kind) {
-            return if *kind == "legal" { "arguments" } else { kind }.to_owned();
-        }
-        at = element.parent;
-    }
-    "headnotes".to_owned()
+    const HEADNOTES: [&str; 7] = ["syllabus", "summary", "headnotes", "history", "seealso", "correction", "arguments"];
+    let elements = &structure.markup_elements;
+    let at = element_of(structure, node).map(|(at, _)| at);
+    std::iter::successors(at, |&at| elements[at].parent)
+        .find_map(|at| {
+            let element = &elements[at];
+            crate::native_markup::cap_front_matter(element.attributes.get("data-type").unwrap_or(&element.tag)).filter(|field| HEADNOTES.contains(field))
+        })
+        .unwrap_or("headnotes")
+        .to_owned()
 }
 
 /// The opinion read on from its markup's structure (`native_markup`'s CourtListener reader): the parse continues that

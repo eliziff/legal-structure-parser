@@ -54,7 +54,7 @@ fn supported(entries: &[(usize, u32)], lines: usize, candidates: usize) -> Vec<(
 
 /// The longest run of `entries` whose values climb: a number misread as another ("[29]" for "[39]") stands in no gap's way
 /// and is itself a line of the gap it falls in, and numbers misread side by side leave the run's good ones their gap.
-fn climbing(entries: &[(usize, u32)]) -> Vec<(usize, u32)> {
+pub(crate) fn climbing(entries: &[(usize, u32)]) -> Vec<(usize, u32)> {
     let mut tails = Vec::<usize>::new();
     let mut before = vec![None; entries.len()];
     for at in 0..entries.len() {

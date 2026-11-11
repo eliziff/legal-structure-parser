@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 #[cfg(feature = "courtlistener")]
 mod courtlistener;
 #[cfg(feature = "courtlistener")]
-use courtlistener::*;
+pub(crate) use courtlistener::cap_front_matter;
 
 const ORIGIN: &str = "provider-adapter";
 
@@ -190,7 +190,7 @@ struct RenderedMarkup {
     matched_role_starts: HashSet<usize>,
     exclusions: Vec<ScalarRange>,
     cited_authorities: Vec<CitedAuthority>,
-    note_references: Vec<(String, Option<String>, ScalarRange)>,
+    note_references: Vec<(String, ScalarRange)>,
     source_hash: Option<String>,
     harvard_casebody: bool,
 }
@@ -334,6 +334,31 @@ fn attribute<'a>(attributes: &'a Attributes<'_>, name: &str) -> &'a str {
         .unwrap_or_default()
 }
 
+/// An element's ancestors by index, nearest first.
+fn ancestors(elements: &[MarkupElement], index: usize) -> impl Iterator<Item = usize> + '_ {
+    std::iter::successors(elements[index].parent, |&at| elements[at].parent)
+}
+
+/// The element whose source starts at `markup_start`.
+fn element_at(elements: &[MarkupElement], markup_start: usize) -> Option<usize> {
+    elements.binary_search_by_key(&markup_start, |element| element.markup_start).ok()
+}
+
+/// A label printed as a number: one to five digits.
+fn short_number(value: &str) -> bool {
+    (1..=5).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+
+fn has_class(attributes: &Attributes<'_>, class: &str) -> bool {
+    attribute(attributes, "class").split_ascii_whitespace().any(|value| value == class)
+}
+
+/// The first of `names` the element sets to something.
+fn first_attribute<'a>(attributes: &'a Attributes<'_>, names: &[&str]) -> &'a str {
+    names.iter().map(|name| attribute(attributes, name)).find(|value| !value.is_empty()).unwrap_or_default()
+}
+
 fn clean_section_id(raw: &str) -> String {
     static PREFIX: OnceLock<Regex> = OnceLock::new();
     static NAMED: OnceLock<Regex> = OnceLock::new();
@@ -415,7 +440,7 @@ fn page_identity(
     if !page_label.bytes().any(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    let numeric = page_label.len() <= 5 && page_label.bytes().all(|byte| byte.is_ascii_digit());
+    let numeric = short_number(&page_label);
     let label = if numeric {
         format!("{}", page_label.parse::<u32>().ok()?)
     } else {
@@ -430,7 +455,14 @@ fn page_identity(
     let (citation_index, page_scheme) = page_citation_identity(attributes);
     let mut page = markup_node(NodeKind::Page, label, anchor);
     page.aliases = page_aliases(&page_label, citation_index, page_citations, page_scheme.as_deref());
+    page.series = page_series(citation_index, page_scheme.as_deref());
     Some(page)
+}
+
+/// The numbering a page mark's attributes name: the case's n-th citation's (`reporter-n`), a vendor's page scheme; none where
+/// they name none.
+fn page_series(citation_index: Option<usize>, page_scheme: Option<&str>) -> String {
+    citation_index.map_or_else(|| page_scheme.unwrap_or_default().to_owned(), |index| format!("reporter-{index}"))
 }
 
 fn page_citation_identity(attributes: &Attributes<'_>) -> (Option<usize>, Option<String>) {
@@ -511,93 +543,57 @@ fn native_identity(
     courtlistener_footnote: bool,
     page_citations: &[String],
 ) -> Option<StructureNode> {
-    let id = ["eid", "id", "name"]
-        .into_iter()
-        .map(|name| attribute(attributes, name))
-        .find(|value| !value.is_empty())
-        .unwrap_or_default();
+    let id = first_attribute(attributes, &["eid", "id", "name"]);
     let anchor = (!id.is_empty()).then(|| id.to_owned());
+    // An id that is a number after "p": a page's ("p412") or a counted block's.
+    let p_number = || {
+        static P_NUMBER: OnceLock<Regex> = OnceLock::new();
+        P_NUMBER.get_or_init(|| Regex::new(r"(?i)^p(\d{1,5})$").unwrap()).captures(id).map(|capture| capture.get(1).unwrap().as_str())
+    };
     if tag == "a" && provider.is_courtlistener() {
         if contains_ascii_word(attribute(attributes, "class"), "page-label", false) {
-            static PAGE_ID: OnceLock<Regex> = OnceLock::new();
             let preferred = attribute(attributes, "data-label");
-            let label = if preferred.is_empty() {
-                PAGE_ID
-                    .get_or_init(|| Regex::new(r"(?i)^p(\d{1,5})$").unwrap())
-                    .captures(id)
-                    .map(|capture| capture[1].to_owned())
-                    .map_or(Cow::Borrowed(""), Cow::Owned)
-            } else {
-                Cow::Borrowed(preferred)
-            };
-            return page_identity(&label, attributes, anchor, page_citations);
+            let label = if preferred.is_empty() { p_number().unwrap_or_default() } else { preferred };
+            return page_identity(label, attributes, anchor, page_citations);
         }
         return None;
     }
     if provider.is_courtlistener() {
-        if tag == "span"
-            && contains_ascii_word(attribute(attributes, "class"), "star-pagination", false)
-        {
-            let raw = ["label", "data-label"]
-                .into_iter()
-                .map(|name| attribute(attributes, name))
-                .find(|value| !value.is_empty())
-                .unwrap_or_default()
-                .to_owned();
-            return page_identity(&raw, attributes, anchor, page_citations);
+        if tag == "span" && contains_ascii_word(attribute(attributes, "class"), "star-pagination", false) {
+            return page_identity(first_attribute(attributes, &["label", "data-label"]), attributes, anchor, page_citations);
         }
         if courtlistener_footnote {
-            let raw = ["data-label", "label", "n"]
-                .into_iter()
-                .map(|name| attribute(attributes, name))
-                .find(|value| !value.is_empty())
-                .unwrap_or_default()
-                .to_owned();
+            let raw = first_attribute(attributes, &["data-label", "label", "n"]);
             return Some(
-                footnote_identity(&raw, &id, anchor.clone())
+                footnote_identity(raw, id, anchor.clone())
                     .unwrap_or_else(|| markup_node(NodeKind::Footnote, String::new(), anchor)),
             );
         }
     }
     if tag == "page-number" {
         static PAGE_ID: OnceLock<Regex> = OnceLock::new();
-        let preferred = ["label", "page"]
-            .into_iter()
-            .map(|name| attribute(attributes, name))
-            .find(|value| !value.is_empty());
-        let raw = preferred.map_or_else(
-            || {
-                PAGE_ID
-                    .get_or_init(|| Regex::new(r"(?i)(?:page|p)[_-]?(\d{1,5})$").unwrap())
-                    .captures(id)
-                    .map(|capture| capture[1].to_owned())
-                    .map_or(Cow::Borrowed(""), Cow::Owned)
-            },
-            Cow::Borrowed,
-        );
-        return page_identity(&raw, attributes, anchor, page_citations);
+        let preferred = first_attribute(attributes, &["label", "page"]);
+        let raw = if preferred.is_empty() {
+            PAGE_ID
+                .get_or_init(|| Regex::new(r"(?i)(?:page|p)[_-]?(\d{1,5})$").unwrap())
+                .captures(id)
+                .map_or("", |capture| capture.get(1).unwrap().as_str())
+        } else {
+            preferred
+        };
+        return page_identity(raw, attributes, anchor, page_citations);
     }
     static PARAGRAPH: OnceLock<Regex> = OnceLock::new();
-    static DIV_PARAGRAPH: OnceLock<Regex> = OnceLock::new();
     let paragraph = PARAGRAPH
         .get_or_init(|| Regex::new(r"(?i)^(?:para(?:graph)?)[_-]?(\d{1,5})$").unwrap())
         .captures(id)
-        .map(|capture| capture[1].to_owned())
+        .map(|capture| capture.get(1).unwrap().as_str())
         .or_else(|| {
-            (provider.is_courtlistener()
-                && tag == "div"
-                && contains_ascii_word(attribute(attributes, "class"), "num", false))
-            .then(|| {
-                DIV_PARAGRAPH
-                    .get_or_init(|| Regex::new(r"(?i)^p(\d{1,5})$").unwrap())
-                    .captures(id)
-                    .map(|capture| capture[1].to_owned())
-            })
-            .flatten()
+            (provider.is_courtlistener() && tag == "div" && contains_ascii_word(attribute(attributes, "class"), "num", false))
+                .then(p_number)
+                .flatten()
         });
-    if let Some(paragraph) = paragraph.filter(|_| {
-        provider.is_tna() || provider.is_courtlistener()
-    }) {
+    if let Some(paragraph) = paragraph.filter(|_| provider.is_tna() || provider.is_courtlistener()) {
         return Some(markup_node(NodeKind::Paragraph, format!("{}", paragraph.parse::<u32>().ok()?), anchor));
     }
     // Source positions identify unanchored structure without inventing browser IDs.
@@ -616,35 +612,11 @@ fn native_identity(
         }
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "heading" | "h" => Some(NodeKind::Heading),
         "opinion" | "headnotes" | "casebody" => Some(NodeKind::Section),
-        "div"
-            if attribute(attributes, "class")
-                .split_ascii_whitespace()
-                .any(|class| class == "co_headtext") =>
-        {
-            Some(NodeKind::Heading)
-        }
-        "div"
-            if attribute(attributes, "class")
-                .split_ascii_whitespace()
-                .any(|class| class == "co_paragraph") =>
-        {
-            Some(NodeKind::Prose)
-        }
-        "div"
-            if attribute(attributes, "class")
-                .split_ascii_whitespace()
-                .any(|class| matches!(class, "co_opinionBlock" | "co_section")) =>
-        {
-            Some(NodeKind::Section)
-        }
+        "div" if has_class(attributes, "co_headtext") => Some(NodeKind::Heading),
+        "div" if has_class(attributes, "co_paragraph") => Some(NodeKind::Prose),
+        "div" if has_class(attributes, "co_opinionBlock") || has_class(attributes, "co_section") => Some(NodeKind::Section),
         "div" if id == "headmatter" => Some(NodeKind::Section),
-        "article" | "section" | "div"
-            if ["opinion", "casebody", "head-matter"].iter().any(|class| {
-                attribute(attributes, "class")
-                    .split_ascii_whitespace()
-                    .any(|value| value == *class)
-            }) =>
-        {
+        "article" | "section" | "div" if ["opinion", "casebody", "head-matter"].iter().any(|class| has_class(attributes, class)) => {
             Some(NodeKind::Section)
         }
         "ul" | "ol" | "li" => Some(NodeKind::List),
@@ -708,7 +680,7 @@ fn page_aliases(
     page_scheme: Option<&str>,
 ) -> Option<Vec<String>> {
     let mut aliases = Vec::new();
-    if !(label.len() <= 5 && label.bytes().all(|byte| byte.is_ascii_digit())) {
+    if !short_number(label) {
         aliases.push(label.to_owned());
     }
     if let Some(citation) = citation_index
@@ -993,8 +965,8 @@ fn render_markup_in_context<'a>(
     let mut open_cited_authorities = Vec::<(usize, CitedAuthority)>::new();
     let mut cited_authorities = Vec::<CitedAuthority>::new();
     let mut cited_authority_keys = HashSet::<String>::new();
-    let mut open_note_references = Vec::<(usize, String, Option<String>, usize)>::new();
-    let mut note_references = Vec::<(String, Option<String>, ScalarRange)>::new();
+    let mut open_note_references = Vec::<(usize, String, usize)>::new();
+    let mut note_references = Vec::<(String, ScalarRange)>::new();
     let mut text_page = None::<TextPage>;
     let mut position = 0;
     let mut inline_whitespace = false;
@@ -1040,7 +1012,7 @@ fn render_markup_in_context<'a>(
             let label = page_value(&rendered);
             if text_page.is_some() && label.bytes().any(|byte| byte.is_ascii_digit()) {
                 let TextPage { mut page, citation_index, page_scheme } = text_page.take().unwrap();
-                let numeric = label.len() <= 5 && label.bytes().all(|byte| byte.is_ascii_digit());
+                let numeric = short_number(&label);
                 page.label = Some(if numeric {
                     format!("{}", label.parse::<u32>().map_err(EngineError::source)?)
                 } else {
@@ -1133,50 +1105,19 @@ fn render_markup_in_context<'a>(
                             | "footnote_body"
                             | "footnote_number"
                             | "footnote_reference"
-                    ) || (tag == "p"
-                        && element_stack.get(depth).is_some_and(|index| {
-                            elements[*index]
-                                .attributes
-                                .get("data-type")
-                                .is_some_and(|role| role == "header")
-                        }))
-                        || (tag == "div"
+                    ) || element_stack.get(depth).is_some_and(|index| {
+                        let element = &elements[*index];
+                        (tag == "p" && element.attributes.get("data-type").is_some_and(|role| role == "header"))
+                            || (tag == "div"
+                                && (courtlistener_ldml_note(element)
+                                    || element.classes().any(|class| {
+                                        matches!(class, "de-writing" | "co_opinionBlock" | "opinion" | "ldml-decision" | "ldml-opinion" | "ldml-notes")
+                                    })))
+                            || (matches!(tag.as_str(), "article" | "section") && element.has_class("opinion"))
+                    }) || (tag == "sup"
                             && element_stack.get(depth).is_some_and(|index| {
                                 let element = &elements[*index];
-                                courtlistener_ldml_note(element)
-                                    || element.attributes.get("class").is_some_and(|classes| {
-                                        classes.split_ascii_whitespace().any(|class| {
-                                            matches!(
-                                                class,
-                                                "de-writing"
-                                                    | "co_opinionBlock"
-                                                    | "opinion"
-                                                    | "ldml-decision"
-                                                    | "ldml-opinion"
-                                                    | "ldml-notes"
-                                            )
-                                        })
-                                    })
-                            }))
-                        || (matches!(tag.as_str(), "article" | "section")
-                            && element_stack.get(depth).is_some_and(|index| {
-                                elements[*index]
-                                    .attributes
-                                    .get("class")
-                                    .is_some_and(|classes| {
-                                        classes
-                                            .split_ascii_whitespace()
-                                            .any(|class| class == "opinion")
-                                    })
-                            }))
-                        || (tag == "sup"
-                            && element_stack.get(depth).is_some_and(|index| {
-                                let element = &elements[*index];
-                                element.attributes.get("class").is_some_and(|classes| {
-                                    classes
-                                        .split_ascii_whitespace()
-                                        .any(|class| class == "ldml-superscript")
-                                }) && markup_tag_end(&markup[element.markup_start..])
+                                element.has_class("ldml-superscript") && markup_tag_end(&markup[element.markup_start..])
                                     .and_then(|end| markup.get(element.markup_start + end + 1..at))
                                     .is_some_and(courtlistener_ldml_bracketed_marker)
                             }))
@@ -1200,15 +1141,8 @@ fn render_markup_in_context<'a>(
                         .iter()
                         .rposition(|reference| reference.0 == depth)
                     {
-                        let (_, target, anchor, start) = open_note_references.remove(index);
-                        note_references.push((
-                            target,
-                            anchor,
-                            ScalarRange {
-                                start,
-                                end: position,
-                            },
-                        ));
+                        let (_, target, start) = open_note_references.remove(index);
+                        note_references.push((target, ScalarRange { start, end: position }));
                     }
                 }
                 if tag == "ref" {
@@ -1337,25 +1271,13 @@ fn render_markup_in_context<'a>(
             // The retained publisher stylesheet hides jumpback UI only within
             // this actual source container. Its markup and link stay preserved
             // in the source graph; it contributes no visible opinion text.
-            if (resource_org_context || !resource_org_depths.is_empty())
-                && attribute(&attributes, "class")
-                    .split_ascii_whitespace()
-                    .any(|class| class == "jumpback")
-            {
+            if (resource_org_context || !resource_org_depths.is_empty()) && has_class(&attributes, "jumpback") {
                 hidden_jumpback_depth.get_or_insert(depth);
             }
         }
         if provider.is_courtlistener() && tag == "a" && !self_closing {
-            if let Some(target) = attribute(&attributes, "href")
-                .strip_prefix('#')
-                .filter(|target| !target.is_empty())
-            {
-                let anchor = ["id", "name"]
-                    .into_iter()
-                    .map(|name| attribute(&attributes, name))
-                    .find(|value| !value.is_empty())
-                    .map(str::to_owned);
-                open_note_references.push((depth, target.to_owned(), anchor, position));
+            if let Some(target) = attribute(&attributes, "href").strip_prefix('#').filter(|target| !target.is_empty()) {
+                open_note_references.push((depth, target.to_owned(), position));
             }
         }
         if tag == "ref" && !self_closing {
@@ -1416,6 +1338,7 @@ fn render_markup_in_context<'a>(
                 .collect();
             page.markup_tag = Some("span".to_owned());
             page.range.start = position;
+            page.series = page_series(citation_index, page_scheme.as_deref());
             text_page = Some(TextPage { page, citation_index, page_scheme });
         }
         if identity
@@ -1527,65 +1450,36 @@ fn render_markup_in_context<'a>(
         normalized_text(text)
     };
     if provider.is_courtlistener() {
-        // The printed star label is the EM child; the accessibility label is
-        // separate source text and must not become part of the page number.
-        let mut coordinates = None;
+        // Westlaw's star pages (span.co_starPage): the printed label is its EM child, or a span after its accessibility
+        // label ("Star page 412", which is no part of the number), or the span's own words where it has no child; and a
+        // declared page_number element. Each stands once.
+        let coordinates = ScalarText::new(&normalized);
+        let words = |element: &MarkupElement| coordinates.slice_utf16(element.range.start..element.range.end).map(trim_js);
+        let star = |element: &MarkupElement| element.tag == "span" && element.has_class("co_starPage");
+        let mut placed = page_starts.iter().filter_map(|(page, _)| page.markup_start).collect::<HashSet<_>>();
         let original_page_starts = page_starts.len();
         for (index, element) in elements.iter().enumerate() {
             let Some(parent_index) = element.parent else {
                 continue;
             };
             let parent = &elements[parent_index];
+            let accessibility = &elements[parent_index + 1];
             let accessible_span = element.tag == "span"
                 && index == parent_index + 2
-                && elements[parent_index + 1].tag == "span"
-                && elements[parent_index + 1].parent == Some(parent_index)
-                && elements[parent_index + 1]
-                    .attributes
-                    .get("class")
-                    .is_some_and(|classes| {
-                        classes
-                            .split_ascii_whitespace()
-                            .any(|class| class == "co_accessibilityLabel")
-                    })
-                && !elements.get(index + 1).is_some_and(|next| {
-                    next.parent == Some(index) || next.parent == Some(parent_index)
-                });
-            if (element.tag != "em" && !accessible_span)
-                || parent.tag != "span"
-                || !parent.attributes.get("class").is_some_and(|classes| {
-                    classes
-                        .split_ascii_whitespace()
-                        .any(|class| class == "co_starPage")
-                })
-            {
+                && accessibility.tag == "span"
+                && accessibility.parent == Some(parent_index)
+                && accessibility.has_class("co_accessibilityLabel")
+                && !elements.get(index + 1).is_some_and(|next| next.parent == Some(index) || next.parent == Some(parent_index));
+            if (element.tag != "em" && !accessible_span) || !star(parent) {
                 continue;
             }
-            let coordinates = coordinates.get_or_insert_with(|| ScalarText::new(&normalized));
-            let Some(label) = coordinates
-                .slice_utf16(element.range.start..element.range.end)
-                .map(trim_js)
-                .and_then(|text| text.strip_prefix('*'))
-                .map(trim_js)
-                .filter(|label| {
-                    !label.is_empty()
-                        && label.len() <= 5
-                        && label.bytes().all(|byte| byte.is_ascii_digit())
-                })
-            else {
+            let Some(label) = words(element).and_then(|text| text.strip_prefix('*')).map(trim_js).filter(|label| short_number(label)) else {
                 continue;
             };
             let scope = if accessible_span {
-                let accessibility = &elements[parent_index + 1];
-                if coordinates
-                    .slice_utf16(accessibility.range.start..accessibility.range.end)
-                    .map(trim_js)
-                    != Some(format!("Star page {label}").as_str())
-                    || coordinates
-                        .slice_utf16(element.range.start..element.range.end)
-                        .map(trim_js)
-                        != Some(format!("*{label}").as_str())
-                    || page_starts.iter().any(|(page, _)| page.markup_start == Some(parent.markup_start))
+                if words(accessibility) != Some(format!("Star page {label}").as_str())
+                    || words(element) != Some(format!("*{label}").as_str())
+                    || placed.contains(&parent.markup_start)
                 {
                     continue;
                 }
@@ -1598,68 +1492,36 @@ fn render_markup_in_context<'a>(
             };
             let mut page = element_node(NodeKind::Page, format!("{}", label.parse::<u32>().map_err(EngineError::source)?), parent);
             page.aliases = accessible_span.then(|| vec![format!("*{label}")]);
+            placed.insert(parent.markup_start);
             page_starts.push((page, scope));
         }
         for (index, element) in elements.iter().enumerate() {
-            if element.tag != "span"
-                || elements
-                    .get(index + 1)
-                    .is_some_and(|next| next.parent == Some(index))
-                || page_starts.iter().any(|(page, _)| page.markup_start == Some(element.markup_start))
-                || !element.attributes.get("class").is_some_and(|classes| {
-                    classes
-                        .split_ascii_whitespace()
-                        .any(|class| class == "co_starPage")
-                })
-            {
+            if !star(element) || elements.get(index + 1).is_some_and(|next| next.parent == Some(index)) || placed.contains(&element.markup_start) {
                 continue;
             }
-            let coordinates = coordinates.get_or_insert_with(|| ScalarText::new(&normalized));
-            let Some(printed) = coordinates
-                .slice_utf16(element.range.start..element.range.end)
-                .map(trim_js)
-            else {
+            let Some(printed) = words(element) else {
                 continue;
             };
-            let Some(label) = printed.strip_prefix('*').filter(|label| {
-                !label.is_empty()
-                    && label.len() <= 5
-                    && label.bytes().all(|byte| byte.is_ascii_digit())
-            }) else {
+            let Some(label) = printed.strip_prefix('*').filter(|label| short_number(label)) else {
                 continue;
             };
+            // This literal marker has no accessibility-label child. Its page ends within the actual opinion, before
+            // separate notes or a footer.
             let Some(scope) = courtlistener_opinion_page_scope(&elements, element) else {
                 continue;
             };
-            // This literal marker has no accessibility-label child. Its page
-            // ends within the actual opinion, before separate notes or a footer.
             let mut page = element_node(NodeKind::Page, format!("{}", label.parse::<u32>().map_err(EngineError::source)?), element);
             page.aliases = Some(vec![printed.to_owned()]);
+            placed.insert(element.markup_start);
             page_starts.push((page, Some(scope)));
         }
-        for element in elements
-            .iter()
-            .filter(|element| element.tag == "page_number")
-        {
-            if !matched_role_starts.contains(&element.markup_start)
-                || page_starts.iter().any(|(page, _)| page.markup_start == Some(element.markup_start))
-            {
+        for element in elements.iter().filter(|element| element.tag == "page_number") {
+            if !matched_role_starts.contains(&element.markup_start) || placed.contains(&element.markup_start) {
                 continue;
             }
-            let coordinates = coordinates.get_or_insert_with(|| ScalarText::new(&normalized));
-            let Some(printed) = coordinates
-                .slice_utf16(element.range.start..element.range.end)
-                .map(trim_js)
-            else {
+            let Some(label) = words(element).map(page_value).filter(|label| short_number(label)) else {
                 continue;
             };
-            let label = page_value(printed);
-            if label.is_empty()
-                || label.len() > 5
-                || !label.bytes().all(|byte| byte.is_ascii_digit())
-            {
-                continue;
-            }
             let page = element_node(NodeKind::Page, format!("{}", label.parse::<u32>().map_err(EngineError::source)?), element);
             page_starts.push((page, courtlistener_opinion_page_scope(&elements, element)));
         }
@@ -1686,17 +1548,10 @@ fn render_markup_in_context<'a>(
         element.range.start = element.range.start.clamp(leading_trim, raw_end) - leading_trim;
         element.range.end = element.range.end.clamp(leading_trim, raw_end) - leading_trim;
     }
-    for (_, target, anchor, start) in open_note_references {
-        note_references.push((
-            target,
-            anchor,
-            ScalarRange {
-                start,
-                end: raw_end.max(start),
-            },
-        ));
+    for (_, target, start) in open_note_references {
+        note_references.push((target, ScalarRange { start, end: raw_end.max(start) }));
     }
-    for (_, _, range) in &mut note_references {
+    for (_, range) in &mut note_references {
         range.start = range.start.clamp(leading_trim, raw_end) - leading_trim;
         range.end = range.end.clamp(leading_trim, raw_end) - leading_trim;
     }
@@ -1725,31 +1580,10 @@ fn render_markup_in_context<'a>(
         let mut next_by_track = HashMap::new();
         let mut ends = vec![raw_end; page_starts.len()];
         for (index, (page, _)) in page_starts.iter().enumerate().rev() {
-            let scheme = page
-                .markup_attributes
-                .get("pagescheme")
-                .filter(|scheme| !scheme.is_empty())
-                .map(String::as_str);
-            let citation_index = ["citation-index", "data-citation-index"]
-                .into_iter()
-                .find_map(|name| page.markup_attributes.get(name)?.parse::<usize>().ok())
-                .filter(|value| *value != 0);
-            // Parallel reporters paginate the same opinion independently.
-            // An unqualified marker still has only source-order evidence.
-            ends[index] = if scheme.is_some() || citation_index.is_some() {
-                next_by_track
-                    .insert(
-                        (
-                            scheme,
-                            if scheme.is_none() {
-                                citation_index
-                            } else {
-                                None
-                            },
-                        ),
-                        page.range.start,
-                    )
-                    .unwrap_or(raw_end)
+            // Parallel reporters paginate the same opinion independently, each its numbering. An unqualified marker still
+            // has only source-order evidence.
+            ends[index] = if !page.series.is_empty() {
+                next_by_track.insert(page.series.as_str(), page.range.start).unwrap_or(raw_end)
             } else {
                 page_starts
                     .get(index + 1)
@@ -1766,24 +1600,12 @@ fn render_markup_in_context<'a>(
             // Literal elements retain source-byte order. A note-contained page
             // belongs to its nearest declared Footnote, including repeated
             // reporter labels; its body cannot continue into a sibling note.
-            let mut parent = page
-                .markup_start
-                .and_then(|start| {
-                    elements
-                        .binary_search_by_key(&start, |element| element.markup_start)
-                        .ok()
+            let note_owner = page.markup_start.and_then(|start| element_at(&elements, start)).and_then(|index| {
+                ancestors(&elements, index).find_map(|at| {
+                    let start = elements[at].markup_start;
+                    note_ends.get(&start).map(|&note_end| (note_end, format!("native-markup-{start}")))
                 })
-                .and_then(|index| elements[index].parent);
-            let mut note_owner = None;
-            while let Some(index) = parent {
-                let element = &elements[index];
-                if let Some(&note_end) = note_ends.get(&element.markup_start) {
-                    note_owner =
-                        Some((note_end, format!("native-markup-{}", element.markup_start)));
-                    break;
-                }
-                parent = element.parent;
-            }
+            });
             let (end, parent_id) = note_owner.map_or((end, scope_parent), |(note_end, id)| {
                 (end.min(note_end), Some(id))
             });
@@ -1855,7 +1677,7 @@ fn render_markup_in_context<'a>(
     normalized.truncate(trailing);
     normalized.drain(..leading);
     let coordinates = ScalarText::new(&normalized);
-    for (_, _, range) in &mut note_references {
+    for (_, range) in &mut note_references {
         let text = coordinates
             .slice_utf16(range.start..range.end)
             .ok_or_else(|| EngineError::source("invalid native note-reference range"))?;
@@ -1935,18 +1757,14 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
     } else {
         RenderedMarkup { text: fallback_text, ..RenderedMarkup::default() }
     };
+    // What CourtListener's markup declares beyond the generic reading, for its passes after derivation.
     #[cfg(feature = "courtlistener")]
-    let printed_notes = if provider.is_courtlistener() {
+    let declared_notes = provider.is_courtlistener().then(|| {
         courtlistener::evidence(
             markup.as_deref(), &scope, &rendered.elements, &rendered.text, &mut rendered.blocks, &mut rendered.exclusions,
             std::mem::take(&mut rendered.recovered_body_blocks), &rendered.matched_role_starts,
         )
-    } else {
-        courtlistener::sibling_note_labels(&rendered.elements, &rendered.text, &mut rendered.blocks);
-        Vec::new()
-    };
-    #[cfg(not(feature = "courtlistener"))]
-    let printed_notes = Vec::<(StructureNode, Vec<ScalarRange>)>::new();
+    });
     let profile = if provider.is_courtlistener() && !rendered.harvard_casebody {
         DetectionProfile::CaseContiguousComplete
     } else {
@@ -2023,76 +1841,42 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
         }
     }
     #[cfg(not(feature = "courtlistener"))]
-    let _ = (rendered.note_references, rendered.matched_role_starts, printed_notes, heading_exclusions, body_exclusions);
+    let _ = (rendered.note_references, rendered.matched_role_starts, heading_exclusions, body_exclusions);
     #[cfg(feature = "courtlistener")]
-    if provider.is_courtlistener() {
-        courtlistener::finish(&mut structure, rendered.note_references, &rendered.matched_role_starts, printed_notes, &heading_exclusions, &body_exclusions);
+    if let Some(declared_notes) = declared_notes {
+        courtlistener::finish(&mut structure, rendered.note_references, &rendered.matched_role_starts, declared_notes, &heading_exclusions, &body_exclusions);
     }
     structure.refresh_revision().expect("Typed document structure is serializable");
     Ok(structure)
 }
 
-fn courtlistener_opinion_page_scope(
-    elements: &[MarkupElement],
-    element: &MarkupElement,
-) -> Option<(usize, String)> {
-    let mut ancestor = element.parent;
-    while let Some(index) = ancestor {
-        let owner = &elements[index];
-        if owner.tag == "div"
-            && owner.attributes.get("class").is_some_and(|classes| {
-                classes
-                    .split_ascii_whitespace()
-                    .any(|class| class == "co_opinionBlock")
-            })
-        {
-            return (owner.range.end >= element.range.end && owner.range.end > element.range.start)
-                .then(|| {
-                    (
-                        owner.range.end,
-                        format!("native-markup-{}", owner.markup_start),
-                    )
-                });
-        }
-        ancestor = owner.parent;
-    }
-    None
+/// The Westlaw opinion block (div.co_opinionBlock) a star page stands in: its page ends where the block does.
+fn courtlistener_opinion_page_scope(elements: &[MarkupElement], element: &MarkupElement) -> Option<(usize, String)> {
+    let owner = std::iter::successors(element.parent, |&at| elements[at].parent)
+        .map(|at| &elements[at])
+        .find(|owner| owner.tag == "div" && owner.has_class("co_opinionBlock"))?;
+    (owner.range.end >= element.range.end && owner.range.end > element.range.start)
+        .then(|| (owner.range.end, format!("native-markup-{}", owner.markup_start)))
 }
 
-fn courtlistener_footnote_body(
-    provider: DocumentProvider,
-    tag: &str,
-    attributes: &Attributes<'_>,
-) -> bool {
-    if !provider.is_courtlistener() {
-        return false;
-    }
+fn courtlistener_footnote_body(provider: DocumentProvider, tag: &str, attributes: &Attributes<'_>) -> bool {
     static ID: OnceLock<Regex> = OnceLock::new();
-    matches!(tag, "footnote" | "footnote_body")
-        || (matches!(tag, "aside" | "div" | "li" | "section")
-            && (contains_ascii_word(attribute(attributes, "class"), "footnote", true)
-                || attribute(attributes, "class")
-                    .split_ascii_whitespace()
-                    .any(|class| class == "co_footnoteBody")
-                || ID
-                    .get_or_init(|| Regex::new(r"(?i)^(?:(?:fn|footnote)[_-]|fn\d|ftn\d)").unwrap())
-                    .is_match(attribute(attributes, "id"))))
+    provider.is_courtlistener()
+        && (matches!(tag, "footnote" | "footnote_body")
+            || (matches!(tag, "aside" | "div" | "li" | "section")
+                && (contains_ascii_word(attribute(attributes, "class"), "footnote", true)
+                    || has_class(attributes, "co_footnoteBody")
+                    || ID
+                        .get_or_init(|| Regex::new(r"(?i)^(?:(?:fn|footnote)[_-]|fn\d|ftn\d)").unwrap())
+                        .is_match(attribute(attributes, "id")))))
 }
 
 fn courtlistener_ldml_bracketed_marker(raw: &str) -> bool {
     raw.strip_prefix('[')
         .and_then(|number| number.strip_suffix(']'))
-        .is_some_and(|number| {
-            !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
-        })
+        .is_some_and(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 fn courtlistener_ldml_note(element: &MarkupElement) -> bool {
-    element.tag.eq_ignore_ascii_case("div")
-        && element.attributes.get("class").is_some_and(|classes| {
-            classes
-                .split_ascii_whitespace()
-                .any(|class| class == "ldml-note")
-        })
+    element.is("div") && element.has_class("ldml-note")
 }
-

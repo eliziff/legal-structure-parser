@@ -737,24 +737,6 @@ pub(super) fn says_paragraph(body: &str) -> bool {
     paragraph_marker(body).is_some_and(|(_, family)| matches!(family, 1 | 2 | 5))
 }
 
-/// The longest run of numbers that only climbs.
-pub(super) fn climbing_run(members: &[(usize, u32)]) -> Vec<(usize, u32)> {
-    let mut tails = Vec::<usize>::new();
-    let mut parent = vec![None; members.len()];
-    for at in 0..members.len() {
-        let place = tails.partition_point(|&tail| members[tail].1 < members[at].1);
-        parent[at] = place.checked_sub(1).map(|previous| tails[previous]);
-        if place == tails.len() { tails.push(at); } else { tails[place] = at; }
-    }
-    let mut run = Vec::with_capacity(tails.len());
-    let mut at = tails.last().copied();
-    while let Some(index) = at {
-        run.push(members[index]);
-        at = parent[index];
-    }
-    run.reverse();
-    run
-}
 
 /// The paragraph numbers that are the opinion's own, of one family. "¶" and "{n}" say what they are and are kept as
 /// printed, whatever their order; "[n]" and "n." must run from 1 for `least` paragraphs, and may start again or repeat.
@@ -772,7 +754,7 @@ pub(super) fn own_numbers<'a>(openings: impl Iterator<Item = (usize, &'a str)>, 
             if members.len() >= 2 { found = members.clone(); }
         } else if family == 4 {
             // A wrapped "See id. ¶ 23" opens a line too: paragraph numbers are the ones that climb.
-            let climbing = climbing_run(members);
+            let climbing = crate::numbering_repair::climbing(members);
             if climbing.len() >= least.min(3) { found = climbing; }
         } else {
             let (mut run, mut last) = (Vec::new(), 0);

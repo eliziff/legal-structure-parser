@@ -339,6 +339,23 @@ pub struct MarkupElement {
     pub range: ScalarRange,
 }
 
+impl MarkupElement {
+    /// Whether the element's class list names `class`, as CSS matches a class.
+    pub fn has_class(&self, class: &str) -> bool {
+        self.classes().any(|value| value == class)
+    }
+
+    /// The element's classes, as its class attribute lists them.
+    pub fn classes(&self) -> impl Iterator<Item = &str> {
+        self.attributes.get("class").map_or("", String::as_str).split_ascii_whitespace()
+    }
+
+    /// Whether the element is the source tag `tag`, whatever case the markup spells it in.
+    pub fn is(&self, tag: &str) -> bool {
+        self.tag.eq_ignore_ascii_case(tag)
+    }
+}
+
 /// Actual enclosing source elements, nearest parent first. They supply context
 /// outside the markup input and have no invented body-text ranges.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
