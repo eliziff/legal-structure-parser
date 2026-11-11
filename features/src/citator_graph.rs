@@ -317,10 +317,7 @@ fn build_cases(graph: &Connection, options: &GraphOptions, summary: &mut GraphSu
 
 /// A journal store cell's text; None where it is not text or only white space.
 fn text(value: ValueRef) -> Option<String> {
-    match value {
-        ValueRef::Text(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()).filter(|value| !value.trim().is_empty()),
-        _ => None,
-    }
+    crate::a2aj::cell(value).filter(|value| !value.trim().is_empty())
 }
 
 /// Reporter readings that are really access dates or volume/issue numbers.

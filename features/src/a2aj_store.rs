@@ -548,10 +548,7 @@ pub fn alias_groups(path: &Path, keys: &[String]) -> CoreResult<Vec<AliasGroup>>
             if ids.len() != 1 {
                 return Ok(AliasGroup { keys: vec![key], forms: Vec::new(), ambiguous: ids.len() > 1 });
             }
-            let text = |value: ValueRef| match value {
-                ValueRef::Text(bytes) => String::from_utf8_lossy(bytes).into_owned(),
-                _ => String::new(),
-            };
+            let text = |value: ValueRef| a2aj::cell(value).unwrap_or_default();
             let mut keys = aliases.query_map([ids[0]], |row| row.get_ref(0).map(text))
                 .and_then(|rows| rows.collect::<Result<Vec<_>, _>>()).map_err(sql)?;
             keys.push(key);

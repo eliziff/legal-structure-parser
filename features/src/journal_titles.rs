@@ -11,7 +11,6 @@ use std::sync::LazyLock;
 
 static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\p{L}\p{N}]+").unwrap());
 static NOT_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\p{L}\p{N}_\s]").unwrap());
-static BLANKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!("{}+", legal_structure::JS_WHITESPACE_CLASS)).unwrap());
 
 /// A search of the index's names for an article titled `title`, in FTS5's query syntax.
 #[derive(Serialize)]
@@ -81,16 +80,10 @@ pub fn journal_title_searches(citation: &str) -> Vec<JournalTitleSearch> {
 
 /// How alike two titles are: difflib's ratio of their letters, case, punctuation and spacing aside.
 fn title_ratio(a: &str, b: &str) -> f64 {
-    let fold = |value: &str| {
-        let lowered = value.to_lowercase();
-        let unmarked = NOT_WORD.replace_all(&lowered, "");
-        let spaced = BLANKS.replace_all(&unmarked, " ");
-        spaced.trim_matches(|c: char| BLANKS.is_match(c.encode_utf8(&mut [0; 4]))).chars().collect::<Vec<_>>()
-    };
+    let fold = |value: &str| legal_structure::normalize_javascript_whitespace(&NOT_WORD.replace_all(&value.to_lowercase(), "")).chars().collect::<Vec<_>>();
     let (x, y) = (fold(a), fold(b));
     if x.is_empty() && y.is_empty() { return 1.0; }
-    let same: usize = crate::quote_location::sequence_opcodes(&x, &y).into_iter().filter(|op| op.0 == "equal")
-        .map(|op| op.2 - op.1).sum();
+    let same = crate::quote_location::matched_size(&x, &y);
     (2 * same) as f64 / (x.len() + y.len()) as f64
 }
 

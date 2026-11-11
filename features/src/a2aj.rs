@@ -455,6 +455,8 @@ pub fn name_words(text: &str) -> Vec<String> {
 }
 
 #[cfg(feature = "a2aj-store")]
+pub(crate) use store::cell;
+#[cfg(feature = "a2aj-store")]
 pub use store::{reporter_pages, LazyRow, StoreRow, COLUMNS};
 
 #[cfg(feature = "a2aj-store")]
@@ -487,7 +489,8 @@ mod store {
     /// A GLOB that a text matches when it holds a character other than JavaScript's white space.
     const NOT_BLANK: &str = "*[^\t\n\u{b}\u{c}\r \u{a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}]*";
 
-    fn cell(value: ValueRef) -> Option<String> {
+    /// A store cell's text; None where it is not text.
+    pub(crate) fn cell(value: ValueRef) -> Option<String> {
         match value {
             ValueRef::Text(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
             _ => None,
