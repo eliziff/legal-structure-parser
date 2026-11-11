@@ -330,23 +330,17 @@ pub(crate) fn resolve_candidates(
     let evidence_by_candidate = evidence_by_candidate(runs, evidence)?;
     // A count of numbers printed with their period ("1.", "2.") that the count from 1 reads is the
     // text's numbered paragraphs, not its sections: a statute prints its sections' numbers bare.
-    // Their sub-items are then lists.
-    let counted_starts = runs
+    // Their sub-items are then lists. A ladder under a Part's or an Exhibit's heading is read by
+    // its first number the count reads, as the count prints it.
+    let counted_labels = runs
         .iter()
         .filter(|run| run.grammar == CandidateGrammar::Numeric && run.rooted && run.consecutive)
-        .flat_map(|run| {
-            run.markers
-                .iter()
-                .map(|candidate| candidate.marker_range.start)
-        })
-        .collect::<HashSet<_>>();
+        .flat_map(|run| run.markers.iter().map(|candidate| (candidate.marker_range.start, candidate.label.trim())))
+        .collect::<HashMap<_, _>>();
     let period_counted = |run: &StructureCandidateRun| {
         run.grammar == CandidateGrammar::Hierarchy
-            && run.markers.first().is_some_and(|first| {
-                let label = first.label.trim();
-                label.ends_with('.')
-                    && label[..label.len() - 1].chars().all(|c| c.is_ascii_digit())
-                    && counted_starts.contains(&first.marker_range.start)
+            && run.markers.iter().find_map(|candidate| counted_labels.get(&candidate.marker_range.start)).is_some_and(|label| {
+                label.ends_with('.') && label[..label.len() - 1].chars().all(|c| c.is_ascii_digit())
             })
     };
     let paragraph_runs = runs
@@ -376,33 +370,37 @@ pub(crate) fn resolve_candidates(
         .map(|candidate| candidate.marker_range.start)
         .collect::<HashSet<_>>();
     provision_starts.retain(|start| !quoted_starts.contains(start));
-    // A count from 1 a quarter or more of whose numbers open prose that no section reads is the
-    // text's numbered paragraphs: the sections read on its other numbers yield to it, and
-    // their sub-items are read as lists.
+    // A count from 1 a quarter or more of whose numbers open prose that no section reads, or that
+    // opens on more such paragraphs than a list runs to, is the text's numbered paragraphs: the
+    // sections read on its other numbers yield to it, each ladder they stand in whole, and their
+    // sub-items are read as lists.
+    let opens_prose = |candidate: &&StructureMarkerCandidate| {
+        !provision_starts.contains(&candidate.marker_range.start)
+            && !quoted(candidate)
+            && evidence_by_candidate
+                .get(candidate.id.as_str())
+                .is_some_and(|item| item.observations.contains(&CandidateObservationV2::BodyProseFlow))
+    };
     let mut yielded = HashSet::new();
     for run in runs
         .iter()
         .filter(|run| run.grammar == CandidateGrammar::Numeric && run.rooted && run.consecutive)
     {
-        let (read, unread) = run.markers.iter().partition::<Vec<_>, _>(|candidate| {
-            provision_starts.contains(&candidate.marker_range.start)
-        });
-        let prose = unread
-            .iter()
-            .filter(|candidate| {
-                !quoted(candidate)
-                    && evidence_by_candidate
-                        .get(candidate.id.as_str())
-                        .is_some_and(|item| {
-                            item.observations
-                                .contains(&CandidateObservationV2::BodyProseFlow)
-                        })
-            })
-            .count();
-        if !read.is_empty() && 4 * prose >= run.markers.len() {
-            yielded.extend(read.iter().map(|candidate| candidate.marker_range.start));
+        let unread = |candidate: &&StructureMarkerCandidate| !provision_starts.contains(&candidate.marker_range.start);
+        let read = run.markers.iter().filter(|candidate| !unread(candidate));
+        let opening = run.markers.iter().take_while(unread).filter(opens_prose).count();
+        if read.clone().next().is_some()
+            && (4 * run.markers.iter().filter(opens_prose).count() >= run.markers.len() || opening > crate::LIST_NUMBERS)
+        {
+            yielded.extend(read.map(|candidate| candidate.marker_range.start));
         }
     }
+    let ladders = runs
+        .iter()
+        .filter(|run| run.markers.iter().any(|candidate| yielded.contains(&candidate.marker_range.start)))
+        .map(|run| run.markers[0].marker_range.start)
+        .collect::<Vec<_>>();
+    yielded.extend(ladders);
     provision_starts.retain(|start| !yielded.contains(start));
     // A count most of whose numbers open sections is the sections'; the numbers among them
     // that open none are no paragraphs.
