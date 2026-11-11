@@ -462,17 +462,8 @@ pub fn highlight_runs(text: &str, plan: &[(usize, usize, String)], base: usize) 
     for at in marks {
         edited[at] = true;
     }
-    let mut runs = Vec::new();
-    let mut i = 0;
-    while i < length {
-        let mut j = i + 1;
-        while j < length && edited[j] == edited[i] {
-            j += 1;
-        }
-        runs.push((base + i, base + j, edited[i]));
-        i = j;
-    }
-    runs
+    let mut at = base;
+    edited.chunk_by(|a, b| a == b).map(|run| (at, { at += run.len(); at }, run[0])).collect()
 }
 fn matched_size<T: PartialEq>(left: &[T], right: &[T]) -> usize {
     sequence_opcodes(left, right).into_iter().filter(|(tag, ..)| *tag == "equal").map(|(_, a0, a1, ..)| a1 - a0).sum()

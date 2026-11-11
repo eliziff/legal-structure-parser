@@ -72,16 +72,9 @@ pub fn section_locator(locator: &str) -> Option<SectionLocator> {
 fn section_words_off(locator: &str) -> String {
     static PREFIX: OnceLock<Regex> = OnceLock::new();
     static CANONICAL_PREFIX: OnceLock<Regex> = OnceLock::new();
-    let without_prefix = PREFIX
-        .get_or_init(|| {
-            Regex::new(&[r"(?iu)^(?:sections?|ss?\.?)", JS_WS, "+"].concat())
-                .expect("valid section prefix grammar")
-        })
-        .replace(js_trim(locator), "");
-    CANONICAL_PREFIX
-        .get_or_init(|| Regex::new(r"(?iu)^sec([\p{L}\p{N}])").expect("valid canonical section grammar"))
-        .replace(&without_prefix, "$1")
-        .into_owned()
+    let prefix = PREFIX.get_or_init(|| Regex::new(&[r"(?iu)^(?:sections?|ss?\.?)", JS_WS, "+"].concat()).expect("section prefix"));
+    let canonical = CANONICAL_PREFIX.get_or_init(|| Regex::new(r"(?iu)^sec([\p{L}\p{N}])").expect("canonical section"));
+    canonical.replace(&prefix.replace(js_trim(locator), ""), "$1").into_owned()
 }
 
 /// A typed locator of a kind as the label it names is written, the words it may open on taken off: "para. 12" and
