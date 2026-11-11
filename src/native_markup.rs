@@ -17,6 +17,8 @@ use std::sync::OnceLock;
 #[cfg(feature = "courtlistener")]
 mod courtlistener;
 #[cfg(feature = "courtlistener")]
+pub(crate) mod titles;
+#[cfg(feature = "courtlistener")]
 pub(crate) use courtlistener::{answer_by_label, called, opens_on_reporter, plain_label, printed_calls};
 #[cfg(feature = "courtlistener")]
 pub(crate) use courtlistener::{cap_front_matter, declared_writing};
@@ -1803,7 +1805,7 @@ pub fn analyze_native_markup(input: NativeMarkupInput) -> Result<DocumentStructu
     let _ = (rendered.note_references, rendered.matched_role_starts, heading_exclusions, body_exclusions);
     #[cfg(feature = "courtlistener")]
     if let Some(declared_notes) = declared_notes {
-        courtlistener::finish(&mut structure, rendered.note_references, &rendered.matched_role_starts, declared_notes, &heading_exclusions, &body_exclusions);
+        courtlistener::finish(&mut structure, rendered.note_references, &rendered.matched_role_starts, declared_notes);
     }
     structure.refresh_revision().expect("Typed document structure is serializable");
     Ok(structure)

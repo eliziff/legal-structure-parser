@@ -6,8 +6,6 @@ pub mod hierarchy;
 #[cfg(feature = "structure-inference")]
 pub mod numbered_paragraphs;
 #[cfg(feature = "structure-inference")]
-mod layout_cues;
-#[cfg(feature = "structure-inference")]
 pub mod transcript;
 #[cfg(feature = "structure-inference")]
 pub mod numbering_repair;

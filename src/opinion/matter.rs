@@ -8,32 +8,9 @@ use legal_structure_model::text::{javascript_whitespace, utf16_len, ScalarText};
 use regex::Regex;
 use crate::trim_javascript_whitespace as trim_js;
 use super::{front_node, headnote_mark, headnote_node, headnote_numbers, name_role, reads, role_of, squeezed, Kinds};
-use super::headings::{enumerator_end, notes_title, section_keyword, title_cased, title_line};
+use crate::inference::{enumerator_end, heading_title_case};
+use crate::native_markup::titles::{front_role, notes_title, section_keyword, section_word, sentences};
 use crate::judgment::{JUDGMENT, ORDERED};
-
-/// A long line of the head, not the opinion's first sentence: it opens as a court's or a filing's line does, or closes
-/// on a party's role. A sentence may open with one ("Plaintiff Troy H. brings this action ...").
-pub(super) fn caption_line(body: &str) -> bool {
-    static CAPTION: OnceLock<Regex> = OnceLock::new();
-    CAPTION.get_or_init(|| Regex::new(r"(?i)^(?:appeals? from|on appeal|before\b|argued|submitted|filed|in the\b|attorneys? for|on (?:the )?brief)|\b(?:plaintiffs?|defendants?|appell(?:ant|ee)s?|petitioners?|respondents?)[,.]?$").unwrap()).is_match(body)
-}
-
-pub(super) fn front_role(body: &str) -> Option<&'static str> {
-    static ROLES: OnceLock<[(Regex, &'static str); 11]> = OnceLock::new();
-    ROLES.get_or_init(|| [
-        (Regex::new(r"^\d{1,4}\s+[A-Z][A-Za-z.\d ]{0,20}\s+\d{1,5}(?:\s*\(\d{4}\))?\.?(?:\s*[;,]\s*\d.*)?$").unwrap(), "citation"),
-        (Regex::new(r"(?i)^(?:per curiam\b.*|.{2,60},\s*(?:u\.\s?s\.\s+|united states\s+)?(?:(?:chief|senior|presiding|associate)\s+)?(?:(?:district|circuit|magistrate|bankruptcy)\s+)?(?:judge|justice)(?:\s*\((?:concurring|dissenting)[^)]*\))?[.:]?|.{2,60},\s*(?:[cp]\.\s*)?j\.[,:]?|(?:mr\.\s+(?:chief\s+)?|chief\s+)justice\s+\S.{0,40}[:.]|.{0,60}deliver(?:ing|ed) the opinion of the court\b.*|(?:specially\s+)?(?:concurring|dissenting)[.:,]?|opinion[,:])$").unwrap(), "author"),
-        (Regex::new(r"(?i)^(?:appeals? from|on appeal from|on petition for (?:review|writ)|petition for review|trial court\b|lower tribunal\b)").unwrap(), "lower_court"),
-        (Regex::new(r"(?i)^(?:re|subject)\s*:").unwrap(), "subject"),
-        (Regex::new(r"(?i)^dear\s").unwrap(), "addressee"),
-        (Regex::new(r"(?i)\b(?:court of appeals?|supreme court|district court|bankruptcy court|court of|tribunal|circuit)\b").unwrap(), "court"),
-        (Regex::new(r"(?i)^(?:(?:case|docket|civil action|cause|appeal|criminal|civil|bankruptcy|adversary|adv\.?|index|c/a|cv|cr|opinion)\s*(?:nos?\.?|numbers?|action)|nos?\.\s*\S*\d)").unwrap(), "docket"),
-        (Regex::new(r"(?i)^(?:before|panel|coram|present)\b|\b(?:circuit|district|chief|magistrate|senior) judges?\b").unwrap(), "judges"),
-        (Regex::new(r"(?i)^(?:(?:filed|decided|argued|submitted|dated|entered|heard|delivered|rehearing|date of|opinion filed|date filed)\b.*\d{4}|(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},\s+\d{4}\.?$)").unwrap(), "date"),
-        (Regex::new(r"(?i)\b(?:for (?:the )?(?:plaintiff|defendant|appell|petitioner|respondent)|attorneys? for|counsel for|on (?:the )?brief)").unwrap(), "counsel"),
-        (Regex::new(r"(?i)\b(?:plaintiffs?|defendants?|appell(?:ant|ee)s?|petitioners?|respondents?)\b|^v\.?$|^vs\.?$").unwrap(), "caption"),
-    ]).iter().find(|(pattern, _)| pattern.is_match(body)).map(|(_, role)| *role)
-}
 
 /// Head matter a court's own page marks by class or id: the older federal `p.case_cite`, `p.parties`, `p.docket`,
 /// `p.date`, `p.court`, and what its `div.prelims` holds; Colorado's `p#Judge`, `p#Attorney`.
@@ -74,7 +51,7 @@ pub(super) fn head_lines(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     let title = TITLE.get_or_init(|| Regex::new(r"(?i)^(?:entry )?(?:opinion|memorandum|order)\b.{0,30}$").unwrap());
     static NOTICE: OnceLock<Regex> = OnceLock::new();
     let notice = NOTICE.get_or_init(|| Regex::new(r"(?i)^(?:(?:this (?:opinion|decision|order)|the slip opinion|notice:?)\b.*\b(?:revision|precedent|publication|published|version|binding)\b|published by\b)").unwrap());
-    let section = |heading: &StructureNode| enumerator_end(&heading.display_value.as_deref().unwrap_or("")).is_some() || title_line(&heading.display_value.as_deref().unwrap_or("")) || heading.display_value.as_deref().unwrap_or("").starts_with(|c: char| c.is_lowercase());
+    let section = |heading: &StructureNode| enumerator_end(&heading.display_value.as_deref().unwrap_or("")).is_some() || section_word(&heading.display_value.as_deref().unwrap_or("")) || heading.display_value.as_deref().unwrap_or("").starts_with(|c: char| c.is_lowercase());
     let first_heading = kinds.headings.iter().filter(|heading| section(heading) && !title.is_match(&heading.display_value.as_deref().unwrap_or(""))).map(|heading| heading.range.start).min().unwrap_or(usize::MAX);
     static FOR_PARTY: OnceLock<Regex> = OnceLock::new();
     let for_party = FOR_PARTY.get_or_init(|| Regex::new(r"(?i)\bfor (?:the )?[\p{L}-]+(?: [\p{L}-]+){0,3}[.,]?$").unwrap());
@@ -100,7 +77,7 @@ pub(super) fn head_lines(structure: &mut DocumentStructure, kinds: &mut Kinds) {
         if next.starts_with(char::is_lowercase) {
             break;
         }
-        let titled = title_cased(&printed) || !printed.chars().any(char::is_lowercase);
+        let titled = heading_title_case(&printed.split_whitespace().collect::<Vec<_>>()) || !printed.chars().any(char::is_lowercase);
         let published = notice.is_match(&printed);
         let role = front_role(&printed).filter(|role| titled || !matches!(*role, "court" | "caption")).or(published.then_some("publication"));
         let long = printed.split_whitespace().count() >= SENTENCE_WORDS;
@@ -231,29 +208,6 @@ pub(super) fn reporter_matter(structure: &mut DocumentStructure, kinds: &mut Kin
     });
     kinds.headings = kept_headings;
     kinds.spans.extend(trailing.into_iter().map(|heading| headnote_node("topics", heading.display_value.unwrap_or_default(), heading.range)));
-}
-
-/// A text's sentences, as ranges of bytes. A stop ends one before a capital or the end, unless it closes an abbreviation
-/// or a number: "I.R.S.", "Mr.", "Doc. 6", "$11,000.00".
-pub(super) fn sentences(raw: &str) -> Vec<(usize, usize)> {
-    let mut found = Vec::new();
-    let mut start = 0;
-    for (at, stop) in raw.char_indices().filter(|(_, c)| matches!(c, '.' | '!' | '?' | ';')) {
-        let after = raw[at + stop.len_utf8()..].trim_start_matches(['"', '”', '’', ')', ']']);
-        let next = after.trim_start();
-        let spaced = after.len() != next.len() || next.is_empty();
-        let word = raw[..at].rsplit(|c: char| !c.is_alphanumeric()).next().unwrap_or("");
-        let short = stop == '.' && word.len() <= 3 && (word.starts_with(char::is_uppercase) || word.is_empty() || word.bytes().all(|byte| byte.is_ascii_digit()));
-        if stop == ';' || spaced && !short && (next.is_empty() || next.starts_with(|c: char| c.is_uppercase() || c == '“' || c == '"')) {
-            let end = at + stop.len_utf8();
-            found.push((start, end));
-            start = end;
-        }
-    }
-    if raw[start..].chars().any(char::is_alphanumeric) {
-        found.push((start, raw.len()));
-    }
-    found
 }
 
 /// What the court did, read back from the end of each of its opinions to the block that says so, and through the blocks

@@ -11,7 +11,7 @@ use super::{
     headnote_node, opening_words, places, read_paragraph, read_part, role_of, squeezed, text, unheld_stretches, Kinds,
     Pending,
 };
-use super::headings::title_cased;
+use crate::native_markup::titles;
 
 /// One paragraph to a place: the engine's numbered hull stops at the next paragraph, heading or note; one that repeats
 /// another gives way to the numbered one; a paragraph that is mostly a note is the note.
@@ -123,7 +123,7 @@ fn closing_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
         let start = at + utf16_len(&line[..line.len() - line.trim_start_matches(javascript_whitespace).len()]);
         let words = trim_js(line);
         at += utf16_len(line);
-        if !words.is_empty() && !held.iter().any(|range| range.0 <= start && start < range.1) && (text::paragraph_marker(words).is_some_and(|(number, _)| number == due) || scanned_number(words, due - 1, due + 1).is_some()) {
+        if !words.is_empty() && !held.iter().any(|range| range.0 <= start && start < range.1) && (titles::paragraph_marker(words).is_some_and(|(number, _)| number == due) || scanned_number(words, due - 1, due + 1).is_some()) {
             found.push(read_paragraph(start, start + utf16_len(words), Some(due.to_string())));
             due += 1;
         }
@@ -212,7 +212,7 @@ fn walk_scanned_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
             continue;
         }
         // A mark may be past reading, "118" for "¶ 13": the next one or two say the count has gone on.
-        let read = (due..=due + STEP).find(|number| paragraph.label.as_deref().as_deref() == Some(number.to_string().as_str()) || text::paragraph_marker(opening).is_some_and(|(marked, _)| marked == *number) || scanned_number(opening, number - 1, number + 1).is_some());
+        let read = (due..=due + STEP).find(|number| paragraph.label.as_deref().as_deref() == Some(number.to_string().as_str()) || titles::paragraph_marker(opening).is_some_and(|(marked, _)| marked == *number) || scanned_number(opening, number - 1, number + 1).is_some());
         if let Some(number) = read {
             taken.push((index, number));
             due = number + 1;
@@ -288,7 +288,7 @@ fn join_block_counters(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 fn numbers_off_titles(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let opening = |paragraph: &StructureNode| coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).unwrap_or("");
-    let plain_numbers = kinds.paragraphs.iter().filter_map(|paragraph| text::paragraph_marker(opening(paragraph)).filter(|(_, family)| *family == 4).map(|(number, _)| number)).collect::<HashSet<_>>();
+    let plain_numbers = kinds.paragraphs.iter().filter_map(|paragraph| titles::paragraph_marker(opening(paragraph)).filter(|(_, family)| *family == 4).map(|(number, _)| number)).collect::<HashSet<_>>();
     let left_open = |number: u32| !plain_numbers.contains(&number) && plain_numbers.contains(&(number + 1)) && (number == 1 || plain_numbers.contains(&(number - 1)));
     let stub = |start: usize, end: usize| read_paragraph(start, end, None);
     // A paragraph that opens with the title already holds its number.
@@ -297,8 +297,8 @@ fn numbers_off_titles(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     kinds.headings.retain_mut(|heading| {
         let Some(printed) = coordinates.slice_utf16(heading.range.start..heading.range.end).filter(|_| !held.contains(&heading.range.start)) else { return true };
         let opened = trim_js(printed);
-        let title = text::past_marker(opened);
-        if text::says_paragraph(opened) {
+        let title = titles::past_marker(opened);
+        if titles::says_paragraph(opened) {
             if let Some(at) = printed.find(title).filter(|_| !title.is_empty()) {
                 let start = heading.range.start + utf16_len(&printed[..at]);
                 stubs.push(stub(heading.range.start, start));
@@ -306,8 +306,8 @@ fn numbers_off_titles(structure: &mut DocumentStructure, kinds: &mut Kinds) {
             }
             return true;
         }
-        let sentence = heading.grammar.as_deref() != Some("other-rendition") && text::paragraph_marker(opened).is_some_and(|(number, family)| family == 4 && left_open(number))
-            && crate::inference::ends_sentence(opened, true) && title.split_whitespace().count() >= 5 && !title_cased(title);
+        let sentence = heading.grammar.as_deref() != Some("other-rendition") && titles::paragraph_marker(opened).is_some_and(|(number, family)| family == 4 && left_open(number))
+            && crate::inference::ends_sentence(opened, true) && title.split_whitespace().count() >= 5 && !crate::inference::heading_title_case(&title.split_whitespace().collect::<Vec<_>>());
         if sentence {
             stubs.push(stub(heading.range.start, heading.range.end));
         }
@@ -345,7 +345,7 @@ fn pilcrow_read_as_one(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 fn carry_title_numbers(structure: &mut DocumentStructure, kinds: &mut Kinds) {
     let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let bare = kinds.paragraphs.iter().enumerate().filter(|(_, paragraph)| paragraph.label.is_some()).filter(|(_, paragraph)| {
-        coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).is_some_and(|opening| text::says_paragraph(opening) && text::past_marker(opening).is_empty())
+        coordinates.slice_utf16(paragraph.range.start..paragraph.range.end).map(trim_js).is_some_and(|opening| titles::says_paragraph(opening) && titles::past_marker(opening).is_empty())
     }).map(|(index, _)| index).collect::<Vec<_>>();
     for index in bare.into_iter().rev() {
         if kinds.paragraphs.get(index + 1).is_some_and(|next| next.label.as_deref().is_none() && !(next.kind == NodeKind::Quote)) {
@@ -456,7 +456,7 @@ pub(super) fn fill_skipped_numbers(structure: &mut DocumentStructure, kinds: &mu
         let (mut last, mut found) = (low, Vec::new());
         for index in span {
             let opening = coordinates.slice_utf16(kinds.paragraphs[index].range.start..kinds.paragraphs[index].range.end).map(trim_js).unwrap_or("");
-            let number = text::paragraph_marker(opening).map(|(number, _)| number).filter(|number| *number > last && *number < high).or_else(|| scanned_number(opening, last, high));
+            let number = titles::paragraph_marker(opening).map(|(number, _)| number).filter(|number| *number > last && *number < high).or_else(|| scanned_number(opening, last, high));
             if let Some(number) = number {
                 found.push((index, number));
                 last = number;

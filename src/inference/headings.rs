@@ -3,9 +3,16 @@
 //GLOB super
 use legal_structure_model::layout::ends_on;
 
+/// Where an outline's enumerator opening a text ends, with the space after it: "IV. ", "2.", "c) ", "(a) ", "5.2. ". A Roman
+/// or arabic number and a parenthesis may run into the title, "II.BACKGROUND"; a letter's point is followed by a space.
+pub(crate) fn enumerator_end(body: &str) -> Option<usize> {
+    cached_regex!(ENUMERATOR, r"^(?:(?:[IVXLC]{1,6}|\d{1,3}(?:\.\d{1,3})*)[.)]\s*|\([\p{L}\p{N}]{1,5}\)\s*|(?:\p{L}|[IVXLCDM]{1,6}|[ivxlcdm]{1,6})[.)](?:\s+|$))")
+        .find(body).map(|found| found.end())
+}
+
+/// A word that is an outline's enumerator ([`enumerator_end`] over all of it), or a section's own figures: "5.2.2".
 pub(crate) fn heading_enumerator(value: &str) -> bool {
-    // Every enumerator the grammar admits ends in a point or a closing parenthesis, but a section's own figures: "5.2.2".
-    value.ends_with(['.', ')']) && cached_regex!(VALUE, r"^(?:\([\p{L}\p{N}]{1,5}\)|\p{L}[.)]|[IVXLCDM]{1,4}[.)]|[ivxlcdm]{1,4}[.)]|\d{1,3}(?:\.\d{1,3})*[.)])$").is_match(value)
+    value.ends_with(['.', ')']) && !value.contains(char::is_whitespace) && enumerator_end(value) == Some(value.len())
         || value.contains('.') && cached_regex!(SECTION, r"^\d{1,3}(?:\.\d{1,3}){2,}$").is_match(value)
 }
 
@@ -44,7 +51,8 @@ pub(super) fn heading_level(words: &[&str], enumerated: bool) -> bool {
     last.ends_with('?') || heading_title_case(words) || enumerated || words.len() <= if last.ends_with(':') { 3 } else { 6 }
 }
 
-pub(super) fn heading_title_case(words: &[&str]) -> bool {
+/// Every longer word (four letters or more) opens on a capital.
+pub(crate) fn heading_title_case(words: &[&str]) -> bool {
     words.iter().all(|word| {
         let (length, first) = word.chars().filter(|value| value.is_alphabetic()).fold(
             (0, None),

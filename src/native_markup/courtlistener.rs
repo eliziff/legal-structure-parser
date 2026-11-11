@@ -1253,38 +1253,6 @@ pub(super) fn clip_courtlistener_paragraphs_to_opinions(
     }
 }
 
-/// An opinion's divisions printed as paragraphs of their own, "I", "II", "A.": headings, where
-/// the opinion opens its divisions with "I".
-pub(super) fn courtlistener_division_headings(structure: &mut DocumentStructure, text_index: &ScalarCoordinates) {
-    static DIVISION: OnceLock<Regex> = OnceLock::new();
-    let division = DIVISION.get_or_init(|| Regex::new(r"^(?:[IVX]{1,5}|[A-H])\.?$").unwrap());
-    let coordinates = ScalarText::with_coordinates(structure.query_text(), text_index);
-    // A heading the engine already reads there stays the one heading.
-    let existing = structure.nodes.iter().filter(|node| node.kind == NodeKind::Heading)
-        .map(|node| structure.query_range(node)).collect::<Vec<_>>();
-    let headings = structure.nodes.iter().enumerate().filter_map(|(index, node)| {
-        if node.source != Derivation::Native || !matches!(node.kind, NodeKind::Prose | NodeKind::Paragraph)
-            || node.marker_range.is_some() || node.markup_tag.as_deref() != Some("p")
-        {
-            return None;
-        }
-        let range = structure.query_range(node);
-        let printed = trim_js(coordinates.slice_utf16(range.start..range.end)?);
-        let read = existing.iter().any(|heading| heading.start < range.end && range.start < heading.end);
-        division.is_match(printed).then(|| (index, printed.trim_end_matches('.') == "I", read))
-    }).collect::<Vec<_>>();
-    if headings.len() < 2 || !headings.iter().any(|(_, first, _)| *first) {
-        return;
-    }
-    for (index, _, _) in headings.into_iter().filter(|(_, _, read)| !read) {
-        let range = structure.query_range(&structure.nodes[index]);
-        let node = &mut structure.nodes[index];
-        node.kind = NodeKind::Heading;
-        node.role = Some(crate::PrimaryRole::Heading);
-        node.heading_range = Some(range);
-    }
-}
-
 /// The CAP front-matter field a data-type attribute names ("legal" is the reporter's arguments of counsel).
 pub(crate) fn cap_front_matter(typed: &str) -> Option<&'static str> {
     Some(match typed {
@@ -1342,8 +1310,6 @@ pub(super) fn finish(
     note_references: Vec<(String, ScalarRange)>,
     matched_role_starts: &HashSet<usize>,
     printed_notes: Vec<(StructureNode, Vec<ScalarRange>)>,
-    heading_exclusions: &[ScalarRange],
-    body_exclusions: &[ScalarRange],
 ) {
     // The text is fixed through these passes: it is indexed once for all of them.
     let text_index = ScalarCoordinates::new(structure.query_text());
@@ -1384,16 +1350,11 @@ pub(super) fn finish(
         structure.nodes[index].calls.push(range);
     }
     clip_courtlistener_pre_note_bodies(structure, &text_index);
-    crate::inference::supplement_source_formatted_headings(
-        structure,
-        heading_exclusions,
-        body_exclusions,
-    );
     supplement_courtlistener_printed_notes(structure, printed_notes);
     read_notes(structure, &text_index, references);
     drop_note_numbered_paragraphs(structure);
-    courtlistener_division_headings(structure, &text_index);
     courtlistener_source_roles(structure);
+    super::titles::shape_headings(structure, &text_index);
 }
 
 /// What a CourtListener rendition's markup declares beyond the generic reading, in order: notes no

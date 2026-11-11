@@ -22,13 +22,13 @@ mod text;
 pub use checks::{parse_failures, parse_screens, quote_miss, receipt_miss};
 pub use pages::{citers_numbering, citers_page};
 use clean::excise;
-use headings::{
-    caption_heading, enumerated_titles, enumerator_end, fused_titles, heading_line, letter_spaced, list_items,
-    notes_title, paged_title, run_in, section_keyword, title_cased, unfused,
+use headings::{enumerated_titles, list_items};
+use crate::native_markup::titles::{
+    self, element_of, emphasized_whole, front_role, heading_line, letter_spaced, notes_title, paged_title, unfused,
 };
 use matter::{
-    classed_front, cover_matter, dispositions, divisions_of_headnotes, document_kind, embedded_topics, front_role,
-    head_lines, name_dates, names_a_digest, printed_headnote_marks, record_gaps, reporter_matter, sentences,
+    classed_front, cover_matter, dispositions, divisions_of_headnotes, document_kind, embedded_topics,
+    head_lines, name_dates, names_a_digest, printed_headnote_marks, record_gaps, reporter_matter,
     titled_digest, topic_index,
 };
 use notes::{answer_calls, flat_notes, supply_notes};
@@ -44,7 +44,7 @@ use readings::{defined_terms, instruments, quotations};
 use crate::text::ScalarCoordinates;
 use crate::{
     analyze_native_markup, hierarchy, javascript_whitespace, trim_javascript_whitespace as trim_js, utf16_len, Derivation, DocumentStructure,
-    MarkupElement, NativeMarkupInput, NodeKind, PrimaryRole, ScalarRange, ScalarText, StructureNode,
+    NativeMarkupInput, NodeKind, PrimaryRole, ScalarRange, ScalarText, StructureNode,
 };
 pub use legal_structure_model::opinion::{OpinionCitation, OpinionReading, PageSeries, Pin, RecordGap};
 use regex::Regex;
@@ -426,7 +426,7 @@ pub fn source_faults_left(structure: &DocumentStructure) -> (usize, usize) {
 pub fn marks_in_notes(structure: &DocumentStructure) -> usize {
     let coordinates = ScalarText::new(&structure.text);
     nodes(structure, NodeKind::Footnote).flat_map(|note| note.ranges.iter()).filter_map(|range| coordinates.slice_utf16(range.start..range.end))
-        .map(|body| body.lines().skip(1).filter(|line| text::says_paragraph(line.trim_start())).count()).sum()
+        .map(|body| body.lines().skip(1).filter(|line| titles::says_paragraph(line.trim_start())).count()).sum()
 }
 
 /// How much of the text (spaces aside) nothing holds, and how the longest such stretch opens.
@@ -861,11 +861,6 @@ fn complete(structure: &mut DocumentStructure, kinds: &mut Kinds, pending: &mut 
     finish(structure, kinds, pending, record);
 }
 
-/// A number and nothing else, as a note's label stands when its note has been read: "[6]", "24".
-fn bare_label(words: &str) -> bool {
-    words.len() <= 8 && words.chars().any(|c| c.is_ascii_digit()) && words.chars().all(|c| c.is_ascii_digit() || matches!(c, '[' | ']' | '(' | ')' | '.'))
-}
-
 fn squeezed(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -972,11 +967,6 @@ fn from_text(record: &OpinionRecord, name: &str, text: String, pending: &mut Pen
     opinion_document(record, name, text, reading.kinds)
 }
 
-fn element_of<'a>(structure: &'a DocumentStructure, node: &StructureNode) -> Option<(usize, &'a MarkupElement)> {
-    let at = crate::native_markup::element_at(&structure.markup_elements, node.markup_start?)?;
-    Some((at, &structure.markup_elements[at]))
-}
-
 /// What a headnote node is: the headnote field of CAP's front matter its element or an ancestor is, by its data-type or
 /// else its tag (`cap_front_matter`).
 fn headnote_kind(structure: &DocumentStructure, node: &StructureNode) -> String {
@@ -998,8 +988,9 @@ fn headnote_kind(structure: &DocumentStructure, node: &StructureNode) -> String 
 /// each of its pages, headings, paragraphs, notes and parts is taken out of them into the parse's lists as the opinion's
 /// rules read it, and what the markup reads that the opinion does not stays out of its nodes.
 fn from_structure(record: &OpinionRecord, name: &str, mut markup: DocumentStructure, pending: &mut Pending) -> (DocumentStructure, Kinds) {
-    let nodes = std::mem::take(&mut markup.nodes);
     let index = ScalarCoordinates::new(markup.query_text());
+    let body_blocks = titles::body_blocks(&markup, &index);
+    let nodes = std::mem::take(&mut markup.nodes);
     let structure = &markup;
     let text = structure.query_text();
     let coordinates = ScalarText::with_coordinates(text, &index);
@@ -1028,11 +1019,11 @@ fn from_structure(record: &OpinionRecord, name: &str, mut markup: DocumentStruct
     // Then each node the opinion reads, taken out of them in their order, by its kind.
     let (mut page_nodes, mut heading_nodes, mut block_nodes, mut note_nodes, mut part_nodes) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut unmatched = Vec::new();
-    for node in nodes {
+    for (at, node) in nodes.into_iter().enumerate() {
         match node.kind {
             NodeKind::Page => page_nodes.push(node),
             NodeKind::Heading => heading_nodes.push(node),
-            NodeKind::Paragraph | NodeKind::Prose | NodeKind::Quote => block_nodes.push(node),
+            NodeKind::Paragraph | NodeKind::Prose | NodeKind::Quote => block_nodes.push((at, node)),
             NodeKind::Footnote => note_nodes.push(node),
             NodeKind::Span if reads(&node, "unmatched-call") => unmatched.push({
                 let mut call = span("unmatched-call", node.range.start, node.range.end);
@@ -1061,83 +1052,24 @@ fn from_structure(record: &OpinionRecord, name: &str, mut markup: DocumentStruct
     }
     pages::never_down(structure, &mut pages);
     let page_marks = pages.iter().filter_map(|page| page.marker_range).collect::<Vec<_>>();
-    // A range's words without the page marks in it: "*223III." is "III.".
-    let bare = |range: ScalarRange| {
-        let mut words = String::new();
-        let mut at = range.start;
-        let first = page_marks.partition_point(|mark| mark.start < range.start);
-        for mark in page_marks[first..].iter().take_while(|mark| mark.end <= range.end) {
-            words.push_str(coordinates.slice_utf16(at..mark.start).unwrap_or(""));
-            at = mark.end.max(at);
-        }
-        words.push_str(coordinates.slice_utf16(at..range.end).unwrap_or(""));
-        words
-    };
-    let inside = |ranges: &[ScalarRange], range: ScalarRange| ranges.iter().any(|note| note.start <= range.start && range.end <= note.end);
-    let mostly_in = |ranges: &[ScalarRange], range: ScalarRange| {
-        ranges.iter().map(|note| note.end.min(range.end).saturating_sub(note.start.max(range.start))).sum::<usize>() * 2 >= (range.end - range.start).max(1)
-    };
 
-    let mut headings = Vec::new();
-    for markup in heading_nodes {
+    let headings = heading_nodes.into_iter().map(|markup| {
         let range = markup.heading_range.unwrap_or(structure.query_range(&markup));
-        let printed = slice(range);
-        if !front_ranges.iter().any(|line| line.start <= range.start && range.end <= line.end) && caption_heading(printed) {
-            front.push(front_node("caption", squeezed(printed), range));
-            continue;
-        }
         let mut heading = taken(markup, NodeKind::Heading, range, Derivation::Native);
         heading.grammar = Some("engine".to_owned());
-        headings.push(heading);
-    }
+        heading
+    }).collect::<Vec<_>>();
 
+    // The body's blocks as the engine reads them (`titles::body_blocks`).
     let counted = counts_its_blocks(structure);
+    let mut block_nodes = block_nodes.into_iter().collect::<HashMap<_, _>>();
     let mut paragraphs = Vec::new();
-    for mut markup in block_nodes {
-        let mut range = structure.query_range(&markup);
-        if mostly_in(&note_ranges, range) || inside(&headnote_ranges, range) || inside(&front_ranges, range) || markup.role.is_some_and(|role| role != PrimaryRole::Text) {
+    for block in body_blocks {
+        let Some(mut markup) = block_nodes.remove(&block.index) else { continue };
+        let range = block.range;
+        if block.contents {
+            front.push(front_node("contents", squeezed(&block.printed), range));
             continue;
-        }
-        let printed = bare(range);
-        if printed.trim().is_empty() {
-            continue;
-        }
-        if headings.iter().any(|heading: &StructureNode| heading.range.start <= range.start && range.end <= heading.range.end) {
-            continue;
-        }
-        if text::contents_line(trim_js(&printed)) {
-            front.push(front_node("contents", squeezed(&printed), range));
-            continue;
-        }
-        if !headings.iter().any(|heading| heading.range.start < range.end && range.start < heading.range.end) && markup.marker_range.is_none() {
-            let after_a_sentence = paragraphs.last().is_none_or(|last: &StructureNode| !(last.kind == NodeKind::Quote) && crate::inference::ends_sentence(slice(last.range), true));
-            let opened = trim_js(&printed);
-            let whole_title = enumerator_end(opened).is_some_and(|end| title_cased(&opened[end..])) && sentences(opened).len() == 1;
-            let alone = whole_title || after_a_sentence && (!crate::inference::ends_sentence(opened, true) || (opened.ends_with('.') && printed.split_whitespace().count() <= 3));
-            if heading_line(&printed, alone || emphasized_whole(structure, &markup)) {
-                // A number on a title keeps its place; it goes to the text under the title once paragraphs are numbered.
-                let title = text::says_paragraph(opened).then(|| text::past_marker(opened)).filter(|title| !title.is_empty())
-                    .and_then(|title| Some(range.start + utf16_len(&slice(range)[..slice(range).find(title)?])));
-                let Some(start) = title else {
-                    headings.push(read_heading(range.start, range.end, "shape"));
-                    continue;
-                };
-                headings.push(read_heading(start, range.end, "shape"));
-                range.end = start;
-            } else if let Some(end) = run_in(structure, &markup, range, &bare) {
-                headings.push(read_heading(range.start, end, "run-in"));
-                range.start = end;
-            } else {
-                let (lead, tail) = fused_titles(coordinates.slice_utf16(range.start..range.end).unwrap_or(""));
-                if let Some(lead) = lead {
-                    headings.push(read_heading(range.start, range.start + lead, "run-in"));
-                    range.start += lead;
-                }
-                if let Some(tail) = tail {
-                    headings.push(read_heading(range.start.max(range.end - tail), range.end, "run-in"));
-                    range.end -= tail;
-                }
-            }
         }
         let quote = markup.kind == NodeKind::Quote || markup.markup_tag.as_deref().is_some_and(|tag| matches!(tag, "blockquote" | "excerpt"));
         let label = if markup.kind == NodeKind::Paragraph && !counted { markup.label.take() } else { None };
@@ -1150,7 +1082,7 @@ fn from_structure(record: &OpinionRecord, name: &str, mut markup: DocumentStruct
     paragraphs.retain(|paragraph| !tables.iter().any(|table| table.range.start <= paragraph.range.start && paragraph.range.end <= table.range.end));
     let classed = classed_front(structure, &coordinates);
     // A line of the foot that carries a paragraph's mark, "¶ 17 SUMMERS, C.J., concur.", is still that paragraph.
-    paragraphs.retain(|paragraph| text::says_paragraph(trim_js(slice(paragraph.range)))
+    paragraphs.retain(|paragraph| titles::says_paragraph(trim_js(slice(paragraph.range)))
         || !classed.iter().any(|line| line.range.start <= paragraph.range.start && paragraph.range.end <= line.range.end + 1));
     front.extend(classed.into_iter().filter(|line| !front_ranges.iter().any(|known| known.start <= line.range.start && line.range.end <= known.end)));
     settle(&mut paragraphs, &headings, &note_ranges);
@@ -1179,14 +1111,11 @@ fn from_structure(record: &OpinionRecord, name: &str, mut markup: DocumentStruct
             let start = at + utf16_len(&line[..line.len() - line.trim_start_matches(javascript_whitespace).len()]);
             let range = ScalarRange { start, end: start + utf16_len(words) };
             at += width;
-            if words.is_empty() || bare_label(words) {
+            if words.is_empty() || titles::bare_label(words) {
                 continue;
             }
-            let enumerated = words.split_whitespace().next().is_some_and(|first| first.ends_with(['.', ')']) && first.len() <= 5);
             if let Some(role) = front_role(words).filter(|_| start < first_text) {
                 front.push(front_node(role, squeezed(words), range));
-            } else if heading_line(words, true) && (enumerated || !words.chars().any(char::is_lowercase) || section_keyword(words)) {
-                headings.push(read_heading(range.start, range.end, "shape"));
             } else if first_text != usize::MAX && start < first_text {
                 front.push(front_node("cover", squeezed(words), range));
             } else if words.split_whitespace().count() >= 4 || words.bytes().any(|byte| byte.is_ascii_digit()) {
@@ -1280,16 +1209,6 @@ fn data_tables(structure: &DocumentStructure, first_block: usize) -> Vec<Structu
     }).filter(|table| {
         elements.iter().filter(|row| matches!(row.tag.as_str(), "tr" | "row") && table.markup_start < row.markup_start && row.markup_end <= table.markup_end).count() >= 2
     }).map(|table| read_table(table.range.start, table.range.end)).collect()
-}
-
-fn emphasized_whole(structure: &DocumentStructure, node: &StructureNode) -> bool {
-    let Some((at, element)) = element_of(structure, node) else { return false };
-    if node.source != Derivation::Native { return false; }
-    let whole = element.range.end - element.range.start;
-    structure.markup_elements[at + 1..].iter().take_while(|child| child.markup_start < element.markup_end)
-        .any(|child| matches!(child.tag.as_str(), "em" | "i" | "strong" | "b" | "u" | "center" | "underline")
-            && (child.range.end - child.range.start) * 10 >= whole * 9)
-        || element.attributes.get("align").is_some_and(|align| align.eq_ignore_ascii_case("center"))
 }
 
 /// The number a headnote prints at its head, "[3]" or "3.".
@@ -1814,7 +1733,7 @@ fn sift_headings(kinds: &mut Kinds) {
         if !title.chars().any(char::is_alphanumeric) {
             continue;
         }
-        if text::contents_line(title) {
+        if titles::contents_line(title) {
             kinds.spans.push(front_node("contents", title.to_owned(), heading.range));
         } else if let Some(numbers) = title.starts_with('[').then(|| headnote_numbers(title)).flatten() {
             kinds.spans.push(headnote_mark(&numbers, heading.range.start, heading.range.end));

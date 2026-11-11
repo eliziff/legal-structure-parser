@@ -18,7 +18,7 @@ mod paragraphs;
 pub(crate) use paragraphs::{excerpt_run, run_in_heading};
 mod tail;
 pub(crate) use tail::closing_line;
-#[cfg(feature = "opinion")]
+#[cfg(feature = "courtlistener")]
 pub(crate) use tail::ends_sentence;
 mod headings;
 pub(crate) use headings::*;
@@ -31,10 +31,6 @@ pub(crate) use sections::*;
 mod instrument;
 pub(crate) use instrument::*;
 mod journal;
-#[cfg(all(feature = "native-markup", feature = "courtlistener"))]
-mod formatted_headings;
-#[cfg(all(feature = "native-markup", feature = "courtlistener"))]
-pub(crate) use formatted_headings::*;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 #[repr(usize)]

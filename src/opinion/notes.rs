@@ -8,8 +8,8 @@ use legal_structure_model::document::{DocumentStructure, NodeKind, StructureNode
 use legal_structure_model::text::{javascript_whitespace, utf16_len, ScalarText};
 use regex::Regex;
 use crate::trim_javascript_whitespace as trim_js;
-use super::headings::notes_title;
-use super::{read_note, reads, text, word_starts, Kinds, Pending, ScalarCoordinates};
+use super::{read_note, reads, word_starts, Kinds, Pending, ScalarCoordinates};
+use crate::native_markup::titles::{self, notes_title};
 use crate::native_markup::{answer_by_label, called, printed_calls};
 pub(super) use crate::native_markup::{opens_on_reporter, plain_label};
 
@@ -134,7 +134,7 @@ pub(super) fn answer_calls(structure: &mut DocumentStructure, kinds: &mut Kinds)
                 }
                 found.push((*number, paragraph.range.start, paragraph.range.end));
                 closed = false;
-            } else if text::says_paragraph(printed) {
+            } else if titles::says_paragraph(printed) {
                 under = None;
                 closed = true;
             } else if !found.is_empty() && !closed {

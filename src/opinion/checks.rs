@@ -7,7 +7,7 @@ use legal_structure_model::text::{utf16_len, ScalarText};
 use regex::Regex;
 use crate::trim_javascript_whitespace as trim_js;
 use super::{front_lines, in_flow, nodes, paragraphs, reading, spans, squeezed, word_key, OpinionRecord};
-use super::headings::notes_title;
+use crate::native_markup::titles::notes_title;
 use super::notes::plain_label;
 use super::pages::page_number;
 
