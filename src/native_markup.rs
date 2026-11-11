@@ -437,26 +437,25 @@ fn page_identity(
     page_citations: &[String],
 ) -> Option<StructureNode> {
     let page_label = page_value(raw);
-    if !page_label.bytes().any(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let numeric = short_number(&page_label);
-    let label = if numeric {
-        format!("{}", page_label.parse::<u32>().ok()?)
-    } else {
-        format!(
-            "page{}",
-            page_label
-                .chars()
-                .filter(|value| !javascript_whitespace(*value))
-                .collect::<String>()
-        )
-    };
+    let label = page_label_of(&page_label)?;
     let (citation_index, page_scheme) = page_citation_identity(attributes);
     let mut page = markup_node(NodeKind::Page, label, anchor);
     page.aliases = page_aliases(&page_label, citation_index, page_citations, page_scheme.as_deref());
     page.series = page_series(citation_index, page_scheme.as_deref());
     Some(page)
+}
+
+/// A page's label as its mark prints it (`page_value`'s reading of the mark), where it prints a digit: a number of up to
+/// five digits as a number ("0412" is 412), any other label as printed, its spaces out ("123a", "S-12", "xii 4" as "xii4").
+fn page_label_of(printed: &str) -> Option<String> {
+    if !printed.bytes().any(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some(if short_number(printed) {
+        printed.parse::<u32>().ok()?.to_string()
+    } else {
+        printed.chars().filter(|value| !javascript_whitespace(*value)).collect()
+    })
 }
 
 /// The numbering a page mark's attributes name: the case's n-th citation's (`reporter-n`), a vendor's page scheme; none where
@@ -1012,12 +1011,7 @@ fn render_markup_in_context<'a>(
             let label = page_value(&rendered);
             if text_page.is_some() && label.bytes().any(|byte| byte.is_ascii_digit()) {
                 let TextPage { mut page, citation_index, page_scheme } = text_page.take().unwrap();
-                let numeric = short_number(&label);
-                page.label = Some(if numeric {
-                    format!("{}", label.parse::<u32>().map_err(EngineError::source)?)
-                } else {
-                    format!("{}", label.chars().filter(|value| !javascript_whitespace(*value)).collect::<String>())
-                });
+                page.label = page_label_of(&label);
                 page.aliases = page_aliases(&label, citation_index, page_citations, page_scheme.as_deref());
                 page_starts.push((page, None));
             }
@@ -1305,13 +1299,10 @@ fn render_markup_in_context<'a>(
         }
         if !self_closing {
             tag_stack.push(tag.clone());
-            static FOOTNOTE_CONTAINER_ID: OnceLock<Regex> = OnceLock::new();
             if provider.is_courtlistener()
                 && (footnote_body
                     || contains_ascii_word(attribute(&attributes, "class"), "footnotes", true)
-                    || FOOTNOTE_CONTAINER_ID
-                        .get_or_init(|| Regex::new(r"(?i)^(?:fn|footnote)[_-]").unwrap())
-                        .is_match(attribute(&attributes, "id")))
+                    || footnote_id(attribute(&attributes, "id")))
             {
                 open_excluded.push(OpenRange {
                     tag: tag.clone(),
@@ -1859,16 +1850,21 @@ fn courtlistener_opinion_page_scope(elements: &[MarkupElement], element: &Markup
         .then(|| (owner.range.end, format!("native-markup-{}", owner.markup_start)))
 }
 
-fn courtlistener_footnote_body(provider: DocumentProvider, tag: &str, attributes: &Attributes<'_>) -> bool {
+/// An id that names a note: "fn-3", "footnote_2", "fn3", "ftn3". What it names is out of the opinion's paragraphs and
+/// headings on any element; it is a note's body only on a block that can hold one (`courtlistener_footnote_body`), as a
+/// superscript label inside a note may carry the note's own id (`<sup id="fn3">`).
+fn footnote_id(id: &str) -> bool {
     static ID: OnceLock<Regex> = OnceLock::new();
+    ID.get_or_init(|| Regex::new(r"(?i)^(?:(?:fn|footnote)[_-]|fn\d|ftn\d)").unwrap()).is_match(id)
+}
+
+fn courtlistener_footnote_body(provider: DocumentProvider, tag: &str, attributes: &Attributes<'_>) -> bool {
     provider.is_courtlistener()
         && (matches!(tag, "footnote" | "footnote_body")
             || (matches!(tag, "aside" | "div" | "li" | "section")
                 && (contains_ascii_word(attribute(attributes, "class"), "footnote", true)
                     || has_class(attributes, "co_footnoteBody")
-                    || ID
-                        .get_or_init(|| Regex::new(r"(?i)^(?:(?:fn|footnote)[_-]|fn\d|ftn\d)").unwrap())
-                        .is_match(attribute(attributes, "id")))))
+                    || footnote_id(attribute(attributes, "id")))))
 }
 
 fn courtlistener_ldml_bracketed_marker(raw: &str) -> bool {
