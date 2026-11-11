@@ -1,13 +1,16 @@
 //! An authority's text as its table of authorities reads it: each body paragraph and each note a unit, its text, where
-//! its notes are called in it, and, for a PDF, where its words stand in the source.
+//! its notes are called in it, and, for a PDF, where its words stand in the source. An Authorities draft stores these
+//! units as they are, each with the citations found in it.
 
 use crate::ScalarRange;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
 pub struct AuthorityTextUnit {
     /// "body:N" or "footnote:N".
+    #[serde(rename = "id")]
     pub key: String,
     /// "body" or "footnote".
     #[cfg_attr(feature = "binding-types", ts(type = "\"body\" | \"footnote\""))]
