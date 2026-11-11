@@ -141,6 +141,12 @@ pub(super) fn inferred_blocks(evidence: &Evidence, text: &ScalarText<'_>) -> Vec
     blocks
 }
 
+/// What the case reader reads in a provider's text of a judgment (its numbered paragraphs, notes and printed pages): the
+/// blocks `profile_blocks` reads for such a text, which carries no layout, exclusions or report start to read with.
+pub(crate) fn case_paragraphs(text: &ScalarText<'_>) -> Vec<StructureNode> {
+    detect_case(text, DetectionProfile::CaseRootedComplete, None, false, &[], false, &[])
+}
+
 fn profile_blocks(evidence: &Evidence, text: &ScalarText<'_>) -> Vec<StructureNode> {
     match evidence.profile {
         DetectionProfile::Legislation => {
