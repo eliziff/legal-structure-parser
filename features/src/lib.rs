@@ -8,12 +8,12 @@
 pub mod a2aj;
 #[cfg(feature = "citator-graph")]
 pub mod citator_graph;
+#[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
+mod courtlistener_page;
 #[cfg(all(feature = "citator", feature = "document-query"))]
 mod journal_titles;
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
 mod outline;
-#[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
-mod courtlistener_page;
 #[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
 mod passage_links;
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
@@ -25,22 +25,38 @@ mod quote_verification;
 mod reading_order;
 
 #[cfg(all(feature = "citator", feature = "document-query"))]
-pub use journal_titles::{journal_title_choice, journal_title_searches, JournalTitleHit, JournalTitleSearch};
+pub use journal_titles::{
+    journal_title_choice, journal_title_searches, JournalTitleHit, JournalTitleSearch,
+};
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
 pub use outline::{document_outline, text_outline, OutlineEntry};
 #[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
-pub use passage_links::{cited_passage_link, courtlistener_link, law_web_link, CourtListenerAnchor, CourtListenerCluster, CourtListenerOpinion, CourtListenerPage, passage_link, source_link, PassageLink, PassageLinkRequest,
-    SourceLinkRequest, VerifiedPdf};
-#[cfg(feature = "document-query")]
-pub use quote_location::{
-    corrected_quote, editorial_quote, locate_document_quotes, quote_text_comparison, verbatim_repair, CitedPinpoint, LocatedQuote,
-    QuoteLocator, QuoteSource, QuoteComparison, QuoteLocation, QuoteToLocate,
+pub use passage_links::{
+    cited_passage_link, courtlistener_link, law_web_link, passage_link, source_link,
+    CourtListenerAnchor, CourtListenerCluster, CourtListenerOpinion, CourtListenerPage,
+    PassageLink, PassageLinkRequest, SourceLinkRequest, VerifiedPdf,
 };
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
 pub use printed_statute::statute_currency;
+#[cfg(feature = "document-query")]
+pub use quote_location::{
+    corrected_quote, editorial_quote, locate_document_quotes, quote_text_comparison,
+    verbatim_repair, CitedPinpoint, LocatedQuote, QuoteBlockKind, QuoteBlockLabel, QuoteComparison,
+    QuoteLocation, QuoteLocator, QuoteSource, QuoteToLocate,
+};
 #[cfg(feature = "quote-verification")]
 pub use quote_verification::*;
 pub use reading_order::{document_reading_order, ReadingOrderUnit};
 
 /// The digest of this crate's source, beside the engine's (`legal_structure::ENGINE_SOURCE_SHA256`).
 pub const SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_FEATURES_SHA256");
+
+mod source_identity;
+#[cfg(feature = "citator")]
+pub use source_identity::citation_key_version;
+pub use source_identity::AliasGroup;
+#[cfg(feature = "a2aj-store")]
+pub mod a2aj_store;
+mod cited_answer;
+pub mod search_query;
+pub use cited_answer::*;

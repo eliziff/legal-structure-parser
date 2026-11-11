@@ -34,7 +34,7 @@ hansard = []
 local-pdf = []
 # The structure engine: inference over any text, a provider's text read into a structure (provider_text), the case
 # and statute outlines, and the analysis the PDF engine installs.
-structure-inference = ["dep:legal-citations"]
+structure-inference = ["dep:legal-citations", "journal"]
 document-query = ["dep:legal-document-query"]
 citator = ["dep:legal-citations"]
 native-markup = ["structure-inference"]
