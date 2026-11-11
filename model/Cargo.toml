@@ -8,7 +8,12 @@ repository = "https://github.com/eliziff/legal-structure-parser"
 # Publishes where legal-layout's sources are to dependents' build scripts (build.rs).
 links = "legal_structure_model"
 
+[features]
+# The TypeScript declarations of its types the engine serves (native/legal-structure-node's export-types).
+binding-types = ["dep:ts-rs", "legal-layout/binding-types"]
+
 [dependencies]
+ts-rs = { version = "12", optional = true, features = ["serde-json-impl"] }
 legal-layout = { path = "../layout" }
 legal-text = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }

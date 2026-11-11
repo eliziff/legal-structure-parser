@@ -86,6 +86,7 @@ impl std::error::Error for EngineError {}
 
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeKind {
     Complete,
@@ -93,6 +94,7 @@ pub enum ScopeKind {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum DetectionProfile {
     CaseRootedComplete,
@@ -104,10 +106,12 @@ pub enum DetectionProfile {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct Scope {
     pub kind: ScopeKind,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub excerpt_of: Option<String>,
 }
 
@@ -121,12 +125,14 @@ impl Scope {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct Origin {
     pub id: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub enum CandidateGrammar {
     Numeric,
     Hierarchy,
@@ -134,6 +140,7 @@ pub enum CandidateGrammar {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct StructureMarkerCandidate {
     pub id: String,
     pub range: ScalarRange,
@@ -143,6 +150,7 @@ pub struct StructureMarkerCandidate {
     /// A provision's kind as its grammar read its marker ("section", "article", "part", ...); none for a clause read by
     /// its number alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub locator_kind: Option<String>,
     pub parent_candidate_id: Option<String>,
     pub level: usize,
@@ -150,6 +158,7 @@ pub struct StructureMarkerCandidate {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct StructureCandidateRun {
     pub id: String,
     pub grammar: CandidateGrammar,
@@ -160,6 +169,7 @@ pub struct StructureCandidateRun {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct CandidateEvidenceV2 {
     pub candidate_id: String,
     pub page_indexes: Vec<usize>,
@@ -168,6 +178,7 @@ pub struct CandidateEvidenceV2 {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum CandidateObservationV2 {
     BodyProseFlow,
@@ -194,6 +205,7 @@ pub enum CandidateObservationV2 {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionRuleV2 {
     RootedNumericProse,
@@ -211,6 +223,7 @@ pub enum ResolutionRuleV2 {
 /// The unit a numbering marker opens: one of the text's numbered paragraphs, a section or clause,
 /// or a list's item.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum UnitRole {
     Paragraph,
@@ -247,6 +260,7 @@ impl UnitRole {
 /// whether its number counts in its text (the next of its count after the last of that count read
 /// before it, or that last one).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct CandidateRoleV2 {
     pub candidate_id: String,
     pub role: Option<UnitRole>,
@@ -257,20 +271,26 @@ pub struct CandidateRoleV2 {
 
 /// An authoritative table cell a document's text was rendered from, in UTF-16 offsets.
 #[derive(Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AuthoritativeTableCell {
     pub table: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub table_name: Option<String>,
     pub row: usize,
     pub column: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub row_span: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub column_span: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub display_value: Option<String>,
     pub ranges: Vec<ScalarRange>,
     pub start: usize,

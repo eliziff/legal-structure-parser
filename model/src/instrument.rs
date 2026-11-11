@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct InstrumentContentsEntry {
     /// The entry's label as the provision it names holds it ("5.2", "4", "b"), and that provision's kind ("section",
@@ -11,12 +12,14 @@ pub struct InstrumentContentsEntry {
     pub heading: String,
     pub depth: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub parent_label: Option<String>,
     pub page: Option<u32>,
     pub contents_line_start: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct InstrumentContentsOutline {
     pub entries: Vec<InstrumentContentsEntry>,
@@ -26,6 +29,7 @@ pub struct InstrumentContentsOutline {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum InstrumentContentsRefusal {
     NoContentsMarker,
@@ -35,12 +39,14 @@ pub enum InstrumentContentsRefusal {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct InstrumentContentsReading {
     pub outline: Option<InstrumentContentsOutline>,
     pub refusal: Option<InstrumentContentsRefusal>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum InstrumentCrossReferenceStatus {
     Resolved,
@@ -50,6 +56,7 @@ pub enum InstrumentCrossReferenceStatus {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum InstrumentCrossReferenceReason {
     ExternalInstrument,
@@ -61,6 +68,7 @@ pub enum InstrumentCrossReferenceReason {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct InstrumentCrossReferenceEdge {
     pub source_start: usize,
@@ -75,10 +83,12 @@ pub struct InstrumentCrossReferenceEdge {
     pub status: InstrumentCrossReferenceStatus,
     pub self_loop: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub reason: Option<InstrumentCrossReferenceReason>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct InstrumentCrossReferenceCounts {
     pub detected: usize,
@@ -91,6 +101,7 @@ pub struct InstrumentCrossReferenceCounts {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct InstrumentCrossReferenceGraph {
     pub edges: Vec<InstrumentCrossReferenceEdge>,

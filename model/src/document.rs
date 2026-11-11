@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, collections::BTreeMap};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum NodeKind {
     Paragraph,
@@ -60,6 +61,7 @@ impl NodeKind {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum Derivation {
     Native,
@@ -69,6 +71,7 @@ pub enum Derivation {
 
 /// Functional roles are independent of locators and structural object kinds.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum PrimaryRole {
     Text,
@@ -97,85 +100,115 @@ pub enum PrimaryRole {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct StructureNode {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub role: Option<PrimaryRole>,
     /// Exact physical membership; range remains its envelope for positioning.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<ScalarRange>>", optional))]
     pub ranges: Vec<ScalarRange>,
     /// Heading text, distinct from the extent of its descendants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub heading_range: Option<ScalarRange>,
     /// Derived from parents, never an independently authored depth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub level: Option<usize>,
     /// Derived exact membership of this node and its descendants.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<ScalarRange>>", optional))]
     pub extent: Vec<ScalarRange>,
     pub kind: NodeKind,
     pub range: ScalarRange,
     /// Where the node reads in the query text, as assembly writes it; in a rendered text (`rendered_text`), none where
     /// it reads nowhere there.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<ScalarRange>>", optional))]
     pub rendered_ranges: Vec<ScalarRange>,
     /// Own logical content, before adding descendant section membership.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<ScalarRange>>", optional))]
     pub rendered_membership: Vec<ScalarRange>,
     pub origin_id: Cow<'static, str>,
     pub source: Derivation,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub locator_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub aliases: Option<Vec<String>>,
     pub parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub anchor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub markup_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub markup_start: Option<usize>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<BTreeMap<String, String>>", optional))]
     pub markup_attributes: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub content_start: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub marker_range: Option<ScalarRange>,
     /// One-based public table number, assigned by the table producer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub table_number: Option<usize>,
     /// One-based header row coordinates; None means the producer has not classified them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub header_rows: Option<Vec<usize>>,
     /// One-based grid position; merged cells name their top-left position.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub row: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub column: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub row_span: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub column_span: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub display_value: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<usize>>", optional))]
     pub page_indexes: Vec<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<String>>", optional))]
     pub line_ids: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub grammar: Option<String>,
     /// A page's numbering, where a document prints more than one: a reporter's (`reporter-1`), a vendor's page scheme,
     /// the slip opinion's (`slip`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<String>", optional))]
     pub series: String,
     /// Where a note is called: each mark in the text that points to it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<ScalarRange>>", optional))]
     pub calls: Vec<ScalarRange>,
     /// What a reader knows of the node past its kind and place, each under the reader's own name: a paragraph's list
     /// item or speaker.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<BTreeMap<String, String>>", optional))]
     pub properties: BTreeMap<String, String>,
 }
 
@@ -274,21 +307,26 @@ pub fn provision_mark(kind: Option<&str>) -> &'static str {
 /// A node as a reader takes it, with what the structure reads of it: the spans of its query text the node holds and
 /// their envelope (`query_ranges`, `query_range`), its link fragment, and whether it prints its label where it stands.
 #[derive(Clone, Debug, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct NodeReading<'a> {
     pub node: &'a StructureNode,
     pub ranges: Cow<'a, [ScalarRange]>,
     pub span: ScalarRange,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub fragment: Option<String>,
     pub prints_label: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct CitedAuthority {
     pub citation: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub canonical: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub kind: Option<String>,
 }
 
@@ -297,6 +335,7 @@ pub struct CitedAuthority {
 /// exact markup identified by `DocumentStructure::markup_sha256`; ranges
 /// address the rendered UTF-16 text. Parent indexes refer to markup_elements.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct MarkupElement {
     pub markup_start: usize,
     pub markup_end: usize,
@@ -326,6 +365,7 @@ impl MarkupElement {
 /// Actual enclosing source elements, nearest parent first. They supply context
 /// outside the markup input and have no invented body-text ranges.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct MarkupAncestor {
     pub tag: String,
     pub attributes: BTreeMap<String, String>,
@@ -333,6 +373,7 @@ pub struct MarkupAncestor {
 
 /// Physical text fragment in this identified source representation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct SourceFragment {
     pub id: String,
@@ -343,10 +384,12 @@ pub struct SourceFragment {
 
 /// An explicit logical object link between physical source starts (UTF-16).
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ContinuationKind { Paragraph, Heading, Note, Table, List }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct SourceContinuation {
     pub kind: ContinuationKind,
     pub from: usize,
@@ -359,6 +402,7 @@ pub type ManuscriptEdits = BTreeMap<String, Vec<(usize, usize, String)>>;
 
 /// A manuscript join is distinct from logical object identity.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct SourceJoin {
     pub from: usize,
     pub to: usize,
@@ -366,6 +410,7 @@ pub struct SourceJoin {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocumentStructure {
     pub schema_version: Cow<'static, str>,
     pub document_id: String,
@@ -373,51 +418,71 @@ pub struct DocumentStructure {
     #[serde(default)]
     pub provider: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub doc_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub profile: Option<DetectionProfile>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<String>", optional))]
     pub revision: String,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub rendered_text: Option<String>,
     pub text_sha256: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub source_sha256: Option<String>,
     pub scope: Scope,
     pub origins: Vec<Origin>,
     pub nodes: Vec<StructureNode>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<SourceFragment>>", optional))]
     pub source_fragments: Vec<SourceFragment>,
     /// None means no explicit source links were supplied, not an empty authored decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub continuations: Option<Vec<SourceContinuation>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<SourceJoin>>", optional))]
     pub joins: Vec<SourceJoin>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<ManuscriptEdits>", optional))]
     pub manuscript_edits: ManuscriptEdits,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<MarkupElement>>", optional))]
     pub markup_elements: Vec<MarkupElement>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<MarkupAncestor>>", optional))]
     pub markup_ancestors: Vec<MarkupAncestor>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub markup_sha256: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<CitedAuthority>>", optional))]
     pub cited_authorities: Vec<CitedAuthority>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<DefinedTerm>>", optional))]
     pub definitions: Vec<DefinedTerm>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub docx: Option<DocxStructureFacts>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub selected_hypothesis: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub contents: Option<InstrumentContentsReading>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub cross_references: Option<InstrumentCrossReferenceGraph>,
     /// A court opinion's readings that are no node of it (`opinion`).
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[cfg_attr(feature = "binding-types", ts(optional))]
     pub opinion: Option<Box<crate::opinion::OpinionReading>>,
 }
 

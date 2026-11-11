@@ -1,12 +1,14 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxNumberAnchor {
     pub number: String,
     pub paragraph_index: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxNumberingDuplicate {
     pub number: String,
     pub previous_paragraph_index: usize,
@@ -14,6 +16,7 @@ pub struct DocxNumberingDuplicate {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxNumberingGap {
     pub previous_number: String,
     pub number: String,
@@ -22,6 +25,7 @@ pub struct DocxNumberingGap {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxNumberingResult {
     pub number_anchors: Vec<DocxNumberAnchor>,
     pub roman_article_anchors: Vec<DocxNumberAnchor>,
@@ -30,6 +34,7 @@ pub struct DocxNumberingResult {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub enum DocxCrossReferenceStatus {
     Resolved,
     SkippedExternal,
@@ -40,6 +45,7 @@ pub enum DocxCrossReferenceStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxCrossReference {
     pub paragraph_index: usize,
     pub subject: String,
@@ -48,6 +54,7 @@ pub struct DocxCrossReference {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub enum DocxAttachmentReferenceStatus {
     Resolved,
     Missing { included: Vec<String> },
@@ -55,6 +62,7 @@ pub enum DocxAttachmentReferenceStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxAttachmentReference {
     pub paragraph_index: usize,
     pub label: String,
@@ -64,6 +72,7 @@ pub struct DocxAttachmentReference {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct DocxStructureFacts {
     pub numbering: DocxNumberingResult,
     pub cross_references: Vec<DocxCrossReference>,
