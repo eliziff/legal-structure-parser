@@ -311,12 +311,14 @@ impl<'a, C: Columns + ?Sized> Document<'a, C> {
 /// What a document must answer to: a citation (by its key and the keys of its other forms), a collection, an address.
 #[derive(Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 #[serde(rename_all = "camelCase")]
 pub struct Query {
     pub citation: String,
     pub dataset: Option<String>,
     pub source_url: Option<String>,
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<String>>", optional))]
     pub aliases: Vec<String>,
 }
 
@@ -348,6 +350,7 @@ impl Answering {
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct Metadata {
+    #[cfg_attr(feature = "binding-types", ts(type = r#""cases" | "laws""#))]
     pub doc_type: &'static str,
     pub dataset: String,
     pub citation: String,
@@ -387,7 +390,8 @@ impl Read {
 
 /// What a provision's excerpt carries of the statute it comes from.
 #[derive(Deserialize)]
-#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS), ts(rename = "ProvisionExcerpt"))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 #[serde(rename_all = "camelCase")]
 pub struct Excerpt {
     pub citation: String,

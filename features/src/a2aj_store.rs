@@ -121,6 +121,7 @@ fn readings<D>(read: Read, make: &impl Make<D>) -> CoreResult<Found<D>> {
 
 #[derive(Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 #[serde(rename_all = "camelCase")]
 pub struct Lookup {
     pub citation: String,
@@ -251,6 +252,7 @@ pub fn section<D: Send + Sync + 'static>(path: &Path, lookup: &Lookup, section: 
 /// What a search asks of the store. The full-text index's query comes built (searchQuery.ts builds every search's).
 #[derive(Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 #[serde(rename_all = "camelCase")]
 pub struct Search {
     query: String,
@@ -471,6 +473,7 @@ pub fn record<D: Send + Sync + 'static>(record: &Value, language: Language, doc_
 /// address asked for, else the first.
 #[derive(Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 #[serde(rename_all = "camelCase")]
 pub struct ProvisionLookup {
     language: Option<Language>,

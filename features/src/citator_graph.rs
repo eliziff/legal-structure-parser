@@ -548,11 +548,13 @@ pub fn court_level(code: &str) -> Option<u8> {
 
 #[derive(Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 #[serde(rename_all = "camelCase")]
 pub struct NoteUpRequest {
     pub citation: String,
     /// The cited decision's keys: its alias group.
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<String>>", optional))]
     pub keys: Vec<String>,
     pub cited_paragraph: Option<i64>,
     pub size: Option<usize>,
@@ -569,6 +571,7 @@ pub struct NoteUpEntry {
     pub name: Option<String>,
     pub court: Option<String>,
     pub date: Option<String>,
+    #[cfg_attr(feature = "binding-types", ts(type = r#""en" | "fr""#))]
     pub language: String,
     pub url: Option<String>,
     pub paragraph: Option<i64>,
@@ -592,9 +595,11 @@ pub struct ProviderCiting {
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct StandsFor {
+    #[cfg_attr(feature = "binding-types", ts(type = r#""case" | "commentary""#))]
     pub source_kind: &'static str,
     pub journal_name: Option<String>,
     pub text: String,
+    #[cfg_attr(feature = "binding-types", ts(type = r#""prose" | "mixed""#))]
     pub excerpt_kind: &'static str,
     pub citing_citation: Option<String>,
     pub citing_name: Option<String>,

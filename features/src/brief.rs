@@ -104,6 +104,7 @@ pub struct BriefPinpoint {
 /// A citation the engine extracted from the brief's text, the fields read of it.
 #[derive(Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 #[serde(rename_all = "camelCase")]
 pub struct BriefCitation {
     pub index: usize,
@@ -113,6 +114,7 @@ pub struct BriefCitation {
     #[serde(default)]
     pub style: Option<BriefSpan>,
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<BriefPinpoint>>", optional))]
     pub pinpoints: Vec<BriefPinpoint>,
 }
 

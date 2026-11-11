@@ -62,6 +62,7 @@ pub struct Passage<'a> {
 #[derive(Serialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 pub struct Locator {
+    #[cfg_attr(feature = "binding-types", ts(type = r#""page" | "paragraph" | "section" | "footnote""#))]
     pub kind: NodeKind,
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]

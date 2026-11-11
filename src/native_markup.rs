@@ -101,11 +101,13 @@ enum MarkupSerialization {
 
 #[derive(Deserialize, Serialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct NativeMarkupScope {
     kind: ScopeKind,
     excerpt_of: Option<String>,
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<MarkupSerialization>", optional))]
     markup_serialization: MarkupSerialization,
 }
 
@@ -119,6 +121,7 @@ fn default_scope() -> NativeMarkupScope {
 
 #[derive(Deserialize, Serialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct NativeMarkupInput {
     provider: DocumentProvider,
@@ -128,10 +131,13 @@ pub struct NativeMarkupInput {
     markup: Option<String>,
     citation: Option<String>,
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<String>>", optional))]
     page_citations: Vec<String>,
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<MarkupAncestor>>", optional))]
     markup_ancestors: Vec<MarkupAncestor>,
     #[serde(default = "default_scope")]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<NativeMarkupScope>", optional))]
     scope: NativeMarkupScope,
 }
 

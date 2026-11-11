@@ -75,6 +75,7 @@ pub struct CitationOccurrence {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "binding-types", ts(optional))]
     pub pinpoint_phrase: Option<CitationTextSpan>,
+    #[cfg_attr(feature = "binding-types", ts(type = r#""case" | "statute" | "journal" | "book" | "parliamentary" | "other""#))]
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "binding-types", ts(optional))]
@@ -97,6 +98,7 @@ pub struct AuthorityReferenceOccurrence {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "binding-types", ts(optional))]
     pub pinpoint_phrase: Option<CitationTextSpan>,
+    #[cfg_attr(feature = "binding-types", ts(type = r#""ibid" | "supra""#))]
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "binding-types", ts(optional))]

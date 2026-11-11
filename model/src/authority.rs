@@ -10,6 +10,7 @@ pub struct AuthorityTextUnit {
     /// "body:N" or "footnote:N".
     pub key: String,
     /// "body" or "footnote".
+    #[cfg_attr(feature = "binding-types", ts(type = "\"body\" | \"footnote\""))]
     pub kind: String,
     pub ordinal: usize,
     /// A note's ordinal among the notes; none for a body unit.

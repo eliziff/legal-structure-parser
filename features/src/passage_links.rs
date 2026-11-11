@@ -22,20 +22,24 @@ pub use crate::courtlistener_page::{CourtListenerAnchor, CourtListenerCluster, C
 pub struct VerifiedPdf {
     pub url: String,
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<bool>", optional))]
     pub pdf_only: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 #[serde(rename_all = "camelCase")]
 pub struct PassageLinkRequest {
     pub url: String,
     pub anchor: Option<String>,
     pub block_text: String,
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<String>>", optional))]
     pub quotes: Vec<String>,
     /// Prefer one directive per HTML block where that paints the same words, each once.
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<bool>", optional))]
     pub prefer_independent_html_blocks: bool,
     pub verified_pdf: Option<VerifiedPdf>,
 }
@@ -51,6 +55,7 @@ pub struct PassageLink {
 /// A passage of an A2AJ document, for the link it is routed to (`source_link`).
 #[derive(Clone, Debug, Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 #[serde(rename_all = "camelCase")]
 pub struct SourceLinkRequest {
     /// The publisher's page A2AJ names for the document, where it names one.
@@ -61,19 +66,23 @@ pub struct SourceLinkRequest {
     #[serde(default)]
     pub alternate_citation: Option<String>,
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<String>", optional))]
     pub language: String,
     /// `cases` or `laws`.
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<String>", optional))]
     pub doc_type: String,
     /// The passage's locator where the citation pinpoints one: its kind (`paragraph`, `section`, `page`) and the label
     /// the document prints (`12`, `5(2)`, `3`).
     pub locator: Option<SourceLocator>,
     pub block_text: String,
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<String>>", optional))]
     pub quotes: Vec<String>,
     /// The citation's pinpoints (`par12`, `sec6subsec1`, `sec6(1)(c)`): a passage cited without a quotation is
     /// linked at them, as a citation's pinpoint is (`cited_passage_link`).
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<String>>", optional))]
     pub pinpoints: Vec<String>,
     pub verified_pdf: Option<VerifiedPdf>,
 }

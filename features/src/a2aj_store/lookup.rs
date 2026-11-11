@@ -143,6 +143,7 @@ pub struct Named {
     pub name: String,
     pub year: String,
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<String>>", optional))]
     pub courts: Vec<String>,
 }
 

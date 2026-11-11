@@ -1138,6 +1138,7 @@ impl Scopes {
 /// "section") and its first locator and the last of a range.
 #[derive(Clone, Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 pub struct CitedPinpoint {
     pub kind: String,
     #[serde(default)]
@@ -1148,9 +1149,11 @@ pub struct CitedPinpoint {
 
 #[derive(Clone, Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 pub struct QuoteToLocate {
     pub quote: String,
     #[serde(default)]
+    #[cfg_attr(feature = "binding-types", ts(as = "Option<Vec<CitedPinpoint>>", optional))]
     pub pinpoints: Vec<CitedPinpoint>,
     /// The quotation's id, which a host's checks of it name the evidence by.
     #[serde(default)]
