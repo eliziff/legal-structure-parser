@@ -373,11 +373,14 @@ fn excerpt_count(text: &ScalarText<'_>, chain: &mut Vec<Marker>, candidates: &[M
     if !numbers.iter().any(|number| numbers.contains(&(number + 1)) || numbers.contains(&(number + 2))) {
         return;
     }
-    // Reported years can rise by one too; citation text establishes no paragraph count.
-    let citations = crate::analysis::citation_spans(text.value);
+    // Reported years can rise by one too; citation text establishes no paragraph count. (Only a
+    // candidate's own line is read for citations, each line once: a citation stands within its line.)
+    let (index, mut citations) = (text.lines(), HashMap::new());
     let mut sorted = candidates.iter().filter(|marker| {
-        let start = text.byte_of_utf16(marker.start);
-        !citations.iter().any(|span| span.core_range.contains(&start))
+        let line = index[index.partition_point(|line| line[2] <= marker.start) - 1];
+        let start = text.byte_of_utf16(marker.start) - line[0];
+        !citations.entry(line[0]).or_insert_with(|| crate::analysis::citation_spans(&text.value[line[0]..line[1]]))
+            .iter().any(|span| span.core_range.contains(&start))
     }).cloned().collect::<Vec<_>>();
     sorted.sort_by_key(|marker| marker.start);
     let (mut best, mut run) = (Vec::<Marker>::new(), Vec::<Marker>::new());
