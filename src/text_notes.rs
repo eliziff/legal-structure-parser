@@ -4,7 +4,7 @@
 //! are no note's labels, and the lines a paragraph count numbers are paragraph labels the pairer may
 //! overturn.
 
-use crate::note_pairing::pair_footnotes;
+use crate::note_pairing::{label_token, pair_footnotes};
 use crate::{utf16_len, NodeKind, ScalarRange, ScalarText, StructureNode};
 use legal_structure_model::NotePairing;
 use legal_citations::cues;
@@ -30,9 +30,9 @@ pub(crate) fn pair_text_notes(lines: &[TextLine<'_>], provider: bool) -> NotePai
         .iter()
         .map(|line| {
             let value = line.text;
-            if !value.bytes().any(|byte| byte.is_ascii_digit()) {
-                return Vec::new();
-            }
+            // (A provider's line is read for citations only where it may hold a note's label or call.)
+            if !value.bytes().any(|byte| byte.is_ascii_digit())
+                || provider && !value.contains('[') && !value.contains("Footnote ") && label_token(value, true).is_none() { return Vec::new(); }
             let characters = ScalarText::new(value);
             cues::layout_protected_spans(value)
                 .into_iter()

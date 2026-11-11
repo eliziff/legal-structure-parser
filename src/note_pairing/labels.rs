@@ -12,7 +12,7 @@ use super::{
     QUOTES, SYMBOL_START_PAGE_LIMIT,
 };
 
-pub(super) fn label_token(text: &str, provider: bool) -> Option<LabelToken> {
+pub(crate) fn label_token(text: &str, provider: bool) -> Option<LabelToken> {
     let values = text.chars().collect::<Vec<_>>();
     let scalar = ScalarText::new(text);
     let mut cursor = 0;

@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 mod labels;
 use build::build_pairs;
-use labels::label_token;
+pub(crate) use labels::label_token;
 use materialize::materialize;
 mod refs;
 mod backbone;
@@ -183,7 +183,7 @@ struct Pair {
 }
 
 #[derive(Debug, Clone)]
-struct LabelToken {
+pub(crate) struct LabelToken {
     pre_start: usize,
     start: usize,
     end: usize,
