@@ -164,8 +164,8 @@ pub(crate) fn statute_reading(text: &str) -> Result<DocumentStructure, EngineErr
 
 /// Where each provision `labels` cite is in a statute's text: a section or article ("16"), a part of one ("16(3)(a)"),
 /// or a range ("49-51", "33 to 35") from its first provision through its last; each span (UTF-16) from its marginal
-/// note through everything under it, in the order the text has them. A label the text holds no provision of has none.
-pub fn statute_provision_spans(text: &str, labels: &[String]) -> Result<Vec<[usize; 2]>, EngineError> {
+/// note through everything under it, by label. A label the text holds no provision of has none.
+pub fn statute_provision_spans(text: &str, labels: &[String]) -> Result<Vec<Option<[usize; 2]>>, EngineError> {
     static RANGE: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"\s*(?:-|\u{2013}|to)\s*").unwrap());
     let mut structure = statute_reading(text)?;
@@ -179,14 +179,12 @@ pub fn statute_provision_spans(text: &str, labels: &[String]) -> Result<Vec<[usi
         let start = node.heading_range.map_or(node.range.start, |note| note.start.min(node.range.start));
         Some([start, node.extent.iter().map(|range| range.end).max().unwrap_or(node.range.end)])
     };
-    let mut spans = labels.iter().filter_map(|label| {
+    Ok(labels.iter().map(|label| {
         if let Some(whole) = span(label) {
             return Some(whole);
         }
         let mut ends = RANGE.split(label);
         let (first, last) = (span(ends.next().unwrap_or("")), ends.next().and_then(|to| (!to.is_empty()).then(|| span(to)).flatten()));
         Some([first?[0], last?[1]])
-    }).collect::<Vec<_>>();
-    spans.sort_by_key(|span| span[0]);
-    Ok(spans)
+    }).collect())
 }
