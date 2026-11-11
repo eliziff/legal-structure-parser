@@ -1336,7 +1336,7 @@ fn line_start_furniture_last_word(
     (first_target > piece_first_word && first_target <= piece_last_word).then_some(first_target - 1)
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 struct MaximalCorePiece {
     start: usize,
     end: usize,
@@ -1423,17 +1423,6 @@ struct LexicalTerm {
     form: LexicalForm,
 }
 
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-struct PieceKey {
-    quote_index: usize,
-    start: usize,
-    end: usize,
-    first_word: usize,
-    last_word: usize,
-    context_first_word: usize,
-    context_last_word: usize,
-}
-
 #[derive(Clone)]
 struct Candidate {
     piece: BuiltPiece,
@@ -1462,22 +1451,8 @@ struct MaximalPlanner<'replay, 'document> {
     /// endpoint_terms_from_start and _end by (from the start, first word, last word, context): a range plan reads a
     /// piece's endpoints once for each way it pairs them.
     endpoint_cache: HashMap<(bool, usize, usize, bool), Vec<LexicalTerm>>,
-    directive_cache: HashMap<PieceKey, Option<String>>,
+    directive_cache: HashMap<(usize, MaximalCorePiece), Option<String>>,
     furniture_cache: HashMap<usize, Option<FurnitureKind>>,
-}
-
-impl PieceKey {
-    fn new(quote_index: usize, piece: MaximalCorePiece) -> Self {
-        Self {
-            quote_index,
-            start: piece.start,
-            end: piece.end,
-            first_word: piece.first_word,
-            last_word: piece.last_word,
-            context_first_word: piece.context_first_word,
-            context_last_word: piece.context_last_word,
-        }
-    }
 }
 
 fn selects(piece: MaximalCorePiece, selected: Option<PhraseSpan>) -> bool {
@@ -2165,12 +2140,17 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
 
     /// The shortest words before and after `piece`, within its context, that tell it apart: none on a side where it
     /// opens or closes its context.
-    fn context_terms(&mut self, piece: MaximalCorePiece, desired: PhraseSpan, required: &HashSet<usize>) -> (Vec<LexicalTerm>, Vec<LexicalTerm>) {
+    /// The piece's context before it and after it, each a piece of its own words, where it has any.
+    fn context_sides(&self, piece: MaximalCorePiece) -> (Option<MaximalCorePiece>, Option<MaximalCorePiece>) {
         let words = self.replay.document.tokens();
         let side = |first_word: usize, last_word: usize| MaximalCorePiece { start: words[first_word].start, end: words[last_word].end,
             first_word, last_word, context_first_word: first_word, context_last_word: last_word };
-        let before = (piece.first_word > piece.context_first_word).then(|| side(piece.context_first_word, piece.first_word - 1));
-        let after = (piece.last_word < piece.context_last_word).then(|| side(piece.last_word + 1, piece.context_last_word));
+        ((piece.first_word > piece.context_first_word).then(|| side(piece.context_first_word, piece.first_word - 1)),
+            (piece.last_word < piece.context_last_word).then(|| side(piece.last_word + 1, piece.context_last_word)))
+    }
+
+    fn context_terms(&mut self, piece: MaximalCorePiece, desired: PhraseSpan, required: &HashSet<usize>) -> (Vec<LexicalTerm>, Vec<LexicalTerm>) {
+        let (before, after) = self.context_sides(piece);
         let prefix = before.map(|context| {
             let terms = self.endpoint_terms_from_end(context, true);
             self.shortest_sufficient_context(terms, desired, required)
@@ -2290,7 +2270,7 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         desired: PhraseSpan,
         required: &HashSet<usize>,
     ) -> Option<String> {
-        let key = PieceKey::new(quote_index, piece);
+        let key = (quote_index, piece);
         if let Some(cached) = self.directive_cache.get(&key) {
             return cached.clone();
         }
@@ -2856,36 +2836,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
                 .slice(words[piece.first_word].start, words[piece.last_word].end),
         );
         let target_term = self.replay.spelled_term(&target)?;
-        let prefixes = if piece.first_word > piece.context_first_word {
-            self.endpoint_terms_from_end(
-                MaximalCorePiece {
-                    start: words[piece.context_first_word].start,
-                    end: words[piece.first_word - 1].end,
-                    first_word: piece.context_first_word,
-                    last_word: piece.first_word - 1,
-                    context_first_word: piece.context_first_word,
-                    context_last_word: piece.first_word - 1,
-                },
-                true,
-            )
-        } else {
-            Vec::new()
-        };
-        let suffixes = if piece.last_word < piece.context_last_word {
-            self.endpoint_terms_from_start(
-                MaximalCorePiece {
-                    start: words[piece.last_word + 1].start,
-                    end: words[piece.context_last_word].end,
-                    first_word: piece.last_word + 1,
-                    last_word: piece.context_last_word,
-                    context_first_word: piece.last_word + 1,
-                    context_last_word: piece.context_last_word,
-                },
-                true,
-            )
-        } else {
-            Vec::new()
-        };
+        let (before, after) = self.context_sides(piece);
+        let prefixes = before.map(|context| self.endpoint_terms_from_end(context, true)).unwrap_or_default();
+        let suffixes = after.map(|context| self.endpoint_terms_from_start(context, true)).unwrap_or_default();
         // The shortest directive that selects the piece, of no context, each prefix, each suffix, then each pair, the
         // first offered where lengths tie. A context adds its own length to the directive's, so the contexts are
         // replayed shortest first until one selects the piece: a line of hundreds of words offers tens of thousands.
