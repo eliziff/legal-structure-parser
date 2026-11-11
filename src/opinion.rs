@@ -454,10 +454,11 @@ impl Kinds {
         self.pages.iter_mut().chain(&mut self.paragraphs).chain(&mut self.notes).chain(&mut self.headings).chain(&mut self.parts).chain(&mut self.tables).chain(&mut self.spans)
     }
 
-    /// The structure takes what the parse read.
-    fn finish(self, structure: &mut DocumentStructure) {
+    /// The structure takes what the parse read; the index of its final text is handed back.
+    fn finish(self, structure: &mut DocumentStructure) -> ScalarCoordinates {
         structure.opinion = Some(Box::new(self.opinion));
         structure.nodes.extend(self.pages.into_iter().chain(self.paragraphs).chain(self.notes).chain(self.headings).chain(self.parts).chain(self.tables).chain(self.spans));
+        self.coordinates
     }
 
     /// A headnote: a span where the text holds it, the record's reading where its words stand apart.
@@ -612,7 +613,7 @@ fn read_record(record: &OpinionRecord, url: Option<String>, witness: Option<Witn
         supply_plain_pages(&mut structure, &mut kinds, &text::unshifted(plain), record.page_count);
     }
     complete(&mut structure, &mut kinds, &mut pending, record, plain);
-    kinds.finish(&mut structure);
+    let index = kinds.finish(&mut structure);
     // Each node its id by kind and place, all of them in the text's order.
     let mut counts = HashMap::<NodeKind, usize>::new();
     for node in structure.nodes.iter_mut().filter(|node| node.id.is_empty()) {
@@ -623,7 +624,7 @@ fn read_record(record: &OpinionRecord, url: Option<String>, witness: Option<Witn
     // At one start, what stands at that point before what runs on from it (a page reckoned ahead of the text, then the page
     // its first mark opens), then the longer before the shorter.
     structure.nodes.sort_by_key(|node| (node.range.start, node.range.end != node.range.start, std::cmp::Reverse(node.range.end)));
-    heading_ladder(&mut structure);
+    heading_ladder(&mut structure, &index);
     structure.url = url;
     // The text is final only now: page marks, furniture and calls are out of it, and other texts' notes in.
     structure.text_sha256 = format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(structure.text.as_bytes()));
@@ -968,7 +969,7 @@ fn from_text(record: &OpinionRecord, name: &str, text: String, pending: &mut Pen
 }
 
 fn element_of<'a>(structure: &'a DocumentStructure, node: &StructureNode) -> Option<(usize, &'a MarkupElement)> {
-    let at = structure.markup_elements.binary_search_by_key(&node.markup_start?, |element| element.markup_start).ok()?;
+    let at = crate::native_markup::element_at(&structure.markup_elements, node.markup_start?)?;
     Some((at, &structure.markup_elements[at]))
 }
 
@@ -1752,10 +1753,10 @@ fn title_headings(structure: &mut DocumentStructure, kinds: &mut Kinds) {
 /// Each heading under the title it ranks below, read off the ladder of enumerator families its titles open on: a family
 /// keeps its rung, a new one goes under the last, and a title of none starts the ladder again. The finished structure's
 /// headings, each with its id.
-fn heading_ladder(structure: &mut DocumentStructure) {
+fn heading_ladder(structure: &mut DocumentStructure, index: &ScalarCoordinates) {
     let mut calls = nodes(structure, NodeKind::Footnote).flat_map(|note| note.calls.iter().copied()).collect::<Vec<_>>();
     calls.sort_by_key(|call| call.start);
-    let coordinates = ScalarText::new(&structure.text);
+    let coordinates = ScalarText::with_coordinates(&structure.text, index);
     // Each rung's family and the heading last on it.
     let mut ladder = Vec::<(String, &str)>::new();
     let mut letter = None;

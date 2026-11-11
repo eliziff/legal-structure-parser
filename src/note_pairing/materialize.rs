@@ -136,7 +136,7 @@ pub(super) fn materialize(
             body_lines = bounded;
         }
         // The body opens after the label and what sets it off (".", ")", a space) on the label's line.
-        let start_of_body = label_token(label_line.text, provider_text(label_line))
+        let start_of_body = label_line.label.as_ref()
             .filter(|token| token.start == pair.label.start && token.value == pair.label.value)
             .map_or(pair.label.end, |token| token.match_end);
         let after = label_line.tail(start_of_body);

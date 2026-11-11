@@ -602,8 +602,6 @@ fn marker_readings(label: &str) -> Vec<(String, u32, bool)> {
 }
 
 #[cfg(feature = "structure-inference")]
-#[cfg(feature = "structure-inference")]
-
 /// How a marker counts: its brackets, and whether it counts in digits, dotted digits, letters or
 /// roman numerals of either case, or is a bullet.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

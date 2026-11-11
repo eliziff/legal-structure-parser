@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) fn label_token(text: &str, provider: bool) -> Option<LabelToken> {
-    let values = chars(text);
+    let values = text.chars().collect::<Vec<_>>();
     let scalar = ScalarText::new(text);
     let mut cursor = 0;
     while cursor < values.len()
@@ -134,7 +134,7 @@ pub(super) fn paren_style(lines: &[PairLine<'_>]) -> bool {
     let mut paren = 0;
     let mut plain = 0;
     for line in lines.iter().filter(|line| line.zone == Zone::Note) {
-        let Some(token) = label_token(&line.text, provider_text(line)) else {
+        let Some(token) = &line.label else {
             continue;
         };
         if token.form == "paren" || (token.form == "plain" && token.post.contains(')')) {
@@ -233,7 +233,7 @@ pub(super) fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate], first_p
         if line.label_suppressed || line.edge_folio {
             continue;
         }
-        let Some(token) = label_token(&line.text, provider_text(line)) else {
+        let Some(token) = &line.label else {
             continue;
         };
         let paired_note_region = (line.zone == Zone::Note && !line.region_witness_demoted
@@ -251,7 +251,7 @@ pub(super) fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate], first_p
         if line.protected(token.start, token.end) && !paired_note_region {
             continue;
         }
-        let scalar = ScalarText::new(&line.text);
+        let scalar = &line.coordinates;
         let body = scalar
             .slice(token.match_end..scalar.len())
             .expect("token offsets must be valid");
@@ -423,7 +423,7 @@ pub(super) fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate], first_p
             end: token.end,
             observed: token.observed.clone(),
             value: token.value,
-            symbol: token.symbol,
+            symbol: token.symbol.clone(),
             form: token.form,
             score,
             repaired: !junk_prefix.is_empty(),
@@ -480,10 +480,7 @@ pub(super) fn extract_labels(lines: &[PairLine<'_>], refs: &[Candidate], first_p
     for indexes in by_value.values().filter(|indexes| indexes.len() >= 2) {
         for &index in indexes {
             let candidate = &candidates[index];
-            let line = ScalarText::new(&lines[candidate.line].text);
-            let continuation = line
-                .slice(candidate.start..line.len())
-                .expect("candidate offsets must be valid");
+            let continuation = lines[candidate.line].tail(candidate.start);
             if volume_cite_start(&continuation)
                 && indexes.iter().any(|other| {
                     *other != index

@@ -28,7 +28,6 @@ use materialize::*;
 const MAX_VALUE: u32 = 999;
 const ENDNOTE_MIN_LABELS: usize = 8;
 const SYMBOL_START_PAGE_LIMIT: u32 = 2;
-const SUPERSCRIPTS: &str = "⁰¹²³⁴⁵⁶⁷⁸⁹";
 const QUOTES: &str = "\"'‘’“”«»";
 const DASHES: &str = "–—-";
 const TERMINAL_PUNCTUATION: &str = ".!?:;”\"'’";
@@ -62,6 +61,10 @@ struct PairLine<'a> {
     spans: &'a [Span],
     /// The pairer reads a line by its characters, as its layout does, and places what it finds in UTF-16.
     coordinates: ScalarText<'a>,
+    /// The line's characters, as the pairer indexes them.
+    characters: Vec<char>,
+    /// The note label the line opens on, read once.
+    label: Option<LabelToken>,
     outline_spans: Vec<(usize, usize)>,
     note_column_fit: bool,
     small_font: bool,
@@ -194,10 +197,6 @@ struct LabelToken {
     post: String,
 }
 
-fn chars(value: &str) -> Vec<char> {
-    value.chars().collect()
-}
-
 fn chars_slice(values: &[char], start: usize, end: usize) -> String {
     values
         .iter()
@@ -206,8 +205,9 @@ fn chars_slice(values: &[char], start: usize, end: usize) -> String {
         .collect()
 }
 
+/// A superscript digit, as the text's digit grammar reads one (normalize_decimal_digit).
 fn is_superscript(character: char) -> bool {
-    SUPERSCRIPTS.contains(character)
+    !character.is_ascii_digit() && normalize_decimal_digit(character).is_some()
 }
 
 fn normalize_symbol(value: &str) -> String {
@@ -224,10 +224,6 @@ fn numeric_value(value: &str) -> Option<u32> {
         found = true;
     }
     (found && (1..=MAX_VALUE).contains(&number)).then_some(number)
-}
-
-fn provider_text(line: &PairLine<'_>) -> bool {
-    line.provider
 }
 
 fn overlaps(spans: &[(usize, usize)], start: usize, end: usize) -> bool {
@@ -311,6 +307,8 @@ fn build_lines<'a>(source: &'a [NoteLine<'a>], provider: bool, part: usize) -> V
                 bbox: line.layout.map_or([0.0; 4], |layout| layout.bbox),
                 spans,
                 coordinates,
+                characters: line.text.chars().collect(),
+                label: label_token(line.text, provider),
                 outline_spans: Vec::new(),
                 note_column_fit: false,
                 small_font: false,
@@ -350,7 +348,7 @@ fn build_lines<'a>(source: &'a [NoteLine<'a>], provider: bool, part: usize) -> V
     let note_column = median(
         lines
             .iter()
-            .filter(|line| line.zone == Zone::Note && label_token(line.text, provider).is_some())
+            .filter(|line| line.zone == Zone::Note && line.label.is_some())
             .map(|line| line.bbox[0])
             .collect(),
     );

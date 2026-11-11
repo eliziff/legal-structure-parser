@@ -83,7 +83,8 @@ pub(super) fn ref_right(character: char) -> bool {
         || DASHES.contains(character)
 }
 
-pub(super) fn chars_at_line_end(values: &[char], end: usize) -> bool {
+/// Whether only a call's closing punctuation follows character end on its line.
+pub(super) fn at_line_end(values: &[char], end: usize) -> bool {
     let tail = values.get(end..).unwrap_or_default();
     let start = tail
         .iter()
@@ -96,16 +97,6 @@ pub(super) fn chars_at_line_end(values: &[char], end: usize) -> bool {
     tail[start..end]
         .iter()
         .all(|character| REF_PUNCTUATION.contains(*character) || QUOTES.contains(*character))
-}
-
-pub(super) fn at_line_end(text: &str, end: usize) -> bool {
-    let text = ScalarText::new(text);
-    text.slice(end.min(text.len())..text.len())
-        .is_some_and(|tail| {
-            tail.trim()
-                .chars()
-                .all(|character| REF_PUNCTUATION.contains(character) || QUOTES.contains(character))
-        })
 }
 
 pub(super) fn preceding_word(values: &[char], start: usize) -> String {
@@ -439,15 +430,15 @@ pub(super) fn extract_refs(lines: &[PairLine<'_>]) -> (Vec<Candidate>, Vec<Candi
             continue;
         };
         let label_end = if line.zone == Zone::Note {
-            label_token(&line.text, provider_text(line)).map_or(0, |token| token.match_end)
+            line.label.as_ref().map_or(0, |token| token.match_end)
         } else {
             0
         };
-        let line_chars = chars(&line.text);
+        let line_chars = &line.characters;
         // A provider's flattened text runs a note's call into the word before it: "counsel[1] for",
         // "appeal.[1] The", "job.Footnote 1 The".
         // Its calls take no other form: no superscript survives the flattening, and its digits are text.
-        if provider_text(line) {
+        if line.provider {
             let Some(zone_score) = zone else {
                 continue;
             };
@@ -638,7 +629,7 @@ pub(super) fn extract_refs(lines: &[PairLine<'_>]) -> (Vec<Candidate>, Vec<Candi
                 .checked_sub(1)
                 .and_then(|index| line_chars.get(index))
                 .copied();
-            let at_eol = chars_at_line_end(&line_chars, end);
+            let at_eol = at_line_end(line_chars, end);
             let form = if start == 0 {
                 let previous = previous_by_line[line_index].map(|index| &lines[index]);
                 let follow_ok = line_chars

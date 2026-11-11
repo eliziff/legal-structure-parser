@@ -51,12 +51,12 @@ pub(super) fn gap_line_score(line: &PairLine<'_>, body: &str) -> f64 {
 
 pub(super) fn gap_repair_tokens(line: &PairLine<'_>) -> Vec<(String, usize, usize)> {
     let mut tokens = Vec::new();
-    if let Some(token) = label_token(&line.text, provider_text(line)) {
+    if let Some(token) = &line.label {
         if token.value.is_some() && matches!(token.form, "plain" | "sup") {
-            tokens.push((token.observed, token.start, token.end));
+            tokens.push((token.observed.clone(), token.start, token.end));
         }
     }
-    let values = chars(&line.text);
+    let values = &line.characters;
     let lead = values
         .iter()
         .take_while(|value| value.is_whitespace())
@@ -146,7 +146,7 @@ pub(super) fn sequence_position_rekey(
             continue;
         }
         let line = &lines[line_index];
-        let Some(token) = label_token(&line.text, provider_text(line)) else {
+        let Some(token) = &line.label else {
             continue;
         };
         if !matches!(token.form, "plain" | "sup") {
@@ -167,7 +167,7 @@ pub(super) fn sequence_position_rekey(
         if gap_line_score(line, &body) < 1.2 {
             continue;
         }
-        qualifying.push((line_index, token.observed, token.start, token.end));
+        qualifying.push((line_index, token.observed.clone(), token.start, token.end));
     }
     if qualifying.len() != residual.len() {
         return Vec::new();
@@ -539,7 +539,7 @@ pub(super) fn repair_missing_refs(
                         && in_window(candidate)
                         && (endnote
                             || lines[label.line].page.abs_diff(lines[candidate.line].page) <= 1)
-                        && at_line_end(&lines[candidate.line].text, candidate.end)
+                        && at_line_end(&lines[candidate.line].characters, candidate.end)
                 })
                 .collect()
         } else {
@@ -576,7 +576,7 @@ pub(super) fn repair_missing_refs(
                 && (chosen.contains_key(&(value + 1))
                     || labels.contains_key(&(value + 1))
                     || value == *values.last().unwrap())
-                && (at_line_end(&lines[candidate.line].text, candidate.end)
+                && (at_line_end(&lines[candidate.line].characters, candidate.end)
                     || left.is_some_and(|character| "\"'’”)]»".contains(character)))
                 && !left.is_some_and(|character| character.is_uppercase())
             {
@@ -718,7 +718,7 @@ pub(super) fn repair_glyph_refs(
             if line.zone != Zone::Body || line.furniture || label_lines.contains(&line_index) {
                 continue;
             }
-            for (start, end) in glyph_sites(&chars(&line.text)) {
+            for (start, end) in glyph_sites(&line.characters) {
                 let site = (line_index, start);
                 if site > floor && site < ceiling {
                     sites.push((line_index, start, end));
@@ -747,7 +747,7 @@ pub(super) fn repair_glyph_refs(
                     line,
                     start,
                     end,
-                    observed: chars_slice(&chars(&lines[line].text), start, end),
+                    observed: chars_slice(&lines[line].characters, start, end),
                     value: Some(value),
                     symbol: String::new(),
                     form: "glyph",
@@ -835,7 +835,7 @@ pub(super) fn repair_page_glyph_refs(
                 {
                     continue;
                 }
-                let text = chars(&line.text);
+                let text = &line.characters;
                 let mut found = glyph_sites(&text);
                 // A lone letter glued after punctuation and standing before a space.
                 for at in 1..text.len() {
@@ -875,7 +875,7 @@ pub(super) fn repair_page_glyph_refs(
                         line,
                         start,
                         end,
-                        observed: chars_slice(&chars(&lines[line].text), start, end),
+                        observed: chars_slice(&lines[line].characters, start, end),
                         value: Some(value),
                         symbol: String::new(),
                         form: "glyph",

@@ -214,7 +214,6 @@ pub(crate) struct ProvisionReference {
 }
 
 #[cfg(feature = "structure-inference")]
-#[cfg(feature = "structure-inference")]
 pub(crate) fn cross_reference_graph(
     structure: &DocumentStructure,
 ) -> Result<InstrumentCrossReferenceGraph, EngineError> {
@@ -392,7 +391,9 @@ pub fn analyze_instrument(
 ) -> Result<DocumentStructure, EngineError> {
     let text = text.into();
     let original_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
-    let coordinates = ScalarText::new(&text);
+    // The original text is indexed once: the lineation is chosen on it, and what is read after reads it again.
+    let index = crate::text::ScalarCoordinates::new(&text);
+    let coordinates = ScalarText::with_coordinates(&text, &index);
     let tables = AuthoritativeTables::new(&coordinates, table_cells)?;
     let references = find_provision_references(&coordinates, FindProvisionReferencesOptions::default());
     let (selected, selected_text, selected_blocks) =
@@ -407,7 +408,7 @@ pub fn analyze_instrument(
     let mut structure = crate::derive::derive(Evidence::new(structure, DetectionProfile::Instrument), Some(selected_blocks));
     structure.selected_hypothesis = Some(selected);
     let original = original_text.as_deref().unwrap_or(&structure.text);
-    let text = ScalarText::new(original);
+    let text = ScalarText::with_coordinates(original, &index);
     let selected_coordinates = (!selected_original).then(|| {
         if structure.text.len() == text.value.len() {
             text.with_same_coordinates(&structure.text)

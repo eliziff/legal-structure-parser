@@ -340,12 +340,12 @@ fn ancestors(elements: &[MarkupElement], index: usize) -> impl Iterator<Item = u
 }
 
 /// The element whose source starts at `markup_start`.
-fn element_at(elements: &[MarkupElement], markup_start: usize) -> Option<usize> {
+pub(crate) fn element_at(elements: &[MarkupElement], markup_start: usize) -> Option<usize> {
     elements.binary_search_by_key(&markup_start, |element| element.markup_start).ok()
 }
 
 /// A label printed as a number: one to five digits.
-fn short_number(value: &str) -> bool {
+pub(crate) fn short_number(value: &str) -> bool {
     (1..=5).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 

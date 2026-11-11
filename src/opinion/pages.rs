@@ -49,12 +49,12 @@ pub(super) fn series_of(node: &StructureNode) -> String {
 
 /// The page printed before a page: 289 before 290, and an inserted page's own run, 595 before 595a and 595a before 595b.
 fn previous_page(printed: &str) -> Option<String> {
-    if !printed.is_empty() && printed.len() <= 5 && printed.bytes().all(|byte| byte.is_ascii_digit()) {
+    if crate::native_markup::short_number(printed) {
         return printed.parse::<u32>().ok().filter(|number| *number >= 2).map(|number| (number - 1).to_string());
     }
     let letter = printed.chars().next_back().filter(char::is_ascii_lowercase)?;
     let digits = &printed[..printed.len() - 1];
-    if digits.is_empty() || digits.len() > 5 || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+    if !crate::native_markup::short_number(digits) {
         return None;
     }
     Some(if letter == 'a' { digits.to_owned() } else { format!("{digits}{}", (letter as u8 - 1) as char) })

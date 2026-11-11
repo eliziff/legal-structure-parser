@@ -713,20 +713,25 @@ fn opens_alone(body: &str) -> bool {
     OPENS.get_or_init(|| Regex::new(r"^(?:[•·▪◦]\s|Q\.\s|A\.\s|THE COURT:|THE WITNESS:|M(?:R|S|RS)\.\s+\p{Lu}[\p{Lu}'’-]+:)").unwrap()).is_match(body)
 }
 
+/// A paragraph's printed number opening a line, in each form it takes: "¶ 12" ("[¶ 12.]", "¶¶ 12"), a scanner's "If 12" or
+/// "T 12" for "¶ 12", the "12]" it leaves of "[¶ 12]", "{12}", "[12]" (or "[12J"), "12." and "12)". The number is the one
+/// capture group that matched.
+fn paragraph_mark() -> &'static Regex {
+    static MARK: OnceLock<Regex> = OnceLock::new();
+    MARK.get_or_init(|| Regex::new(r"^(?:[\[{(]?¶¶?\s*(\d{1,4})\.?[\]})]?|\[?I?[Tf] ?(\d{1,4})\]?\s|(\d{1,4})\]\s|\{\s*(\d{1,4})\s*\}?|\[ ?(\d{1,4})[\]jJ]|(\d{1,3})[.)](?:\s|$|\p{Lu}))").unwrap())
+}
+
 /// A numbered line's words past its number.
 pub(super) fn past_marker(body: &str) -> &str {
-    static MARK: OnceLock<Regex> = OnceLock::new();
-    let marker = MARK.get_or_init(|| Regex::new(r"^(?:[\[{(]?¶¶?\s*\d{1,4}\.?[\]})]?|[Tf] \d{1,4}\s|\d{1,4}\]\s|\{\s*\d{1,4}\s*\}?|\[\d{1,4}[\]jJ]|\d{1,3}[.)](?:\s|$|\p{Lu}))\s*").unwrap());
-    marker.find(body).map_or(body, |found| &body[found.end()..])
+    paragraph_mark().find(body).map_or(body, |found| body[found.end()..].trim_start())
 }
 
 /// A paragraph's printed number and its family: 1 "¶ 12" (or the "12]" a scanner leaves of "[¶ 12]"), 2 "{12}", 3 "[12]", 4 "12.".
 pub(super) fn paragraph_marker(body: &str) -> Option<(u32, usize)> {
-    static MARK: OnceLock<Regex> = OnceLock::new();
     let body = body.trim_start_matches('•');
     // A headnote's mark may stand first: "[5] [¶ 17] In McAdoo".
     let body = body.split_once(']').filter(|(mark, rest)| mark.starts_with('[') && mark[1..].bytes().all(|byte| byte.is_ascii_digit()) && rest.trim_start().trim_start_matches(['[', '{']).starts_with('¶')).map_or(body, |(_, rest)| rest.trim_start());
-    let capture = MARK.get_or_init(|| Regex::new(r"^(?:[\[{(]?¶¶?\s*(\d{1,4})[\]})]?|\[?I?[Tf] ?(\d{1,4})\]?\s|(\d{1,4})\]\s|\{\s*(\d{1,4})\s*\}?|\[ ?(\d{1,4})[\]jJ]|(\d{1,3})[.)](?:\s|$|\p{Lu}))").unwrap()).captures(body)?;
+    let capture = paragraph_mark().captures(body)?;
     let group = (1..=6).find(|&group| capture.get(group).is_some())?;
     let bare = group == 2 || group == 1 && body.starts_with('¶');
     Some((capture[group].parse().ok()?, match group { _ if bare => 5, 1 | 3 => 1, 4 => 2, 5 => 3, _ => 4 }))
