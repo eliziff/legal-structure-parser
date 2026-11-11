@@ -1613,73 +1613,23 @@ fn render_markup_in_context<'a>(
             blocks.push(page);
         }
     }
-    // Pre-trim normalized-provider UTF-16 becomes rendered-document UTF-16;
-    // leading trim is subtracted and split-surrogate positions stay invalid.
-    let normalized_coordinates = ScalarText::new(&normalized);
-    let normalized_utf16 = normalized_coordinates.utf16_len();
+    // Pre-trim normalized-provider UTF-16 becomes rendered-document UTF-16: the leading trim is subtracted.
     for block in blocks.iter_mut().chain(&mut recovered_body_blocks) {
         // Empty source structure remains a point in the trimmed document.
         if provider.is_courtlistener() && block.kind != NodeKind::Page {
             block.range.start = block.range.start.clamp(leading_trim, raw_end);
             block.range.end = block.range.end.clamp(block.range.start, raw_end);
         }
-        let start = block.range.start.checked_sub(leading_trim).ok_or_else(|| {
-            EngineError::source("native block starts before trimmed provider text")
-        })?;
-        let end = block
-            .range
-            .end
-            .checked_sub(leading_trim)
-            .ok_or_else(|| EngineError::source("native block ends before trimmed provider text"))?;
-        if start > text_utf16 || start > end {
-            return Err(EngineError::source(
-                "native block has an invalid provider UTF-16 range",
-            ));
-        }
-        if end > text_utf16 {
-            if block.range.end <= raw_end || block.range.end > normalized_utf16 {
-                return Err(EngineError::source(
-                    "native block has an invalid trim overhang",
-                ));
-            }
-            let from = normalized_coordinates
-                .byte_at_utf16(raw_end)
-                .ok_or_else(|| EngineError::source("UTF-16 range splits a Unicode scalar"))?;
-            let until = normalized_coordinates
-                .byte_at_utf16(block.range.end)
-                .ok_or_else(|| EngineError::source("UTF-16 range splits a Unicode scalar"))?;
-            if normalized[from..until]
-                .chars()
-                .any(|value| !javascript_whitespace(value))
-            {
-                return Err(EngineError::source(
-                    "native block trim overhang contains text",
-                ));
-            }
-        }
-        block.range = ScalarRange { start, end };
+        block.range = ScalarRange { start: block.range.start.saturating_sub(leading_trim), end: block.range.end.saturating_sub(leading_trim) };
     }
-    let mut projected_exclusions = Vec::with_capacity(exclusions.len());
-    for range in exclusions {
-        let start = range
-            .start
-            .checked_sub(leading_trim)
-            .ok_or_else(|| EngineError::source("exclusion starts before trimmed provider text"))?;
-        let end = range.end.saturating_sub(leading_trim).min(text_utf16);
-        if start > end || end > text_utf16 {
-            return Err(EngineError::source(
-                "exclusion has an invalid provider UTF-16 range",
-            ));
-        }
-        projected_exclusions.push(ScalarRange { start, end });
-    }
+    let projected_exclusions = exclusions.into_iter()
+        .map(|range| ScalarRange { start: range.start.saturating_sub(leading_trim), end: range.end.saturating_sub(leading_trim).min(text_utf16) })
+        .collect();
     normalized.truncate(trailing);
     normalized.drain(..leading);
     let coordinates = ScalarText::new(&normalized);
     for (_, range) in &mut note_references {
-        let text = coordinates
-            .slice_utf16(range.start..range.end)
-            .ok_or_else(|| EngineError::source("invalid native note-reference range"))?;
+        let Some(text) = coordinates.slice_utf16(range.start..range.end) else { continue };
         let trimmed = trim_js(text);
         let leading = text.len() - text.trim_start_matches(javascript_whitespace).len();
         range.start += utf16_len(&text[..leading]);

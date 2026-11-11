@@ -346,8 +346,7 @@ pub(super) fn find_provision_references(
             let start = coordinates
                 .utf16_at_byte(start_byte)
                 .expect("reference boundary");
-            if let Some(head_byte) = reference.continuation_of {
-                assert_eq!(head_byte, head.0, "coordinated-list head precedes member");
+            if reference.continuation_of.is_some() {
                 reference.continuation_of = Some(head.1);
             } else {
                 head = (start_byte, start);

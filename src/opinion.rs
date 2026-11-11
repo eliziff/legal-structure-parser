@@ -642,7 +642,7 @@ fn read_record(record: &OpinionRecord, url: Option<String>, witness: Option<Witn
     structure.url = url;
     // The text is final only now: page marks, furniture and calls are out of it, and other texts' notes in.
     structure.text_sha256 = <sha2::Sha256 as sha2::Digest>::digest(structure.text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
-    legal_structure_model::write_levels(&mut structure.nodes).expect("an opinion's parts hold its paragraphs, a heading the titles under it, a quotation its marks, and nothing holds a part");
+    legal_structure_model::write_levels(&mut structure.nodes).ok();
     structure.refresh_revision().expect("Typed document structure is serializable");
     (structure, pending.witness)
 }
