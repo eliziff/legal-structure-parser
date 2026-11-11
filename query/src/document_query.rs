@@ -14,8 +14,10 @@ use std::sync::{atomic::AtomicBool, OnceLock};
 
 mod search;
 mod source_text;
+mod provisions;
 mod text_fragment;
 pub use source_text::TextStatistics;
+pub use provisions::{note_named, Provisions};
 use search::{quote_text, PhraseOptions, PhraseSpan};
 pub use search::{lowercase_words, tokenize_source_text, word_regex, DocumentWordSpan};
 pub use text_fragment::{
@@ -790,6 +792,7 @@ impl DocumentQuery {
 
     fn resolves(&self, document: &DocumentStructure, node: &StructureNode, label: &str, kind: Option<NodeKind>) -> bool {
         names(node, label)
+            || kind == Some(NodeKind::Footnote) && note_named(node, &legal_locator::note_label(label))
             || (node.anchor.as_deref() == Some(label)
                 // Publisher IDs and legal labels are separate namespaces: a
                 // displayed footnote 1 can have browser ID fn0, while fn1 is
@@ -854,6 +857,7 @@ impl DocumentQuery {
                         .any(|alias| equal_fold(alias, exact))
             })
             .then_some(Cow::Borrowed(exact))
+            .or_else(|| (kind == NodeKind::Footnote).then(|| Cow::Owned(legal_locator::note_label(locator))))
             .unwrap_or_default()
     }
 
@@ -1158,14 +1162,25 @@ impl DocumentQuery {
             return self.lookup_label(document, kind, &direct, context_blocks);
         }
         let normalized = normalize_document_locator(NodeKind::Section, locator);
-        if !normalized.is_empty() {
-            let found =
-                self.lookup_label(document, NodeKind::Section, &normalized, context_blocks);
-            if !matches!(found.status, DocumentLookupStatus::NotFound) {
-                return found;
-            }
+        let requested_label = if normalized.is_empty() { direct } else { normalized };
+        let empty = |status, matches| DocumentLookup {
+            status, requested_label: requested_label.clone(), matches, block: None, before: Vec::new(), after: Vec::new(),
+        };
+        if requested_label.is_empty() {
+            return empty(DocumentLookupStatus::Unavailable, Vec::new());
         }
-        self.lookup_label(document, NodeKind::Section, &direct, context_blocks)
+        match self.provisions(document, "section", locator, None, None, false) {
+            Provisions::Found { order, first, .. } => {
+                let selected = order[first];
+                let served = self.served(document, NodeKind::Section);
+                let available = if served.contains(&selected) { served } else { vec![selected] };
+                self.found(document, requested_label.clone(), &available, selected, context_blocks)
+            }
+            Provisions::Ambiguous(nodes) => empty(DocumentLookupStatus::Ambiguous,
+                nodes.into_iter().map(|index| document.nodes[index].label.clone().unwrap_or_default()).collect()),
+            Provisions::NotFound => empty(DocumentLookupStatus::NotFound, Vec::new()),
+            Provisions::Unavailable => empty(DocumentLookupStatus::Unavailable, Vec::new()),
+        }
     }
 
     pub fn graph_scope<'a>(
