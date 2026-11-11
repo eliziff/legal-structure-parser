@@ -9,6 +9,23 @@ pub(super) fn next_boundary(boundaries: &[usize], start: usize, end: usize) -> u
         .unwrap_or(end)
 }
 
+/// A printed marker as a candidate: its label as printed, its extent to the next boundary, and its grammar's value.
+fn marker_candidate(text: &ScalarText<'_>, boundaries: &[usize], start: usize, content_start: usize, grammar_value: String)
+    -> StructureMarkerCandidate {
+    let printed = text.slice_utf16(start..content_start).expect("a marker's range is bounded");
+    StructureMarkerCandidate {
+        id: String::new(),
+        range: ScalarRange { start, end: next_boundary(boundaries, start, text.utf16_len()) },
+        marker_range: ScalarRange { start, end: start + utf16_len(printed.trim_end()) },
+        label: printed.trim().to_owned(),
+        grammar_value,
+        locator_kind: None,
+        parent_candidate_id: None,
+        level: 0,
+        content_start,
+    }
+}
+
 pub(crate) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateRun> {
     let all = paragraph_markers(text, false, false);
     // Each style's numbering from 1 is read first, as the longest unbroken count: a number
@@ -120,30 +137,7 @@ pub(crate) fn raw_numeric_runs(text: &ScalarText<'_>) -> Vec<StructureCandidateR
         let boundaries = chain_boundaries.get(index).unwrap_or(&boundaries);
         let candidates = scope
             .iter()
-            .map(|marker| {
-                let end = next_boundary(boundaries, marker.start, text.utf16_len());
-                let printed = text
-                    .slice_utf16(marker.start..marker.content_start)
-                    .expect("numeric marker range is bounded");
-                let surface_label = printed.trim().to_owned();
-                StructureMarkerCandidate {
-                    id: String::new(),
-                    range: ScalarRange {
-                        start: marker.start,
-                        end,
-                    },
-                    marker_range: ScalarRange {
-                        start: marker.start,
-                        end: marker.start + utf16_len(printed.trim_end()),
-                    },
-                    label: surface_label,
-                    grammar_value: marker.number.to_string(),
-                    locator_kind: None,
-                    parent_candidate_id: None,
-                    level: 0,
-                    content_start: marker.content_start,
-                }
-            })
+            .map(|marker| marker_candidate(text, boundaries, marker.start, marker.content_start, marker.number.to_string()))
             .collect::<Vec<_>>();
         let range = ScalarRange {
             start: candidates[0].range.start,
@@ -320,30 +314,7 @@ pub(crate) fn raw_enumerator_runs(text: &ScalarText<'_>) -> Vec<StructureCandida
         for scope in scopes.into_iter().filter(|scope| scope.len() >= 2) {
             let mut candidates = scope
                 .iter()
-                .map(|marker| {
-                    let end = next_boundary(&boundaries, marker.start, text.utf16_len());
-                    let printed = text
-                        .slice_utf16(marker.start..marker.content_start)
-                        .expect("enumerator marker range is bounded");
-                    let surface_label = printed.trim().to_owned();
-                    StructureMarkerCandidate {
-                        id: String::new(),
-                        range: ScalarRange {
-                            start: marker.start,
-                            end,
-                        },
-                        marker_range: ScalarRange {
-                            start: marker.start,
-                            end: marker.start + utf16_len(printed.trim_end()),
-                        },
-                        label: surface_label,
-                        grammar_value: format!("{family}:{}", marker.value),
-                        locator_kind: None,
-                        parent_candidate_id: None,
-                        level: 0,
-                        content_start: marker.content_start,
-                    }
-                })
+                .map(|marker| marker_candidate(text, &boundaries, marker.start, marker.content_start, format!("{family}:{}", marker.value)))
                 .collect::<Vec<_>>();
             let range = ScalarRange {
                 start: candidates[0].range.start,

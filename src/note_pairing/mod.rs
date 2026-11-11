@@ -159,6 +159,12 @@ struct Candidate {
 }
 
 impl Candidate {
+    /// A note's label recovered by a repair (`repair_kind`) rather than read: plain, its score set by the repair.
+    fn repaired(line: usize, start: usize, end: usize, observed: String, value: u32, repair_kind: &'static str) -> Self {
+        Candidate { line, start, end, observed, value: Some(value), symbol: String::new(), form: "plain", score: 0.0, repaired: true,
+            repair_kind, requires_visual_cue: false, flags: CandidateFlags::default() }
+    }
+
     fn pos(&self, lines: &[PairLine<'_>]) -> (usize, usize) {
         (lines[self.line].idx, self.start)
     }

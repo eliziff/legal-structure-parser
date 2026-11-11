@@ -2193,8 +2193,26 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         true
     }
 
-    fn shortest_sufficient_context(
-        &mut self,
+    /// The shortest words before and after `piece`, within its context, that tell it apart: none on a side where it
+    /// opens or closes its context.
+    fn context_terms(&mut self, piece: MaximalCorePiece, desired: PhraseSpan, required: &HashSet<usize>) -> (Vec<LexicalTerm>, Vec<LexicalTerm>) {
+        let words = self.replay.document.tokens();
+        let side = |first_word: usize, last_word: usize| MaximalCorePiece { start: words[first_word].start, end: words[last_word].end,
+            first_word, last_word, context_first_word: first_word, context_last_word: last_word };
+        let before = (piece.first_word > piece.context_first_word).then(|| side(piece.context_first_word, piece.first_word - 1));
+        let after = (piece.last_word < piece.context_last_word).then(|| side(piece.last_word + 1, piece.context_last_word));
+        let prefix = before.map(|context| {
+            let terms = self.endpoint_terms_from_end(context, true);
+            self.shortest_sufficient_context(terms, desired, required)
+        }).unwrap_or_default();
+        let suffix = after.map(|context| {
+            let terms = self.endpoint_terms_from_start(context, true);
+            self.shortest_sufficient_context(terms, desired, required)
+        }).unwrap_or_default();
+        (prefix, suffix)
+    }
+
+    fn shortest_sufficient_context(        &mut self,
         terms: Vec<LexicalTerm>,
         desired: PhraseSpan,
         required: &HashSet<usize>,
@@ -2316,35 +2334,8 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         let bare = vec![(None, None)];
         let mut directive = if guarded { None } else { self.shortest_for(piece, &exact_targets, &bare) };
         if directive.is_none() {
-            let words = self.replay.document.tokens();
-            let prefix = if piece.first_word > piece.context_first_word {
-                let context = MaximalCorePiece {
-                    start: words[piece.context_first_word].start,
-                    end: words[piece.first_word - 1].end,
-                    first_word: piece.context_first_word,
-                    last_word: piece.first_word - 1,
-                    context_first_word: piece.context_first_word,
-                    context_last_word: piece.first_word - 1,
-                };
-                let terms = self.endpoint_terms_from_end(context, true);
-                self.shortest_sufficient_context(terms, desired, required)
-            } else {
-                Vec::new()
-            };
-            let suffix = if piece.last_word < piece.context_last_word {
-                let context = MaximalCorePiece {
-                    start: words[piece.last_word + 1].start,
-                    end: words[piece.context_last_word].end,
-                    first_word: piece.last_word + 1,
-                    last_word: piece.context_last_word,
-                    context_first_word: piece.last_word + 1,
-                    context_last_word: piece.context_last_word,
-                };
-                let terms = self.endpoint_terms_from_start(context, true);
-                self.shortest_sufficient_context(terms, desired, required)
-            } else {
-                Vec::new()
-            };
+            let (prefix, suffix) = self.context_terms(piece, desired, required);
+
             // A context meeting the piece at a seam is read only where no other tells the piece apart: a sentence a
             // headnote repeats whole is told apart by the sentence before it, or painted nowhere.
             let (seamed_prefix, mut prefix): (Vec<_>, Vec<_>) = prefix.into_iter()
@@ -2591,36 +2582,9 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
             return None;
         }
 
-        let words = self.replay.document.tokens();
         let labelled = self.labelled_opening(piece);
-        let mut prefixes = if piece.first_word > piece.context_first_word {
-            let context = MaximalCorePiece {
-                start: words[piece.context_first_word].start,
-                end: words[piece.first_word - 1].end,
-                first_word: piece.context_first_word,
-                last_word: piece.first_word - 1,
-                context_first_word: piece.context_first_word,
-                context_last_word: piece.first_word - 1,
-            };
-            let terms = self.endpoint_terms_from_end(context, true);
-            self.shortest_sufficient_context(terms, desired, required)
-        } else {
-            Vec::new()
-        };
-        let mut suffixes = if piece.last_word < piece.context_last_word {
-            let context = MaximalCorePiece {
-                start: words[piece.last_word + 1].start,
-                end: words[piece.context_last_word].end,
-                first_word: piece.last_word + 1,
-                last_word: piece.context_last_word,
-                context_first_word: piece.last_word + 1,
-                context_last_word: piece.context_last_word,
-            };
-            let terms = self.endpoint_terms_from_start(context, true);
-            self.shortest_sufficient_context(terms, desired, required)
-        } else {
-            Vec::new()
-        };
+        let (mut prefixes, mut suffixes) = self.context_terms(piece, desired, required);
+
         // As atomic_directive_for: a context meeting the piece at a seam is read only where no other tells it apart.
         let dropped = !seamed_contexts
             && (prefixes.iter().any(|term| self.boundary_seam(term.last_word, piece.first_word))

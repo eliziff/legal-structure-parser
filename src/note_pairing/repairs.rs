@@ -100,20 +100,7 @@ pub(super) fn gap_repair_claim(
         if body.chars().count() < 4 || score < 1.2 {
             continue;
         }
-        return Some(Candidate {
-            line: line_index,
-            start,
-            end,
-            observed,
-            value: Some(value),
-            symbol: String::new(),
-            form: "plain",
-            score,
-            repaired: true,
-            repair_kind,
-            requires_visual_cue: false,
-            flags: CandidateFlags::default(),
-        });
+        return Some(Candidate { score, ..Candidate::repaired(line_index, start, end, observed, value, repair_kind) });
     }
     None
 }
@@ -167,22 +154,8 @@ pub(super) fn sequence_position_rekey(
         .map(|(value, (line, observed, start, end))| {
             used_lines.insert(line);
             Candidate {
-                line,
-                start,
-                end,
-                observed,
-                value: Some(value),
-                symbol: String::new(),
-                form: "plain",
-                score: if lines[line].zone == Zone::Note && !lines[line].region_witness_demoted {
-                    3.0
-                } else {
-                    0.6
-                },
-                repaired: true,
-                repair_kind: "sequence_position_rekey",
-                requires_visual_cue: false,
-                flags: CandidateFlags::default(),
+                score: if lines[line].zone == Zone::Note && !lines[line].region_witness_demoted { 3.0 } else { 0.6 },
+                ..Candidate::repaired(line, start, end, observed, value, "sequence_position_rekey")
             }
         })
         .collect()
@@ -729,23 +702,9 @@ pub(super) fn repair_glyph_refs(
             continue;
         }
         for (&value, &(line, start, end)) in missing.iter().zip(&sites) {
-            chosen.insert(
-                value,
-                Candidate {
-                    line,
-                    start,
-                    end,
-                    observed: chars_slice(&lines[line].characters, start, end),
-                    value: Some(value),
-                    symbol: String::new(),
-                    form: "glyph",
-                    score: 0.5,
-                    repaired: true,
-                    repair_kind: "glyph_sequence_repair",
-                    requires_visual_cue: false,
-                    flags: CandidateFlags::default(),
-                },
-            );
+            let observed = chars_slice(&lines[line].characters, start, end);
+            chosen.insert(value, Candidate { form: "glyph", score: 0.5,
+                ..Candidate::repaired(line, start, end, observed, value, "glyph_sequence_repair") });
         }
     }
 }
@@ -857,23 +816,9 @@ pub(super) fn repair_page_glyph_refs(
                 continue;
             }
             for (value, (line, start, end)) in values.into_iter().zip(sites) {
-                chosen.insert(
-                    value,
-                    Candidate {
-                        line,
-                        start,
-                        end,
-                        observed: chars_slice(&lines[line].characters, start, end),
-                        value: Some(value),
-                        symbol: String::new(),
-                        form: "glyph",
-                        score: 0.5,
-                        repaired: true,
-                        repair_kind: "page_glyph_repair",
-                        requires_visual_cue: false,
-                        flags: CandidateFlags::default(),
-                    },
-                );
+                let observed = chars_slice(&lines[line].characters, start, end);
+                chosen.insert(value, Candidate { form: "glyph", score: 0.5,
+                    ..Candidate::repaired(line, start, end, observed, value, "page_glyph_repair") });
             }
         }
     }
