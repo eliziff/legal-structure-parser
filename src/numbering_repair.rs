@@ -25,6 +25,38 @@ use std::sync::OnceLock;
 const X0_LOW: f64 = -0.5;
 const X0_HIGH: f64 = 1.0;
 
+/// Where a misread digit is read, which says how far a mark may stand for one: quote marks stand for "1" only in a note's
+/// label at a line's opening ("'2" for "12"), and the loose shapes ("t", "n", "A", "T", "?") only where an expected value
+/// confirms them (a note pairing's gap or residue).
+#[derive(Clone, Copy, Default)]
+pub(crate) struct DigitReading {
+    pub(crate) quotes: bool,
+    pub(crate) loose: bool,
+}
+
+/// The digits recognition may have printed `c` for: a digit, superscript or not, is itself; a glyph it confuses with a
+/// digit stands for each digit it may be (an "S" is a 5 or an 8); anything else stands for none.
+pub(crate) fn misread_digits(c: char, reading: DigitReading) -> Vec<char> {
+    if let Some(digit) = legal_structure_model::normalize_decimal_digit(c) {
+        return vec![digit];
+    }
+    match c {
+        'I' | 'l' | '|' | 'i' | '!' | 'í' => vec!['1'],
+        '\'' | '\u{2019}' | '`' if reading.quotes => vec!['1'],
+        'O' | 'o' | '\u{b0}' | 'º' | 'ð' | 'D' | 'Q' => vec!['0'],
+        'J' | 'j' => vec!['3'],
+        'S' | 's' => vec!['5', '8'],
+        'B' => vec!['8'],
+        'G' | 'b' => vec!['6'],
+        'Z' | 'z' => vec!['2'],
+        'g' | 'q' => vec!['9'],
+        't' if reading.loose => vec!['1'],
+        'A' if reading.loose => vec!['4'],
+        'T' | '?' | 'n' if reading.loose => vec!['7'],
+        _ => Vec::new(),
+    }
+}
+
 /// A document's lines in reading order, page by page, each with its zone.
 type Lines<'a> = [(&'a mut Line, LineZone)];
 
@@ -256,21 +288,11 @@ fn misread_note_label(text: &str) -> Option<(usize, usize, Vec<Reading>)> {
     let mut readings = vec![String::new()];
     let mut digits = 0;
     while at < characters.len() && at - start < 4 {
-        let choices = match characters[at] {
-            c @ '0'..='9' => {
-                digits += 1;
-                vec![c]
-            }
-            'I' | 'l' | '|' | 'i' | '\'' | '\u{2019}' | '`' | '!' => vec!['1'],
-            'O' | 'o' | '\u{b0}' => vec!['0'],
-            'J' | 'j' => vec!['3'],
-            'S' | 's' => vec!['5', '8'],
-            'B' => vec!['8'],
-            'Z' | 'z' => vec!['2'],
-            'g' => vec!['9'],
-            'G' | 'b' => vec!['6'],
-            _ => break,
-        };
+        let choices = misread_digits(characters[at], DigitReading { quotes: true, loose: false });
+        if choices.is_empty() {
+            break;
+        }
+        digits += usize::from(characters[at].is_ascii_digit());
         readings = readings
             .iter()
             .flat_map(|reading| choices.iter().map(move |choice| format!("{reading}{choice}")))
@@ -403,16 +425,8 @@ fn render(family: &Family, value: u32) -> Option<(String, String)> {
 fn readings(c: char, count: &str) -> Vec<char> {
     match count {
         "1" | "1.1" | "1.1.1" | "1.1.1.1" => match c {
-            '0'..='9' => vec![c],
             '.' | ',' if count != "1" => vec!['.'],
-            'I' | 'l' | '|' | 'i' | '!' => vec!['1'],
-            'O' | 'o' | '\u{b0}' => vec!['0'],
-            'S' | 's' => vec!['5', '8'],
-            'B' => vec!['8'],
-            'Z' | 'z' => vec!['2'],
-            'g' => vec!['9'],
-            'G' | 'b' => vec!['6'],
-            _ => Vec::new(),
+            c => misread_digits(c, DigitReading::default()),
         },
         "a" | "A" => {
             let mut found = match c {

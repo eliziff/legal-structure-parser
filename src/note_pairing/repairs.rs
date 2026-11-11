@@ -6,31 +6,19 @@ pub(super) fn confusable_variants(value: &str) -> HashSet<u32> {
     if value.is_empty() || value.chars().count() > 3 {
         return HashSet::new();
     }
-    let mut result = String::new();
+    // Each numeral the marks may stand for, a gap's expected value confirming the loose ones.
+    let mut numerals = vec![String::new()];
     for character in value.chars() {
-        let mapped = normalize_decimal_digit(character).or(match character {
-            'l' | 'I' | 'i' | '|' | '!' | 'í' | 't' => Some('1'),
-            'o' | 'O' | '°' | 'º' | 'ð' | 'D' | 'Q' => Some('0'),
-            's' | 'S' => Some('5'),
-            'B' => Some('8'),
-            'G' | 'b' => Some('6'),
-            'Z' | 'z' => Some('2'),
-            'g' | 'q' => Some('9'),
-            'A' => Some('4'),
-            'T' | '?' | 'n' => Some('7'),
-            'J' => Some('3'),
-            _ => None,
-        });
-        let Some(mapped) = mapped else {
+        let choices = crate::numbering_repair::misread_digits(character, crate::numbering_repair::DigitReading { quotes: false, loose: true });
+        if choices.is_empty() {
             return HashSet::new();
-        };
-        result.push(mapped);
+        }
+        numerals = numerals.iter().flat_map(|numeral| choices.iter().map(move |digit| format!("{numeral}{digit}"))).collect();
     }
-    result
-        .parse::<u32>()
-        .ok()
-        .filter(|value| (1..=MAX_VALUE).contains(value))
+    numerals
         .into_iter()
+        .filter_map(|numeral| numeral.parse::<u32>().ok())
+        .filter(|value| (1..=MAX_VALUE).contains(value))
         .collect()
 }
 
@@ -64,7 +52,7 @@ pub(super) fn gap_repair_tokens(line: &PairLine<'_>) -> Vec<(String, usize, usiz
     let mut end = lead;
     while end < values.len()
         && end - lead < 3
-        && (values[end].is_ascii_digit() || "lIi|!íoO°ºDQsSBGbZzgqATnJt?".contains(values[end]))
+        && !crate::numbering_repair::misread_digits(values[end], crate::numbering_repair::DigitReading { quotes: false, loose: true }).is_empty()
     {
         end += 1;
     }
