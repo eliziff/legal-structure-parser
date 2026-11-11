@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::Derivation;
+use crate::text::ScalarCoordinates;
 
 /// Each element's nearest owner, itself or an ancestor, that `owns`: none where no such element holds it.
 fn nearest_owners(elements: &[MarkupElement], owns: impl Fn(&MarkupElement) -> bool) -> Vec<Option<usize>> {
@@ -50,9 +51,8 @@ fn declared_writing(element: &MarkupElement) -> bool {
 
 pub(super) fn courtlistener_sibling_note_markers(
     elements: &[MarkupElement],
-    text: &str,
+    coordinates: &ScalarText<'_>,
 ) -> HashMap<usize, (String, ScalarRange)> {
-    let coordinates = ScalarText::new(text);
     let mut numbers = HashMap::<usize, Option<(String, ScalarRange)>>::new();
     let mut bodies = HashMap::<usize, Option<usize>>::new();
     for element in elements.iter().filter(|element| element.tag == "div") {
@@ -65,7 +65,7 @@ pub(super) fn courtlistener_sibling_note_markers(
         if !element.has_class("co_footnoteNumber") {
             continue;
         }
-        let Some((label, range)) = printed(&coordinates, element.range).filter(|(label, _)| short_number(label)) else {
+        let Some((label, range)) = printed(coordinates, element.range).filter(|(label, _)| short_number(label)) else {
             continue;
         };
         unique(&mut numbers, parent, Some((format!("{}", label.parse::<u32>().unwrap()), range)));
@@ -87,7 +87,7 @@ pub(super) fn courtlistener_footnote_number(raw: &str) -> Option<StructureNode> 
 pub(super) fn courtlistener_numbered_note_markers(
     elements: &[MarkupElement],
     matched_role_starts: &HashSet<usize>,
-    text: &str,
+    coordinates: &ScalarText<'_>,
 ) -> HashMap<usize, (Option<String>, Option<Vec<String>>, ScalarRange)> {
     if !elements
         .iter()
@@ -95,7 +95,6 @@ pub(super) fn courtlistener_numbered_note_markers(
     {
         return HashMap::new();
     }
-    let coordinates = ScalarText::new(text);
     let mut markers = HashMap::<usize, Option<(Option<String>, Option<Vec<String>>, ScalarRange)>>::new();
     for element in elements
         .iter()
@@ -114,7 +113,7 @@ pub(super) fn courtlistener_numbered_note_markers(
             if !matched_role_starts.contains(&element.markup_start) {
                 return None;
             }
-            let (printed, range) = printed(&coordinates, element.range)?;
+            let (printed, range) = printed(coordinates, element.range)?;
             let identity = courtlistener_footnote_number(printed)?;
             if body.range.end < range.end || !trim_js(coordinates.slice_utf16(body.range.start..range.start)?).is_empty() {
                 return None;
@@ -132,6 +131,7 @@ pub(super) fn courtlistener_numbered_note_markers(
 
 pub(super) fn supplement_courtlistener_declared_note_references(
     structure: &mut DocumentStructure,
+    text_index: &ScalarCoordinates,
     matched_role_starts: &HashSet<usize>,
 ) {
     if !structure.nodes.iter().any(|node| node.kind == NodeKind::Footnote) {
@@ -190,7 +190,7 @@ pub(super) fn supplement_courtlistener_declared_note_references(
                 }
             }
         }
-        let coordinates = ScalarText::new(structure.query_text());
+        let coordinates = ScalarText::with_coordinates(structure.query_text(), text_index);
         let mut numbered_targets = HashMap::<&str, Option<usize>>::new();
         if has_numbered_references {
             for element in elements.iter().filter(|element| element.tag == "footnote_number") {
@@ -366,9 +366,9 @@ pub(super) fn supplement_courtlistener_declared_note_references(
     }
 }
 
-pub(super) fn clip_courtlistener_pre_note_bodies(structure: &mut DocumentStructure) {
+pub(super) fn clip_courtlistener_pre_note_bodies(structure: &mut DocumentStructure, text_index: &ScalarCoordinates) {
     let ends = {
-        let coordinates = ScalarText::new(structure.query_text());
+        let coordinates = ScalarText::with_coordinates(structure.query_text(), text_index);
         let pre = structure
             .markup_elements
             .iter()
@@ -439,7 +439,7 @@ pub(super) fn clip_courtlistener_pre_note_bodies(structure: &mut DocumentStructu
     }
 }
 
-pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut DocumentStructure, sibling_markers: &HashMap<usize, (String, ScalarRange)>) {
+pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut DocumentStructure, text_index: &ScalarCoordinates, sibling_markers: &HashMap<usize, (String, ScalarRange)>) {
     if !structure.nodes.iter().any(|node| node.kind == NodeKind::Footnote) {
         return;
     }
@@ -463,7 +463,7 @@ pub(super) fn supplement_courtlistener_bookmarked_notes(structure: &mut Document
         let note_starts = structure.nodes.iter().filter(|node| node.kind == NodeKind::Footnote).filter_map(|node| node.markup_start).collect::<HashSet<_>>();
         let note_owner = |index: usize| ancestors(elements, index).map(|at| elements[at].markup_start).find(|start| note_starts.contains(start));
         let parent_tag = |index: usize, tag: &str| ancestors(elements, index).find(|&at| elements[at].is(tag));
-        let coordinates = ScalarText::new(structure.query_text());
+        let coordinates = ScalarText::with_coordinates(structure.query_text(), text_index);
         // Where an element prints `expected`, bare or bracketed.
         let printed_range = |index: usize, expected: &str| {
             printed(&coordinates, elements[index].range)
@@ -1119,7 +1119,7 @@ pub(super) fn courtlistener_declared_blocks(
     existing: &[StructureNode],
     recovered_bodies: &[StructureNode],
     matched_role_starts: &HashSet<usize>,
-    text: &str,
+    text: &ScalarText<'_>,
 ) -> Vec<StructureNode> {
     let declared_role = |element: &MarkupElement| {
         let class = |name: &str| element.has_class(name);
@@ -1167,10 +1167,7 @@ pub(super) fn courtlistener_declared_blocks(
     {
         return Vec::new();
     }
-    let note_text = elements
-        .iter()
-        .any(|element| declared_role(element) == Some(NodeKind::Footnote))
-        .then(|| ScalarText::new(text));
+
     let mut owners = existing
         .iter()
         .chain(recovered_bodies)
@@ -1212,7 +1209,7 @@ pub(super) fn courtlistener_declared_blocks(
         let anchor = attributes.get("id").filter(|id| !id.is_empty()).cloned();
         let note = (kind == NodeKind::Footnote)
             .then(|| {
-                courtlistener_declared_note_marker(elements, index, note_text.as_ref()?, &owners)
+                courtlistener_declared_note_marker(elements, index, text, &owners)
             })
             .flatten();
         let mut block = element_node(kind, String::new(), element);
@@ -1452,7 +1449,7 @@ pub(super) fn drop_note_numbered_paragraphs(structure: &mut DocumentStructure) {
 pub(super) fn courtlistener_uncontained_note_blocks(
     markup: &str,
     elements: &[MarkupElement],
-    text: &str,
+    coordinates: &ScalarText<'_>,
     existing: &[StructureNode],
 ) -> Vec<StructureNode> {
     let candidates = elements
@@ -1481,7 +1478,6 @@ pub(super) fn courtlistener_uncontained_note_blocks(
     if candidates.is_empty() {
         return Vec::new();
     }
-    let coordinates = ScalarText::new(text);
     let anchors = named_elements(elements);
     let gap = |start, end| {
         markup
@@ -1891,7 +1887,7 @@ pub(super) fn courtlistener_uncontained_note_blocks(
     result
 }
 
-pub(super) fn native_table_coordinates(structure: &mut DocumentStructure) {
+pub(super) fn native_table_coordinates(structure: &mut DocumentStructure, text_index: &ScalarCoordinates) {
     let mut tables = structure
         .nodes
         .iter()
@@ -1900,7 +1896,7 @@ pub(super) fn native_table_coordinates(structure: &mut DocumentStructure) {
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
     tables.sort_by_key(|&index| structure.nodes[index].markup_start);
-    let coordinates = ScalarText::new(structure.query_text());
+    let coordinates = ScalarText::with_coordinates(structure.query_text(), text_index);
     let mut replacements = HashMap::<String, String>::new();
     let mut grids = HashMap::<String, (Option<usize>, Option<usize>, Option<usize>)>::new();
     let mut table_headers = HashMap::<String, Vec<usize>>::new();
@@ -2157,10 +2153,10 @@ pub(super) fn clip_courtlistener_paragraphs_to_opinions(
 
 /// An opinion's divisions printed as paragraphs of their own, "I", "II", "A.": headings, where
 /// the opinion opens its divisions with "I".
-pub(super) fn courtlistener_division_headings(structure: &mut DocumentStructure) {
+pub(super) fn courtlistener_division_headings(structure: &mut DocumentStructure, text_index: &ScalarCoordinates) {
     static DIVISION: OnceLock<Regex> = OnceLock::new();
     let division = DIVISION.get_or_init(|| Regex::new(r"^(?:[IVX]{1,5}|[A-H])\.?$").unwrap());
-    let coordinates = ScalarText::new(structure.query_text());
+    let coordinates = ScalarText::with_coordinates(structure.query_text(), text_index);
     // A heading the engine already reads there stays the one heading.
     let existing = structure.nodes.iter().filter(|node| node.kind == NodeKind::Heading)
         .map(|node| structure.query_range(node)).collect::<Vec<_>>();
@@ -2248,10 +2244,12 @@ pub(super) fn finish(
     heading_exclusions: &[ScalarRange],
     body_exclusions: &[ScalarRange],
 ) {
+    // The text is fixed through these passes: it is indexed once for all of them.
+    let text_index = ScalarCoordinates::new(structure.query_text());
     prefer_source_headings(structure);
     prefer_source_note_markers(structure);
     clip_courtlistener_paragraphs_to_opinions(structure, matched_role_starts);
-    native_table_coordinates(structure);
+    native_table_coordinates(structure, &text_index);
     let mut references = HashMap::<String, Vec<ScalarRange>>::new();
     for (target, range) in note_references {
         references.entry(target).or_default().push(range);
@@ -2268,9 +2266,9 @@ pub(super) fn finish(
             node.calls = calls;
         }
     }
-    supplement_courtlistener_bookmarked_notes(structure, &sibling_note_markers);
-    supplement_courtlistener_declared_note_references(structure, matched_role_starts);
-    clip_courtlistener_pre_note_bodies(structure);
+    supplement_courtlistener_bookmarked_notes(structure, &text_index, &sibling_note_markers);
+    supplement_courtlistener_declared_note_references(structure, &text_index, matched_role_starts);
+    clip_courtlistener_pre_note_bodies(structure, &text_index);
     crate::inference::supplement_source_formatted_headings(
         structure,
         heading_exclusions,
@@ -2278,7 +2276,7 @@ pub(super) fn finish(
     );
     supplement_courtlistener_printed_notes(structure, printed_notes);
     drop_note_numbered_paragraphs(structure);
-    courtlistener_division_headings(structure);
+    courtlistener_division_headings(structure, &text_index);
     courtlistener_source_roles(structure);
 }
 
@@ -2296,6 +2294,7 @@ pub(super) fn evidence(
     mut recovered_body_blocks: Vec<StructureNode>,
     matched_role_starts: &HashSet<usize>,
 ) -> (Vec<(StructureNode, Vec<ScalarRange>)>, HashMap<usize, (String, ScalarRange)>) {
+    let coordinates = ScalarText::new(text);
     if matches!(scope.kind, ScopeKind::Complete)
         && matches!(
             scope.markup_serialization,
@@ -2304,7 +2303,7 @@ pub(super) fn evidence(
     {
         if let Some(markup) = markup {
             let notes =
-                courtlistener_uncontained_note_blocks(markup, elements, text, rendered_blocks);
+                courtlistener_uncontained_note_blocks(markup, elements, &coordinates, rendered_blocks);
             for note in &notes {
                 if let Some(marker) = note.marker_range {
                     rendered_exclusions.push(ScalarRange {
@@ -2343,14 +2342,14 @@ pub(super) fn evidence(
             rendered_blocks,
             &recovered_body_blocks,
             matched_role_starts,
-            text,
+            &coordinates,
         );
         rendered_blocks.extend(declared);
         recovered_body_blocks.sort_by_key(|block| block.markup_start);
         rendered_blocks.extend(recovered_body_blocks);
     }
-    let numbered_note_markers = courtlistener_numbered_note_markers(elements, matched_role_starts, text);
-    let sibling_note_markers = courtlistener_sibling_note_markers(elements, text);
+    let numbered_note_markers = courtlistener_numbered_note_markers(elements, matched_role_starts, &coordinates);
+    let sibling_note_markers = courtlistener_sibling_note_markers(elements, &coordinates);
     for block in rendered_blocks.iter_mut() {
         if block.kind == NodeKind::Footnote {
             if let Some((label, aliases, marker)) = block
@@ -2374,7 +2373,6 @@ pub(super) fn evidence(
             }
         }
     }
-    let coordinates = ScalarText::new(text);
     let printed_notes = match markup.filter(|_| matches!(scope.kind, ScopeKind::Complete)) {
         Some(markup) => courtlistener_printed_note_blocks(markup, elements, &coordinates, rendered_blocks),
         None => Vec::new(),
