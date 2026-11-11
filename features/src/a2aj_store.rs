@@ -460,7 +460,7 @@ pub fn record<D: Send + Sync + 'static>(record: &Value, language: Language, doc_
     let Ok(read) = Document::new(record, Source::Api).read(language, a2aj::doc_type(doc_type));
     let Some(read) = read else { return Ok(None) };
     let identity = serde_json::to_string(&(&read.metadata, &read.text, &read.provisions)).map_err(|error| error.to_string())?;
-    let key = (PathBuf::new(), (0, None), format!("record\0{:x}", Sha256::digest(identity.as_bytes())));
+    let key = (PathBuf::new(), (0, None), Sha256::digest(identity.as_bytes()).iter().fold(String::from("record\0"), |key, byte| key + &format!("{byte:02x}")));
     if let Some(found) = derived(&key) {
         return Ok(Some(found));
     }

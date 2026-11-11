@@ -393,7 +393,7 @@ pub fn analyze_instrument(
     reconstruct_lineation: bool,
 ) -> Result<DocumentStructure, EngineError> {
     let text = text.into();
-    let original_sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
+    let original_sha256 = Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect::<String>();
     // The original text is indexed once: the lineation is chosen on it, and what is read after reads it again.
     let index = crate::text::ScalarCoordinates::new(&text);
     let coordinates = ScalarText::with_coordinates(&text, &index);

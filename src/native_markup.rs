@@ -1694,7 +1694,7 @@ fn render_markup_in_context<'a>(
         exclusions: projected_exclusions,
         cited_authorities,
         note_references,
-        source_hash: Some(format!("{:x}", Sha256::digest(markup.as_bytes()))),
+        source_hash: Some(Sha256::digest(markup.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()),
         harvard_casebody,
     })
 }

@@ -634,7 +634,7 @@ pub struct NoteUp {
     pub excerpts_rejected: BTreeMap<&'static str, usize>,
 }
 
-fn sha256(text: &str) -> String { format!("{:x}", Sha256::digest(text.as_bytes())) }
+fn sha256(text: &str) -> String { Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect() }
 
 /// The decisions citing the request's keys and what those decisions and journal authors say the cited decision
 /// stands for; None where no graph is built.

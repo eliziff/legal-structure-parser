@@ -10,10 +10,19 @@ use std::fmt::{Display, Formatter};
 
 /// The SHA-256 of a value's JSON, in hex, written straight into the digest: the key every cache of the stack uses.
 pub fn serialization_sha256(value: &impl Serialize) -> String {
+    json_sha256(value).expect("a value of the model serializes")
+}
+
+fn json_sha256(value: &impl Serialize) -> serde_json::Result<String> {
     use sha2::{Digest, Sha256};
-    let mut digest = Sha256::new();
-    serde_json::to_writer(&mut digest, value).expect("a value of the model serializes");
-    format!("{:x}", digest.finalize())
+    struct Hashing(Sha256);
+    impl std::io::Write for Hashing {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> { self.0.update(bytes); Ok(bytes.len()) }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+    let mut digest = Hashing(Sha256::new());
+    serde_json::to_writer(&mut digest, value)?;
+    Ok(digest.0.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 mod analysis;

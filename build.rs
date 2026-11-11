@@ -86,7 +86,7 @@ fn main() {
         digest.update([0]);
     }
     println!(
-        "cargo:rustc-env=LEGAL_STRUCTURE_ENGINE_SHA256={:x}",
-        digest.finalize()
+        "cargo:rustc-env=LEGAL_STRUCTURE_ENGINE_SHA256={}",
+        digest.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>()
     );
 }

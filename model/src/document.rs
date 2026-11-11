@@ -506,7 +506,7 @@ impl DocumentStructure {
             doc_type: None,
             profile: None,
             revision: String::new(),
-            text_sha256: format!("{:x}", Sha256::digest(text.as_bytes())),
+            text_sha256: Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect(),
             text,
             rendered_text: None,
             source_sha256: None,
@@ -533,13 +533,10 @@ impl DocumentStructure {
     /// Identity of the complete queryable representation: the digest of the structure's JSON written without a
     /// revision (an empty one is not written), straight into the digest.
     pub fn refresh_revision(&mut self) -> Result<(), serde_json::Error> {
-        use sha2::{Digest, Sha256};
         let prior = std::mem::take(&mut self.revision);
-        let mut digest = Sha256::new();
-        let written = serde_json::to_writer(&mut digest, &*self);
+        let written = crate::json_sha256(&*self);
         self.revision = prior;
-        written?;
-        self.revision = format!("{:x}", digest.finalize());
+        self.revision = written?;
         Ok(())
     }
 
