@@ -1,4 +1,9 @@
-use super::*;
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use legal_structure_model::DocumentStructure;
+use regex::Regex;
+use serde::Serialize;
+use super::{regex, DocumentQuery};
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Serialize)]

@@ -1,6 +1,16 @@
 //! Note labels: a line's opening label token and the labels a document's lines may carry.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
+use legal_citations::cues;
+use legal_structure_model::ScalarText;
+use legal_structure_model::layout::NoteMode;
+use legal_structure_model::text::{is_note_symbol as is_symbol, MAX_SYMBOL_LABEL_LEN as MAX_SYMBOL_RUN};
+use regex::Regex;
+use super::{
+    is_superscript, normalize_symbol, numeric_value, Candidate, CandidateFlags, LabelToken, PairLine, Zone, MONTH,
+    QUOTES, SYMBOL_START_PAGE_LIMIT,
+};
 
 pub(super) fn label_token(text: &str, provider: bool) -> Option<LabelToken> {
     let values = text.chars().collect::<Vec<_>>();

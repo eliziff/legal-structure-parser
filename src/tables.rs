@@ -1,4 +1,5 @@
-use super::*;
+use legal_structure_model::{AuthoritativeTableCell, EngineError, ScalarRange};
+use legal_structure_model::document::{Derivation, NodeKind, StructureNode};
 use crate::text::ScalarText;
 
 #[cfg(target_pointer_width = "32")]

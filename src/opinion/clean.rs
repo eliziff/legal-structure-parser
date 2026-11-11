@@ -1,6 +1,12 @@
 //! The reading text: page marks and furniture out, broken words whole, every range moved to match.
 
-use super::*;
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use legal_structure_model::ScalarRange;
+use legal_structure_model::document::{DocumentStructure, NodeKind, PrimaryRole};
+use legal_structure_model::text::{javascript_whitespace, utf16_len, ScalarText};
+use regex::Regex;
+use super::{span, squeezed, Kinds, ScalarCoordinates};
 
 /// Takes the page marks and the page furniture out of the text and moves every range to match, each furniture line held as
 /// a span where it stood. A word a mark split is joined: where its fragments are not words of this text on their own, or

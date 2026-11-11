@@ -1,6 +1,11 @@
 //! Raw numeric, bullet and enumerator runs, the candidates structure resolution starts from.
 
-use super::*;
+use std::collections::{BTreeMap, HashSet};
+use legal_structure_model::{CandidateGrammar, ScalarRange, StructureCandidateRun, StructureMarkerCandidate};
+use legal_structure_model::text::{utf16_len, ScalarText};
+use super::{lines, Marker, MarkerStyle};
+use super::instrument::{compare_child_values, enum_increment, enum_readings, instrument_marker, instrument_space};
+use super::paragraphs::{monotone_scopes, paragraph_markers, rooted_chain};
 
 pub(super) fn next_boundary(boundaries: &[usize], start: usize, end: usize) -> usize {
     boundaries

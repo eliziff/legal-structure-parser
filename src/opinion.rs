@@ -21,13 +21,28 @@ mod text;
 
 pub use checks::{parse_failures, parse_screens, quote_miss, receipt_miss};
 pub use pages::{citers_numbering, citers_page};
-use clean::*;
-use headings::*;
-use matter::*;
-use notes::*;
-use pages::*;
-use paragraphs::*;
-use readings::*;
+use clean::excise;
+use headings::{
+    caption_heading, enumerated_titles, enumerator_end, fused_titles, heading_line, letter_spaced, list_items,
+    notes_title, paged_title, run_in, section_keyword, title_cased, unfused,
+};
+use matter::{
+    classed_front, cover_matter, dispositions, divisions_of_headnotes, document_kind, embedded_topics, front_role,
+    head_lines, name_dates, names_a_digest, printed_headnote_marks, record_gaps, reporter_matter, sentences,
+    titled_digest, topic_index,
+};
+use notes::{
+    anchored_notes, answer_calls, flat_notes, join_citation_fragments, note_label_of, share_note_calls,
+    split_note_lists, supply_notes, unmatched_calls, word_notes,
+};
+use pages::{
+    element_pages, label_run, leaves_to_pages, opening_pages, page_number, page_series, printed_mark,
+    printed_page_marks, series_of,
+};
+use paragraphs::{
+    drop_empty_paragraphs, hold_leftovers, number_paragraphs, rejoin_paragraphs, separate_parts, settle, speakers,
+};
+use readings::{defined_terms, instruments, quotations};
 
 use crate::text::ScalarCoordinates;
 use crate::{

@@ -1,29 +1,21 @@
-use legal_citations::cues;
-use legal_citations::cues::is_counter_noun as counter_noun;
-use legal_structure_model::layout::{self, Diagnostic, LineZone, NoteLine, NoteMode, Span};
-use legal_structure_model::{Derivation, NodeKind, NotePairing, ScalarRange, StructureNode, NOTE_PAIRING_ORIGIN};
-use crate::{select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy};
+use legal_structure_model::layout::{self, LineZone, NoteLine, NoteMode, Span};
+use legal_structure_model::{NotePairing, ScalarRange};
 use legal_structure_model::{normalize_decimal_digit, normalize_note_symbol, ScalarText};
-use legal_structure_model::text::{is_note_symbol as is_symbol, MAX_SYMBOL_LABEL_LEN as MAX_SYMBOL_RUN};
 use regex::Regex;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::ops::Deref;
 use std::sync::OnceLock;
 
 mod labels;
-use labels::*;
+use build::build_pairs;
+use labels::label_token;
+use materialize::materialize;
 mod refs;
-use refs::*;
 mod backbone;
-use backbone::*;
 mod assign;
-use assign::*;
 mod repairs;
-use repairs::*;
 mod build;
-use build::*;
 mod materialize;
-use materialize::*;
 
 const MAX_VALUE: u32 = 999;
 const ENDNOTE_MIN_LABELS: usize = 8;

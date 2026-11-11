@@ -1,6 +1,18 @@
 //! A case's reading: its paragraphs with their notes, its source layout, headings and prose.
 
-use super::*;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use legal_structure_model::{DetectionProfile, ScalarRange};
+use legal_structure_model::document::{NodeKind, StructureNode};
+use legal_structure_model::text::{utf16_len, ScalarText};
+use crate::Evidence;
+use super::{decimal_prefix, leading_ascii_space, lines, prose_block, Line, Marker, MarkerStyle};
+use super::headings::{heading_enumerator, heading_levels, heading_title_case, sentence_heading};
+use super::instrument::enum_readings;
+use super::pages::detect_pages;
+use super::paragraphs::{
+    case_source_line, clipped_case_paragraphs, detect_paragraphs, gapped_paragraphs, median, monotone_scopes,
+    paragraph_markers, unnumbered_paragraphs, word_count,
+};
 use legal_structure_model::layout::ends_on;
 
 pub(super) fn detect_case(

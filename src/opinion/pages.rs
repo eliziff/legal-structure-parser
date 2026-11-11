@@ -1,6 +1,14 @@
 //! The pages of a record: every form a mark takes, each numbering tied to the printing it belongs to, and where a passage falls in each.
 
-use super::*;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::OnceLock;
+use legal_structure_model::ScalarRange;
+use legal_structure_model::document::{DocumentStructure, StructureNode};
+use legal_structure_model::opinion::{OpinionCitation, PageSeries, Pin};
+use legal_structure_model::text::{javascript_whitespace, utf16_len, ScalarText};
+use regex::Regex;
+use crate::trim_javascript_whitespace as trim_js;
+use super::{in_flow, read_page, squeezed, word_place, Kinds, OpinionRecord};
 
 /// The page mark printed at a page's start, in whatever words it carries its label: "*645", "*Page 169", "*West Page 12",
 /// "*Supp. 12", "*[12]", "*B5", "**709"; or "Page 382" alone in its block.

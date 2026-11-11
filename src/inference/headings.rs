@@ -1,6 +1,6 @@
 //! Formal and sentence headings, as a judgment's text prints them.
 
-use super::*;
+//GLOB super
 use legal_structure_model::layout::ends_on;
 
 pub(crate) fn heading_enumerator(value: &str) -> bool {

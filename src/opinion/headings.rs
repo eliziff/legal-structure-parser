@@ -1,6 +1,14 @@
 //! What is a heading: titles by their words, set apart, run into a paragraph, or printed with a page.
 
-use super::*;
+use std::sync::OnceLock;
+use legal_structure_model::ScalarRange;
+use legal_structure_model::document::{Derivation, DocumentStructure, StructureNode};
+use legal_structure_model::text::{utf16_len, ScalarText};
+use regex::Regex;
+use crate::trim_javascript_whitespace as trim_js;
+use super::{element_of, read_heading, read_paragraph, text, Kinds};
+use super::matter::sentences;
+use super::pages::page_number;
 
 /// A title in strong or underlined type at a paragraph's head, or in italics where it reads as one: where it ends.
 pub(super) fn run_in(structure: &DocumentStructure, node: &StructureNode, range: ScalarRange, bare: &dyn Fn(ScalarRange) -> String) -> Option<usize> {

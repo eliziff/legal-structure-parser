@@ -1,6 +1,14 @@
 //! Note references: the sites in a line's text where a reference may stand, scored.
 
-use super::*;
+use std::collections::HashSet;
+use std::sync::OnceLock;
+use legal_citations::cues::is_counter_noun as counter_noun;
+use legal_structure_model::text::{is_note_symbol as is_symbol, MAX_SYMBOL_LABEL_LEN as MAX_SYMBOL_RUN};
+use regex::Regex;
+use super::{
+    chars_slice, is_superscript, normalize_symbol, numeric_value, overlaps, Candidate, CandidateFlags, PairLine, Zone,
+    DASHES, MAX_VALUE, MONTH, QUOTES, REF_PUNCTUATION, REF_RIGHT_PUNCTUATION, TERMINAL_PUNCTUATION,
+};
 
 /// What a reference read on the line scores for where the line stands: a running head's or
 /// number's line holds one only where it reads as prose. The page's furniture read as body (its

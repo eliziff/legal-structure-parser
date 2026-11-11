@@ -1,5 +1,11 @@
 use super::search;
-use super::*;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
+use legal_structure_model::{DocumentStructure, NodeKind, ScalarRange, ScalarText};
+use regex::Regex;
+use serde::Serialize;
+use super::{js_regex, js_trim, queried_as, DocumentQuery, JS_WS};
+use super::search::{quote_text, PhraseOptions, PhraseSpan};
 use crate::{javascript_whitespace, text::normalize_blank_whitespace, utf16_len};
 use std::rc::Rc;
 use std::sync::atomic::Ordering;

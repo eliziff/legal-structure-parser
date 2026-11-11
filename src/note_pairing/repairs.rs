@@ -1,6 +1,10 @@
 //! Repairs to a backbone and its references: gaps, misread glyphs, labels out of order.
 
-use super::*;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use legal_citations::cues;
+use legal_structure_model::{layout, normalize_decimal_digit};
+use super::{chars_slice, numeric_value, Candidate, PairLine, Zone, MAX_VALUE};
+use super::refs::at_line_end;
 
 pub(super) fn confusable_variants(value: &str) -> HashSet<u32> {
     if value.is_empty() || value.chars().count() > 3 {

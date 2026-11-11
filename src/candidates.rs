@@ -1,4 +1,10 @@
-use super::*;
+use std::collections::{HashMap, HashSet};
+use legal_structure_model::{
+    CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, CandidateRoleV2, EngineError, ResolutionRuleV2,
+    ScalarRange, StructureCandidateRun, StructureMarkerCandidate, UnitRole,
+};
+use legal_structure_model::text::{utf16_len, ScalarText};
+use crate::inference;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "structure-inference")]

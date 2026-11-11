@@ -1,6 +1,14 @@
 //! Headings a source's own formatting marks.
 
-use super::*;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::OnceLock;
+use legal_structure_model::{LayoutAnalysis, ScalarRange};
+use legal_structure_model::document::{Derivation, DocumentStructure, NodeKind, StructureNode};
+use legal_structure_model::text::{javascript_whitespace, trim_javascript_whitespace, utf16_len, ScalarText};
+use regex::Regex;
+use crate::ENGINE_ORIGIN;
+use super::headings::{heading_enumerator, heading_level, heading_title_case, trim_leading_parenthetical, utf16_longer};
+use super::instrument::enum_readings;
 
 /// Source formatting supplies isolation that physical text lines cannot. Keep
 /// the source paragraph and its anchors; append only a heuristic heading role.

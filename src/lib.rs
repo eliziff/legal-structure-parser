@@ -1,8 +1,3 @@
-#[cfg(feature = "structure-inference")]
-use regex::Regex;
-use std::collections::{HashMap, HashSet};
-#[cfg(feature = "structure-inference")]
-use std::sync::OnceLock;
 
 #[cfg(feature = "structure-inference")]
 mod analysis;
@@ -61,8 +56,8 @@ pub use text_units::text_units;
 #[cfg(all(feature = "citator", feature = "canlii"))]
 pub use canlii::{canlii_case_url, canlii_court_route, canlii_law_url};
 pub use document::{
-    provision_mark, CitedAuthority, Derivation, DocumentStructure, MarkupAncestor, NodeReading,
-    ContinuationKind, SourceContinuation, SourceJoin, ManuscriptEdits, MarkupElement, NodeKind, PrimaryRole, SourceFragment, StructureNode,
+    provision_mark, CitedAuthority, ContinuationKind, Derivation, DocumentStructure, ManuscriptEdits, MarkupAncestor,
+    MarkupElement, NodeKind, NodeReading, PrimaryRole, SourceContinuation, SourceFragment, SourceJoin, StructureNode,
 };
 pub use docx_lint::*;
 pub use docx_numbering::*;
@@ -96,9 +91,8 @@ pub use text::{
 
 pub use legal_structure_model::{
     CandidateEvidenceV2, CandidateGrammar, CandidateObservationV2, CandidateRoleV2, DetectionProfile, EngineError,
-    Origin, ResolutionRuleV2, ScalarRange, Scope,
-    LayoutAnalysis, ScopeKind, StructureAnalysis, StructureCandidateRun, StructureMarkerCandidate,
-    UnitRole, DOCUMENT_STRUCTURE_SCHEMA,
+    LayoutAnalysis, Origin, ResolutionRuleV2, ScalarRange, Scope, ScopeKind, StructureAnalysis, StructureCandidateRun,
+    StructureMarkerCandidate, UnitRole, DOCUMENT_STRUCTURE_SCHEMA,
 };
 pub const ENGINE_SOURCE_SHA256: &str = env!("LEGAL_STRUCTURE_ENGINE_SHA256");
 const ENGINE_ORIGIN: &str = "legalpdf.structure-engine";

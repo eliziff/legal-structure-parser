@@ -5,7 +5,15 @@
 //! from line to line, far apart ("-5-", "Page 3 of 10", an ECF stamp, a running title and its number). Note zones are
 //! the page ends that open with the next note's number; note pairing pairs their labels with the calls.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
+use legal_structure_model::document::{NodeKind, StructureNode};
+use legal_structure_model::text::{javascript_whitespace, utf16_len};
+use regex::Regex;
+use super::{read_heading, read_note, read_page, read_paragraph, Kinds};
+use super::headings::{heading_line, section_line, title_line};
+use super::matter::{caption_line, front_role};
+use super::notes::opens_on_reporter;
 use legal_structure_model::layout::ScalarRange;
 use std::collections::BTreeMap;
 

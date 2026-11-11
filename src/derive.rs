@@ -1,4 +1,7 @@
-use super::*;
+use std::collections::{HashMap, HashSet};
+use legal_structure_model::document::{Derivation, DocumentStructure, NodeKind, StructureNode};
+use legal_structure_model::text::ScalarText;
+use crate::{inference, Evidence};
 
 /// The structure from a reader's evidence: its own nodes, with what inference finds (or the blocks it was given in
 /// place of inference), each node's parent resolved from the place (or id) it names: a node's label or alias, a

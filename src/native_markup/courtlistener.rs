@@ -1,7 +1,18 @@
 //! CourtListener's own renditions (html_with_citations, CAP's xml_harvard, Columbia, Lawbox, Lexis,
 //! Westlaw, OSCN, public.resource.org): what their markup and printed text supply beyond the generic reading.
 
-use super::*;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::OnceLock;
+use legal_structure_model::{ScalarRange, ScopeKind};
+use legal_structure_model::document::{DocumentStructure, MarkupElement, NodeKind, StructureNode};
+use legal_structure_model::text::{utf16_len, ScalarText};
+use regex::Regex;
+use crate::text::trim_javascript_whitespace as trim_js;
+use super::{
+    ancestors, courtlistener_ldml_bracketed_marker, courtlistener_ldml_note, decode_entities, element_at, element_node,
+    footnote_identity, javascript_whitespace, leading_footnote_marker, markup_tag_end, parse_tag, short_number,
+    MarkupSerialization, NativeMarkupScope,
+};
 use crate::Derivation;
 use crate::text::ScalarCoordinates;
 

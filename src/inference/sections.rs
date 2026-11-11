@@ -1,6 +1,10 @@
 //! Legislation's sections: their labels, families and scopes.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use legal_structure_model::document::{NodeKind, StructureNode};
+use legal_structure_model::text::ScalarText;
+use super::{leading_ascii_space, lines, Line};
+use super::instrument::{enumerated_children, grammar_section, repeated_subsection};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum SectionStyle {
@@ -1180,7 +1184,6 @@ pub(super) fn drop_integer_spikes(marks: Vec<SectionMark>) -> Vec<SectionMark> {
         .collect()
 }
 
-pub(super) use legal_structure_model::layout::roman_value;
 
 /// Where a provider's markdown opens a schedule between `from` and `end` ("## Schedule 1", "## SCHEDULE I —
 /// (Section 2)", "## Schedule Reference Generating Unit …"), else `end`: a provision ends where a schedule begins. A

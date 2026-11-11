@@ -10,7 +10,11 @@
 //! going on), `closes_sentence` (it ends, no capitals, question or bracket it does not open) and `sentence_closed` (it
 //! ends on no one- or two-letter word).
 
-use super::*;
+use super::headings::{
+    formal_heading, heading_between, heading_enumerator, heading_title_case, level_opens, may_head, utf16_longer,
+};
+use super::instrument::{enumerated, Levels};
+use super::paragraphs::running_prose;
 use crate::judgment::{author_line, date_line, disposition_line, end_matter, figure_caption, signature_line};
 use crate::numbered_paragraphs::editorial_line;
 use std::borrow::Cow;

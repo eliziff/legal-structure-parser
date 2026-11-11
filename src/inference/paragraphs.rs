@@ -1,6 +1,15 @@
 //! Numbered paragraphs: their markers, the counts they form, and the ranges each count gives.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use legal_structure_model::{DetectionProfile, ScalarRange};
+use legal_structure_model::document::{NodeKind, StructureNode};
+use legal_structure_model::text::{utf16_len, ScalarText};
+use crate::numeric_sequence::{select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy};
+use super::{decimal_prefix, leading_ascii_space, lines, prose_block, Line, Marker, MarkerStyle};
+use super::headings::{formal_heading, joined_heading_levels, sentence_heading};
+use super::runs::next_boundary;
+use super::tail::{paragraph_tail, sentence_closed};
 use crate::judgment::{author_line, signature_line};
 use crate::statute::{marginal_note_shaped, markdown_line};
 

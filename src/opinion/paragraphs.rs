@@ -1,6 +1,17 @@
 //! Paragraphs: one to a place, rejoined across a page, numbered, and who speaks them.
 
-use super::*;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::OnceLock;
+use legal_structure_model::ScalarRange;
+use legal_structure_model::document::{DocumentStructure, NodeKind, StructureNode};
+use legal_structure_model::text::{javascript_whitespace, utf16_len, ScalarText};
+use regex::Regex;
+use crate::trim_javascript_whitespace as trim_js;
+use super::{
+    headnote_node, opening_words, places, read_paragraph, read_part, role_of, squeezed, text, unheld_stretches, Kinds,
+    Pending,
+};
+use super::headings::title_cased;
 
 /// One paragraph to a place: the engine's numbered hull stops at the next paragraph, heading or note; one that repeats
 /// another gives way to the numbered one; a paragraph that is mostly a note is the note.

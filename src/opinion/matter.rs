@@ -1,6 +1,14 @@
 //! What surrounds the opinion's text: the front lines, the reporter's matter, the record's gaps and kind.
 
-use super::*;
+use std::sync::OnceLock;
+use legal_structure_model::ScalarRange;
+use legal_structure_model::document::{DocumentStructure, NodeKind, StructureNode};
+use legal_structure_model::opinion::RecordGap;
+use legal_structure_model::text::{javascript_whitespace, utf16_len, ScalarText};
+use regex::Regex;
+use crate::trim_javascript_whitespace as trim_js;
+use super::{front_node, headnote_mark, headnote_node, headnote_numbers, name_role, reads, role_of, squeezed, Kinds};
+use super::headings::{enumerator_end, notes_title, section_keyword, title_cased, title_line};
 use crate::judgment::{JUDGMENT, ORDERED};
 
 /// A long line of the head, not the opinion's first sentence: it opens as a court's or a filing's line does, or closes

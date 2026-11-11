@@ -1,6 +1,15 @@
 //! The pairs of one document: labels, references and repairs read into pairs.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use super::{Candidate, Pair, PairLine, Zone, SYMBOL_START_PAGE_LIMIT};
+use super::assign::{label_only_supported, repeated_refs, select_refs};
+use super::backbone::{endnote_mode, select_segments, trim_unsupported_tail};
+use super::labels::extract_labels;
+use super::refs::extract_refs;
+use super::repairs::{
+    recover_out_of_order_labels, rekey_same_value_ref_runs, repair_gaps, repair_glyph_refs, repair_missing_refs,
+    repair_page_glyph_refs,
+};
 
 pub(super) fn build_pairs(lines: &[PairLine<'_>]) -> Vec<Pair> {
     // Source page numbers remain physical; introductory symbols belong to this document's start.

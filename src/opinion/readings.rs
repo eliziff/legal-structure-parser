@@ -1,6 +1,12 @@
 //! What a lawyer searches inside the text: short names, quotations and the documents reproduced, each a span of it.
 
-use super::*;
+use std::collections::HashSet;
+use std::sync::OnceLock;
+use legal_structure_model::document::{NodeKind, StructureNode};
+use legal_structure_model::text::{utf16_len, ScalarText};
+use regex::Regex;
+use crate::trim_javascript_whitespace as trim_js;
+use super::{span, squeezed};
 
 /// Short names the opinion gives, `("Debtor")`, `Administrative Procedure Act (APA)`, `"Lease" means`: a quoted name in
 /// parentheses, an acronym after its full name, "X" means. Each a `defined-term`, the name its words and its `form`

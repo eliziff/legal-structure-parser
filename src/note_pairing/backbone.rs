@@ -1,6 +1,11 @@
 //! The label backbone: the runs of labels that count on, and where a run of endnotes stands.
 
-use super::*;
+use std::collections::HashSet;
+use std::sync::OnceLock;
+use legal_structure_model::layout::NoteMode;
+use regex::Regex;
+use crate::numeric_sequence::{select_numeric_sequence, NumericSequenceCandidate, NumericSequencePolicy};
+use super::{Candidate, PairLine, ENDNOTE_MIN_LABELS};
 
 pub(super) fn select_backbone(
     candidates: &[Candidate],

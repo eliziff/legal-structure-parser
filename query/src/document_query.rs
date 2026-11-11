@@ -18,7 +18,6 @@ mod provisions;
 mod text_fragment;
 pub use source_text::TextStatistics;
 pub use provisions::{note_named, Provisions};
-use search::{quote_text, PhraseOptions, PhraseSpan};
 pub use search::{lowercase_words, tokenize_source_text, word_regex, DocumentWordSpan};
 pub use text_fragment::{
     sentence_end, source_text_fragment_plan, text_fragment_plan, text_fragment_plan_in,

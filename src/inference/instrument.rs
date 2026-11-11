@@ -1,6 +1,14 @@
 //! An instrument's enumerated grammar.
 
-use super::*;
+use legal_structure_model::ScalarRange;
+use legal_structure_model::document::{provision_mark, Derivation, NodeKind, StructureNode};
+use legal_structure_model::layout::roman_value;
+use legal_structure_model::text::{utf16_len, ScalarText};
+use crate::ENGINE_ORIGIN;
+use super::{leading_ascii_space, lines, Line};
+use super::headings::heading_enumerator;
+use super::runs::BULLETS;
+use super::sections::{compare_labels, statute_spine_from_lines};
 
 /// An open level of a provision's enumerators: its family, the value last read in it, and the label and id of the
 /// provision that value opened.

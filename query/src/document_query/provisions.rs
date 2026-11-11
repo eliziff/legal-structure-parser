@@ -2,7 +2,10 @@
 //! own structure lookup (`structure_block`) and a PDF's lookup by locator (`legalpdf`'s `PdfDocument::lookup`) both
 //! resolve through here.
 
-use super::*;
+use std::borrow::Cow;
+use std::collections::HashSet;
+use legal_structure_model::{provision_mark, DocumentStructure, NodeKind, StructureNode};
+use super::DocumentQuery;
 use legal_locator::{note_label, section_locator, SectionLocator};
 use unicode_normalization::UnicodeNormalization;
 

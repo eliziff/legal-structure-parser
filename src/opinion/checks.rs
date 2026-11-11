@@ -1,6 +1,15 @@
 //! What a finished structure shows is wrong or missing, class by class, for a run over a corpus to report.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
+use legal_structure_model::document::{DocumentStructure, NodeKind, StructureNode};
+use legal_structure_model::text::{utf16_len, ScalarText};
+use regex::Regex;
+use crate::trim_javascript_whitespace as trim_js;
+use super::{front_lines, in_flow, nodes, paragraphs, reading, spans, squeezed, word_starts, OpinionRecord};
+use super::headings::notes_title;
+use super::notes::plain_label;
+use super::pages::page_number;
 
 /// Each failure the structure shows: its class, and the detail to read it by.
 pub fn parse_failures(structure: &DocumentStructure) -> Vec<(&'static str, String)> {

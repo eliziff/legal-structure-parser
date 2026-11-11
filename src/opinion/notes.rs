@@ -1,6 +1,14 @@
 //! A record's notes beyond what the engine links: labels as printed, anchors, flat notes, and calls matched to bodies.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
+use legal_structure_model::ScalarRange;
+use legal_structure_model::document::{DocumentStructure, NodeKind, StructureNode};
+use legal_structure_model::text::{javascript_whitespace, utf16_len, ScalarText};
+use regex::Regex;
+use crate::trim_javascript_whitespace as trim_js;
+use super::{read_note, reads, span, text, word_starts, Kinds, Pending, ScalarCoordinates};
+use super::headings::notes_title;
 
 /// A label as called and as printed compare bare: "(1)", "[1]" and "1" are one note's.
 pub(super) fn plain_label(label: &str) -> &str {

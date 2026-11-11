@@ -1,18 +1,22 @@
-use super::*;
-use std::{collections::BTreeMap, sync::Arc};
+use case::{case_source_layout, detect_case, detect_case_headings, detect_case_prose};
+use journal::detect_journal;
+use legal_structure_model::{DetectionProfile, ScalarRange};
+use legal_structure_model::document::{Derivation, NodeKind, StructureNode};
+use legal_structure_model::text::ScalarText;
+use pages::{form_feed_pages, marked_pages};
+use paragraphs::provision_end_before_marginal_notes;
+use crate::{Evidence, ENGINE_ORIGIN};
 
 macro_rules! cached_regex {
     ($name:ident, $pattern:expr) => {{
-        static $name: OnceLock<Regex> = OnceLock::new();
-        $name.get_or_init(|| Regex::new($pattern).unwrap())
+        static $name: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        $name.get_or_init(|| regex::Regex::new($pattern).unwrap())
     }};
 }
 
 mod paragraphs;
-use paragraphs::*;
 pub(crate) use paragraphs::{excerpt_run, run_in_heading};
 mod tail;
-use tail::*;
 pub(crate) use tail::closing_line;
 #[cfg(feature = "opinion")]
 pub(crate) use tail::ends_sentence;
@@ -21,15 +25,12 @@ pub(crate) use headings::*;
 mod runs;
 pub(crate) use runs::*;
 mod pages;
-use pages::*;
 mod case;
-use case::*;
 mod sections;
 pub(crate) use sections::*;
 mod instrument;
 pub(crate) use instrument::*;
 mod journal;
-use journal::*;
 #[cfg(all(feature = "native-markup", feature = "courtlistener"))]
 mod formatted_headings;
 #[cfg(all(feature = "native-markup", feature = "courtlistener"))]

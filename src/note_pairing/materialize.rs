@@ -1,6 +1,9 @@
 //! Pairs made notes: each a Footnote (or Endnote) node placed in the reader's text, and the diagnostics.
 
-use super::*;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use legal_structure_model::{Derivation, NodeKind, NotePairing, ScalarRange, StructureNode, NOTE_PAIRING_ORIGIN};
+use legal_structure_model::layout::{Diagnostic, NoteMode};
+use super::{Pair, PairLine, Zone};
 
 /// One part's pairs made notes, added to `pairing`'s: each note's id counts on from the notes before it, and its
 /// numbering's restart from `restarts`, the restarts of the parts before; the count of restarts after this part's.

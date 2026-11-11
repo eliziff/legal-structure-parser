@@ -1,6 +1,9 @@
 //! References matched to the backbone's labels, in order.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use legal_structure_model::layout::LineZone;
+use super::{Candidate, PairLine, ENDNOTE_MIN_LABELS};
+use super::backbone::visual_label_cue;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct RefTail {

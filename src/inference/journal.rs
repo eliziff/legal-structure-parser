@@ -1,6 +1,9 @@
 //! A journal article's structure.
 
-use super::*;
+use legal_structure_model::ScalarRange;
+use legal_structure_model::document::{NodeKind, StructureNode};
+use legal_structure_model::text::{javascript_whitespace, ScalarText};
+use super::{javascript_lines, prose_block};
 
 pub(super) fn add_ranges(mut blocks: Vec<StructureNode>, length: usize) -> Vec<StructureNode> {
     for index in 0..blocks.len() {

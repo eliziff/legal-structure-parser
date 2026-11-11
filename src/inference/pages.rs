@@ -1,6 +1,11 @@
 //! Printed and physical pages.
 
-use super::*;
+use std::collections::{HashMap, HashSet};
+use legal_structure_model::ScalarRange;
+use legal_structure_model::document::{NodeKind, StructureNode};
+use legal_structure_model::text::ScalarText;
+use crate::Evidence;
+use super::lines;
 
 pub(super) struct PageMarker {
     number: u32,
