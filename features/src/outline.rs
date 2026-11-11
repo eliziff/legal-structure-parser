@@ -10,34 +10,34 @@ use serde::Serialize;
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct OutlineEntry {
-    kind: OutlineKind,
+    pub kind: OutlineKind,
     /// Its depth under its parents, from 0; a line of text one under the node holding it.
-    level: usize,
+    pub level: usize,
     /// Its number or enumerator as printed: "[12]", "(2)", "PART XXIII", "IV.".
     #[serde(skip_serializing_if = "String::is_empty")]
     #[cfg_attr(feature = "binding-types", ts(as = "Option<String>", optional))]
-    label: String,
+    pub label: String,
     /// A heading's words; a provision's marginal note.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "binding-types", ts(optional))]
-    title: Option<String>,
+    pub title: Option<String>,
     /// Its own words, up to the first entry under it, without the source's emphasis marks: a line to each paragraph.
     #[serde(skip_serializing_if = "String::is_empty")]
     #[cfg_attr(feature = "binding-types", ts(as = "Option<String>", optional))]
-    text: String,
+    pub text: String,
     /// Its span in the document's query text; a provision's opens with its marginal note.
-    start: usize,
-    end: usize,
+    pub start: usize,
+    pub end: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "binding-types", ts(optional))]
-    role: Option<PrimaryRole>,
+    pub role: Option<PrimaryRole>,
     /// A provision's kind as its marker reads it: "section", "part", "schedule", ...
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "binding-types", ts(optional))]
-    locator: Option<String>,
+    pub locator: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "binding-types", ts(optional))]
-    page_index: Option<usize>,
+    pub page_index: Option<usize>,
 }
 
 /// What an outline entry is: a node's kind (a span, a line of the front matter), or text, lines no node of the outline

@@ -29,7 +29,7 @@ pub use journal_titles::{
     journal_title_choice, journal_title_searches, JournalTitleHit, JournalTitleSearch,
 };
 #[cfg(all(feature = "structure-inference", feature = "document-query"))]
-pub use outline::{document_outline, text_outline, OutlineEntry};
+pub use outline::{document_outline, text_outline, OutlineEntry, OutlineKind};
 #[cfg(all(feature = "citator", feature = "document-query", feature = "canada"))]
 pub use passage_links::{
     cited_passage_link, courtlistener_link, law_web_link, passage_link, source_link,
