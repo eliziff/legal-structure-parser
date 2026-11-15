@@ -3,7 +3,8 @@
 //! legal_structure_features::a2aj and derived here into the host's document (`make`); JavaScript is given its metadata
 //! and documents, never its text.
 
-use self::lookup::{self as a2aj_lookup, datasets, sql};
+use self::lookup::{self as a2aj_lookup, datasets};
+use crate::sqlite::{self, sql, Stamp};
 pub use self::lookup::{name_key, Named};
 use crate::AliasGroup;
 type CoreResult<T> = Result<T, String>;
@@ -12,69 +13,54 @@ use crate::a2aj::{
 };
 use legal_structure::{trim_javascript_whitespace as js_trim, DocumentStructure, ProviderTextInput};
 use regex::Regex;
-use rusqlite::{types::ValueRef, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{types::ValueRef, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Weak};
-use std::time::SystemTime;
 
 pub mod lookup;
+pub mod remote;
 
-/// What the host makes a derived structure into: its own document, which the store keeps while the host holds it.
-pub trait Make<D>: Fn(DocumentStructure) -> D {}
-impl<D, F: Fn(DocumentStructure) -> D> Make<D> for F {}
+/// What the host makes a reading into: its own document, which the store keeps while the host holds it, and which
+/// derives the reading's structure where it is first read.
+pub trait Make<D>: Fn(Reading) -> D {}
+impl<D, F: Fn(Reading) -> D> Make<D> for F {}
 
-/// Which copy of a store a connection or a document came from: a store replaced in its place is another copy.
-pub type Stamp = (u64, Option<SystemTime>);
-
-fn stamp(path: &Path) -> Option<Stamp> {
-    let metadata = std::fs::metadata(path).ok()?;
-    Some((metadata.len(), metadata.modified().ok()))
+/// A document as the store reads it, its structure not yet derived: what it is derived from, and its revision, the
+/// digest of what it is read from (`role` tells a statute's provisions from its full text) and of the reader, so a
+/// document is known without deriving it. The structure derived takes that revision.
+pub struct Reading {
+    pub revision: String,
+    pub input: ProviderTextInput,
+    /// The names the document's statute citations give, as the citator read them when it read the decision
+    /// (`citator_graph::cited_names`); none where nothing has read its citations.
+    pub cited_names: Option<Vec<String>>,
+    /// The document's CanLII page, as its metadata read it (`a2aj::Metadata::canlii_url`).
+    pub canlii: Option<String>,
 }
 
-/// Read-only connections, kept while their copy of the store is: the installer writes the store in place, through its
-/// write-ahead log, which readers may hold open. Opening and closing one costs more than most reads.
-static CONNECTIONS: Mutex<Vec<(PathBuf, Stamp, Connection)>> = Mutex::new(Vec::new());
+/// The reader whose readings the revision names: changed whenever what a reading derives changes.
+const READER: &str = "a2aj-provider-text-reading-v1";
+
+fn reading(identity: &str, role: &str, input: ProviderTextInput, cited_names: Option<Vec<String>>, canlii: Option<String>) -> Reading {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::new().chain_update(READER).chain_update([0]).chain_update(role).chain_update([0])
+        .chain_update(identity).finalize();
+    Reading { revision: digest.iter().map(|byte| format!("{byte:02x}")).collect(), input, cited_names, canlii }
+}
+
+/// A reading derived: its structure, with the reading's revision.
+pub fn derived_structure(reading: Reading) -> CoreResult<DocumentStructure> {
+    let mut structure = legal_structure::provider_text_document_structure(reading.input).map_err(|error| error.to_string())?;
+    structure.revision = reading.revision;
+    Ok(structure)
+}
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// Runs `work` on a read-only connection to a store's file (the store, or a file beside it); None where there is no file.
-pub fn with_store<T>(path: &Path, work: impl FnOnce(&Connection, Stamp) -> CoreResult<T>) -> CoreResult<Option<T>> {
-    kept(&CONNECTIONS, path, |path| {
-        let connection = open_read_only(path).map_err(sql)?;
-        // A decision's text runs over many pages: they are read from a mapping of the file, not a call each.
-        connection.execute_batch("PRAGMA mmap_size=2147418112").map_err(sql)?;
-        Ok(connection)
-    }, work)
-}
-
-/// Runs `work` on a read-only connection to a file from `pool`, kept there while its copy of the file is, `open`
-/// opening one where none is; None where there is no file.
-pub(crate) fn kept<T, E>(pool: &Mutex<Vec<(PathBuf, Stamp, Connection)>>, path: &Path, open: impl FnOnce(&Path) -> Result<Connection, E>,
-    work: impl FnOnce(&Connection, Stamp) -> Result<T, E>) -> Result<Option<T>, E> {
-    let Some(stamp) = stamp(path) else { return Ok(None) };
-    let kept = {
-        let mut connections = lock(pool);
-        connections.retain(|(other, held, _)| other != path || *held == stamp);
-        connections.iter().position(|(other, _, _)| other == path).map(|index| connections.swap_remove(index).2)
-    };
-    let connection = match kept {
-        Some(connection) => connection,
-        None => open(path)?,
-    };
-    let result = work(&connection, stamp);
-    lock(pool).push((path.to_owned(), stamp, connection));
-    result.map(Some)
-}
-
-/// A read-only connection to a file, as the store and the note-up graph open theirs.
-pub(crate) fn open_read_only(path: &Path) -> rusqlite::Result<Connection> {
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
 }
 
 /// The documents derived from a store, kept while JavaScript holds them: an operation's stages ask for the same
@@ -120,14 +106,14 @@ pub struct Found<D> {
     pub search: Option<Arc<D>>,
 }
 
-fn derive<D>(input: ProviderTextInput, make: &impl Make<D>) -> CoreResult<Arc<D>> {
-    legal_structure::provider_text_document_structure(input).map(|structure| Arc::new(make(structure))).map_err(|error| error.to_string())
-}
-
-fn readings<D>(read: Read, make: &impl Make<D>) -> CoreResult<Found<D>> {
+fn readings<D>(read: Read, cited_names: Option<Vec<String>>, make: &impl Make<D>) -> CoreResult<Found<D>> {
     let metadata = read.metadata.clone();
+    let pages = read.printed_pages.iter().map(|page| (&page.label, page.start, page.end)).collect::<Vec<_>>();
+    let identity = serde_json::to_string(&(&read.metadata, &read.text, &read.provisions, pages)).map_err(|error| error.to_string())?;
+    let canlii = metadata.canlii_url.clone();
     let (native, search) = read.inputs();
-    Ok(Found { native: derive(native, make)?, search: search.map(|search| derive(search, make)).transpose()?, metadata })
+    Ok(Found { search: search.map(|search| Arc::new(make(reading(&identity, "search", search, cited_names.clone(), canlii.clone())))),
+        native: Arc::new(make(reading(&identity, "native", native, cited_names, canlii))), metadata })
 }
 
 #[derive(Deserialize)]
@@ -150,7 +136,7 @@ pub fn find(connection: &Connection, lookup: &Lookup) -> CoreResult<Option<i64>>
 /// the courts asked for (of any where none is): how a decision cited by an identifier A2AJ does not carry ("1991
 /// CanLII 45 (SCC)") is found, as the Python app's identity_hints does. None where no decision answers, or several.
 pub fn named_case(path: &Path, named: &Named) -> CoreResult<Option<String>> {
-    Ok(with_store(path, |connection, _| {
+    Ok(sqlite::read(path, |connection, _| {
         let mut citations = BTreeSet::new();
         for (_, row) in a2aj_lookup::named_decisions(connection, named)? {
             citations.extend(Document::new(&row, Source::Store).language_field("citation", Language::En).map_err(sql)?);
@@ -190,20 +176,24 @@ fn by_id<D: Send + Sync + 'static>(connection: &Connection, path: &Path, stamp: 
     let document = Document::new(&row, Source::Store);
     let Some(mut read) = document.read(language, document.doc_type().map_err(sql)?).map_err(sql)? else { return Ok(None) };
     read.printed_pages = a2aj::reporter_pages(path, id, read.metadata.language);
-    let found = readings(read, make)?;
+    #[cfg(feature = "citator-graph")]
+    let cited = crate::citator_graph::cited_names(path, id, read.metadata.language);
+    #[cfg(not(feature = "citator-graph"))]
+    let cited = None;
+    let found = readings(read, cited, make)?;
     keep(key, &found);
     Ok(Some(found))
 }
 
 /// The id of the one document the store holds under a citation.
 pub fn find_id(path: &Path, lookup: &Lookup) -> CoreResult<Option<i64>> {
-    Ok(with_store(path, |connection, _| find(connection, lookup))?.flatten())
+    Ok(sqlite::read(path, |connection, _| find(connection, lookup))?.flatten())
 }
 
 /// A document the store holds under a citation.
 pub fn document<D: Send + Sync + 'static>(path: &Path, lookup: &Lookup, make: impl Make<D>) -> CoreResult<Option<Found<D>>> {
     let language = lookup.language.unwrap_or(Language::En);
-    Ok(with_store(path, |connection, stamp| {
+    Ok(sqlite::read(path, |connection, stamp| {
         let Some(id) = find(connection, lookup)? else { return Ok(None) };
         by_id(connection, path, stamp, id, language, &make)
     })?
@@ -213,7 +203,7 @@ pub fn document<D: Send + Sync + 'static>(path: &Path, lookup: &Lookup, make: im
 /// The store's documents with these ids, of a kind: what experiments sample the store by.
 pub fn documents<D: Send + Sync + 'static>(path: &Path, ids: &[i64], doc_type: &str, language: Language, make: impl Make<D>)
     -> CoreResult<Option<Vec<(i64, Found<D>)>>> {
-    with_store(path, |connection, stamp| {
+    sqlite::read(path, |connection, stamp| {
         let mut found = Vec::new();
         for &id in ids {
             let document = by_id(connection, path, stamp, id, language, &make)?;
@@ -228,7 +218,7 @@ pub fn documents<D: Send + Sync + 'static>(path: &Path, ids: &[i64], doc_type: &
 pub fn section<D: Send + Sync + 'static>(path: &Path, lookup: &Lookup, section: &str, excerpt: Excerpt, make: impl Make<D>)
     -> CoreResult<Option<Option<Arc<D>>>> {
     let language = lookup.language.unwrap_or(Language::En);
-    Ok(with_store(path, |connection, stamp| {
+    Ok(sqlite::read(path, |connection, stamp| {
         let Some(id) = find(connection, lookup)? else { return Ok(None) };
         let Some(row) = LazyRow::read(connection, id, FIELDS).map_err(sql)? else { return Ok(None) };
         // The store holds the statute where it holds its text, in the language asked for or the other, and citation.
@@ -253,14 +243,15 @@ pub fn section<D: Send + Sync + 'static>(path: &Path, lookup: &Lookup, section: 
         if let Some(found) = derived::<D>(&key) {
             return Ok(Some(Some(found.native)));
         }
-        let native = derive(a2aj::provision_input(excerpt, metadata.language, section, text), &make)?;
+        let identity = serde_json::to_string(&(&key.2, &text)).map_err(|error| error.to_string())?;
+        let native = Arc::new(make(reading(&identity, "provision", a2aj::provision_input(excerpt, metadata.language, section, text), None, metadata.canlii_url.clone())));
         keep(key, &Found { metadata, native: native.clone(), search: None });
         Ok(Some(Some(native)))
     })?
     .flatten())
 }
 
-/// What a search asks of the store. The full-text index's query comes built (searchQuery.ts builds every search's).
+/// What a search asks of the store (and of A2AJ, where the store has no full-text indexes).
 #[derive(Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
@@ -276,11 +267,6 @@ pub struct Search {
     start_date: Option<String>,
     end_date: Option<String>,
     sort_results: Option<String>,
-    /// The query in the full-text index's syntax.
-    #[serde(rename = "match")]
-    expression: String,
-    /// Whether the query uses the index's operators.
-    operators: bool,
 }
 
 /// The best matches the index ranks on its own before citations count, and how much each order of magnitude of
@@ -307,12 +293,13 @@ pub fn search(path: &Path, search: &Search) -> CoreResult<Option<Vec<Listing>>> 
     let wanted = search.size.map_or(10.0, f64::trunc).clamp(1.0, 50.0) as i64;
     let language = search.language.unwrap_or(Language::En);
     let name_search = search.search_type.as_deref() == Some("name");
-    let names = if search.operators {
-        search.expression.clone()
+    let compiled = crate::search_query::compile(&search.query, None);
+    let names = if compiled.operators {
+        compiled.fts5.clone()
     } else {
         a2aj::name_words(&search.query).iter().map(|word| format!("\"{word}\"")).collect::<Vec<_>>().join(" ")
     };
-    Ok(with_store(path, |connection, _| {
+    Ok(sqlite::read(path, |connection, _| {
         let mut indexes = connection.prepare_cached(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('document_search', 'name_search')").map_err(sql)?;
         if indexes.query_row([], |row| row.get::<_, i64>(0)).map_err(sql)? < 2 {
@@ -377,7 +364,7 @@ pub fn search(path: &Path, search: &Search) -> CoreResult<Option<Vec<Listing>>> 
                 return Ok(named);
             }
             let mut seen = HashSet::new();
-            Ok(named.into_iter().chain(matching("document_search", &search.expression)?).filter(|(id, _)| seen.insert(*id))
+            Ok(named.into_iter().chain(matching("document_search", &compiled.fts5)?).filter(|(id, _)| seen.insert(*id))
                 .take(wanted as usize).collect())
         })();
         // Held only for the search: the citator replaces its graph's file when it builds it again.
@@ -407,7 +394,7 @@ pub struct Court {
 
 /// Every court and jurisdiction in the store, with how many documents each has.
 pub fn courts(path: &Path) -> CoreResult<Option<Vec<Court>>> {
-    with_store(path, |connection, _| {
+    sqlite::read(path, |connection, _| {
         let recorded = connection.query_row("SELECT 1 FROM sqlite_master WHERE name = 'source_file'", [], |_| Ok(()))
             .optional().map_err(sql)?.is_some();
         let mut files = HashMap::new();
@@ -447,7 +434,7 @@ pub struct StoreRead {
 pub fn reads(path: &Path, ids: &[i64], doc_type: &str, language: Language) -> CoreResult<Option<Vec<StoreRead>>> {
     // Its small fields, texts and provisions.
     const COLUMNS: &[&str] = a2aj::COLUMNS.as_slice().split_at(17).0;
-    with_store(path, |connection, _| {
+    sqlite::read(path, |connection, _| {
         let mut statement = connection.prepare_cached(&format!("SELECT {} FROM document WHERE id = ? AND doc_type = ?", COLUMNS.join(", ")))
             .map_err(sql)?;
         let mut found = Vec::new();
@@ -475,7 +462,7 @@ pub fn record<D: Send + Sync + 'static>(record: &Value, language: Language, doc_
     if let Some(found) = derived(&key) {
         return Ok(Some(found));
     }
-    let found = readings(read, &make)?;
+    let found = readings(read, None, &make)?;
     keep(key, &found);
     Ok(Some(found))
 }
@@ -515,7 +502,11 @@ pub fn record_provision<D>(records: &[Value], lookup: &ProvisionLookup, excerpt:
     };
     let section = js_trim(&lookup.section);
     match chosen {
-        Some(read) if !section.is_empty() => Ok(Some(derive(a2aj::provision_input(excerpt, language, section, read.text), &make)?)),
+        Some(read) if !section.is_empty() => {
+            let identity = serde_json::to_string(&(&read.metadata, section, &excerpt.citation, &excerpt.url,
+                &excerpt.alternate_citation, &excerpt.dataset, &excerpt.name, &read.text)).map_err(|error| error.to_string())?;
+            Ok(Some(Arc::new(make(reading(&identity, "provision", a2aj::provision_input(excerpt, language, section, read.text), None, read.metadata.canlii_url.clone())))))
+        }
         _ => Ok(None),
     }
 }
@@ -548,7 +539,7 @@ pub fn alias_keys(path: &Path, citation: &str) -> CoreResult<Vec<String>> {
 /// Each parsed key's exact aliases and authored forms (as the store writes them) in the store's inventory; its own key
 /// alone where no store is installed.
 pub fn alias_groups(path: &Path, keys: &[String]) -> CoreResult<Vec<AliasGroup>> {
-    let found = with_store(path, |connection, _| {
+    let found = sqlite::read(path, |connection, _| {
         let mut targets = connection.prepare_cached("SELECT DISTINCT document_id FROM citation_lookup WHERE citation_key = ?").map_err(sql)?;
         let mut aliases = connection.prepare_cached("SELECT citation_key FROM citation_lookup WHERE document_id = ?").map_err(sql)?;
         let mut forms = connection.prepare_cached(&format!("SELECT {} FROM document WHERE id = ?", CITATIONS.join(", "))).map_err(sql)?;
@@ -576,4 +567,68 @@ pub fn alias_groups(path: &Path, keys: &[String]) -> CoreResult<Vec<AliasGroup>>
         .collect()
     })?;
     Ok(found.unwrap_or_else(|| keys.iter().map(|key| AliasGroup::own(key)).collect()))
+}
+
+/// A citation read once for its lookup: the forms the store and A2AJ are asked for, in order and at most twelve (the
+/// citation as written, a Recueil citation as the S.C.R. it is, its case citations' cores, then the forms the store's
+/// inventory writes for the decision), the keys the decision is known by, and whether a key names several decisions.
+#[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct CitationLookup {
+    pub forms: Vec<LookupForm>,
+    pub aliases: Vec<String>,
+    pub ambiguous: bool,
+}
+
+/// A form a citation is asked for by, and what A2AJ's coverage must hold for A2AJ to be asked for it: the court's
+/// dataset ("SCC") of a neutral or S.C.R. citation, the jurisdiction ("FED", "ON") of a statute's. None where A2AJ is
+/// asked by another form: a CanLII number, another reporter, a bill, a case's name written before its citation.
+#[derive(Serialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct LookupForm {
+    pub text: String,
+    pub covered_by: Option<String>,
+}
+
+pub fn citation_lookup(path: &Path, citation: &str, laws: bool) -> CoreResult<CitationLookup> {
+    static RECUEIL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?-u:\b)R\.?\s?C\.?\s?S\.?(\s+\d)").unwrap());
+    // The citation is read once, for its cores and for how A2AJ is asked by it; every other form is a text of its own.
+    let read = legal_structure::read_citations(citation);
+    let (english, core) = if laws { (citation.to_owned(), Vec::new()) } else {
+        (RECUEIL.replace_all(citation, "S.C.R.$1").into_owned(),
+            legal_structure::citation_occurrences(citation, &read, 0).into_iter().filter(|found| found.kind == "case")
+                .map(|found| found.spans.core_span.text).collect::<Vec<_>>())
+    };
+    let mut own = Some(legal_structure::provider_citations(citation, &read));
+    // A2AJ is asked by citation alone, never with a case's name written before it: that only asks again for the same
+    // decision.
+    let named = [citation.to_owned(), english.clone()].into_iter()
+        .filter(|form| !core.is_empty() && !core.contains(form)).collect::<HashSet<_>>();
+    let mut seen = HashSet::new();
+    let requested = [citation.to_owned(), english].into_iter().chain(core).filter(|form| seen.insert(form.clone()))
+        .collect::<Vec<_>>();
+    let inventory = if laws { Vec::new() } else {
+        alias_groups(path, &requested.iter().map(|form| legal_structure::citation_lookup_key(form)).collect::<Vec<_>>())?
+    };
+    let mut kept = HashSet::new();
+    let aliases = inventory.iter().flat_map(|group| group.keys.iter().cloned()).filter(|key| kept.insert(key.clone())).collect();
+    let written = inventory.iter().flat_map(|group| group.forms.iter().cloned()).filter(|form| seen.insert(form.clone()));
+    let forms = requested.into_iter().chain(written).take(12).map(|text| {
+        let read = if text == citation { own.take().unwrap_or_default() } else { legal_structure::provider_citations_in_text(&text) };
+        let covered_by = (if named.contains(&text) { None } else if laws {
+            read.into_iter().find(|cite| cite.family == "statute").and_then(|cite| cite.jurisdiction).and_then(|place| match place.as_str() {
+                "ca" => Some("FED".to_owned()),
+                _ => place.strip_prefix("ca-").map(|code| match code.to_uppercase() { code if code == "YK" => "YT".to_owned(), code => code }),
+            })
+        } else {
+            read.into_iter().next().and_then(|cite| {
+                let court = cite.court?.chars().filter(|c| !c.is_whitespace() && *c != '.').collect::<String>().to_uppercase();
+                match cite.family { "neutral" => Some(court), "reporter" if court == "SCR" => Some("SCC".to_owned()), _ => None }
+            })
+        }).filter(|code| !code.is_empty());
+        LookupForm { text, covered_by }
+    }).collect();
+    Ok(CitationLookup { forms, aliases, ambiguous: inventory.iter().any(|group| group.ambiguous) })
 }

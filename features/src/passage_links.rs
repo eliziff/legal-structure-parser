@@ -2,21 +2,22 @@
 //! with the text fragments the planner gives the passage's block and quotations. These are the links Beaver's
 //! legalSourceLinks.ts makes (buildLegalSourcePinpoint, citedPassageLink, and A2AJ Law Web's).
 
-use legal_structure::{canlii_case_url, canlii_law_url, provision_mark, NodeKind, DocumentQuery, DocumentStructure, TextFragmentPlan};
+use legal_structure::{provision_mark, NodeKind, DocumentQuery, DocumentStructure, TextFragmentPlan};
 use legal_document_query::{source_text_fragment_plan, TextFragmentPage};
 use regex::Regex;
 use std::sync::OnceLock;
-use legal_citations::reference_names::reference_name_ends;
+use legal_citations::reference_names::{cited_names, read_citations, reference_name_ends};
 use legal_citations::url::{
     is_pdf_address, law_web_document, passage_locator, publisher_annotates_legal_references,
     publisher_glues_section_labels, publisher_may_repeat_passages, source_anchor, source_url,
 };
 use serde::{Deserialize, Serialize};
 use crate::courtlistener_page::{print_page, PrintedPage};
+use crate::quote_location::{QuoteBlockKind, QuoteLocation, QuoteSource};
 pub use crate::courtlistener_page::{CourtListenerAnchor, CourtListenerCluster, CourtListenerOpinion};
 
 /// A PDF of the source a reader may be sent to instead of its page.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct VerifiedPdf {
@@ -24,6 +25,21 @@ pub struct VerifiedPdf {
     #[serde(default)]
     #[cfg_attr(feature = "binding-types", ts(as = "Option<bool>", optional))]
     pub pdf_only: bool,
+}
+
+/// The PDF a Decisia decision's page offers, read off its index page; none where `page` is no Decisia decision's, or
+/// its index offers none or could not be had.
+pub fn decisia_pdf(page: &str) -> Option<VerifiedPdf> {
+    let index = legal_citations::url::decisia_index(page)?;
+    let reply = crate::http::send(&index, "text/html,application/xhtml+xml", None, None, Some(crate::http::DAY)).ok()?;
+    (200..300).contains(&reply.status).then(|| decisia_markup_pdf(&reply.body, &index)).flatten()
+}
+
+pub use legal_citations::url::decisia_index;
+
+/// The PDF a Decisia decision's index page (`markup`, at `index`) offers in its own controls.
+pub fn decisia_markup_pdf(markup: &str, index: &str) -> Option<VerifiedPdf> {
+    legal_citations::url::decisia_pdf(markup, index).map(|(url, pdf_only)| VerifiedPdf { url, pdf_only })
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -60,14 +76,8 @@ pub struct PassageLink {
 pub struct SourceLinkRequest {
     /// The publisher's page A2AJ names for the document, where it names one.
     pub url: Option<String>,
-    /// The A2AJ dataset (`SCC`, `LEGISLATION-ON`), the document's citation and its other one.
-    pub dataset: String,
+    /// The document's citation, as A2AJ Law Web's reader finds it.
     pub citation: String,
-    #[serde(default)]
-    pub alternate_citation: Option<String>,
-    #[serde(default)]
-    #[cfg_attr(feature = "binding-types", ts(as = "Option<String>", optional))]
-    pub language: String,
     /// `cases` or `laws`.
     #[serde(default)]
     #[cfg_attr(feature = "binding-types", ts(as = "Option<String>", optional))]
@@ -99,8 +109,10 @@ pub struct SourceLocator {
 /// when its words do not paint), else on the document's CanLII page; the page that exists where only one does; else
 /// on A2AJ Law Web's reader, where the passage plans whole there. Measured 2026-10-18 on 3,904 passages judged on
 /// both pages: publisher always 99.08% painted on the words / 99.28% on the words or at the anchor; CanLII always
-/// 98.13 / 99.46; this rule 99.15 / 99.54. Only the page linked is planned.
-pub fn source_link(query: &DocumentQuery, structure: &DocumentStructure, request: &SourceLinkRequest) -> Option<String> {
+/// 98.13 / 99.46; this rule 99.15 / 99.54. Only the page linked is planned. `canlii`: the document's CanLII page, as
+/// its reading read it off its citations (`a2aj::Metadata::canlii_url`).
+pub fn source_link(query: &DocumentQuery, structure: &DocumentStructure, canlii: Option<&str>, request: &SourceLinkRequest)
+    -> Option<String> {
     // A pinpoint cited without a quotation: its paragraph's or provision's anchor in the engine's form (`par12`,
     // `sec6subsec1`; a provision's part, "6(1)(c)", is anchored at its provision and painted from `pinpoints`), as the
     // measured routing linked it.
@@ -126,18 +138,8 @@ pub fn source_link(query: &DocumentQuery, structure: &DocumentStructure, request
         }),
     };
     let laws = request.doc_type == "laws";
-    let language = if request.language.is_empty() { "en" } else { &request.language };
     let publisher = || request.url.as_deref().and_then(|page| link(page, request.verified_pdf.clone()));
-    let canlii = || {
-        let page = if laws {
-            canlii_law_url(&request.citation, language, true)
-        } else {
-            let citations = [Some(request.citation.clone()), request.alternate_citation.clone()].into_iter()
-                .flatten().collect::<Vec<_>>();
-            canlii_case_url(&citations, language, Some(&request.dataset))
-        };
-        page.as_deref().and_then(|page| link(page, None))
-    };
+    let canlii = || canlii.and_then(|page| link(page, None));
     let routed = if request.url.as_deref().and_then(anchor_on).is_some() {
         publisher().or_else(canlii)
     } else {
@@ -145,6 +147,78 @@ pub fn source_link(query: &DocumentQuery, structure: &DocumentStructure, request
     };
     routed.map(|link| link.target).or_else(|| law_web_link(query, structure, &request.citation,
         if laws { "laws" } else { "cases" }, &request.block_text, &request.quotes))
+}
+
+/// A source a passage of it is linked on, as a host's reference names it: its provider, its kind (`legislation` for
+/// a statute), its citation and its page.
+#[derive(Clone, Debug, Deserialize)]
+#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+#[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
+pub struct LinkedSource {
+    pub provider: String,
+    pub kind: String,
+    pub citation: Option<String>,
+    pub url: Option<String>,
+}
+
+impl LinkedSource {
+    /// How its quotations are located: a provider's text, a PDF attached for it (a statute's by its provisions).
+    pub fn quote_source(&self) -> QuoteSource {
+        match (self.provider.as_str(), self.kind.as_str()) {
+            ("attached", "legislation") => QuoteSource::Legislation,
+            ("attached", _) => QuoteSource::Pdf,
+            _ => QuoteSource::Text,
+        }
+    }
+
+    /// A passage of its A2AJ text, linked where the engine routes it (`source_link`); None for another provider's.
+    pub fn routed_link(&self, query: &DocumentQuery, structure: &DocumentStructure, canlii: Option<&str>,
+        locator: Option<SourceLocator>, block_text: String, quotes: Vec<String>, pinpoints: Vec<String>) -> Option<String> {
+        let citation = self.citation.clone().filter(|citation| !citation.is_empty() && self.provider == "a2aj")?;
+        let doc_type = if self.kind == "legislation" { "laws" } else { "cases" }.into();
+        source_link(query, structure, canlii, &SourceLinkRequest { url: self.url.clone(), citation, doc_type, locator,
+            block_text, quotes, pinpoints, verified_pdf: None })
+    }
+}
+
+/// `link` of an address as a host writes it: a path on the host ("/api/…") linked as an address on a local origin and
+/// given back as a path, None where its link leaves the host; any other address linked as written.
+pub fn on_host(raw: &str, link: impl FnOnce(&str) -> Option<String>) -> Option<String> {
+    const HOST: &str = "http://mike.local";
+    if !raw.starts_with('/') || raw.starts_with("//") || raw.contains('\\') { return link(raw); }
+    link(&format!("{HOST}{raw}"))?.strip_prefix(HOST).filter(|path| path.starts_with('/')).map(str::to_owned)
+}
+
+pub fn host_source_url(raw: &str, anchor: Option<&str>) -> Option<String> { on_host(raw, |url| source_url(url, anchor)) }
+
+pub fn host_passage_link(query: &DocumentQuery, structure: &DocumentStructure, request: &PassageLinkRequest) -> Option<PassageLink> {
+    let mut plan = None;
+    let target = on_host(&request.url, |url| passage_link(query, structure, &PassageLinkRequest { url: url.to_owned(), ..request.clone() })
+        .map(|link| { plan = link.plan; link.target }))?;
+    Some(PassageLink { target, plan })
+}
+
+/// The link opening a source at a quotation found in it: the page of the block holding the quoted words, at the
+/// block's anchor where the page has one for its label (CanLII's #par12 or #sec4), else its node's, painting the words
+/// found; an A2AJ text's where the engine routes the passage. None for a quotation in no block, or a source with no page.
+pub fn quote_link(query: &DocumentQuery, structure: &DocumentStructure, canlii: Option<&str>, source: &LinkedSource,
+    found: &QuoteLocation, quote: &str) -> Option<String> {
+    let url = source.url.as_deref().filter(|url| !url.is_empty() && !found.text.is_empty())?;
+    let label = found.labels.first().filter(|label| label.kind != QuoteBlockKind::PdfPage);
+    let (kind, node) = match label.map(|label| label.kind) {
+        Some(QuoteBlockKind::Paragraph) => ("paragraph", NodeKind::Paragraph),
+        Some(QuoteBlockKind::Section) => ("section", NodeKind::Section),
+        _ => ("page", NodeKind::Page),
+    };
+    let anchor = label.and_then(|label| (label.kind != QuoteBlockKind::Page).then(|| source_anchor(url, kind, &label.shown)).flatten()
+        .or_else(|| (!label.label.is_empty()).then(|| query.read_range(structure, node, &label.label, &label.label, 0)?
+            .selected.into_iter().next()?.reading.node.anchor.clone()).flatten()));
+    let quotes = vec![if found.correction.fragment.is_empty() { quote } else { found.correction.fragment.as_str() }.to_owned()];
+    let locator = label.filter(|label| label.kind != QuoteBlockKind::Page).map(|label| SourceLocator { kind: kind.into(), label: label.label.clone() });
+    (found.location != "unmatched" && host_source_url(url, anchor.as_deref()).is_some()).then(|| source.routed_link(query, structure,
+        canlii, locator, found.text.clone(), quotes.clone(), Vec::new())).flatten()
+        .or_else(|| host_passage_link(query, structure, &PassageLinkRequest { url: url.to_owned(), anchor, block_text: found.text.clone(),
+            quotes, prefer_independent_html_blocks: false, verified_pdf: None }).map(|link| link.target))
 }
 
 /// A pinpoint linked on `page` as a citation's pinpoint is (`cited_passage_link`: the cited paragraph or provision,
@@ -168,7 +242,16 @@ fn append_directives(url: &str, directives: &[String]) -> String {
     }
 }
 
-/// The passage's link on the page at `request.url`: the page at the passage's anchor, its block's or quotations'
+/// Where the names of legal references end in a document's text: those its reading's citations give (`known`), else
+/// those its text is read for here, once per document (DocumentQuery::read_legal_reference_ends).
+fn legal_reference_ends(text: &str, known: Option<&[String]>) -> Vec<usize> {
+    match known {
+        Some(names) => reference_name_ends(text, names),
+        None => reference_name_ends(text, &cited_names(&read_citations(text))),
+    }
+}
+
+/// The passage's link on the page at `request.url`:the page at the passage's anchor, its block's or quotations'
 /// fragments planned against `structure`; a verified PDF where the page cannot be planned whole and the PDF can.
 pub fn passage_link(query: &DocumentQuery, structure: &DocumentStructure, request: &PassageLinkRequest)
     -> Option<PassageLink> {
@@ -179,7 +262,7 @@ pub fn passage_link(query: &DocumentQuery, structure: &DocumentStructure, reques
     let plan = |url: &str, pdf: bool| {
         let annotated = publisher_annotates_legal_references(url);
         if annotated {
-            query.read_legal_reference_ends(structure, reference_name_ends);
+            query.read_legal_reference_ends(structure, legal_reference_ends);
         }
         let fragments = |split: bool| query.text_fragment_plan(structure, &request.block_text, &request.quotes, pdf,
             annotated, split, publisher_may_repeat_passages(url), publisher_glues_section_labels(url));
@@ -230,7 +313,7 @@ pub fn cited_passage_link(query: &DocumentQuery, structure: &DocumentStructure, 
     let section = locator.kind == "section";
     let (pdf, annotated) = (is_pdf_address(&url), publisher_annotates_legal_references(&url));
     if annotated {
-        query.read_legal_reference_ends(structure, reference_name_ends);
+        query.read_legal_reference_ends(structure, legal_reference_ends);
     }
     let kind = if section { NodeKind::Section } else { NodeKind::Paragraph };
     let plan = |target: &str| query.range_fragment_plan(structure, kind, target, target, pdf, annotated, section,
@@ -283,9 +366,10 @@ fn percent_decoded(value: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut at = 0;
     while at < bytes.len() {
-        if bytes[at] == b'%' && at + 2 < bytes.len() + 0 && at + 2 <= bytes.len() - 1 {
-            if let Ok(byte) = u8::from_str_radix(&value[at + 1..at + 3], 16) {
-                out.push(byte);
+        let hex = |byte: u8| (byte as char).to_digit(16);
+        if let (b'%', Some(&high), Some(&low)) = (bytes[at], bytes.get(at + 1), bytes.get(at + 2)) {
+            if let (Some(high), Some(low)) = (hex(high), hex(low)) {
+                out.push((high * 16 + low) as u8);
                 at += 3;
                 continue;
             }

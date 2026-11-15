@@ -5,6 +5,7 @@ use legal_structure_model::document::{Derivation, NodeKind, StructureNode};
 use legal_structure_model::text::ScalarText;
 use pages::{form_feed_pages, marked_pages};
 use paragraphs::provision_end_before_marginal_notes;
+use crate::analysis::CitedText;
 use crate::{Evidence, ENGINE_ORIGIN};
 
 macro_rules! cached_regex {
@@ -18,7 +19,7 @@ mod paragraphs;
 pub(crate) use paragraphs::{excerpt_run, run_in_heading};
 mod tail;
 pub(crate) use tail::closing_line;
-#[cfg(feature = "courtlistener")]
+#[cfg(all(feature = "courtlistener", feature = "native-markup"))]
 pub(crate) use tail::ends_sentence;
 mod headings;
 pub(crate) use headings::*;
@@ -53,12 +54,14 @@ struct Marker {
     introduced: bool,
     /// Its words open in lower case: the sentence above goes on under it, if the count prints it again.
     going_on: bool,
+    /// A number a garbled mark may stand for ("T6", "[118]" for "¶ 18"): taken only for a number its count is due.
+    misread: bool,
 }
 
 impl Marker {
     /// A marker on a line of its own: no heading run in before it, nothing introducing it.
     fn new(number: u32, start: usize, content_start: usize, style: MarkerStyle, score: f64) -> Self {
-        Self { number, start, content_start, style, score, formal: false, sentence: false, introduced: false, going_on: false }
+        Self { number, start, content_start, style, score, formal: false, sentence: false, introduced: false, going_on: false, misread: false }
     }
 }
 
@@ -132,7 +135,7 @@ fn decimal_prefix(value: &str, maximum: usize) -> Option<(&str, usize)> {
     (length > 0 && length <= maximum).then(|| (&value[..length], length))
 }
 
-pub(super) fn inferred_blocks(evidence: &Evidence, text: &ScalarText<'_>) -> Vec<StructureNode> {
+pub(super) fn inferred_blocks(evidence: &Evidence, text: &CitedText<'_>) -> Vec<StructureNode> {
     let mut blocks = profile_blocks(evidence, text);
     if !blocks.iter().chain(&evidence.structure.nodes).any(|node| node.kind == NodeKind::Page) {
         blocks.extend(marked_pages(text));
@@ -142,11 +145,11 @@ pub(super) fn inferred_blocks(evidence: &Evidence, text: &ScalarText<'_>) -> Vec
 
 /// What the case reader reads in a provider's text of a judgment (its numbered paragraphs, notes and printed pages): the
 /// blocks `profile_blocks` reads for such a text, which carries no layout, exclusions or report start to read with.
-pub(crate) fn case_paragraphs(text: &ScalarText<'_>) -> Vec<StructureNode> {
+pub(crate) fn case_paragraphs(text: &CitedText<'_>) -> Vec<StructureNode> {
     detect_case(text, DetectionProfile::CaseRootedComplete, None, false, &[], false, &[])
 }
 
-fn profile_blocks(evidence: &Evidence, text: &ScalarText<'_>) -> Vec<StructureNode> {
+fn profile_blocks(evidence: &Evidence, text: &CitedText<'_>) -> Vec<StructureNode> {
     match evidence.profile {
         DetectionProfile::Legislation => {
             let mut blocks = detect_legislation(

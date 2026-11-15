@@ -1,6 +1,13 @@
 //! Output-shape adapters over the shared citation engine. No parsing lives here.
 use crate::ScalarText;
-use legal_citations::{Authority, Citation, Form, Format, ParentheticalKind, PinpointKind, Options};
+use legal_citations::authorities::PinpointValue;
+use legal_citations::{Authority, Citation, Form, Format, Options, ParentheticalKind, Span};
+
+/// A text's citations as each reading below takes them, their parallel citations ungrouped: one extraction, which a
+/// caller wanting several of the readings of one text makes once and lends to each.
+pub fn read_citations(text: &str) -> Vec<Citation> {
+    legal_citations::extract(text, &Options { resolve: false, parallel: false, ..Default::default() })
+}
 use serde::Serialize;
 pub use legal_citations::excerpt::{classify_citator_excerpt, ExcerptClassification};
 pub use legal_citations as citations;
@@ -35,29 +42,22 @@ pub struct ProviderCitationMatch {
     pub page: Option<String>,
 }
 
+/// Where a citation sits in its unit, as a draft records it: its authority's citation (the style its core is written
+/// with), its core, its pinpoints first to last, and the words that introduce them ("at para 105").
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
-pub struct CitationTextSpan {
-    pub text: String,
-    pub start: usize,
-    pub end: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-pub struct CitationPinpoint {
-    pub text: String,
-    pub start: usize,
-    pub end: usize,
-    pub kind: &'static str,
-    pub first: String,
+pub struct OccurrenceSpans {
+    pub authority_span: Span,
+    pub core_span: Span,
+    pub pinpoint_span: Option<Span>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "binding-types", ts(optional))]
-    pub last: Option<String>,
+    pub pinpoint_phrase: Option<Span>,
 }
 
+/// A citation read in a text: its whole extent, where its parts sit, and its pinpoints in a draft's form. Every place is
+/// in UTF-16 units of the unit the text starts at `offset` in.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -65,16 +65,11 @@ pub struct CitationOccurrence {
     pub text: String,
     pub start: usize,
     pub end: usize,
-    pub styled_citation: CitationTextSpan,
-    pub core_citation: CitationTextSpan,
+    pub spans: OccurrenceSpans,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "binding-types", ts(optional))]
     pub format: Option<Format>,
-    pub pinpoints: Vec<CitationPinpoint>,
-    /// The pinpoints as written, with the words that introduce them: "at para 105".
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "binding-types", ts(optional))]
-    pub pinpoint_phrase: Option<CitationTextSpan>,
+    pub pinpoints: Vec<PinpointValue>,
     #[cfg_attr(feature = "binding-types", ts(type = r#""case" | "statute" | "journal" | "book" | "parliamentary" | "other""#))]
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,6 +81,8 @@ pub struct CitationOccurrence {
     pub reasons: Vec<&'static str>,
 }
 
+/// A supra or ibid read in a text, as [`CitationOccurrence`] places it: its authority's citation is the written short
+/// name through the marker, its core the marker ("supra note 6").
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
@@ -93,11 +90,8 @@ pub struct AuthorityReferenceOccurrence {
     pub text: String,
     pub start: usize,
     pub end: usize,
-    pub token: CitationTextSpan,
-    pub pinpoints: Vec<CitationPinpoint>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "binding-types", ts(optional))]
-    pub pinpoint_phrase: Option<CitationTextSpan>,
+    pub spans: OccurrenceSpans,
+    pub pinpoints: Vec<PinpointValue>,
     #[cfg_attr(feature = "binding-types", ts(type = r#""ibid" | "supra""#))]
     pub kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,42 +99,53 @@ pub struct AuthorityReferenceOccurrence {
     pub note_number: Option<usize>,
 }
 
-fn span(text: &str, coordinates: &ScalarText<'_>, start: usize, end: usize) -> CitationTextSpan {
-    CitationTextSpan { text: text[start..end].to_owned(),
-        start: coordinates.utf16_at_byte(start).unwrap(), end: coordinates.utf16_at_byte(end).unwrap() }
+/// A text's places in UTF-16 units of the unit it starts at `offset` in.
+struct Places<'a> { text: &'a str, coordinates: ScalarText<'a>, offset: usize }
+
+impl<'a> Places<'a> {
+    fn new(text: &'a str, offset: usize) -> Self { Self { text, coordinates: ScalarText::new(text), offset } }
+
+    fn span(&self, start: usize, end: usize) -> Span {
+        Span { text: self.text[start..end].to_owned(), start: self.offset + self.coordinates.utf16_at_byte(start).unwrap(),
+            end: self.offset + self.coordinates.utf16_at_byte(end).unwrap() }
+    }
+
+    /// The citation's spans from its authority's and core's byte ranges, and its pinpoints.
+    fn place(&self, authority: (usize, usize), core: (usize, usize), citation: &Citation) -> (OccurrenceSpans, Vec<PinpointValue>) {
+        let (pinpoint, phrase) = pinpoint_extent(citation.pinpoints.iter().map(|pinpoint| (pinpoint.span.start, pinpoint.span.end)),
+            citation.fields.pin_cite.as_ref().map(|phrase| (phrase.start, phrase.end)));
+        let pinpoints = citation.pinpoints.iter().map(|pinpoint| {
+            let at = self.span(pinpoint.span.start, pinpoint.span.end);
+            PinpointValue::read(pinpoint, at.start, at.end)
+        }).collect();
+        (OccurrenceSpans { authority_span: self.span(authority.0, authority.1), core_span: self.span(core.0, core.1),
+            pinpoint_span: pinpoint.map(|(start, end)| self.span(start, end)),
+            pinpoint_phrase: phrase.map(|(start, end)| self.span(start, end)) }, pinpoints)
+    }
 }
 
-fn pinpoints(text: &str, coordinates: &ScalarText<'_>, citation: &Citation) -> Vec<CitationPinpoint> {
-    citation.pinpoints.iter().map(|pinpoint| {
-        let kind = match pinpoint.kind {
-            PinpointKind::Paragraph => "paragraph", PinpointKind::Page => "page",
-            PinpointKind::Section | PinpointKind::Rule | PinpointKind::Article => "section",
-            PinpointKind::Subsection => "subsection",
-            PinpointKind::Schedule => "schedule", PinpointKind::Footnote => "footnote",
-            PinpointKind::Clause => "clause", _ => "other",
-        };
-        let mapped = span(text, coordinates, pinpoint.span.start, pinpoint.span.end);
-        CitationPinpoint { text: mapped.text, start: mapped.start, end: mapped.end, kind,
-            first: pinpoint.first.clone(), last: pinpoint.last.clone() }
-    }).collect()
+/// Where a citation writes its pinpoints, first to last, and the words that introduce them ("at para 105") where those
+/// hold them all.
+pub fn pinpoint_extent(pinpoints: impl IntoIterator<Item = (usize, usize)>, phrase: Option<(usize, usize)>)
+    -> (Option<(usize, usize)>, Option<(usize, usize)>) {
+    let mut ordered = pinpoints.into_iter().collect::<Vec<_>>();
+    ordered.sort_by_key(|range| range.0);
+    let pinpoint = ordered.first().zip(ordered.last()).map(|(first, last)| (first.0, last.1));
+    (pinpoint, phrase.filter(|phrase| pinpoint.is_some_and(|(start, end)| phrase.0 <= start && phrase.1 >= end)))
 }
 
-/// The engine's pinpoint phrase: the pinpoints as written, with the words that introduce them.
-fn pinpoint_phrase(text: &str, coordinates: &ScalarText<'_>, citation: &Citation) -> Option<CitationTextSpan> {
-    citation.fields.pin_cite.as_ref().map(|phrase| span(text, coordinates, phrase.start, phrase.end))
+pub fn citation_occurrences_in_text(text: &str, offset: usize) -> Vec<CitationOccurrence> {
+    citation_occurrences(text, &read_citations(text), offset)
 }
 
-fn occurrences(text: &str) -> Vec<Citation> {
-    legal_citations::extract(text, &Options { resolve: false, parallel: false, ..Default::default() })
-}
-
-pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
-    let coordinates = ScalarText::new(text);
-    occurrences(text).into_iter().filter(|cite| matches!(cite.form, Form::Full | Form::Short)).map(|cite| {
+/// [`citation_occurrences_in_text`] over the text's citations already read (`reference_names::read_citations`).
+pub fn citation_occurrences(text: &str, read: &[Citation], offset: usize) -> Vec<CitationOccurrence> {
+    let places = Places::new(text, offset);
+    read.iter().filter(|cite| matches!(cite.form, Form::Full | Form::Short)).map(|cite| {
         let start = cite.style.as_ref().map_or(cite.span.start, |style| style.start);
         let end = cite.fields.explicit_short_span.as_ref().or(cite.fields.pin_cite.as_ref())
             .map_or(cite.span.end, |suffix| suffix.end.max(cite.span.end));
-        let full = span(text, &coordinates, start, end);
+        let full = places.span(start, end);
         let kind = match cite.reasons.first().map(String::as_str) {
             Some("journal_grammar" | "article_grammar") => "journal",
             Some("book_grammar") => "book",
@@ -149,7 +154,7 @@ pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
             Some("provider_routing" | "reporter_grammar") => "case",
             Some("citation_grammar") => if cite.reasons.iter().any(|reason| reason == "kind_unclassified") { "other" } else { "case" },
             Some("online_grammar") => "other",
-            _ => match cite.authority {
+            _ => match &cite.authority {
                 Authority::Case => "case", Authority::Journal => "journal",
                 Authority::Book | Authority::BookChapter => "book",
                 Authority::Bill | Authority::ParliamentaryPaper | Authority::Debate => "parliamentary",
@@ -172,36 +177,33 @@ pub fn citation_occurrences_in_text(text: &str) -> Vec<CitationOccurrence> {
                 "short_form_suffix", "statute_grammar", "titled_statute_grammar"]
                 .into_iter().find(|known| *known == reason)
         }).collect();
-        CitationOccurrence { text: full.text, start: full.start, end: full.end,
-            styled_citation: span(text, &coordinates, start, cite.span.end),
-            core_citation: span(text, &coordinates, cite.span.start, cite.span.end),
-            format: cite.format,
-            pinpoints: pinpoints(text, &coordinates, &cite),
-            pinpoint_phrase: pinpoint_phrase(text, &coordinates, &cite), kind,
-            short_form: cite.short_name, explicit_short_form: cite.explicit_short_name, reasons }
+        let (spans, pinpoints) = places.place((start, cite.span.end), (cite.span.start, cite.span.end), cite);
+        CitationOccurrence { text: full.text, start: full.start, end: full.end, spans, format: cite.format.clone(), pinpoints,
+            kind, short_form: cite.short_name.clone(), explicit_short_form: cite.explicit_short_name.clone(), reasons }
     }).collect()
 }
 
-pub fn authority_references_in_text(text: &str) -> Vec<AuthorityReferenceOccurrence> {
-    let coordinates = ScalarText::new(text);
+pub fn authority_references_in_text(text: &str, offset: usize) -> Vec<AuthorityReferenceOccurrence> {
+    let places = Places::new(text, offset);
     legal_citations::find::find_references(text).into_iter().filter_map(|cite| {
         let reference = cite.fields.inline_reference.as_ref()?;
-        let full = span(text, &coordinates, cite.full_span.start, cite.full_span.end);
-        Some(AuthorityReferenceOccurrence { text: full.text, start: full.start, end: full.end,
-            token: span(text, &coordinates, reference.span.start, reference.span.end),
-            pinpoints: pinpoints(text, &coordinates, &cite),
-            pinpoint_phrase: pinpoint_phrase(text, &coordinates, &cite), kind: match cite.form {
-                Form::Ibid => "ibid", Form::Supra => "supra",
-                _ => unreachable!(),
-            },
+        let full = places.span(cite.full_span.start, cite.full_span.end);
+        let (spans, pinpoints) = places.place((cite.full_span.start, reference.span.end),
+            (reference.span.start, reference.span.end), &cite);
+        Some(AuthorityReferenceOccurrence { text: full.text, start: full.start, end: full.end, spans, pinpoints,
+            kind: match cite.form { Form::Ibid => "ibid", Form::Supra => "supra", _ => unreachable!() },
             note_number: reference.note })
     }).collect()
 }
 
 pub fn provider_citations_in_text(text: &str) -> Vec<ProviderCitationMatch> {
+    provider_citations(text, &read_citations(text))
+}
+
+/// [`provider_citations_in_text`] over the text's citations already read (`reference_names::read_citations`).
+pub fn provider_citations(text: &str, read: &[Citation]) -> Vec<ProviderCitationMatch> {
     let coordinates = ScalarText::new(text);
-    legal_citations::extract(text, &Options { resolve: false, parallel: false, ..Default::default() })
-        .into_iter().filter_map(|cite| {
+    read.iter().filter_map(|cite| {
         if cite.form != Form::Full { return None; }
         let family = match cite.format {
             Some(Format::Neutral) => "neutral", Some(Format::Reporter) => "reporter",
@@ -214,11 +216,36 @@ pub fn provider_citations_in_text(text: &str) -> Vec<ProviderCitationMatch> {
         Some(ProviderCitationMatch { text: text[cite.span.start..end].to_owned(),
             start: coordinates.utf16_at_byte(cite.span.start).unwrap(),
             end: coordinates.utf16_at_byte(end).unwrap(), family,
-            jurisdiction: cite.jurisdiction, year: cite.fields.year,
-            court: cite.court.map(|court| court.text).or(cite.fields.series),
-            number: cite.fields.number, volume: cite.fields.volume,
-            reporter: cite.fields.reporter, page: cite.fields.page })
+            jurisdiction: cite.jurisdiction.clone(), year: cite.fields.year.clone(),
+            court: cite.court.as_ref().map(|court| court.text.clone()).or_else(|| cite.fields.series.clone()),
+            number: cite.fields.number.clone(), volume: cite.fields.volume.clone(),
+            reporter: cite.fields.reporter.clone(), page: cite.fields.page.clone() })
     }).collect()
+}
+
+/// Whether a model's answer links a Canadian decision, which it must not cite by address: a markdown link or a bare
+/// address to a page whose paragraphs CanLII's or Decisia's anchors reach, a B.C. court's judgment text or the Supreme
+/// Court's case page. A link whose label writes a Canadian neutral citation (of a court CanLII routes, from 1900) is
+/// read as that citation, and its address is not counted.
+pub fn canadian_decision_link(answer: &str) -> bool {
+    use std::sync::LazyLock;
+    static LABELLED: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\[([^\]\r\n]+)\]\(([^)\r\n]*)\)").unwrap());
+    static LINKED: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\[[^\]\r\n]+\]\((https?://[^\s)]+)\)").unwrap());
+    static BARE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r#"https?://[^\s<>"')\]]+"#).unwrap());
+    let cited = |label: &str| provider_citations_in_text(label).into_iter().any(|cite| cite.family == "neutral"
+        && cite.year.as_deref().is_some_and(|year| year.starts_with("19") || year.starts_with("20"))
+        && legal_citations::url::source_canlii_routes().contains_key(&cite.court.unwrap_or_default().to_uppercase()));
+    let decision = |raw: &str| url::Url::parse(raw).is_ok_and(|url| {
+        let host = url.host_str().unwrap_or("");
+        let (host, path) = (host.strip_prefix("www.").unwrap_or(host), url.path().to_lowercase());
+        legal_citations::url::source_anchor_within(url.as_str(), "paragraph", "par1", None).is_some()
+            || (host == "bccourts.ca" && path.contains("/jdb-txt/")) || (host == "scc-csc.ca" && path.contains("/case-dossier/"))
+    });
+    let read = LABELLED.replace_all(answer, |found: &regex::Captures| {
+        if cited(&found[1]) { found[1].to_owned() } else { found[0].to_owned() }
+    });
+    LINKED.captures_iter(&read).any(|found| decision(&found[1]))
+        || BARE.find_iter(&read).any(|found| decision(found.as_str().trim_end_matches(['.', ',', ';', ':', '!', '?'])))
 }
 
 pub fn citation_lookup_key(text: &str) -> String {
@@ -239,7 +266,7 @@ pub struct ReporterDecision {
 }
 
 pub fn reporter_decision(text: &str) -> Option<ReporterDecision> {
-    let citations = legal_citations::extract(text, &Options { resolve: false, parallel: false, ..Default::default() });
+    let citations = read_citations(text);
     let [citation] = citations.iter().filter(|citation| citation.form == Form::Full).collect::<Vec<_>>()[..]
         else { return None };
     if citation.format != Some(Format::Reporter) || citation.authority != Authority::Case || citation.is_ambiguous() {

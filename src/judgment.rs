@@ -9,7 +9,16 @@ pub fn signature_line(value: &str) -> bool {
     static SIGNATURE: OnceLock<Regex> = OnceLock::new();
     static RELEASE: OnceLock<Regex> = OnceLock::new();
     let value = value.trim().trim_matches(['"', '“', '”', '\'', '‘', '’']).trim();
-    !value.is_empty()
+    // (What the patterns' alternatives end or open on: a judge's title's stop, colon or bracket, a capital ("JJA",
+    // "CJO"), a tribunal's title; "Le juge", "Vice-", "Président", "Released", "Dated", "I agree".)
+    const TITLES: [&str; 11] = ["Member", "Adjudicator", "Arbitrator", "Chairperson", "Vice-Chair", "Commissioner", "Associate Judge",
+        "Master", "Prothonotary", "Referee", "Vice-Chairperson"];
+    let (first, last) = (value.chars().next(), value.chars().next_back());
+    let shaped = matches!(last, Some('.' | ':' | ')')) || last.is_some_and(|c| c.is_ascii_uppercase())
+        || matches!(first, Some('L' | 'V' | 'P' | 'p' | 'r' | 'R' | 'd' | 'D' | 'i' | 'I'))
+        || TITLES.iter().any(|title| value.ends_with(title));
+    shaped
+        && !value.is_empty()
         && value.chars().count() <= 90
         && (SIGNATURE
             .get_or_init(|| {
@@ -216,7 +225,8 @@ pub fn court_order(value: &str) -> Option<Vec<&'static str>> {
 /// were delivered by", "The reasons of Bastarache and Rothstein JJ. were delivered by", "Version française des motifs".
 pub fn author_line(line: &str) -> bool {
     static AUTHOR: OnceLock<Regex> = OnceLock::new();
-    AUTHOR
+    // (The pattern's judge writes "J." in each of its titles, or opens "Le juge"/"La juge"/"Les juges".)
+    (line.contains("J.") || line.starts_with('L')) && AUTHOR
         .get_or_init(|| {
             Regex::new(r"^[A-Z][A-Za-zÀ-ÿ'’´. -]{1,60}?(?:C\.J\.[A-Z.]*|J\.A\.|JJ\.|J\.)\s*(?:[—–]\s*|-\s+|-\s*$)(?:\S|$)|^L(?:[AEae]|ES|es)\s+(?i:juges?)(?:\s+(?:(?i:en|chef|et|l[ae]s?|juges?)\b|\p{Lu}[\p{L}'’´.-]*|\([^)]*\)))*\s*(?:[—–]\s*|--\s*)(?:\S|$)").expect("author regex")
         })

@@ -6,10 +6,10 @@ use legal_structure_model::document::{DocumentStructure, NodeKind, StructureNode
 use legal_structure_model::text::{utf16_len, ScalarText};
 use regex::Regex;
 use crate::trim_javascript_whitespace as trim_js;
-use super::{front_lines, in_flow, nodes, paragraphs, reading, spans, squeezed, word_key, OpinionRecord};
+use super::{front_lines, nodes, paragraphs, reading, spans, squeezed, word_key, OpinionRecord};
 use crate::native_markup::titles::notes_title;
-use super::notes::plain_label;
-use super::pages::page_number;
+use crate::native_markup::plain_label;
+use crate::native_markup::printed_pages::{in_flow, page_number};
 
 /// Each failure the structure shows: its class, and the detail to read it by.
 pub fn parse_failures(structure: &DocumentStructure) -> Vec<(&'static str, String)> {
@@ -320,7 +320,7 @@ pub fn quote_miss(structure: &DocumentStructure, target: &'static str, quote: &s
         _ => wanted,
     };
     let coordinates = ScalarText::new(&structure.text);
-    let printed = |start: usize, end: usize| coordinates.slice_utf16(start..end).map(key).unwrap_or_default();
+    let printed = |start: usize, end: usize| coordinates.slice_utf16(start..end).map(word_key).unwrap_or_default();
     let found = match target {
         // A page mark's number, in any numbering.
         "page" => {

@@ -5,10 +5,11 @@ use std::sync::Arc;
 use legal_structure_model::{DetectionProfile, ScalarRange};
 use legal_structure_model::document::{NodeKind, StructureNode};
 use legal_structure_model::text::{utf16_len, ScalarText};
+use crate::analysis::CitedText;
 use super::{decimal_prefix, leading_ascii_space, lines, prose_block, Line, Marker, MarkerStyle};
 use super::headings::{formal_heading, joined_heading_levels, sentence_heading};
 use super::runs::next_boundary;
-use super::tail::{paragraph_tail, sentence_closed};
+use super::tail::{ends_sentence, paragraph_tail, sentence_closed};
 use crate::judgment::{author_line, signature_line};
 use crate::statute::{marginal_note_shaped, markdown_line};
 
@@ -34,6 +35,26 @@ fn misread_bracket(value: &str) -> Option<(&str, usize)> {
         return Some((number, value.len() - after.len() + 1));
     }
     (value.starts_with('[') && after.starts_with(char::is_uppercase)).then_some((number, value.len() - after.len()))
+}
+
+/// A mark that names itself a paragraph's at `value`'s opening: bracketed as the public-domain citation courts print it
+/// ("[¶ 12]", South Dakota's "[¶ 12.]", Ohio's "{¶ 12}", New Mexico's "{12}"), or the pilcrow alone ("¶ 12"; a bullet is
+/// what some sources make of it). Its number, where the mark ends, and whether it is bracketed.
+fn named_mark(value: &str) -> Option<(&str, usize, bool)> {
+    let close = match value.as_bytes().first() { Some(b'[') => Some(']'), Some(b'{') => Some('}'), _ => None };
+    if let Some(close) = close {
+        let inner = value[1..].trim_start_matches([' ', '\t']);
+        let inner = inner.strip_prefix('¶').or((close == '}').then_some(inner))?;
+        let rest = inner.trim_start_matches([' ', '\t']);
+        let (number, length) = decimal_prefix(rest, 4)?;
+        let after = rest[length..].strip_prefix('.').unwrap_or(&rest[length..]).trim_start_matches([' ', '\t']);
+        after.strip_prefix(close)?;
+        return Some((number, value.len() - after.len() + 1, true));
+    }
+    let glyph = value.chars().next().filter(|value| matches!(value, '¶' | '\u{95}' | '•'))?;
+    let rest = value[glyph.len_utf8()..].trim_start_matches([' ', '\t']);
+    let (number, length) = decimal_prefix(rest, 4)?;
+    rest[length..].chars().next().is_none_or(|value| value.is_whitespace() || ".,;:—-".contains(value)).then_some((number, value.len() - rest.len() + length, false))
 }
 
 pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtlistener: bool) -> Vec<Marker> {
@@ -67,18 +88,7 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
         } else { 0 };
         let value = &value[shift..];
         let start = if shift > 0 { line.start + lead + shift } else { line.start };
-        // Public-domain citation courts bracket the number, mostly with a pilcrow: "[¶ 12]",
-        // South Dakota's "[¶ 12.]", Ohio's "{¶ 12}", New Mexico's "{12}".
-        let pilcrow = courtlistener.then(|| {
-            let close = match value.as_bytes().first() { Some(b'[') => ']', Some(b'{') => '}', _ => return None };
-            let inner = value[1..].trim_start_matches([' ', '\t']);
-            let inner = inner.strip_prefix('¶').or((close == '}').then_some(inner))?;
-            let rest = inner.trim_start_matches([' ', '\t']);
-            let (number, length) = decimal_prefix(rest, 4)?;
-            let after = rest[length..].strip_prefix('.').unwrap_or(&rest[length..]).trim_start_matches([' ', '\t']);
-            after.strip_prefix(close)?;
-            Some((number, MarkerStyle::Bracket, value.len() - after.len() + 1))
-        }).flatten();
+        let pilcrow = courtlistener.then(|| named_mark(value)).flatten().filter(|mark| mark.2).map(|(number, end, _)| (number, MarkerStyle::Bracket, end));
         let basic = if pilcrow.is_some() {
             pilcrow
         } else if let Some(rest) = value.strip_prefix('[') {
@@ -136,28 +146,11 @@ pub(super) fn paragraph_markers(text: &ScalarText<'_>, contiguous: bool, courtli
                 ..Marker::new(number.parse().unwrap(), start, line.start + lead + shift + content, style, 1.0)
             });
         }
-        {
-            // Oklahoma's OSCN serves its pilcrow as mojibake, "Â¶1".
-            let value = if courtlistener {
-                value.strip_prefix('Â').filter(|rest| rest.starts_with('¶')).unwrap_or(value)
-            } else {
-                value
-            };
-            let glyph = value
-                .chars()
-                .next()
-                .filter(|value| matches!(value, '¶' | '\u{95}' | '•'));
-            if let Some(glyph) = glyph {
-                let rest = value[glyph.len_utf8()..].trim_start_matches([' ', '\t']);
-                if let Some((number, length)) = decimal_prefix(rest, 4) {
-                    let after = rest[length..].chars().next();
-                    if after.is_none_or(|value| value.is_whitespace() || ".,;:—-".contains(value))
-                    {
-                        let content = text.utf16_of_byte(line.byte_start + line.text.len() - rest.len() + length);
-                        result.push(Marker::new(number.parse().unwrap(), start, content, MarkerStyle::Dot, 1.0));
-                    }
-                }
-            }
+        // Oklahoma's OSCN serves its pilcrow as mojibake, "Â¶1".
+        let glyphed = if courtlistener { value.strip_prefix('Â').filter(|rest| rest.starts_with('¶')).unwrap_or(value) } else { value };
+        if let Some((number, end, false)) = named_mark(glyphed) {
+            let content = text.utf16_of_byte(line.byte_start + line.text.len() - glyphed.len() + end);
+            result.push(Marker::new(number.parse().unwrap(), start, content, MarkerStyle::Dot, 1.0));
         }
     }
     result
@@ -214,11 +207,10 @@ pub(super) fn median(values: &[usize]) -> f64 {
     legal_structure_model::layout::median(values.iter().map(|&value| value as f64).collect())
 }
 
-pub(super) fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usize>>; 2]) -> [Vec<Marker>; 2] {
+pub(super) fn heading_joined(text: &CitedText<'_>, known: [Option<&HashSet<usize>>; 2]) -> [Vec<Marker>; 2] {
     let mut result = std::array::from_fn(|_| Vec::new());
     for line in lines(text) {
         let bytes = line.text.as_bytes();
-        let mut protected = None;
         let mut at = 0;
         while at < bytes.len() {
             let (style, index, digits) = match bytes[at] {
@@ -273,15 +265,18 @@ pub(super) fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usiz
                 at = end;
                 continue;
             }
-            let formal = (style == MarkerStyle::Bracket || !heading.contains('.')) && formal_heading(heading);
+            let formal = (style == MarkerStyle::Bracket || !heading.contains('.')) && formal_heading(heading, text);
             let sentence = style == MarkerStyle::Bracket
                 && sentence_heading(heading, &text.value[line.byte_start + end..]);
             if formal || sentence {
-                // A reported citation after a case name is no heading with a paragraph joined to it.
-                if protected
-                    .get_or_insert_with(|| crate::analysis::citation_spans(line.text))
-                    .iter()
-                    .any(|span| span.core_range.start <= at && end <= span.core_range.end)
+                // A reported citation after a case name is no heading with a paragraph joined to it. Only the words
+                // about the number are read: a citation holding it has its other figures within a few words of it,
+                // and a decision's line runs to hundreds of characters.
+                let from = (0..=at.saturating_sub(64)).rev().find(|&k| line.text.is_char_boundary(k)).unwrap_or(0);
+                let to = ((end + 32).min(bytes.len())..=bytes.len()).find(|&k| line.text.is_char_boundary(k)).unwrap_or(bytes.len());
+                let near = &line.text[from..to];
+                if crate::analysis::may_cite(near)
+                    && text.spans(near).iter().any(|span| from + span.core_range.start <= at && end <= from + span.core_range.end)
                 {
                     at = end;
                     continue;
@@ -297,42 +292,103 @@ pub(super) fn heading_joined(text: &ScalarText<'_>, known: [Option<&HashSet<usiz
 
 /// A count whose first numbers its reader lost ("1" and "2" read into a citation, "1" run into the small capital
 /// opening the judge's name: "1I" "ACOBUCCI J."), the count going on from "3", is read as a lossy reading reads one:
-/// the longest count by steps of up to eight (`monotone_scopes`), where it runs more than twice the rooted count; its
+/// the best count by steps of up to eight (`stepped_count`), where it reads better than the rooted count; its
 /// score as a rooted count's (each number's, and a third more for each that follows the last by one).
 pub(super) fn lost_root(chain: &mut Vec<Marker>, score: &mut f64, candidates: &[Marker]) {
     let mut sorted = candidates.to_vec();
     sorted.sort_by_key(|marker| marker.start);
-    // The best count, not the first that fits: a stray figure ahead of the next number takes no step from it.
+    let scope = stepped_count(&sorted, |marker| marker.number <= LOST_ROOT_START);
+    // A count that lost its first numbers goes on from near its start, as a run of years ("1999" to "2010") never does;
+    // it stands for the count where it reads better than the rooted one (a scan's stray "1" late in the text roots a
+    // count that skips most of the decision).
+    // And it counts: most of its steps are by one, where a scatter of citations' figures ("1 S.C.R. 3", "17 O.R.")
+    // climbs by jumps.
+    let counting = scope.windows(2).filter(|pair| pair[1].number == pair[0].number + 1).count() * 2 >= scope.len();
+    if !scope.is_empty() && counting && chain_score(&scope) > chain_score(chain) {
+        *score = chain_score(&scope);
+        *chain = scope;
+    }
+}
+
+/// The best count `sorted` reads, its markers in the text's order: each number one to eight past the last, the count
+/// opening on a marker `roots` lets it open on. Each number's score counts, and a third more where it follows the last by
+/// one; of two counts as good, the one that came the shorter way through the text (a stray figure ahead of the next
+/// number takes no step from it). One place gives the count one number, whatever readings stand there. A reading of a
+/// garbled mark (`misread`) is taken only for a number its count is due: no more than three past the last, and opening
+/// no count but at 1.
+fn stepped_count(sorted: &[Marker], roots: impl Fn(&Marker) -> bool) -> Vec<Marker> {
     let mut best = Vec::<Option<(f64, Option<usize>)>>::with_capacity(sorted.len());
     let mut at_number = HashMap::<u32, Vec<usize>>::new();
-    for (at, marker) in sorted.iter().enumerate() {
-        let root = (marker.number <= LOST_ROOT_START).then_some((marker.score, None));
-        let steps = (marker.number.saturating_sub(8)..marker.number).flat_map(|number| at_number.get(&number).into_iter().flatten().copied());
-        let onward = steps.filter_map(|before| {
-            let reached = best[before]?.0 + marker.score + if sorted[before].number + 1 == marker.number { 0.3 } else { 0.0 };
-            Some((reached, Some(before)))
-        });
-        best.push(root.into_iter().chain(onward).max_by(|a, b| a.0.total_cmp(&b.0)));
-        at_number.entry(marker.number).or_default().push(at);
+    let mut group = 0;
+    while group < sorted.len() {
+        let end = (group + 1..sorted.len()).find(|&at| sorted[at].start != sorted[group].start).unwrap_or(sorted.len());
+        for marker in &sorted[group..end] {
+            let root = (roots(marker) && (!marker.misread || marker.number == 1)).then_some((marker.score, None));
+            let reach = if marker.misread { 3 } else { 8 };
+            let steps = (marker.number.saturating_sub(reach)..marker.number).flat_map(|number| at_number.get(&number).into_iter().flatten().copied());
+            let onward = steps.filter_map(|before| {
+                let reached = best[before]?.0 + marker.score + if sorted[before].number + 1 == marker.number { 0.3 } else { 0.0 };
+                Some((reached, Some(before)))
+            });
+            best.push(root.into_iter().chain(onward).max_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1))));
+        }
+        for at in group..end {
+            at_number.entry(sorted[at].number).or_default().push(at);
+        }
+        group = end;
     }
     let last = (0..sorted.len()).filter(|&at| best[at].is_some()).max_by(|&a, &b| best[a].map_or(0.0, |x| x.0).total_cmp(&best[b].map_or(0.0, |x| x.0)));
-    let scope = last.map(|last| {
-        let mut scope = std::iter::successors(Some(last), |&at| best[at].and_then(|(_, before)| before)).map(|at| sorted[at].clone()).collect::<Vec<_>>();
-        scope.reverse();
-        scope
-    });
-    if let Some(scope) = scope {
-        // A count that lost its first numbers goes on from near its start, as a run of years ("1999" to "2010") never does;
-        // it stands for the count where it reads better than the rooted one (a scan's stray "1" late in the text roots a
-        // count that skips most of the decision).
-        // And it counts: most of its steps are by one, where a scatter of citations' figures ("1 S.C.R. 3", "17 O.R.")
-        // climbs by jumps.
-        let counting = scope.windows(2).filter(|pair| pair[1].number == pair[0].number + 1).count() * 2 >= scope.len();
-        if scope[0].number <= LOST_ROOT_START && counting && chain_score(&scope) > chain_score(chain) {
-            *score = chain_score(&scope);
-            *chain = scope;
+    let mut count = std::iter::successors(last, |&at| best[at].and_then(|(_, before)| before)).map(|at| sorted[at].clone()).collect::<Vec<_>>();
+    count.reverse();
+    count
+}
+
+/// Every count of `least` numbers or more the markers read, the best first (`stepped_count`): what one count leaves is
+/// read for the next, a place in one count only.
+fn counts(markers: &[Marker], least: usize) -> Vec<Vec<Marker>> {
+    let mut rest = markers.to_vec();
+    let mut found = Vec::new();
+    loop {
+        let count = stepped_count(&rest, |_| true);
+        if count.len() < least {
+            return found;
         }
+        let taken = count.iter().map(|marker| marker.start).collect::<HashSet<_>>();
+        rest.retain(|marker| !taken.contains(&marker.start));
+        found.push(count);
     }
+}
+
+/// What a scanner made of a paragraph's mark at a line's opening, as the numbers it may stand for and where the mark
+/// ends: "T6", "€ 1", "1 41", "1{29", "4 13", "[118]" or "1830" for "¶ 18" and "¶ 30" (a pilcrow read as figures runs
+/// into the number: each ending of the figures is a reading, so "T 12" is 12 before it is 2 and a bare "11" is 11), a
+/// mark behind a headnote's "[19, 20]", and "I." or "l." for "1.". A year before a name is a citation ("1998 OK CR
+/// 66"): "1830 We note" goes on in words.
+fn misread_marks(value: &str) -> (Vec<u32>, usize) {
+    let Some(found) = cached_regex!(SCANNED, r#"^((?:\[[\d,\s-]+\]\s*)?(?:[^\s\d]{1,2}\s)?[\[{(]?¶?\s?(?:[^\s\d]{1,2} ?|[14](?:[\[\]{}] ?| ))?(\d{1,4})[\]}).]*)\s+["“\[\p{Lu}]"#).captures(value) else {
+        let first = cached_regex!(FIRST, r"^\W{0,2}[IlL][.)T]?\s").find(value);
+        return first.map_or((Vec::new(), 0), |first| (vec![1], first.end() - 1));
+    };
+    let (mark, digits) = (found.get(1).unwrap(), &found[2]);
+    if digits.len() == 4 && value[found.get(2).unwrap().end()..].split_whitespace().next().is_some_and(|word| !word.chars().any(char::is_lowercase)) {
+        return (Vec::new(), 0);
+    }
+    let numbers = (0..digits.len()).filter(|&from| !digits[from..].starts_with('0')).filter_map(|from| digits[from..].parse().ok()).collect();
+    (numbers, mark.end())
+}
+
+/// The readings of the garbled marks a CourtListener text's lines open on (`misread_marks`), each a marker of `style`
+/// its count may take: a number a well-read mark at its place already reads is that mark's.
+fn misread_markers(text: &ScalarText<'_>, read: &[Marker], style: MarkerStyle) -> Vec<Marker> {
+    let read = read.iter().map(|marker| (marker.start, marker.number)).collect::<HashSet<_>>();
+    lines(text).flat_map(|line| {
+        let line = case_source_line(text, line);
+        let lead = leading_ascii_space(line.text);
+        let (numbers, end) = misread_marks(&line.text[lead..]);
+        let content = line.byte_start + lead + end + leading_ascii_space(&line.text[lead + end..]);
+        let (start, content) = (line.start, text.utf16_of_byte(content));
+        numbers.into_iter().filter(|number| !read.contains(&(start, *number))).map(move |number| Marker { misread: true, ..Marker::new(number, start, content, style, 0.9) }).collect::<Vec<_>>()
+    }).collect()
 }
 
 /// A count of bare numbers whose "1" a recognizer lost, or found on a figure in the matter before the reasons ("1 Ad. & E. 3",
@@ -376,19 +432,18 @@ pub(crate) fn excerpt_run(numbers: impl IntoIterator<Item = usize>, introduced: 
 }
 
 /// Where no count reads from near 1, the longest run of bracketed numbers that is an excerpt's (`excerpt_run`).
-fn excerpt_count(text: &ScalarText<'_>, chain: &mut Vec<Marker>, candidates: &[Marker]) {
+fn excerpt_count(text: &CitedText<'_>, chain: &mut Vec<Marker>, candidates: &[Marker]) {
     let numbers = candidates.iter().map(|marker| marker.number).collect::<HashSet<_>>();
     if !numbers.iter().any(|number| numbers.contains(&(number + 1)) || numbers.contains(&(number + 2))) {
         return;
     }
-    // Reported years can rise by one too; citation text establishes no paragraph count. (Only a
-    // candidate's own line is read for citations, each line once: a citation stands within its line.)
-    let (index, mut citations) = (text.lines(), HashMap::new());
+    // Reported years can rise by one too; citation text establishes no paragraph count.
+    let index = text.lines();
     let mut sorted = candidates.iter().filter(|marker| {
         let line = index[index.partition_point(|line| line[2] <= marker.start) - 1];
         let start = text.byte_of_utf16(marker.start) - line[0];
-        !citations.entry(line[0]).or_insert_with(|| crate::analysis::citation_spans(&text.value[line[0]..line[1]]))
-            .iter().any(|span| span.core_range.contains(&start))
+        let words = &text.value[line[0]..line[1]];
+        !crate::analysis::may_cite(words) || !text.spans(words).iter().any(|span| span.core_range.contains(&start))
     }).cloned().collect::<Vec<_>>();
     sorted.sort_by_key(|marker| marker.start);
     let (mut best, mut run) = (Vec::<Marker>::new(), Vec::<Marker>::new());
@@ -472,7 +527,7 @@ pub(super) fn rooted_chain(candidates: &[Marker]) -> (Vec<Marker>, f64) {
 
 /// The case profile's count, including its existing recovery of a lost opening or a mid-count excerpt.
 /// Glued labels are evaluated by this same reading, so a count recovered after them can retain them.
-fn paragraph_chain(text: &ScalarText<'_>, candidates: &[Marker], style: MarkerStyle) -> Vec<Marker> {
+fn paragraph_chain(text: &CitedText<'_>, candidates: &[Marker], style: MarkerStyle) -> Vec<Marker> {
     let (mut chain, mut score) = rooted_chain(candidates);
     extend_over_gaps(&mut chain, candidates);
     lost_root(&mut chain, &mut score, candidates);
@@ -579,7 +634,7 @@ fn quoted_runs(candidates: &[Marker]) -> HashSet<usize> {
 /// read again with them, and where it runs longer the labels it takes join the candidates; the rest are dropped, so
 /// a year's "[2003] OJ" never reaches any other reading.
 pub(super) fn bridge_glued_labels(
-    text: &ScalarText<'_>,
+    text: &CitedText<'_>,
     candidates: &mut Vec<Marker>,
     chain: &mut Vec<Marker>,
     until: usize,
@@ -856,7 +911,7 @@ pub(super) fn bare_heading_joined(text: &ScalarText<'_>, known: &HashSet<usize>)
 
 /// A provider text's paragraphs numbered in parentheses ("(3) I note the decision …"), read only
 /// where it has no other count: a quoted provision numbers its subsections the same way.
-pub(super) fn parenthesized_paragraphs(text: &ScalarText<'_>, excluded: &[ScalarRange]) -> Vec<StructureNode> {
+pub(super) fn parenthesized_paragraphs(text: &CitedText<'_>, excluded: &[ScalarRange]) -> Vec<StructureNode> {
     let markers = lines(text)
         .filter_map(|line| {
             let lead = leading_ascii_space(line.text);
@@ -1083,9 +1138,30 @@ pub(super) fn recover_contiguous(
     result
 }
 
+/// A named mark in a line's course, where a block ran two paragraphs together: "... complaints. ¶21 On appeal", or
+/// "GILBERTSON, Chief Justice [¶1.] Scotty". It stands after a finished sentence, a title in capitals or the author's
+/// line at the block's head, a new sentence following; a headnote's mark may stand before that sentence's words ("¶31
+/// [6] For the reasons").
+fn marks_in_course(text: &ScalarText<'_>) -> Vec<Marker> {
+    /// An author's line run into the block it heads is no longer than this.
+    const HEAD_OF_BLOCK: usize = 160;
+    let mark = cached_regex!(IN_COURSE, r#"(?:[\[{]\s?¶|¶|\{)\s?(\d{1,4})\.?[\]}]?\s+(?:\[[\d,\s-]+\]\s*)?["“\p{Lu}]"#);
+    lines(text).flat_map(|line| mark.captures_iter(line.text).filter_map(move |found| {
+        let whole = found.get(0).unwrap();
+        let lead = line.text[..whole.start()].trim_end();
+        let titled = lead.rsplit(char::is_whitespace).next().is_some_and(|word| word.len() >= 2 && word.chars().any(char::is_alphabetic) && !word.chars().any(char::is_lowercase));
+        let content = whole.end() - whole.as_str().chars().next_back().map_or(0, char::len_utf8);
+        (!lead.is_empty() && (ends_sentence(lead, true) || titled || lead.len() < HEAD_OF_BLOCK)).then(|| Marker {
+            formal: true,
+            ..Marker::new(found[1].parse().unwrap(), text.utf16_of_byte(line.byte_start + whole.start()), text.utf16_of_byte(line.byte_start + content), MarkerStyle::Bracket, 0.6)
+        })
+    }).collect::<Vec<_>>()).collect()
+}
+
 pub(super) fn fill_lossy_marker_gaps(
-    text: &ScalarText<'_>,
+    text: &CitedText<'_>,
     spine: &[Marker],
+    all: &[Marker],
     style: MarkerStyle,
 ) -> Vec<Marker> {
     let known = spine
@@ -1098,8 +1174,26 @@ pub(super) fn fill_lossy_marker_gaps(
         MarkerStyle::Bare => return spine.to_vec(),
     };
     let mut candidates = heading_joined(text, known);
-    let candidates = std::mem::take(&mut candidates[style as usize]);
+    let mut candidates = std::mem::take(&mut candidates[style as usize]);
+    if style == MarkerStyle::Bracket {
+        candidates.extend(marks_in_course(text).into_iter().filter(|marker| spine.binary_search_by_key(&marker.start, |value| value.start).is_err()));
+    }
     let mut recovered = HashMap::<u32, Vec<Marker>>::new();
+    // The marks the count passed over between two of its numbers are the numbers missing there, where there are as many
+    // of the one as of the other, however their figures read: "1, 2, 8, 4" is 3, "[110]" between 9 and 11 is 10. A
+    // citation's year opening a line ("[2008] 1 S.C.R. 190") is no such mark: a misread number keeps its length, or
+    // nearly.
+    for pair in spine.windows(2) {
+        let missing = pair[0].number + 1..pair[1].number;
+        let between = all.iter().filter(|marker| pair[0].start < marker.start && marker.start < pair[1].start).collect::<Vec<_>>();
+        let alike = |marker: &Marker, number: u32| marker.number.to_string().len().abs_diff(number.to_string().len()) <= 1;
+        if !between.is_empty() && between.len() == missing.len() && between.windows(2).all(|pair| pair[0].start < pair[1].start)
+            && between.iter().zip(missing.clone()).all(|(marker, number)| alike(marker, number)) {
+            for (marker, number) in between.into_iter().zip(missing) {
+                recovered.entry(number).or_default().push(Marker { number, ..marker.clone() });
+            }
+        }
+    }
     for candidate in candidates {
         let at = spine.partition_point(|value| value.start < candidate.start);
         let before = spine[..at].last();
@@ -1117,7 +1211,9 @@ pub(super) fn fill_lossy_marker_gaps(
         let sentence = before.zip(after).is_some_and(|(left, right)| {
             left.number + 1 == candidate.number && candidate.number + 1 == right.number
         }) && candidate.sentence;
-        if (between || leading) && (candidate.formal || sentence) {
+        // (A heading's or a named mark's number the count is due past its last goes on with it.)
+        let trailing = after.is_none() && candidate.formal && before.is_some_and(|left| left.number + 1 == candidate.number);
+        if (between || leading) && (candidate.formal || sentence) || trailing {
             recovered
                 .entry(candidate.number)
                 .or_default()
@@ -1131,6 +1227,24 @@ pub(super) fn fill_lossy_marker_gaps(
             .filter(|values| values.len() == 1)
             .flatten(),
     );
+    // Two marks swapped, "1, 3, 2, 4": the count took one and passed over the other, and they are 2 and 3 as they stand.
+    let passed = |from: usize, to: usize, number: u32| {
+        let mut found = all.iter().filter(|marker| !marker.misread && marker.number == number && from < marker.start && marker.start < to);
+        found.next().filter(|_| found.next().is_none())
+    };
+    for at in 0..spine.len().saturating_sub(2) {
+        let (first, taken, last) = (&spine[at], &spine[at + 1], &spine[at + 2]);
+        let other = match (taken.number - first.number, last.number - first.number) {
+            (2, 3) => passed(taken.start, last.start, first.number + 1),
+            (1, 3) => passed(first.start, taken.start, first.number + 2),
+            _ => None,
+        };
+        if let Some(other) = other {
+            let (early, late) = if other.start < taken.start { (other, taken) } else { (taken, other) };
+            result.retain(|marker| marker.start != taken.start);
+            result.extend([Marker { number: first.number + 1, ..early.clone() }, Marker { number: first.number + 2, ..late.clone() }]);
+        }
+    }
     result.sort_by_key(|value| value.start);
     result
 }
@@ -1158,7 +1272,7 @@ pub(super) struct Hypothesis {
 }
 
 pub(super) fn paragraph_ranges(
-    text: &ScalarText<'_>,
+    text: &CitedText<'_>,
     selected: &[Marker],
     all: &[Marker],
     style: MarkerStyle,
@@ -1166,7 +1280,7 @@ pub(super) fn paragraph_ranges(
     extra: &[ScalarRange],
 ) -> Vec<StructureNode> {
     let selected = if fill_gaps && style != MarkerStyle::Bare {
-        fill_lossy_marker_gaps(text, selected, style)
+        fill_lossy_marker_gaps(text, selected, all, style)
     } else {
         selected.to_vec()
     };
@@ -1208,7 +1322,7 @@ pub(super) fn paragraph_ranges(
 /// text ends: after its own lines (`paragraph_tail`), each line read from the paragraph's number and up to `end`
 /// (the next number may follow a heading on its line, "(3) Legal proceedings [20] On April 14, …"). `last`: the
 /// paragraph is its count's last.
-pub(super) fn paragraph_end(text: &ScalarText<'_>, start: usize, end: usize, last: bool) -> usize {
+pub(super) fn paragraph_end(text: &CitedText<'_>, start: usize, end: usize, last: bool) -> usize {
     let index = text.lines();
     let first = index.partition_point(|line| line[2] <= start).saturating_sub(1);
     let (start_byte, end_byte) = (text.byte_at_utf16(start).unwrap_or(0), text.byte_at_utf16(end).unwrap_or(text.value.len()));
@@ -1233,7 +1347,7 @@ pub(super) fn paragraph_end(text: &ScalarText<'_>, start: usize, end: usize, las
     }
     let after = &text.value[end_byte..stop.max(end_byte)];
     let lines = pieces.iter().map(|(_, value)| *value).collect::<Vec<_>>();
-    pieces.get(paragraph_tail(&lines, &separated, after, last)).map_or(end, |(at, _)| *at)
+    pieces.get(paragraph_tail(text, &lines, &separated, after, last)).map_or(end, |(at, _)| *at)
 }
 
 /// Statute marginal notes are short sentence-case lines ("Lawyer's right to costs out of property
@@ -1274,7 +1388,7 @@ pub(super) fn provision_end_before_marginal_notes(text: &ScalarText<'_>, start: 
 }
 
 pub(super) fn detect_paragraphs(
-    text: &ScalarText<'_>,
+    text: &CitedText<'_>,
     profile: DetectionProfile,
     excluded: &[ScalarRange],
     courtlistener: bool,
@@ -1380,7 +1494,24 @@ pub(super) fn detect_paragraphs(
         let scopes = if contiguous {
             contiguous_scopes(&style_markers)
         } else {
-            monotone_scopes(&style_markers, 8)
+            // A scanned text's garbled marks are read with the marks of a count that prints three or more well. Where
+            // none prints well ("T1", "12", "T3", "%4"), the count they make stands alone only as an opinion numbered
+            // throughout is: from 1, by ones but for a mark or two past reading, over most of the text.
+            let mut read = style_markers.clone();
+            let garbled = courtlistener && style == MarkerStyle::Bracket && style_markers.len() < 3;
+            if courtlistener && style != MarkerStyle::Bare && (style_markers.len() >= 3 || garbled) {
+                read.extend(misread_markers(text, &style_markers, style).into_iter().filter(|marker| marker_visible(marker, excluded)));
+                read.sort_by_key(|marker| (marker.start, marker.number));
+            }
+            // (Only a bracketed count stands on fewer than five numbers.)
+            let mut found = counts(&read, if style == MarkerStyle::Bracket { 2 } else { 5 });
+            if garbled {
+                found.retain(|count| {
+                    let (first, last) = (&count[0], &count[count.len() - 1]);
+                    first.number == 1 && count.len() >= 4 && count.len() * 5 >= last.number as usize * 4 && (last.start - first.start) * 2 >= text_length
+                });
+            }
+            found
         };
         let all: Arc<[Marker]> = style_markers.into();
         for scope in scopes.iter() {
@@ -1454,9 +1585,12 @@ pub(super) fn detect_paragraphs(
     let starts = parenthesized.iter().filter(|block| block.kind == NodeKind::Paragraph).map(|block| block.range.start).collect::<Vec<_>>();
     let numbered = starts.len();
     // Spread through the decision, not cornered as a quoted enactment's subsections are; and never in place
-    // of a bracketed count, which a decision quoting an enactment keeps.
+    // of a bracketed count from 1, which a decision quoting an enactment keeps. A bracketed run opening mid-count
+    // (`excerpt_count`) is another decision's paragraphs the reasons quote ("“[16] Generally …” [17] In Edwards …"
+    // inside "(48) The law … has been well described"), where the decision's own count runs in parentheses.
     let spread = starts.first().zip(starts.last()).is_some_and(|(first, last)| (last - first) as f64 / text_length.max(1) as f64 >= 0.4);
-    let outnumbered = |hypothesis: &Hypothesis| rooted && spread && hypothesis.style != MarkerStyle::Bracket
+    let outnumbered = |hypothesis: &Hypothesis| rooted && spread
+        && (hypothesis.style != MarkerStyle::Bracket || hypothesis.markers[0].number > 1)
         && numbered >= 10 && numbered >= 2 * hypothesis.markers.len();
     for hypothesis in hypotheses {
         // A rooted count's paragraphs end at one another and at a second count from 1, not at the
@@ -1468,7 +1602,9 @@ pub(super) fn detect_paragraphs(
             ends.sort_by_key(|marker| marker.start);
             ends
         } else {
-            hypothesis.all.to_vec()
+            let mut ends = hypothesis.all.iter().chain(hypothesis.markers.iter().filter(|marker| marker.misread)).cloned().collect::<Vec<_>>();
+            ends.sort_by_key(|marker| marker.start);
+            ends
         };
         let mut next = HashMap::with_capacity(ends.len());
         for pair in ends.windows(2) {

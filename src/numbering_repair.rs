@@ -29,14 +29,14 @@ const X0_HIGH: f64 = 1.0;
 /// label at a line's opening ("'2" for "12"), and the loose shapes ("t", "n", "A", "T", "?") only where an expected value
 /// confirms them (a note pairing's gap or residue).
 #[derive(Clone, Copy, Default)]
-pub(crate) struct DigitReading {
-    pub(crate) quotes: bool,
-    pub(crate) loose: bool,
+pub struct DigitReading {
+    pub quotes: bool,
+    pub loose: bool,
 }
 
 /// The digits recognition may have printed `c` for: a digit, superscript or not, is itself; a glyph it confuses with a
 /// digit stands for each digit it may be (an "S" is a 5 or an 8); anything else stands for none.
-pub(crate) fn misread_digits(c: char, reading: DigitReading) -> Vec<char> {
+pub fn misread_digits(c: char, reading: DigitReading) -> Vec<char> {
     if let Some(digit) = legal_structure_model::normalize_decimal_digit(c) {
         return vec![digit];
     }
@@ -596,6 +596,12 @@ pub fn repair_paragraph_numbers(lines: &mut Lines<'_>) -> usize {
         };
         let count = marker.family.split_once(':').map_or("", |(_, count)| count);
         if (wrap.is_empty() && !count.contains('.')) || count == "bullet" {
+            continue;
+        }
+        // A citation's year opening a line ("[1995] 1 R.C.S.", a scan's running head the fences left in the body, or a
+        // citation wrapped onto its line) numbers nothing: a chain of years would carry its values into the lines
+        // between ("(b) Interference ..." read as "[1986]").
+        if crate::analysis::protected_citation_spans(line(position).text.trim_start()).iter().any(|&(start, end)| start == 0 && end > 0) {
             continue;
         }
         last.insert(wrap, marker.clone());

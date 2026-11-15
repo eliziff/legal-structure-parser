@@ -37,12 +37,29 @@ pub fn flag_share(line: &Line, flag: u32) -> Option<f64> {
     }
     (total > 0).then(|| flagged as f64 / total as f64)
 }
+/// `value.round()` (to the nearest, half away from zero) without the C runtime's call, which `round` is on x86-64 without
+/// SSE4.1: exact where |value| < 2^53, the rest (and NaN and the infinities) `round`'s own.
+#[inline]
+pub fn rounded(value: f64) -> f64 {
+    if !(value.abs() < 9_007_199_254_740_992.0) {
+        return value.round();
+    }
+    let whole = value as i64 as f64;
+    let rest = value - whole;
+    if rest >= 0.5 { whole + 1.0 } else if rest <= -0.5 { whole - 1.0 } else if whole == 0.0 { 0.0f64.copysign(value) } else { whole }
+}
+
 /// A line's commonest face and type size by characters, the size to the half point.
 pub fn dominant_face(line: &Line) -> Option<(&str, f64)> {
-    let mut weight: HashMap<(&str, i64), usize> = HashMap::new();
+    // (A line's few faces, searched in place: no table to hash them into.)
+    let mut weight: Vec<((&str, i64), usize)> = Vec::with_capacity(line.spans.len());
     for span in &line.spans {
-        *weight.entry((span.font.as_str(), (span.size * 2.0).round() as i64)).or_default() +=
-            span.text.chars().filter(|c| !c.is_whitespace()).count();
+        let key = (span.font.as_str(), rounded(span.size * 2.0) as i64);
+        let count = span.text.chars().filter(|c| !c.is_whitespace()).count();
+        match weight.iter_mut().find(|(known, _)| *known == key) {
+            Some((_, total)) => *total += count,
+            None => weight.push((key, count)),
+        }
     }
     // Ties broken by name and size, so a line always reads the same way.
     weight

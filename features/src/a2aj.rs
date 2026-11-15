@@ -3,7 +3,8 @@
 //! citator's graph and the corpus census. A source gives its columns as it holds them ([`Columns`]); the two sources
 //! differ only in the few values they have always given differently, which [`Source`] names.
 
-use legal_structure::{canlii_case_url, canlii_law_url, citation_lookup_key, trim_javascript_whitespace as js_trim, windows_1252_punctuation,
+use legal_structure::citations::url::{canlii_pages, decision_canlii_page, legislation_canlii_page};
+use legal_structure::{citation_lookup_key, trim_javascript_whitespace as js_trim, windows_1252_punctuation,
     ProviderPage, ProviderTextInput, ProviderTextSourceKind};
 use legal_structure_model::text::normalize_blank_whitespace;
 use serde::{Deserialize, Serialize};
@@ -186,21 +187,33 @@ impl<'a, C: Columns + ?Sized> Document<'a, C> {
         })
     }
 
-    /// The document's public page. A2AJ's API gives CanLII's for legislation (its publishers' own links are feeds),
-    /// else the publisher's, else the page CanLII publishes for a decision's citation.
-    pub fn url(&self, language: Language) -> Result<Option<String>, C::Error> {
+    /// The document's CanLII page, from the citation engine's pages of its own citations: a statute's consolidation
+    /// (true), else a decision's page by its neutral or CanLII citation of its collection's court.
+    fn canlii(&self, language: Language) -> Result<Option<(String, bool)>, C::Error> {
+        let pages = canlii_pages(self.language_field("citation", language)?.as_deref().unwrap_or(""));
+        if let Some(url) = legislation_canlii_page(&pages, language.code(), true) {
+            return Ok(Some((url, true)));
+        }
+        let other = canlii_pages(self.language_field("citation2", language)?.as_deref().unwrap_or(""));
+        let dataset = self.field("dataset")?.unwrap_or_default();
+        Ok(decision_canlii_page(pages.iter().chain(&other), language.code(), Some(&dataset)).map(|url| (url, false)))
+    }
+
+    /// The document's public page, its CanLII page given (canlii). A2AJ's API gives CanLII's for legislation (its
+    /// publishers' own links are feeds), else the publisher's, else the page CanLII publishes for a decision's citation.
+    fn page(&self, language: Language, canlii: &Option<(String, bool)>) -> Result<Option<String>, C::Error> {
         if self.source == Source::Store {
             return self.language_field("url", language);
         }
-        let citation = self.language_field("citation", language)?;
-        if let Some(url) = canlii_law_url(citation.as_deref().unwrap_or(""), language.code(), true) {
-            return Ok(Some(url));
-        }
-        if let Some(url) = self.publisher_url(language)? {
-            return Ok(Some(url));
-        }
-        let citations = [citation, self.language_field("citation2", language)?].into_iter().flatten().collect::<Vec<_>>();
-        Ok(canlii_case_url(&citations, language.code(), Some(&self.field("dataset")?.unwrap_or_default())))
+        Ok(match canlii {
+            Some((url, true)) => Some(url.clone()),
+            _ => self.publisher_url(language)?.or_else(|| canlii.as_ref().map(|(url, _)| url.clone())),
+        })
+    }
+
+    pub fn url(&self, language: Language) -> Result<Option<String>, C::Error> {
+        let canlii = if self.source == Source::Store { None } else { self.canlii(language)? };
+        self.page(language, &canlii)
     }
 
     /// The document's provisions in a language, else in the other.
@@ -228,14 +241,16 @@ impl<'a, C: Columns + ?Sized> Document<'a, C> {
     /// The document's metadata in a language, where it has a citation in it.
     pub fn metadata(&self, language: Language, doc_type: &'static str) -> Result<Option<Metadata>, C::Error> {
         let Some(citation) = self.citation(language)? else { return Ok(None) };
+        let canlii = self.canlii(language)?;
         Ok(Some(Metadata {
+            url: self.page(language, &canlii)?,
+            canlii_url: canlii.map(|(url, _)| url),
             doc_type,
             dataset: self.field("dataset")?.unwrap_or_default(),
             citation,
             alternate_citation: self.language_field("citation2", language)?,
             name: self.language_field("name", language)?,
             date: self.date(language)?,
-            url: self.url(language)?,
             publisher_url: self.publisher_url(language)?,
             language,
             upstream_license: self.field("upstream_license")?,
@@ -361,7 +376,12 @@ pub struct Metadata {
     pub publisher_url: Option<String>,
     pub language: Language,
     pub upstream_license: Option<String>,
+    /// The document's CanLII page (`Document::canlii`), read with its metadata: not part of what its revision names.
+    #[serde(skip)]
+    #[cfg_attr(feature = "binding-types", ts(skip))]
+    pub canlii_url: Option<String>,
 }
+
 
 /// A document as the engine reads it.
 #[derive(Serialize)]
@@ -389,7 +409,7 @@ impl Read {
 }
 
 /// What a provision's excerpt carries of the statute it comes from.
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[cfg_attr(feature = "binding-types", derive(ts_rs::TS), ts(rename = "ProvisionExcerpt"))]
 #[cfg_attr(feature = "binding-types", ts(optional_fields = nullable))]
 #[serde(rename_all = "camelCase")]
@@ -405,7 +425,7 @@ pub struct Excerpt {
 pub fn provision_input(excerpt: Excerpt, language: Language, section: &str, text: String) -> ProviderTextInput {
     let metadata = Metadata { doc_type: "laws", dataset: excerpt.dataset.unwrap_or_default(), citation: excerpt.citation.clone(),
         alternate_citation: excerpt.alternate_citation, name: excerpt.name, date: None, url: excerpt.url, publisher_url: None,
-        language, upstream_license: None };
+        language, upstream_license: None, canlii_url: None };
     input(&metadata, text.clone(), Some(vec![(section.to_owned(), text)]), Some(excerpt.citation.clone()), Some(excerpt.citation))
 }
 
@@ -478,7 +498,7 @@ mod store {
     /// The pages a report's print gives a document's text, read off its PDF: reporter-pages.sqlite beside the store, a row
     /// (document_id, language, pages) with pages [[number, start, end], ...]. None where the file or the row is absent.
     pub fn reporter_pages(store: &Path, id: i64, language: Language) -> Vec<ProviderPage> {
-        let pages = crate::a2aj_store::with_store(&store.with_file_name("reporter-pages.sqlite"), |connection, _| {
+        let pages = crate::sqlite::read(&store.with_file_name("reporter-pages.sqlite"), |connection, _| {
             Ok(connection.prepare_cached("SELECT pages FROM reporter_pages WHERE document_id = ? AND language = ?")
                 .and_then(|mut statement| statement.query_row(rusqlite::params![id, language.code()], |row| row.get::<_, String>(0))).ok())
         });

@@ -3,9 +3,9 @@
 
 use crate::inference::{enumerated, heading_between, joined_heading_levels, may_head, run_in_heading, Levels};
 use crate::filing::{front_matter_line, FrontMatterLine};
-use crate::analysis::citation_spans;
+use crate::analysis::CitedText;
 use crate::{
-    Derivation, DocumentStructure, NodeKind, PrimaryRole, ScalarRange, ScalarText, StructureNode, utf16_len,
+    Derivation, DocumentStructure, NodeKind, PrimaryRole, ScalarRange, StructureNode, utf16_len,
 };
 use crate::judgment::{author_line, date_line, signature_line};
 use std::collections::HashMap;
@@ -13,8 +13,8 @@ use std::collections::HashMap;
 /// What a line before a judgment's reasons is: the opening line that names the decision by its citation ("R. v.
 /// Murphy, 2022 ONCA 615"), a party's role, a short line that is no label's and no counsel's (the caption's), a
 /// labelled line, or counsel's.
-fn front_role(line: &str, opening: bool) -> Option<PrimaryRole> {
-    if opening && citation_title(line) {
+fn front_role(line: &str, opening: bool, text: &CitedText<'_>) -> Option<PrimaryRole> {
+    if opening && citation_title(line, text) {
         return Some(PrimaryRole::Title);
     }
     match front_matter_line(line) {
@@ -27,9 +27,10 @@ fn front_role(line: &str, opening: bool) -> Option<PrimaryRole> {
     }
 }
 
-/// Whether a line is a citation and nothing else: the provider's line naming the document by it.
-pub(crate) fn citation_title(line: &str) -> bool {
-    citation_spans(line).iter().any(|span| span.range == (0..line.len()))
+/// Whether a line of `text` is a citation and nothing else: the provider's line naming the document by it.
+pub(crate) fn citation_title(line: &str, text: &CitedText<'_>) -> bool {
+    // (A citation holds a figure: a line with none, a statute's preamble or title in words, is not read.)
+    line.bytes().any(|byte| byte.is_ascii_digit()) && text.spans(line).iter().any(|span| span.range == (0..line.len()))
 }
 
 /// A line of the front matter as a node: a Span the `front` grammar names, its role the line's.
@@ -60,14 +61,14 @@ pub fn judgment_end(line: &str) -> bool {
 pub fn judgment_division(line: &str) -> bool {
     // (A heading's words may end on a stop of their own: "II. The Sexual Activity with A.C.".)
     let initials = line.split_whitespace().last().is_some_and(|word| word.trim_end_matches('.').contains('.'));
-    judgment_end(line) || crate::inference::formal_heading(line.trim()) && (initials || !line.trim().ends_with(['.', ';', ':', ',']))
+    judgment_end(line) || crate::inference::formal_heading(line.trim(), &CitedText::new(line)) && (initials || !line.trim().ends_with(['.', ';', ':', ',']))
 }
 
 /// A judgment's numbered paragraphs as a provider's text of it reads, every printing an entry: a decision printed
 /// again whole after its reasons (its translation set after them) is read the same way, a count that holds four
 /// fifths of the first's numbers being that decision again and not a list after its reasons.
 pub fn judgment_paragraphs(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
-    let mut paragraphs = printings(text);
+    let mut paragraphs = printings(&CitedText::new(text));
     // A count holds four fifths of the numbers from 1 to its last: a number past the highest that does is no
     // paragraph's (a stray "272" among a few low numbers), and a text none of whose numbers do numbers none.
     let numbers: std::collections::BTreeSet<usize> = paragraphs.iter().map(|(number, _)| *number).collect();
@@ -131,12 +132,12 @@ pub fn reasons_go_on(before: &str, numbered: &str, rest: &str) -> bool {
 }
 
 /// Every printing of each number `text` reads: a decision printed twice over is read as two.
-fn printings(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
+fn printings(text: &CitedText<'_>) -> Vec<(usize, Vec<ScalarRange>)> {
     if let Some(printings) = two_printings(text) {
         return printings;
     }
     let mut paragraphs = one_printing(text);
-    let utf16: Vec<u16> = text.encode_utf16().collect();
+    let utf16: Vec<u16> = text.value.encode_utf16().collect();
     let mut from = 0;
     let mut wanted = paragraphs.len();
     while wanted > 0 {
@@ -145,7 +146,7 @@ fn printings(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
         if end <= from || (utf16.len() - end) * 2 < end - from {
             break;
         }
-        let again = one_printing(&String::from_utf16_lossy(utf16.get(end..).unwrap_or_default()));
+        let again = one_printing(&text.part(&text.value[text.byte_of_utf16(end)..]));
         if again.len() * 5 < wanted * 4 {
             break;
         }
@@ -161,7 +162,8 @@ fn printings(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
 /// printing and hop from the one to the other, so a later line opening as the text's first number does ("[1]" or "1."),
 /// past the first third of the text and not under a line introducing it ("The orders sought were as follows:", a list),
 /// parts them where each part then reads a count of four fifths of the other's or more.
-fn two_printings(text: &str) -> Option<Vec<(usize, Vec<ScalarRange>)>> {
+fn two_printings(text: &CitedText<'_>) -> Option<Vec<(usize, Vec<ScalarRange>)>> {
+    let (cited, text) = (text, text.value);
     const TRIALS: usize = 3;
     let shift = |ranges: Vec<ScalarRange>, by: usize| ranges.into_iter().map(|range| ScalarRange { start: range.start + by, end: range.end + by }).collect::<Vec<_>>();
     let (mut at, mut trials) = (0, 0);
@@ -173,9 +175,9 @@ fn two_printings(text: &str) -> Option<Vec<(usize, Vec<ScalarRange>)>> {
         if at >= third && trials < TRIALS && opening.starts_with(first_number) && !introduced {
             trials += 1;
             let (first, second) = text.split_at(at);
-            let before = one_printing(first);
+            let before = one_printing(&cited.part(first));
             if before.len() >= 5 {
-                let after = one_printing(second);
+                let after = one_printing(&cited.part(second));
                 if before.len() * 5 >= after.len() * 4 && after.len() * 5 >= before.len() * 4 {
                     let offset = first.encode_utf16().count();
                     let mut printings = before;
@@ -191,19 +193,20 @@ fn two_printings(text: &str) -> Option<Vec<(usize, Vec<ScalarRange>)>> {
 
 /// Each number of the first count `text` reads (the structure of a case's text), once, with the spans its first
 /// printing holds: the structure's paragraph, which ends where its own lines do (`paragraph_tail`).
-fn one_printing(text: &str) -> Vec<(usize, Vec<ScalarRange>)> {
+fn one_printing(text: &CitedText<'_>) -> Vec<(usize, Vec<ScalarRange>)> {
     // (A printing is read as a text of its own, not as a view of the whole one's structure: read whole, the count
     // would take a number's later printing and hop from the one to the other.) Its paragraphs are what the case reader
     // reads in a provider's text (the windows-1252 punctuation it carries read as such), each ending where a heading
     // read with its lines opens (`end_at_heading`); a number's first printing is the one at the earliest place. (A
     // provider's text has no pages, so no later printing on the first's pages counts as it.)
-    let text = crate::provider_text::windows_1252_punctuation(text);
-    let units = text.encode_utf16().collect::<Vec<_>>();
-    let mut paragraphs = crate::inference::case_paragraphs(&ScalarText::new(&text))
+    let read = crate::provider_text::windows_1252_punctuation(text.value);
+    let text = &text.part(&read);
+    let units = text.value.encode_utf16().collect::<Vec<_>>();
+    let mut paragraphs = crate::inference::case_paragraphs(text)
         .into_iter()
         .filter(|node| node.kind == NodeKind::Paragraph && node.range.start < node.range.end)
         .collect::<Vec<_>>();
-    let starts = heading_starts(&units, &paragraphs);
+    let starts = heading_starts(text, &units, &paragraphs);
     let mut first = std::collections::BTreeMap::<usize, (usize, Vec<ScalarRange>)>::new();
     for paragraph in &mut paragraphs {
         end_at_heading(paragraph, &starts, &units);
@@ -368,7 +371,7 @@ impl Writer {
 /// (a line to a paragraph, its headings on lines of their own or run into the paragraph they open), each told to `lines`
 /// as it is read: the headings are the lines between the paragraphs the heading grammar takes as headings, the items the
 /// lines a list's enumerator opens, the front matter's lines its roles.
-fn read_case_lines(units: &[u16], paragraphs: &[(usize, usize, usize)], lines_read: &mut Writer) {
+fn read_case_lines(text: &CitedText<'_>, units: &[u16], paragraphs: &[(usize, usize, usize)], lines_read: &mut Writer) {
     let newline = u16::from(b'\n');
     let slice = |start: usize, end: usize| String::from_utf16_lossy(&units[start..end]);
     let line_start = |at: usize| units[..at].iter().rposition(|unit| *unit == newline).map_or(0, |at| at + 1);
@@ -382,12 +385,12 @@ fn read_case_lines(units: &[u16], paragraphs: &[(usize, usize, usize)], lines_re
         let mut at = start;
         while at < end {
             let close = (at..end).find(|at| units[*at] == newline).unwrap_or(end);
-            let value = slice(at, close);
+            let value = &text.value[text.byte_of_utf16(at)..text.byte_of_utf16(close)];
             if !value.trim().is_empty() {
                 let lead = value.len() - value.trim_start().len();
                 let trimmed = value.trim();
                 let from = at + utf16_len(&value[..lead]);
-                lines.push((from, from + utf16_len(trimmed), trimmed.to_owned()));
+                lines.push((from, from + utf16_len(trimmed), trimmed));
             }
             at = close + 1;
         }
@@ -400,8 +403,8 @@ fn read_case_lines(units: &[u16], paragraphs: &[(usize, usize, usize)], lines_re
                 .then(|| joined_heading_levels(line).or_else(|| run_in_heading(line).then(|| vec![line.to_owned()])))
                 .flatten();
             joined_levels.or_else(|| match lines.get(index + 1) {
-                Some((_, _, next)) => heading_between(line, next),
-                None => heading_between(line, &slice(end, (end + 200).min(units.len()))),
+                Some((_, _, next)) => heading_between(line, next, text),
+                None => heading_between(line, &slice(end, (end + 200).min(units.len())), text),
             })
         };
         // Before the reasons, only the headings that open them count: the enumerated ones just before the first
@@ -410,7 +413,7 @@ fn read_case_lines(units: &[u16], paragraphs: &[(usize, usize, usize)], lines_re
             Place::Front => {
                 let mut opening = lines.len();
                 while let Some(index) = opening.checked_sub(1) {
-                    let Some(levels) = heading(index, &lines[index].2) else {
+                    let Some(levels) = heading(index, lines[index].2) else {
                         break;
                     };
                     opening = index;
@@ -423,6 +426,11 @@ fn read_case_lines(units: &[u16], paragraphs: &[(usize, usize, usize)], lines_re
             Place::Between => 0,
             Place::Tail => lines.len(),
         };
+        // Between paragraphs, five or more unnumbered heading-shaped lines in a row are a quoted form's or a list's, not
+        // headings ("THE GOVERNMENT OF" / "THE PROVINCE OF BRITISH COLUMBIA" / "WARRANT OF COMMITTAL ...").
+        let read = (0..lines.len()).map(|index| matches!(place, Place::Between).then(|| heading(index, lines[index].2)).flatten()).collect::<Vec<_>>();
+        let plain = |read: &&Option<Vec<String>>| read.as_ref().is_some_and(|levels| enumerated(&levels[0]).is_none());
+        let stacked = |index: usize| plain(&&read[index]) && read[index..].iter().take_while(plain).count() + read[..index].iter().rev().take_while(plain).count() >= 5;
         for (index, (from, to, line)) in lines.iter().enumerate() {
             // A line going on with the list the paragraph above ends in is that list's; before the reasons (a
             // publication ban quoting its enactment), a line may also open a list.
@@ -434,8 +442,9 @@ fn read_case_lines(units: &[u16], paragraphs: &[(usize, usize, usize)], lines_re
                 writer.item(depth + 1, token, ScalarRange { start: *from, end: *from + utf16_len(token) }, *to);
                 continue;
             }
-            let Some(levels) = (index >= opening).then(|| heading(index, line)).flatten() else {
-                match front.then(|| front_role(line, opening_line)).flatten() {
+            let Some(levels) = (index >= opening && !stacked(index))
+                .then(|| if matches!(place, Place::Between) { read[index].clone() } else { heading(index, line) }).flatten() else {
+                match front.then(|| front_role(line, opening_line, text)).flatten() {
                     Some(role) => writer.front(role, *from, *to, line),
                     None => writer.read(*from, *to, Read::Text { inner: false, words: line }),
                 }
@@ -536,7 +545,7 @@ fn end_at_heading(paragraph: &mut StructureNode, heading_starts: &[usize], units
 /// A judgment's reading beyond its numbered paragraphs (`nodes`), as nodes (`Writer`) read from its lines
 /// (`read_case_lines`): its headings in their hierarchy, the lists within its paragraphs, the passages they quote and
 /// the front matter's lines.
-fn case_nodes(units: &[u16], nodes: &[StructureNode]) -> Vec<StructureNode> {
+fn case_nodes(text: &CitedText<'_>, units: &[u16], nodes: &[StructureNode]) -> Vec<StructureNode> {
     let paragraphs = nodes.iter().filter(|node| node.kind == NodeKind::Paragraph)
         .map(|node| (node.range, node.id.clone(), node.level.unwrap_or(1))).collect::<Vec<_>>();
     let mut writer = Writer {
@@ -548,21 +557,21 @@ fn case_nodes(units: &[u16], nodes: &[StructureNode]) -> Vec<StructureNode> {
         quote: None,
         previous_item: false,
     };
-    read_case_lines(units, &paragraph_spans(nodes, units), &mut writer);
+    read_case_lines(text, units, &paragraph_spans(nodes, units), &mut writer);
     writer.close_quote();
     writer.nodes
 }
 
 /// Where the headings of a judgment's lines start, read around its paragraphs: where its paragraphs end.
-fn heading_starts(units: &[u16], nodes: &[StructureNode]) -> Vec<usize> {
-    case_nodes(units, nodes).iter().filter(|node| node.kind == NodeKind::Heading).map(|node| node.range.start).collect()
+fn heading_starts(text: &CitedText<'_>, units: &[u16], nodes: &[StructureNode]) -> Vec<usize> {
+    case_nodes(text, units, nodes).iter().filter(|node| node.kind == NodeKind::Heading).map(|node| node.range.start).collect()
 }
 
 /// A judgment's structure with its reading beyond its numbered paragraphs (`case_nodes`), each paragraph ending where
 /// a heading after it opens (`end_at_heading`).
 pub(crate) fn add_case_nodes(structure: &mut DocumentStructure) {
     let units = structure.text.encode_utf16().collect::<Vec<_>>();
-    let added = case_nodes(&units, &structure.nodes);
+    let added = case_nodes(&CitedText::new(&structure.text), &units, &structure.nodes);
     let heading_starts = added.iter().filter(|node| node.kind == NodeKind::Heading).map(|node| node.range.start).collect::<Vec<_>>();
     for paragraph in structure.nodes.iter_mut().filter(|node| node.kind == NodeKind::Paragraph) {
         end_at_heading(paragraph, &heading_starts, &units);

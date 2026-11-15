@@ -17,7 +17,7 @@ use super::instrument::{enumerated, Levels};
 use super::paragraphs::running_prose;
 use crate::judgment::{author_line, date_line, disposition_line, end_matter, figure_caption, signature_line};
 use crate::numbered_paragraphs::editorial_line;
-use std::borrow::Cow;
+use crate::analysis::CitedText;
 
 /// How many of a line's words open in lower case.
 pub(super) fn lower_words(line: &str) -> usize {
@@ -26,7 +26,7 @@ pub(super) fn lower_words(line: &str) -> usize {
 
 /// Whether a line ends as a sentence does: on a stop (".", ";", "?", "!", "…", and a colon where `colon` says a colon ends
 /// one), or a closing quotation mark, bracket or guillemet after one or standing alone; past a note's call printed after
-/// it ("… costs awards.”60", "… (Vernon Supp. 2002).\n 5"); or an editorial line ("[Emphasis added]"). The one reader
+/// it ("… costs awards.”60", or on a line of its own, "… (Vernon Supp. 2002).\n 5"); or an editorial line ("[Emphasis added]"). The one reader
 /// of a sentence's end: the case readers ask it without the colon, the opinion's layout with it (a block introducing a
 /// list is finished as a block).
 pub(crate) fn ends_sentence(line: &str, colon: bool) -> bool {
@@ -42,10 +42,15 @@ pub(crate) fn ends_sentence(line: &str, colon: bool) -> bool {
     if cached_regex!(COLON_CALL, r":\[\d{1,3}\]$").is_match(line) {
         return false;
     }
-    let called = line.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end();
+    let glued = line.trim_end_matches(|c: char| c.is_ascii_digit());
+    let called = glued.trim_end();
     // (A stop inside a section's figures is none: "Section 732.1". A year's is: "... in 1974.14".)
     let decimal = called.strip_suffix('.').is_some_and(|rest| (1..=3).contains(&(rest.len() - rest.trim_end_matches(|c: char| c.is_ascii_digit()).len())));
-    let line = if called.len() < line.len() && ends(called) && !decimal { called } else { line };
+    // A call is set against its sentence or on a line of its own ("... 2002).\n 5"): figures set apart on the sentence's
+    // line are a citation's page ("D. Cour d'appel de la Colombie-Britannique," / "2012 BCCA 512, 331 B.C.A.C. 170",
+    // "A. Court of Queen's Bench (1992), 82 Man. R. (2d) 253", a heading), not a call after its stop.
+    let call = called.len() == glued.len() || glued[called.len()..].contains('\n');
+    let line = if glued.len() < line.len() && call && ends(called) && !decimal { called } else { line };
     ends(line) || editorial_line(line)
 }
 
@@ -83,9 +88,11 @@ fn closes_sentence(line: &str) -> bool {
 }
 
 /// Whether text ends a sentence, not a citation ("…; 2 Baudry", "([22]) 1 Masse") or an abbreviation ("p. 3",
-/// "Q. R. 6 Q. B. 237"); a pinpoint ends one ("… at para. 23. 24 The …").
+/// "Q. R. 6 Q. B. 237"); a pinpoint ends one ("… at para. 23. 24 The …"). Stricter than a line's end (`ends_sentence`):
+/// it closes on its stop, and a bracket closes one only after its stop (".)"), so a heading run in before a
+/// paragraph's number ("Question 7b) 36 This sub-question ...", "... (PSLREB File No. 566-34-3750) 101 The ...") is none.
 pub(super) fn sentence_closed(value: &str) -> bool {
-    ends_sentence(value, false)
+    (value.ends_with(['.', '?', '!', '"', '\u{201d}', ']', '…']) || value.ends_with(".)"))
         && value.split_whitespace().last().is_some_and(|word| {
             let word = word.trim_matches(|c: char| !c.is_alphanumeric());
             !(word.chars().all(char::is_alphabetic) && word.chars().count() <= 2)
@@ -196,17 +203,6 @@ impl<'a> LineEvidence<'a> {
             && (!self.enumerated || line.starts_with("R. ") || line.starts_with("c. "))
     }
 
-    /// A citation closing a line, with no enumerator before it, is what the paragraph cites: "Premakumar v. Air Canada, 2002
-    /// CanLII 23561 (CHRT)".
-    fn cited(&self) -> bool {
-        let line = self.line;
-        // (A court's history is a heading on its citation: "The Supreme Court of British Columbia (1994), 91 B.C.L.R. (2d) 365".)
-        let court = court_opens(line);
-        // (A decision's citation: a statute named as a heading, "Section 35(1) of the Constitution Act, 1982", cites nothing here.)
-        let decision = line.contains(" v. ") || cached_regex!(REPORTER, r"\d{4} [A-Z]{2,}|\[\d{4}\]").is_match(line);
-        !court && decision && !self.enumerated && crate::analysis::citation_spans(line).iter().any(|span| span.range.end + 8 >= line.trim_end().len())
-    }
-
     /// A line of its own in title case, a stop after it, is a heading some courts stop: "Impact on the Community.",
     /// "LSOG Inc. and LSM Inc."
     /// So is a question of its own, however long: "If the April 6 Agreement is valid and binding, is it enforceable in view of
@@ -217,6 +213,17 @@ impl<'a> LineEvidence<'a> {
         // (A word to carry it: "R. (2d) 308 (C.A.).", "456 (H.C.)." are a citation's tail.)
         let worded = self.words.iter().any(|word| word.chars().count() >= 4 && word.starts_with(char::is_uppercase) && word.chars().all(char::is_alphabetic));
         level_opens(self.value) && !self.spoken && (asked || self.value.ends_with('.') && (2..=8).contains(&self.words.len()) && !self.line.contains(',') && worded && self.title_case)
+    }
+
+    /// A citation closing a line, with no enumerator before it, is what the paragraph cites: "Premakumar v. Air Canada, 2002
+    /// CanLII 23561 (CHRT)"; `text` holds its citations.
+    fn cited(&self, text: &CitedText<'_>) -> bool {
+        let line = self.line;
+        // (A court's history is a heading on its citation: "The Supreme Court of British Columbia (1994), 91 B.C.L.R. (2d) 365".)
+        let court = court_opens(line);
+        // (A decision's citation: a statute named as a heading, "Section 35(1) of the Constitution Act, 1982", cites nothing here.)
+        let decision = line.contains(" v. ") || cached_regex!(REPORTER, r"\d{4} [A-Z]{2,}|\[\d{4}\]").is_match(line);
+        !court && decision && !self.enumerated && crate::analysis::may_cite(line) && text.spans(line).iter().any(|span| span.range.end + 8 >= line.trim_end().len())
     }
 
     /// What heads nothing for `short` heads nothing here: a stop read as a bullet, a sentence's lost stop, spoken words, a
@@ -240,6 +247,8 @@ struct Tail<'a> {
     separated: &'a [bool],
     /// What follows the lines.
     after: &'a str,
+    /// The text the lines are of, with its citations.
+    text: &'a CitedText<'a>,
 }
 
 impl Tail<'_> {
@@ -257,7 +266,7 @@ impl Tail<'_> {
         // (Nor a provision's or a case's next words, "s. 59 of the Act?", "... Limited v." / "Companhia ... 2007 BCSC 610", nor
         // figures, "94, 103-4.1".)
         // (A line going on, or a list's bullet, stands over none: "... R. v. Hunter (1997)," / "59 O.R. (2d) 364 (C.A.)".)
-        !introduced && !above.value.ends_with(',') && above.value.chars().any(char::is_alphanumeric) && !above.shortened && !line.provision && may_head(line.value) && formal_heading(line.value)
+        !introduced && !above.value.ends_with(',') && above.value.chars().any(char::is_alphanumeric) && !above.shortened && !line.provision && may_head(line.value) && formal_heading(line.value, self.text)
             && (line.enumerated || self.apart(at) || !line.asks && line.title_case)
     }
 
@@ -306,7 +315,7 @@ impl Tail<'_> {
             // (Nor is a question on an enumerator no open list goes on with: "(1) ... Et (2) ... santé?" / "VI. La juge de première instance était-elle liée ...?".)
             || line.asks && above.asks && !(above.enumerated && !line.enumerated && !self.lines[1.min(at - 1)..at - 1].iter().any(|before| before.asks && !before.enumerated)) && !(line.enumerated && line.title_case && !above.words.iter().take(2).any(|word| heading_enumerator(word)) && !Levels::opens(line.words[0])) && !self.off_list(at, line)
             || !above.value.chars().any(char::is_alphanumeric)
-            || line.cited() && !self.case_head(at)
+            || line.cited(self.text) && !self.case_head(at)
             || editorial_line(line.line) && !line.noted
             || remarked(line.line)
     }
@@ -320,7 +329,7 @@ impl Tail<'_> {
         // (A title may wrap onto its provision: "The Admissibility of a Videotaped Statement Under" / "s. 715.1".)
         let wrapped = line.provision && line.words.len() <= 3 && !above.ended && above.title_case;
         let next = self.lines.get(at + 1).map_or(self.after, |next| next.line);
-        !line.barred() && heading_between(line.line, next).is_some() || short(line.line) || line.titled() && (above.completed || at >= 2 && self.formal(at - 1, above)) || small || wrapped
+        !line.barred() && heading_between(line.line, next, self.text).is_some() || short(line.line) || line.titled() && (above.completed || at >= 2 && self.formal(at - 1, above)) || small || wrapped
     }
 
     /// (A heading on a colon introduces nothing: "Analysis:" / "1. Does the applicant ...?".)
@@ -356,8 +365,8 @@ impl Tail<'_> {
         let (mut at, mut cut, mut stood, mut unformal) = (lines.len(), lines.len(), lines.len(), 0);
         while at > 1 {
             // (A heading's note call is none of its words: "(1) The Jordan Framework[4]".)
-            let uncalled = cached_regex!(HEADING_CALL, r"\[\d{1,3}\]\s*$").replace(lines[at - 1].line, "");
-            let reread = matches!(uncalled, Cow::Owned(_)).then(|| LineEvidence::read(&uncalled));
+            let reread = cached_regex!(HEADING_CALL, r"\[\d{1,3}\]\s*$").find(lines[at - 1].line)
+                .map(|call| LineEvidence::read(&lines[at - 1].line[..call.start()]));
             let line = reread.as_ref().unwrap_or(&lines[at - 1]);
             if self.stops_run(at - 1, line) {
                 break;
@@ -450,8 +459,8 @@ impl Tail<'_> {
 /// sentence too ("…, 2008 BCSC 1726"), as any heading does set apart by a blank line (`separated`: whether a blank
 /// line stands before each line). Headings may stand one above another; the run is theirs and opens what follows.
 /// `lines.len()` where the paragraph ends in none; never 0, the paragraph's own first line.
-fn trailing_headings(lines: &[&str], separated: &[bool], after: &str) -> usize {
-    let tail = Tail { lines: lines.iter().map(|line| LineEvidence::read(line)).collect(), separated, after };
+fn trailing_headings(text: &CitedText<'_>, lines: &[&str], separated: &[bool], after: &str) -> usize {
+    let tail = Tail { lines: lines.iter().map(|line| LineEvidence::read(line)).collect(), separated, after, text };
     let cut = tail.heading_run();
     (1..cut).find(|&at| tail.enumerated_heading(at, cut)).unwrap_or(cut)
 }
@@ -523,9 +532,9 @@ fn list_goes_on(lines: &[&str], mut cut: usize) -> usize {
 /// (`trailing_headings`); a line going on with the paragraph's list is its next item, however like a heading it
 /// reads. The count's `last` paragraph ends with its own words and what they introduce (`own_matter`): nothing
 /// follows the reasons' last paragraph as its own.
-pub(super) fn paragraph_tail(lines: &[&str], separated: &[bool], after: &str, last: bool) -> usize {
+pub(super) fn paragraph_tail(text: &CitedText<'_>, lines: &[&str], separated: &[bool], after: &str, last: bool) -> usize {
     let lines = &lines[..closing_at(lines)];
-    let cut = list_goes_on(lines, trailing_headings(lines, separated, after));
+    let cut = list_goes_on(lines, trailing_headings(text, lines, separated, after));
     if last { own_matter(&lines[..cut]) } else { cut }
 }
 

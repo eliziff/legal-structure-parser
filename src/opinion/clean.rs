@@ -61,7 +61,7 @@ pub(super) fn unshifted(text: &str) -> String {
 /// Takes the page marks and the page furniture out of the text and moves every range to match, each furniture line held as
 /// a span where it stood. A word a mark split is joined: where its fragments are not words of this text on their own, or
 /// the whole word is. The text's index is built again over the new text.
-pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furniture: Vec<ScalarRange>, printed_elsewhere: &mut [(bool, Vec<(u32, usize)>)]) {
+pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furniture: Vec<ScalarRange>) {
     struct Cut { start: usize, end: usize, keep: &'static str }
     let coordinates = ScalarText::with_coordinates(&structure.text, &kinds.coordinates);
     let end = utf16_len(&structure.text);
@@ -194,9 +194,6 @@ pub(super) fn excise(structure: &mut DocumentStructure, kinds: &mut Kinds, furni
         if node.kind == NodeKind::Page {
             node.marker_range = None;
         }
-    }
-    for (_, numbers) in printed_elsewhere.iter_mut() {
-        numbers.iter_mut().for_each(|number| number.1 = moved(number.1));
     }
     let mut text = String::with_capacity(structure.text.len());
     let (mut unit, mut index) = (0, 0);

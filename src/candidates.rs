@@ -8,7 +8,7 @@ use crate::inference;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "structure-inference")]
-pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<StructureCandidateRun> {
+pub fn detect_structure_candidate_runs(value: &str, refinements: bool, instrument: bool) -> Vec<StructureCandidateRun> {
     let text = ScalarText::new(value);
     let mut runs = inference::raw_numeric_runs(&text);
     let mut raw_enumerators = inference::raw_enumerator_runs(&text);
@@ -23,7 +23,8 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
         .collect::<Vec<_>>();
     // A section read from nothing but its number (no statute's run of sections, and no article, part or division), on
     // the line of a number the text counts from 1, is a numbered paragraph; its sub-items are then read as lists of
-    // their own.
+    // their own. In an instrument (`instrument`, the reader's measure of the document) such a count is its sections:
+    // a by-law's or an agreement's "1.", "2.", "3.".
     let counted = runs
         .iter()
         .filter(|run| run.rooted && run.consecutive)
@@ -33,6 +34,7 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
         .filter(|index| {
             parent_indexes[*index].is_none()
                 && direct
+                && !instrument
                 && !matches!(points[*index].locator_kind.as_deref(), Some("article" | "part" | "division"))
                 && counted.contains(&points[*index].range.start)
         })
@@ -51,7 +53,9 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
         }
         let content_start = point.content_start.expect("a grammar point opens its words");
         let entry = grouped.entry(root).or_insert_with(|| (Vec::new(), 0, 0));
-        // A ladder is consecutive where its markers past the root break its count at most a third of the time.
+        // A ladder is consecutive where none of its markers past the root breaks its count; an instrument's, where they
+        // break it at most a third of the time (a statute's ladder, a few of its numbers misread or repealed). A judgment's
+        // headings hung under a section it quoted pages before are no such ladder.
         if index != root {
             if matches!(
                 point.properties.get("diagnostic").map(String::as_str),
@@ -97,7 +101,7 @@ pub fn detect_structure_candidate_runs(value: &str, refinements: bool) -> Vec<St
                 end: markers.iter().map(|marker| marker.range.end).max().unwrap(),
             },
             rooted: markers[0].parent_candidate_id.is_none(),
-            consecutive: bad == 0 || good >= bad * 2,
+            consecutive: bad == 0 || instrument && good >= bad * 2,
             markers,
         })
         .collect::<Vec<_>>();
@@ -322,6 +326,7 @@ struct ResolvedCandidate<'a> {
 pub fn resolve_candidates(
     runs: &[StructureCandidateRun],
     evidence: &[CandidateEvidenceV2],
+    instrument: bool,
 ) -> Result<Vec<CandidateRoleV2>, EngineError> {
     let counted = counted_markers(runs);
     let mut provision_starts = runs
@@ -333,32 +338,33 @@ pub fn resolve_candidates(
     let shows = |candidate: &StructureMarkerCandidate, observation: CandidateObservationV2| {
         evidence_by_candidate.get(candidate.id.as_str()).is_some_and(|item| item.observations.contains(&observation))
     };
-    // A count from 1 is the text's numbered paragraphs only where its numbers stand whole: a statute's,
-    // a by-law's or an agreement's sections divide ("1." over "(1)", "(a)" or "a." carrying prose of
-    // their own), a paragraph does not. A count more than a tenth of whose numbers divide is sections.
-    let starts = runs.iter().flat_map(|run| &run.markers).map(|candidate| (candidate.id.as_str(), candidate.marker_range.start)).collect::<HashMap<_, _>>();
-    let divided = runs
-        .iter()
-        .flat_map(|run| &run.markers)
-        .filter(|candidate| shows(candidate, CandidateObservationV2::BodyProseFlow))
-        .filter_map(|candidate| starts.get(candidate.parent_candidate_id.as_deref()?).copied())
-        .collect::<HashSet<_>>();
+    // A count from 1 is the text's numbered paragraphs, unless the text is an instrument (`instrument`, the reader's
+    // measure of the document): a statute's, a by-law's or an agreement's count from 1 is its sections.
     let counts = runs
         .iter()
-        .filter(|run| run.grammar == CandidateGrammar::Numeric && run.rooted && run.consecutive)
-        .map(|run| (run, 10 * run.markers.iter().filter(|candidate| divided.contains(&candidate.marker_range.start)).count() <= run.markers.len()))
+        .filter(|run| run.grammar == CandidateGrammar::Numeric && run.rooted && run.consecutive && !instrument)
         .collect::<Vec<_>>();
-    // A whole count of numbers printed with their period ("1.", "2.") is the text's paragraphs; their
+    // Such a count of numbers printed with their period ("1.", "2.") is the text's paragraphs; their
     // sub-items are lists. A ladder under a Part's or an Exhibit's heading is read by its first
-    // number a count reads, as the count prints it.
+    // number a count reads, as the count prints it, where its numbers are paragraphs, not titles:
+    // a factum's "PART III – ARGUMENT", "36." beside its prose (21 of 145 numbers set as a
+    // heading). A schedule's entries under its Parts, most of them set as a provision's heading
+    // ("PART 1 – DEPARTMENTS ...", "1. Department of Agriculture": 76 of 86), are the instrument's
+    // provisions.
     let counted_labels = counts
         .iter()
-        .flat_map(|(run, whole)| run.markers.iter().map(move |candidate| (candidate.marker_range.start, (candidate.label.trim(), *whole))))
+        .flat_map(|run| run.markers.iter().map(|candidate| (candidate.marker_range.start, candidate.label.trim())))
         .collect::<HashMap<_, _>>();
     let period_counted = |run: &StructureCandidateRun| {
+        let numbered = run.markers.iter().filter(|candidate| counted_labels.contains_key(&candidate.marker_range.start));
         run.grammar == CandidateGrammar::Hierarchy
-            && run.markers.iter().find_map(|candidate| counted_labels.get(&candidate.marker_range.start)).is_some_and(|(label, whole)| {
-                *whole && label.ends_with('.') && label[..label.len() - 1].chars().all(|c| c.is_ascii_digit())
+            && numbered.clone().next().is_some_and(|first| {
+                let label = counted_labels[&first.marker_range.start];
+                label.ends_with('.')
+                    && label[..label.len() - 1].chars().all(|c| c.is_ascii_digit())
+                    && (std::ptr::eq(first, &run.markers[0])
+                        || 2 * numbered.clone().filter(|candidate| shows(candidate, CandidateObservationV2::SectionHeading)).count()
+                            <= numbered.clone().count())
             })
     };
     let paragraph_runs = runs
@@ -377,7 +383,7 @@ pub fn resolve_candidates(
         .map(|candidate| candidate.marker_range.start)
         .collect::<HashSet<_>>();
     provision_starts.retain(|start| !quoted_starts.contains(start));
-    // A whole count a quarter or more of whose numbers open prose that no section reads, or that
+    // Such a count a quarter or more of whose numbers open prose that no section reads, or that
     // opens on more such paragraphs than a list runs to, is the text's numbered paragraphs: the
     // sections read on its other numbers yield to it, each ladder they stand in whole, and their
     // sub-items are read as lists.
@@ -387,7 +393,7 @@ pub fn resolve_candidates(
             && shows(candidate, CandidateObservationV2::BodyProseFlow)
     };
     let mut yielded = HashSet::new();
-    for (run, _) in counts.iter().filter(|(_, whole)| *whole) {
+    for run in &counts {
         let unread = |candidate: &&StructureMarkerCandidate| !provision_starts.contains(&candidate.marker_range.start);
         let read = run.markers.iter().filter(|candidate| !unread(candidate));
         let opening = run.markers.iter().take_while(unread).filter(opens_prose).count();
@@ -447,6 +453,20 @@ pub fn resolve_candidates(
                 (
                     Some(UnitRole::Paragraph),
                     ResolutionRuleV2::RootedNumericProse,
+                )
+            // What an instrument's ladder reads under a section is the section's own (a subsection, a paragraph, a
+            // clause: "8(1)(a)"), however its line is set.
+            } else if instrument
+                && !quotation
+                && candidate.level > 0
+                && run.grammar == CandidateGrammar::Hierarchy
+                && run.rooted
+                && run.consecutive
+                && !yielded.contains(&run.markers[0].marker_range.start)
+            {
+                (
+                    Some(UnitRole::Section),
+                    ResolutionRuleV2::HierarchySection,
                 )
             } else if seen(CandidateObservationV2::ComposedListItem) {
                 (

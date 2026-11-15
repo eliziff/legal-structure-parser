@@ -17,13 +17,18 @@ pub(crate) fn element_of<'a>(structure: &'a DocumentStructure, node: &StructureN
     Some((at, &structure.markup_elements[at]))
 }
 
-/// A block of the body: its node, its range, its words without the page marks in it ("*223III." is "III.") and whether
-/// it is a line of a table of contents.
+/// A block of the body: its node, its range, its words without the page marks in it ("*223III." is "III."), the number
+/// the engine read for it and whether it is a line of a table of contents.
 pub(crate) struct BodyBlock {
     pub(crate) index: usize,
     pub(crate) range: ScalarRange,
     pub(crate) printed: String,
+    pub(crate) number: Option<String>,
     pub(crate) contents: bool,
+    /// It goes on a sentence the block before a page's notes left unfinished.
+    pub(crate) continues: bool,
+    /// An old report's catchword, read out of the margin into a sentence's course.
+    pub(crate) catchword: bool,
 }
 
 fn inside(ranges: &[ScalarRange], range: ScalarRange) -> bool {
@@ -58,8 +63,11 @@ fn held_ranges(structure: &DocumentStructure) -> Vec<ScalarRange> {
         .map(|node| structure.query_range(node)).collect()
 }
 
-/// The body's blocks in the text's order: each paragraph, prose block or quotation of the text's own role that no note
-/// mostly holds, no head matter (`held_ranges`) and no heading holds, with words past its page marks.
+/// The body's blocks in the text's order, one to a place: each paragraph, prose block or quotation of the text's own role
+/// that no note mostly holds, no head matter (`held_ranges`) and no heading holds, with words past its page marks. A
+/// paragraph the engine numbers (`inference::paragraphs`) opens where its mark stands: the block that opens there takes its
+/// number, or the block after it where a title took all but the mark ("¶ 30 Conclusion"); a block it opens inside ends
+/// there; and it ends where the next block, heading or note opens.
 pub(crate) fn body_blocks(structure: &DocumentStructure, text_index: &ScalarCoordinates) -> Vec<BodyBlock> {
     let coordinates = ScalarText::with_coordinates(structure.query_text(), text_index);
     let nodes = &structure.nodes;
@@ -82,19 +90,122 @@ pub(crate) fn body_blocks(structure: &DocumentStructure, text_index: &ScalarCoor
         }
         let printed = unmarked(&coordinates, &marks, range);
         let contents = contents_line(trim_js(&printed));
-        (!printed.trim().is_empty()).then_some(BodyBlock { index, range, printed, contents })
+        let number = (node.kind == NodeKind::Paragraph).then(|| node.label.clone()).flatten();
+        // A rule, or a block that held a page's mark and nothing else, holds no words.
+        printed.chars().any(|c| c.is_alphanumeric() || c == '*').then_some(BodyBlock { index, range, printed, number, contents, continues: false, catchword: false })
     }).collect::<Vec<_>>();
     blocks.sort_by_key(|block| block.range.start);
-    blocks
+    let mut stops = blocks.iter().map(|block| block.range.start).chain(headings.iter().chain(&notes).map(|range| range.start)).collect::<Vec<_>>();
+    stops.sort_unstable();
+    let (numbered, mut blocks): (Vec<_>, Vec<_>) = blocks.into_iter().partition(|block| nodes[block.index].kind == NodeKind::Paragraph && nodes[block.index].marker_range.is_some());
+    for mut paragraph in numbered {
+        // A mark a heading holds numbers the text under it.
+        if let Some(heading) = headings.iter().find(|heading| heading.start <= paragraph.range.start && paragraph.range.start < heading.end) {
+            paragraph.range.start = heading.end;
+        }
+        let at =blocks.partition_point(|block| block.range.start <= paragraph.range.start);
+        let within = at.checked_sub(1).filter(|&before| blocks[before].range.end > paragraph.range.start);
+        let opens = within.filter(|&before| trim_js(&unmarked(&coordinates, &marks, ScalarRange { start: blocks[before].range.start, end: paragraph.range.start })).is_empty());
+        if let Some(before) = opens {
+            let mark_only = says_paragraph(trim_js(&blocks[before].printed)) && past_marker(trim_js(&blocks[before].printed)).is_empty() && before + 1 < blocks.len();
+            if mark_only { blocks.remove(before); }
+            blocks[before].number = paragraph.number;
+            continue;
+        }
+        if let Some(before) = within {
+            blocks[before].range.end = paragraph.range.start;
+            blocks[before].printed = unmarked(&coordinates, &marks, blocks[before].range);
+        }
+        paragraph.range.end = paragraph.range.end.min(stops.get(stops.partition_point(|stop| *stop <= paragraph.range.start)).copied().unwrap_or(usize::MAX));
+        paragraph.printed = unmarked(&coordinates, &marks, paragraph.range);
+        if paragraph.printed.chars().any(char::is_alphanumeric) {
+            blocks.insert(at, paragraph);
+        }
+    }
+    // A source's block counter split from its words, a block of "57" alone, opens the block after it.
+    let bare = |block: &BodyBlock| block.number.is_none() && trim_js(&block.printed).len() <= 4 && trim_js(&block.printed).bytes().all(|byte| byte.is_ascii_digit());
+    for at in (0..blocks.len().saturating_sub(1)).rev() {
+        if bare(&blocks[at]) && !bare(&blocks[at + 1]) {
+            let counter = blocks.remove(at);
+            blocks[at].range.start = counter.range.start;
+            blocks[at].printed = unmarked(&coordinates, &marks, blocks[at].range);
+        }
+    }
+    // As many unnumbered blocks between two numbers as numbers are missing there: each is its number, its mark lost.
+    let held = blocks.iter().enumerate().filter_map(|(at, block)| Some((at, block.number.as_deref()?.parse::<u32>().ok()?))).collect::<Vec<_>>();
+    for pair in held.windows(2) {
+        let ((from, low), (to, high)) = (pair[0], pair[1]);
+        if high > low + 1 && to - from == (high - low) as usize && (from + 1..to).all(|at| nodes[blocks[at].index].kind != NodeKind::Quote && !blocks[at].contents) {
+            for (at, number) in (from + 1..to).zip(low + 1..high) {
+                blocks[at].number = Some(number.to_string());
+            }
+        }
+    }
+    // Runs of blocks that open "(a)", "(b)" or "(1)", "(2)" are cited by those labels, and a certified question by its
+    // own ("Question 2").
+    static LETTERED: OnceLock<Regex> = OnceLock::new();
+    static QUESTION: OnceLock<Regex> = OnceLock::new();
+    let lettered = LETTERED.get_or_init(|| Regex::new(r"^\(([a-z]|\d{1,2})\)\s").unwrap());
+    let question = QUESTION.get_or_init(|| Regex::new(r#"^["“]?(Question \d{1,2})[.:]"#).unwrap());
+    let (mut run, mut last) = (Vec::<(usize, String)>::new(), 0);
+    let mut labels = Vec::new();
+    for (at, block) in blocks.iter().enumerate().filter(|(_, block)| block.number.is_none() && nodes[block.index].kind != NodeKind::Quote) {
+        let opening = trim_js(&block.printed);
+        if let Some(asked) = question.captures(opening) {
+            labels.push((at, asked[1].to_owned()));
+        }
+        let Some(printed) = lettered.captures(opening) else { continue };
+        let Some(place) = printed[1].parse::<u32>().ok().or_else(|| printed[1].chars().next().map(|c| c as u32 - 'a' as u32 + 1)) else { continue };
+        if place != last + 1 {
+            if run.len() >= 2 { labels.append(&mut run); }
+            run.clear();
+        }
+        last = if place == 1 || !run.is_empty() { run.push((at, format!("({})", &printed[1]))); place } else { 0 };
+    }
+    if run.len() >= 2 { labels.append(&mut run); }
+    for (at, label) in labels {
+        blocks[at].number = Some(label);
+    }
+    // A sentence a block leaves unfinished goes on in the unnumbered block after it that opens in lower case: they are
+    // one block where only a page's turn parted them, and the second `continues` where a page's notes stand between. A
+    // short line opening on a capital between the two, in a marked-up text, is an old report's catchword read out of
+    // the margin into the column (a plain text's short lines are its wrapping): the sentence goes on over it.
+    let quoted = |block: &BodyBlock| nodes[block.index].kind == NodeKind::Quote;
+    let lower = |block: &BodyBlock| trim_js(&block.printed).starts_with(char::is_lowercase);
+    let open = |block: &BodyBlock| !crate::inference::ends_sentence(trim_js(&block.printed), true);
+    let between = |marks: &[ScalarRange], from: usize, to: usize| marks.iter().any(|mark| from <= mark.start && mark.start < to);
+    if !structure.markup_elements.is_empty() {
+        for at in 1..blocks.len().saturating_sub(1) {
+            let line = trim_js(&blocks[at].printed);
+            blocks[at].catchword = !quoted(&blocks[at]) && blocks[at].number.is_none() && line.len() < 60 && line.starts_with(char::is_uppercase)
+                && open(&blocks[at - 1]) && lower(&blocks[at + 1]);
+        }
+    }
+    let mut joined = Vec::<BodyBlock>::with_capacity(blocks.len());
+    for mut block in blocks {
+        let last = joined.iter_mut().rev().find(|last| !last.catchword).filter(|_| !block.catchword && !block.contents && block.number.is_none());
+        if let Some(last) = last.filter(|last| quoted(last) == quoted(&block) && open(last) && lower(&block) && !between(&headings, last.range.end, block.range.start)) {
+            if !between(&notes, last.range.end, block.range.start) {
+                last.range.end = block.range.end;
+                last.printed = unmarked(&coordinates, &marks, last.range);
+                continue;
+            }
+            block.continues = true;
+        }
+        joined.push(block);
+    }
+    joined
 }
 
 /// The one reading of a rendition's headings past those its markup declares. A heading the markup sets that is a case's
 /// name is the caption's line. A body block is a title by its words where it stands alone (set off in its type, or after
 /// a finished sentence: "I.", "II. BACKGROUND"); the title a paragraph's mark carries ("¶ 4 Facts"), a title in strong or
 /// underlined type at a paragraph's head (`run_in`), and a section's title run into a paragraph at its start or end
-/// (`fused_titles`) are headings of their own and the block keeps the rest. A line no node holds (a div's or a br's) is a
-/// heading where it is a title by its words, past the head's lines. No title is read in front matter, a headnote, a note,
-/// a contents line or a numbered block.
+/// (`fused_titles`) are headings of their own and the block keeps the rest, as is a section's first sentence where
+/// numerals run on from block to block (`numbered_title`). A line no node holds (a div's or a br's) is a heading where it
+/// is a title by its words, past the head's lines. No title is read in front matter, a headnote, a note, a contents line
+/// or a numbered block. A heading's words decide last: a declared heading with none, or a contents line, is a block; a
+/// bracketed number is a headnote's mark; and bracketed lines of one form with no text between them are a list's items.
 pub(super) fn shape_headings(structure: &mut DocumentStructure, text_index: &ScalarCoordinates) {
     let blocks = body_blocks(structure, text_index);
     let coordinates = ScalarText::with_coordinates(structure.query_text(), text_index);
@@ -106,12 +217,14 @@ pub(super) fn shape_headings(structure: &mut DocumentStructure, text_index: &Sca
     let (captions, declared): (Vec<_>, Vec<_>) = nodes.iter().enumerate().filter(|(_, node)| node.kind == NodeKind::Heading)
         .map(|(index, node)| (index, node.heading_range.unwrap_or(structure.query_range(node))))
         .partition(|(_, range)| !inside(&held, *range) && caption_heading(slice(*range)));
-    let mut headings = declared.into_iter().map(|(_, range)| range).collect::<Vec<_>>();
-    // Blocks wholly titles; blocks that keep part of their range; the titles taken out of blocks, by the block.
+    let mut headings = declared.iter().map(|(_, range)| *range).collect::<Vec<_>>();
+    // Blocks wholly titles; blocks that keep part of their range; the titles taken out of blocks, by the block; where the
+    // blocks that stay text open; a run of numbered sections' blocks and the numeral due next.
     let (mut whole, mut kept, mut titles) = (Vec::new(), Vec::new(), Vec::<(Option<usize>, ScalarRange)>::new());
+    let (mut texts, mut numbered, mut due) = (Vec::new(), Vec::new(), None);
     let mut last: Option<(ScalarRange, bool)> = None;
     let mut first_text = usize::MAX;
-    for block in blocks.iter().filter(|block| !block.contents) {
+    for block in blocks.iter().filter(|block| !block.contents && !block.catchword) {
         let (index, read, printed) = (block.index, block.range, &block.printed);
         let node = &nodes[index];
         let quote = node.kind == NodeKind::Quote || node.markup_tag.as_deref().is_some_and(|tag| matches!(tag, "blockquote" | "excerpt"));
@@ -127,7 +240,7 @@ pub(super) fn shape_headings(structure: &mut DocumentStructure, text_index: &Sca
                 let title = says_paragraph(opened).then(|| past_marker(opened)).filter(|title| !title.is_empty())
                     .and_then(|title| Some(range.start + utf16_len(&slice(range)[..slice(range).find(title)?])));
                 let Some(start) = title else {
-                    whole.push(index);
+                    whole.push((index, range));
                     headings.push(range);
                     continue;
                 };
@@ -148,12 +261,27 @@ pub(super) fn shape_headings(structure: &mut DocumentStructure, text_index: &Sca
                 }
             }
             headings.extend(titles[taken..].iter().map(|(_, title)| *title));
+            if let Some(length) = numbered_title(coordinates.slice_utf16(range.start..range.end).unwrap_or(""), &mut due) {
+                numbered.push((index, range, length));
+            }
             if range != read {
                 kept.push((index, range));
             }
         }
         first_text = first_text.min(range.start);
+        texts.push(range.start);
         last = Some((range, quote));
+    }
+    // One numbered section is no run.
+    if numbered.len() < 2 {
+        numbered.clear();
+    }
+    for (index, range, length) in numbered {
+        let title = ScalarRange { start: range.start, end: range.start + length };
+        titles.push((Some(index), title));
+        headings.push(title);
+        kept.retain(|(at, _)| *at != index);
+        kept.push((index, ScalarRange { start: title.end, end: range.end }));
     }
     // Text no node holds: each line of it that is a title by its words, but a bare number and, ahead of the text, a line
     // of the head.
@@ -185,12 +313,44 @@ pub(super) fn shape_headings(structure: &mut DocumentStructure, text_index: &Sca
         }
         cursor = cursor.max(range.end);
     }
+    // An outline numbers with a stop, "I." over "A."; a list with a bracket, "(a)", "d)", "6)".
+    static ITEM: OnceLock<Regex> = OnceLock::new();
+    let item = ITEM.get_or_init(|| Regex::new(r"^(\(?)([a-z]{1,4}|\d{1,2})\)").unwrap());
+    let family = |range: ScalarRange| item.captures(unfused(slice(range))).map(|capture| (!capture[1].is_empty(), capture[2].starts_with(|c: char| c.is_ascii_digit())));
+    headings.extend(titles.iter().filter(|(index, _)| index.is_none()).map(|(_, range)| *range));
+    headings.sort_by_key(|range| range.start);
+    texts.sort_unstable();
+    let listed = headings.windows(2).filter(|pair| texts.get(texts.partition_point(|start| *start <= pair[0].start)).is_none_or(|start| *start >= pair[1].start)
+        && family(pair[0]).is_some() && family(pair[0]) == family(pair[1])).flatten().copied().collect::<Vec<_>>();
+    whole.retain(|(_, range)| !listed.contains(range));
+    // A numbered sentence set as a heading, "6. Robert Poe is the Chairman.", is the count's paragraph where the paragraphs
+    // either side leave its number open; an outline's "3. The Order Was Proper." sits among paragraphs numbered in their own
+    // right.
+    let counted = structure.nodes.iter().filter(|node| node.kind == NodeKind::Paragraph)
+        .filter_map(|node| paragraph_marker(trim_js(slice(node.marker_range?))).filter(|(_, family)| *family == 4).map(|(number, _)| number)).collect::<std::collections::HashSet<_>>();
+    let sentence = |words: &str| {
+        let title = past_marker(words).split_whitespace().collect::<Vec<_>>();
+        paragraph_marker(words).filter(|(number, family)| *family == 4 && !counted.contains(number) && counted.contains(&(number + 1)) && (*number == 1 || counted.contains(&(number - 1))))
+            .filter(|_| crate::inference::ends_sentence(words, true) && title.len() >= 5 && !heading_title_case(&title)).map(|(number, _)| number)
+    };
+    let unmade = declared.into_iter().filter_map(|(index, range)| {
+        let words = bare(range);
+        let words = trim_js(&words);
+        let mark = words.starts_with('[').then(|| headnote_numbers(words)).flatten();
+        let lead = coordinates.slice_utf16(range.start..range.end).map_or(0, |raw| utf16_len(&raw[..raw.len() - raw.trim_start_matches(javascript_whitespace).len()]));
+        let number = sentence(words).map(|number| (number, range.start + lead));
+        (mark.is_some() || number.is_some() || listed.contains(&range) || contents_line(words) || !words.chars().any(char::is_alphanumeric)).then_some((index, range, mark, number))
+    }).collect::<Vec<_>>();
     let titles = titles.into_iter().map(|(index, range)| {
         let parent = index.and_then(|index| structure.nodes[index].parent_id.clone());
-        let mut heading = StructureNode::new(format!("shape-heading-{}-{}", range.start, range.end), NodeKind::Heading, range, crate::ENGINE_ORIGIN, Derivation::Heuristic, parent);
-        heading.role = Some(PrimaryRole::Heading);
-        heading.heading_range = Some(range);
-        heading.label = coordinates.slice_utf16(range.start..range.end).map(|label| trim_js(label).to_owned());
+        let item = listed.contains(&range);
+        let kind = if item { NodeKind::Prose } else { NodeKind::Heading };
+        let mut heading = StructureNode::new(format!("shape-{}-{}-{}", kind.name(), range.start, range.end), kind, range, crate::ENGINE_ORIGIN, Derivation::Heuristic, parent);
+        if !item {
+            heading.role = Some(PrimaryRole::Heading);
+            heading.heading_range = Some(range);
+            heading.label = coordinates.slice_utf16(range.start..range.end).map(|label| trim_js(label).to_owned());
+        }
         heading
     }).collect::<Vec<_>>();
     for (index, range) in captions {
@@ -200,7 +360,22 @@ pub(super) fn shape_headings(structure: &mut DocumentStructure, text_index: &Sca
         node.heading_range = None;
         node.range = range;
     }
-    for index in whole {
+    for (index, range, mark, number) in unmade {
+        let node = &mut structure.nodes[index];
+        (node.range, node.heading_range) = (range, None);
+        match (mark, number) {
+            (Some(numbers), _) => {
+                (node.kind, node.role, node.grammar) = (NodeKind::Span, None, Some("headnote-mark".to_owned()));
+                node.properties.insert("numbers".to_owned(), numbers.iter().map(u32::to_string).collect::<Vec<_>>().join(","));
+            }
+            (None, Some((number, start))) => {
+                (node.kind, node.role, node.label) = (NodeKind::Paragraph, Some(PrimaryRole::Text), Some(number.to_string()));
+                node.marker_range = Some(ScalarRange { start, end: start + number.to_string().len() + 1 });
+            }
+            (None, None) => (node.kind, node.role) = (NodeKind::Prose, Some(PrimaryRole::Text)),
+        }
+    }
+    for (index, _) in whole {
         let range = structure.query_range(&structure.nodes[index]);
         let node = &mut structure.nodes[index];
         node.kind = NodeKind::Heading;
@@ -253,6 +428,32 @@ fn fused_titles(raw: &str) -> (Option<usize>, Option<usize>) {
     let tail = TAIL.get_or_init(|| Regex::new(r#"[.;:!?”"]\s+([A-Z][A-Z ,&]{5,60})\s*$"#).unwrap()).captures(raw)
         .filter(|capture| section_word(&capture[1])).and_then(|capture| capture.get(1)).map(|title| utf16_len(&raw[title.start()..]));
     (lead, tail)
+}
+
+/// A section numbered in the run of the paragraphs, title and text in one block with no markup: "II. The plea of estoppel
+/// is not well founded. The fact is ...". Where the block's numeral is the one `due` (the first, or the one after the last
+/// read), the length of its title, its first sentence; `due` moves on with each numeral read.
+fn numbered_title(raw: &str, due: &mut Option<u32>) -> Option<usize> {
+    const TITLE_WORDS: usize = 16;
+    static OPENING: OnceLock<Regex> = OnceLock::new();
+    let words = unfused(raw);
+    let number = OPENING.get_or_init(|| Regex::new(r"^\s*([IVXLC]{1,6})\.\s+\p{Lu}").unwrap()).captures(words)
+        .and_then(|capture| super::printed_pages::page_number(&capture[1])).filter(|number| due.is_none_or(|due| due == *number))?;
+    *due = Some(number + 1);
+    let lead = raw.len() - words.len();
+    sentences(words).first().filter(|sentence| sentence.1 < words.trim_end().len() && words[..sentence.1].split_whitespace().count() <= TITLE_WORDS)
+        .map(|sentence| utf16_len(&raw[..lead + sentence.1]))
+}
+
+/// "[5, 6]", "1, 2.", "[8-8]", "3.": the numbers a headnote mark names.
+pub(crate) fn headnote_numbers(printed: &str) -> Option<Vec<u32>> {
+    static MARK: OnceLock<Regex> = OnceLock::new();
+    // Scanners leave "[3J", "[3|", "¡3]", "f 3 ]", "■ [3]"; old reports print "Syllabus 3.", "Item 5:", "3. 4.".
+    if !MARK.get_or_init(|| Regex::new(r"^[^\d\p{L}]*(?:f\s|Item\s|Syllabus\s)?[\[(]?\s*\d{1,3}(?:\s*[-–,.]\s*\d{1,3}|\s+\d{1,3})*\s*[.\])|Jj,:']*$").unwrap()).is_match(printed) {
+        return None;
+    }
+    let values = printed.split(|c: char| !c.is_ascii_digit()).filter_map(|value| value.parse().ok()).collect::<Vec<u32>>();
+    (!values.is_empty()).then_some(values)
 }
 
 /// A section's usual titles.
@@ -388,7 +589,6 @@ pub(crate) fn heading_line(body: &str, set_apart: bool) -> bool {
 }
 
 /// The title of a list of notes.
-#[cfg(feature = "opinion")]
 pub(crate) fn notes_title(body: &str) -> bool {
     static TITLE: OnceLock<Regex> = OnceLock::new();
     TITLE.get_or_init(|| Regex::new(r"(?i)^(?:foot|end)?notes?:?$").unwrap()).is_match(body)

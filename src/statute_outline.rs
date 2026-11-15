@@ -1,11 +1,12 @@
 //! A statute's reading past its provisions, read from a provider's text of it as nodes: its headings (its parts,
 //! divisions and schedules) in their hierarchy, each provision's marginal note, and the title over it all.
 
+use crate::analysis::CitedText;
 use crate::case_outline::{citation_title, front_line};
 use crate::statute::{markdown_line, marginal_note_shaped};
 use crate::{
     provision_mark, utf16_len, Derivation, DocumentStructure, EngineError, NodeKind, PrimaryRole, ProviderTextInput,
-    ProviderTextSourceKind, ScalarRange, ScalarText, StructureNode,
+    ProviderTextSourceKind, ScalarRange, StructureNode,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -63,6 +64,48 @@ pub(crate) fn add_statute_nodes(structure: &mut DocumentStructure) {
         .collect::<Vec<_>>();
     provisions.sort_unstable();
     let first_provision = provisions.first().copied().unwrap_or(length);
+    let ids = structure.nodes.iter().enumerate().map(|(at, node)| (node.id.clone(), at)).collect::<HashMap<_, _>>();
+    let indexed = CitedText::new(text);
+    let printed = |node: &StructureNode| node.marker_range
+        .and_then(|range| indexed.slice_utf16(range.start..range.end));
+    // A provision that may carry a marginal note: a section, or a subsection numbered "(2)" under one.
+    let noted_kind = |node: &StructureNode| {
+        if node.kind != NodeKind::Section || provision_mark(node.locator_kind.as_deref()) != "sec" {
+            return None;
+        }
+        let top = node.parent_id.as_ref().and_then(|parent| ids.get(parent)).is_none_or(|&parent| structure.nodes[parent].kind != NodeKind::Section);
+        let subsection = !top && printed(node).is_some_and(|marker| marker.trim_start().strip_prefix('(').is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit())));
+        (top || subsection).then_some(top)
+    };
+    // A provider that sets each provision's caption as a markdown line just above it ("### Effect of assignment" /
+    // "670 (1) When an assignee …", as A2AJ sets a province's statutes) prints its marginal notes so, not headings: a
+    // caption is no heading (a heading heads several provisions). Read so where such lines stand over most of the
+    // text's sections and most of them are set in sentence case, as captions are; a text whose markdown lines head its
+    // groups of sections ("## Short Title", "### Establishment of the National Gallery of Canada", Canada's own
+    // statutes, which set their marginal notes in bold) sets them in title case and over a few of its sections. A line
+    // naming a part, a division or a schedule heads what follows it wherever it stands.
+    let noted_starts = structure.nodes.iter().filter(|node| noted_kind(node).is_some()).map(|node| node.range.start).collect::<HashSet<_>>();
+    let sections = structure.nodes.iter().filter(|node| noted_kind(node) == Some(true)).count();
+    let mut captions = HashSet::new();
+    let mut sentence_case = 0;
+    for (at, line) in lines.iter().enumerate() {
+        let trimmed = line.text.trim_start();
+        let marks = trimmed.chars().take_while(|c| *c == '#').count();
+        if marks < 2 || !trimmed[marks..].starts_with(' ') || heading(trimmed[marks..].trim()).0.is_some() {
+            continue;
+        }
+        let Some(next) = lines[at + 1..].iter().find(|line| !line.text.trim().is_empty()) else { continue };
+        let lead = utf16_len(&next.text[..next.text.len() - next.text.trim_start().len()]);
+        if !noted_starts.contains(&next.start) && !noted_starts.contains(&(next.start + lead)) {
+            continue;
+        }
+        let words = markdown_line(line.text).0.split_whitespace().collect::<Vec<_>>();
+        sentence_case += usize::from(!crate::inference::heading_title_case(&words));
+        captions.insert(line.start);
+    }
+    if captions.len() * 5 < sections * 3 || sentence_case * 2 < captions.len() {
+        captions.clear();
+    }
     let mut added = Vec::<StructureNode>::new();
     let mut open = Vec::<(usize, String, usize)>::new();
     let mut opened = false;
@@ -76,12 +119,12 @@ pub(crate) fn add_statute_nodes(structure: &mut DocumentStructure) {
             .is_some_and(|&start| start < line.end.max(line.start + 1)) {
             continue;
         }
-        if markdown && marks == 1 || !markdown && !opened && line.end <= first_provision && citation_title(markdown_line(line.text).0) {
+        if markdown && marks == 1 || !markdown && !opened && line.end <= first_provision && citation_title(markdown_line(line.text).0, &indexed) {
             let id = format!("statute-span-{:06}", added.len() + 1);
             added.push(front_line(id, PrimaryRole::Title, line.start + lead, line.end));
             continue;
         }
-        if !markdown {
+        if !markdown || captions.contains(&line.start) {
             continue;
         }
         opened = true;
@@ -111,30 +154,22 @@ pub(crate) fn add_statute_nodes(structure: &mut DocumentStructure) {
         let start = node.range.start;
         node.range.end = starts.get(starts.partition_point(|&next| next <= start)).copied().unwrap_or(length);
     }
-    // Each provision's marginal note.
-    let indexed = ScalarText::new(text);
-    let printed = |node: &StructureNode| node.marker_range
-        .and_then(|range| indexed.slice_utf16(range.start..range.end));
+    // Each provision's marginal note: a line in its shape, or its caption.
     let mut noted = HashSet::new();
-    let ids = structure.nodes.iter().enumerate().map(|(at, node)| (node.id.clone(), at)).collect::<HashMap<_, _>>();
     let mut notes = Vec::new();
     for (at, node) in structure.nodes.iter().enumerate() {
-        if node.kind != NodeKind::Section || provision_mark(node.locator_kind.as_deref()) != "sec" {
-            continue;
-        }
-        let top = node.parent_id.as_ref().and_then(|parent| ids.get(parent)).is_none_or(|&parent| structure.nodes[parent].kind != NodeKind::Section);
-        let subsection = !top && printed(node).is_some_and(|marker| marker.trim_start().strip_prefix('(').is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit())));
-        if !top && !subsection {
-            continue;
-        }
+        let Some(top) = noted_kind(node) else { continue };
         let start = node.range.start;
         let Some(above) = lines.partition_point(|line| line.end <= start && line.start < start).checked_sub(1) else { continue };
         let Some(line) = lines[..=above].iter().rev().find(|line| !line.text.trim().is_empty()) else { continue };
         let (_, emphasized) = markdown_line(line.text);
-        if line.text.trim_start().starts_with('#') || !marginal_note_shaped(line.text) || !top && !emphasized || !noted.insert(line.start) {
+        let caption = captions.contains(&line.start);
+        if !caption && (line.text.trim_start().starts_with('#') || !marginal_note_shaped(line.text) || !top && !emphasized) || !noted.insert(line.start) {
             continue;
         }
-        let lead = utf16_len(&line.text[..line.text.len() - line.text.trim_start().len()]);
+        // (A caption's words open after its marks.)
+        let words = line.text.trim_start().trim_start_matches('#').trim_start();
+        let lead = utf16_len(&line.text[..line.text.len() - words.len()]);
         notes.push((at, ScalarRange { start: line.start + lead, end: line.end }));
     }
     for (at, note) in notes {

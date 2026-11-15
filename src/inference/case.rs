@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use legal_structure_model::{DetectionProfile, ScalarRange};
 use legal_structure_model::document::{Derivation, NodeKind, PrimaryRole, StructureNode};
 use legal_structure_model::text::{utf16_len, ScalarText};
+use crate::analysis::CitedText;
 use crate::Evidence;
 use super::{decimal_prefix, leading_ascii_space, lines, prose_block, Line, Marker, MarkerStyle};
 use super::headings::{heading_enumerator, heading_levels, heading_title_case, sentence_heading};
@@ -16,7 +17,7 @@ use super::paragraphs::{
 use legal_structure_model::layout::ends_on;
 
 pub(super) fn detect_case(
-    text: &ScalarText<'_>,
+    text: &CitedText<'_>,
     profile: DetectionProfile,
     report_start_page: Option<u32>,
     require_report_start: bool,
@@ -34,7 +35,11 @@ pub(super) fn detect_case(
             if !complete.is_empty() && !gapped_paragraphs(&complete) {
                 complete
             } else {
-                detect_paragraphs(text, DetectionProfile::CaseContiguousComplete, excluded, courtlistener, loose_markers)
+                let contiguous = detect_paragraphs(text, DetectionProfile::CaseContiguousComplete, excluded, courtlistener, loose_markers);
+                // A scanned text's count read through its garbled marks, a number or two lost, stands over an unbroken
+                // count less than half as long (its "117" to "123" read as they print).
+                let numbered = |blocks: &[StructureNode]| blocks.iter().filter(|block| block.kind == NodeKind::Paragraph).count();
+                if courtlistener && numbered(&contiguous) * 2 < numbered(&complete) { complete } else { contiguous }
             }
         }
         profile => detect_paragraphs(text, profile, excluded, courtlistener, loose_markers),
@@ -262,7 +267,7 @@ fn furniture(range: ScalarRange) -> StructureNode {
 
 pub(super) fn case_decimal_subheadings(
     evidence: &Evidence,
-    text: &ScalarText<'_>,
+    text: &CitedText<'_>,
     source_lines: &[Line<'_>],
     numeric: &[Marker],
 ) -> Vec<StructureNode> {
@@ -278,7 +283,7 @@ pub(super) fn case_decimal_subheadings(
         let lead = line.text.len() - line.text.trim_start().len();
         let mut range = ScalarRange { start: text.utf16_of_byte(line.byte_start + lead), end: text.utf16_of_byte(line.byte_start + lead + value.len()) };
         if evidence.clip_inference(NodeKind::Heading, range) != Some(range) { continue; }
-        if heading_enumerator(token) && heading_levels(value).is_some()
+        if heading_enumerator(token) && heading_levels(value, text).is_some()
             && heading_title_case(&value.split_whitespace().skip(1).collect::<Vec<_>>()) {
             let inner = token.trim_start_matches('(').trim_end_matches(['.', ')']);
             if enum_readings(inner).into_iter().flatten().any(|(family, _)| family != 0) {
@@ -297,7 +302,7 @@ pub(super) fn case_decimal_subheadings(
                 || !value.chars().any(char::is_alphabetic) || !heading_title_case(&words)
                 || words.first().is_some_and(|word| heading_enumerator(word)) { break; }
             let next = joined.split_whitespace().chain(words.iter().copied()).collect::<Vec<_>>().join(" ");
-            if heading_levels(&next).is_none() { break; }
+            if heading_levels(&next, text).is_none() { break; }
             let lead = continuation.text.len() - continuation.text.trim_start().len();
             let extended = ScalarRange { start: range.start,
                 end: text.utf16_of_byte(continuation.byte_start + lead + value.len()) };
@@ -311,7 +316,7 @@ pub(super) fn case_decimal_subheadings(
             line.start >= range.end && !line.text.trim().is_empty());
         let title = text.slice_utf16(marker.content_start..range.end).unwrap_or("").trim();
         let words = title.split_whitespace().collect::<Vec<_>>();
-        if heading_levels(&joined).is_some() && title.chars().any(char::is_alphabetic)
+        if heading_levels(&joined, text).is_some() && title.chars().any(char::is_alphabetic)
             && (heading_title_case(&words) || title.ends_with('?')
                 || following.is_some_and(|next| sentence_heading(title, next.text))) {
             supported.insert(marker.start);
@@ -336,8 +341,8 @@ pub(super) fn case_decimal_subheadings(
                 if !triple.iter().all(|marker| titles[&marker.start].start - marker.start == column) { return false; }
                 let title = text.slice_utf16(titles[&triple[1].start].start..titles[&triple[1].start].end).unwrap_or("");
                 if title.contains('\n') {
-                    heading_levels(&title.split_whitespace().collect::<Vec<_>>().join(" ")).is_some()
-                } else { heading_levels(title).is_some() }
+                    heading_levels(&title.split_whitespace().collect::<Vec<_>>().join(" "), text).is_some()
+                } else { heading_levels(title, text).is_some() }
             }).map(|triple| triple[1].start).collect::<HashSet<_>>();
             for marker in scope.into_iter().filter(|marker|
                 (supported.contains(&marker.start) || bracketed.contains(&marker.start))
@@ -351,7 +356,7 @@ pub(super) fn case_decimal_subheadings(
     result
 }
 
-pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a ScalarText<'a>) -> CaseSourceLayout<'a> {
+pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a CitedText<'a>) -> CaseSourceLayout<'a> {
     let mut result = CaseSourceLayout::default();
     if evidence.structure.provider != "courtlistener" {
         return result;
@@ -486,7 +491,7 @@ pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a ScalarText<'
             let line = text.value[byte..].split('\n').next().unwrap_or("");
             let Some((topic, _)) = line.split_once('.') else { return false; };
             let words = topic.split_whitespace().collect::<Vec<_>>();
-            topic.contains(':') && heading_levels(topic).is_some() && heading_title_case(&words)
+            topic.contains(':') && heading_levels(topic, text).is_some() && heading_title_case(&words)
         }).count();
         if topical < 3 || topical * 2 <= scope.len() { continue; }
         // A repeated early editorial topic catalogue does not number judicial paragraphs.
@@ -741,7 +746,7 @@ pub(super) fn case_source_layout<'a>(evidence: &Evidence, text: &'a ScalarText<'
     CaseSourceLayout { source_lines, markers: numeric, ..result }
 }
 
-pub(super) fn detect_case_headings(evidence: &Evidence, text: &ScalarText<'_>, layout: &CaseSourceLayout<'_>) -> Vec<StructureNode> {
+pub(super) fn detect_case_headings(evidence: &Evidence, text: &CitedText<'_>, layout: &CaseSourceLayout<'_>) -> Vec<StructureNode> {
     // This supplement has CourtListener corpus evidence; other providers retain their readers.
     if evidence.structure.provider != "courtlistener" {
         return Vec::new();
@@ -801,7 +806,7 @@ pub(super) fn detect_case_headings(evidence: &Evidence, text: &ScalarText<'_>, l
         let words = value.split_whitespace().collect::<Vec<_>>();
         let enumerated = words.first().is_some_and(|word| heading_enumerator(word));
         let bare = words.len() == 1 && enumerated;
-        let formal = heading_levels(value).is_some();
+        let formal = heading_levels(value, text).is_some();
         let uppercase = value
             .chars()
             .filter(|character| character.is_alphabetic())
@@ -924,7 +929,7 @@ pub(super) fn detect_case_headings(evidence: &Evidence, text: &ScalarText<'_>, l
 
 pub(super) fn detect_case_prose(
     evidence: &Evidence,
-    text: &ScalarText<'_>,
+    text: &CitedText<'_>,
     layout: &CaseSourceLayout<'_>,
     recovered: &[StructureNode],
 ) -> Vec<StructureNode> {
@@ -1045,14 +1050,18 @@ pub(super) fn detect_case_prose(
     }).collect::<Vec<_>>();
     let wrap_gap = if wrap_gaps.len() >= 3 { median(&mut wrap_gaps) as usize } else { 0 };
     let mut result = Vec::new();
+    // Where the opinion's first passage opens, among those the markup and the count already gave.
+    let first = recovered.iter().chain(&evidence.structure.nodes).filter(|block| matches!(block.kind, NodeKind::Paragraph | NodeKind::Prose | NodeKind::Quote))
+        .map(|block| block.range.start).min();
     let mut emit = |range: ScalarRange| {
         let value = text.slice_utf16(range.start..range.end).unwrap_or("");
         let (words, lowercase) = (word_count(value, true), lowercase_words(value));
-        // Prose a page break or a note cuts before its sentence ends is still prose.
-        if words >= 12 && lowercase >= 4
-            && (value.split_whitespace().any(sentence_end) || words >= 20 && lowercase >= 8)
-            && evidence.clip_inference(NodeKind::Prose, range) == Some(range)
-        {
+        // Prose a page break or a note cuts before its sentence ends is still prose. Past the opinion's first passage a
+        // short line in words is the opinion's too ("It is so ordered.", "Judgment reversed and remanded."); ahead of
+        // it only running prose is, a caption's lines being none.
+        let running = words >= 12 && lowercase >= 4 && (value.split_whitespace().any(sentence_end) || words >= 20 && lowercase >= 8);
+        let short = words >= 4 && lowercase >= 1 && (!result.is_empty() || first.is_some_and(|first| first < range.start));
+        if (running || short) && evidence.clip_inference(NodeKind::Prose, range) == Some(range) {
             result.push(prose_block(range));
         }
     };
@@ -1087,7 +1096,7 @@ pub(super) fn detect_case_prose(
         // An enumerator opening a line of running prose ("(1) In May 2018, a grand jury indicted
         // the appellant for") opens a paragraph, not a heading.
         let opening = enumerated && ordinary_line(line);
-        let title = !opening && !sentence_end(value) && heading_levels(value).is_some()
+        let title = !opening && !sentence_end(value) && heading_levels(value, text).is_some()
             && (enumerated || heading_title_case(&words) && !continued_wrap);
         let uppercase = !value.chars().any(char::is_lowercase);
         let columns = value.matches("  ").take(2).count() == 2 && lowercase_words(value) < 3;

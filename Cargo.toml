@@ -15,12 +15,13 @@ resolver = "2"
 
 # First-party dependencies are the independent main checkouts beside this repository.
 [workspace.dependencies]
-legal-citations = { path = "../common-law-cite/crates/legal-citations" }
+legal-citations = { path = "../common-law-cite/crates/legal-citations", default-features = false, features = ["canada"] }
 legal-text = { path = "../common-law-cite/crates/legal-text" }
 
 [features]
 # Every provider adapter is built by default; a jurisdiction's instantiation builds only its own.
-default = ["canada", "us", "uk", "journal", "local-pdf"]
+default = ["canada", "us", "uk", "journal", "all-jurisdictions"]
+all-jurisdictions = ["legal-citations?/uk", "legal-citations?/us", "legal-citations?/australia", "legal-citations?/new-zealand", "legal-citations?/ireland", "legal-citations?/hong-kong", "legal-citations?/singapore", "legal-citations?/south-africa"]
 canada = ["a2aj", "canlii"]
 us = ["courtlistener", "govinfo"]
 uk = ["tna", "govuk-et", "hansard"]
@@ -31,7 +32,6 @@ govinfo = []
 tna = []
 govuk-et = []
 hansard = []
-local-pdf = []
 # The structure engine: inference over any text, a provider's text read into a structure (provider_text), the case
 # and statute outlines, and the analysis the PDF engine installs.
 structure-inference = ["dep:legal-citations", "journal"]
@@ -54,6 +54,7 @@ regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 sha2 = "0.11"
+url = "2.5.8"
 ts-rs = { version = "12", optional = true, features = ["serde-json-impl"] }
 
 [build-dependencies]

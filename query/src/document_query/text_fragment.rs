@@ -2417,14 +2417,28 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
 
     /// A start term's words before its first seam (from_start), or an end term's after its last: a term that ends or
     /// begins at the word boundary a hyphen or a sentence's end makes, with no seam in it.
-    fn seamless_part(&self, term: &LexicalTerm, from_start: bool) -> Option<LexicalTerm> {
+    /// The terms share their first word (from_start) or their last, so the seam nearest it is found once for them all,
+    /// over the longest, and each term is cut there where the seam falls inside it.
+    fn seamless_parts(&self, terms: &[LexicalTerm], from_start: bool) -> Vec<Option<LexicalTerm>> {
         let words = self.replay.document.tokens();
         let hyphen_after = |index: usize| has_seam(self.replay.document.slice(words[index].start, words[index + 1].end));
+        let (Some(first), Some(last)) = (terms.iter().map(|term| term.first_word).min(), terms.iter().map(|term| term.last_word).max())
+            else { return Vec::new() };
+        let seam = if from_start { (first..last).find(|&index| hyphen_after(index)) } else { (first..last).rev().find(|&index| hyphen_after(index)) };
+        // Made once for each edge the terms keep (their start, or their end), which alone the part takes from a term.
+        let mut made = HashMap::<usize, Option<LexicalTerm>>::new();
+        terms.iter().map(|term| {
+            let cut = seam.filter(|&cut| term.first_word <= cut && cut < term.last_word)?;
+            made.entry(if from_start { term.start } else { term.end })
+                .or_insert_with(|| self.seamless_part(term, from_start, cut)).clone()
+        }).collect()
+    }
+
+    fn seamless_part(&self, term: &LexicalTerm, from_start: bool, cut: usize) -> Option<LexicalTerm> {
+        let words = self.replay.document.tokens();
         let (start, end, first_word, last_word) = if from_start {
-            let cut = (term.first_word..term.last_word).find(|&index| hyphen_after(index))?;
             (term.start, words[cut].end, term.first_word, cut)
         } else {
-            let cut = (term.first_word..term.last_word).rev().find(|&index| hyphen_after(index))?;
             (words[cut + 1].start, term.end, cut + 1, term.last_word)
         };
         let text = self.replay.fragment_spelling(self.replay.document.slice(start, end));
@@ -2503,8 +2517,8 @@ impl<'replay, 'document> MaximalPlanner<'replay, 'document> {
         // each that opens or closes on a quotation mark read without it: no term holds a seam.
         for from_start in [true, false] {
             let terms = if from_start { &heads } else { &tails };
-            let variants = terms.iter()
-                .flat_map(|term| [self.seamless_part(term, from_start), self.quote_free(term)])
+            let variants = terms.iter().zip(self.seamless_parts(terms, from_start))
+                .flat_map(|(term, seamless)| [seamless, self.quote_free(term)])
                 .flatten()
                 .filter(|term| !require_multiword_endpoints || term.first_word < term.last_word)
                 .collect::<Vec<_>>();

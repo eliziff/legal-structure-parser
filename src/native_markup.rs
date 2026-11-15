@@ -19,7 +19,9 @@ mod courtlistener;
 #[cfg(feature = "courtlistener")]
 pub(crate) mod titles;
 #[cfg(feature = "courtlistener")]
-pub(crate) use courtlistener::{answer_by_label, called, opens_on_reporter, plain_label, printed_calls};
+pub(crate) mod printed_pages;
+#[cfg(feature = "opinion")]
+pub(crate) use courtlistener::{answer_calls, plain_label};
 #[cfg(feature = "courtlistener")]
 pub(crate) use courtlistener::{cap_front_matter, declared_writing};
 
@@ -50,9 +52,6 @@ pub(crate) enum DocumentProvider {
     #[cfg(feature = "journal")]
     #[serde(rename = "journal")]
     Journal,
-    #[cfg(feature = "local-pdf")]
-    #[serde(rename = "local-pdf")]
-    LocalPdf,
 }
 
 impl DocumentProvider {
@@ -72,8 +71,6 @@ impl DocumentProvider {
             Self::Hansard => "hansard",
             #[cfg(feature = "journal")]
             Self::Journal => "journal",
-            #[cfg(feature = "local-pdf")]
-            Self::LocalPdf => "local-pdf",
         }
     }
 
@@ -147,6 +144,7 @@ pub struct NativeMarkupInput {
 
 impl NativeMarkupInput {
     /// A provider's record of one document: its text and its markup, nothing else known of it.
+    #[cfg(feature = "opinion")]
     pub(crate) fn of(provider: DocumentProvider, id: &str, text: String, markup: String) -> Self {
         Self {
             provider,
@@ -159,6 +157,17 @@ impl NativeMarkupInput {
             markup_ancestors: Vec::new(),
             scope: default_scope(),
         }
+    }
+
+    /// A publisher's record of one document (`provider` by its records' name; none for a reader not built in): its id,
+    /// page, text and markup, its citation, and whether it is an excerpt of the document `id` names.
+    pub fn published(provider: &str, id: &str, url: &str, text: String, markup: Option<String>, citation: Option<String>,
+        excerpt: bool) -> Option<Self> {
+        let provider = serde_json::from_value(serde_json::Value::String(provider.to_owned())).ok()?;
+        let scope = NativeMarkupScope { kind: if excerpt { ScopeKind::Excerpt } else { ScopeKind::Complete },
+            excerpt_of: excerpt.then(|| id.to_owned()), markup_serialization: MarkupSerialization::HtmlSource };
+        Some(Self { provider, id: id.to_owned(), url: Some(url.to_owned()), text, markup, citation,
+            page_citations: Vec::new(), markup_ancestors: Vec::new(), scope })
     }
 }
 
@@ -191,6 +200,8 @@ struct OpenRange {
 /// A star page whose label its text, still to come, prints.
 struct TextPage {
     page: StructureNode,
+    /// Where its span stands among the open tags: the page waits for its number until that span closes.
+    depth: usize,
     citation_index: Option<usize>,
     page_scheme: Option<String>,
 }
@@ -234,19 +245,16 @@ fn contains_ascii_word(value: &str, word: &str, insensitive: bool) -> bool {
     })
 }
 
-fn decode_entities(value: &str) -> Cow<'_, str> {
-    decode_attribute(value)
-}
-
 type Attributes<'a> = Vec<(&'a str, Cow<'a, str>)>;
 
-fn decode_attribute(value: &str) -> Cow<'_, str> {
+/// Markup's text with its character entities read: the XML five, a space, curly single quotes and numbered characters.
+pub fn decode_entities(value: &str) -> Cow<'_, str> {
     if !value.contains('&') {
         return Cow::Borrowed(value);
     }
     static ENTITIES: OnceLock<Regex> = OnceLock::new();
     ENTITIES
-        .get_or_init(|| Regex::new(r"(?i)&(?:nbsp|amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);").unwrap())
+        .get_or_init(|| Regex::new(r"(?i)&(?:nbsp|amp|lt|gt|quot|apos|[lr]squo|#\d+|#x[0-9a-f]+);").unwrap())
         .replace_all(value, |capture: &regex::Captures<'_>| {
             let body = &capture[0][1..capture[0].len() - 1];
             let character = match body.to_ascii_lowercase().as_str() {
@@ -256,6 +264,8 @@ fn decode_attribute(value: &str) -> Cow<'_, str> {
                 "gt" => Some('>'),
                 "quot" => Some('"'),
                 "apos" => Some('\''),
+                "lsquo" => Some('\u{2018}'),
+                "rsquo" => Some('\u{2019}'),
                 _ => body
                     .strip_prefix("#x")
                     .or_else(|| body.strip_prefix("#X"))
@@ -335,7 +345,7 @@ fn parse_attributes<'a>(raw: &'a str, attributes: &mut Attributes<'a>) {
             }
             (start, at)
         };
-        let value = decode_attribute(&raw[start..end]);
+        let value = decode_entities(&raw[start..end]);
         attributes.push((name, value));
     }
 }
@@ -1024,7 +1034,7 @@ fn render_markup_in_context<'a>(
             observe_footnote_marker(&mut open, &rendered, &mut observed_note_markers);
             let label = page_value(&rendered);
             if text_page.is_some() && label.bytes().any(|byte| byte.is_ascii_digit()) {
-                let TextPage { mut page, citation_index, page_scheme } = text_page.take().unwrap();
+                let TextPage { mut page, citation_index, page_scheme, .. } = text_page.take().unwrap();
                 page.label = page_label_of(&label);
                 page.aliases = page_aliases(&label, citation_index, page_citations, page_scheme.as_deref());
                 page_starts.push((page, None));
@@ -1207,7 +1217,7 @@ fn render_markup_in_context<'a>(
                     }
                 }
             }
-            if tag == "span" {
+            if tag == "span" && text_page.as_ref().is_some_and(|page| tag_stack.len() <= page.depth) {
                 text_page = None;
             }
             // Typed owners close with their actual source element, including
@@ -1342,7 +1352,7 @@ fn render_markup_in_context<'a>(
             page.markup_tag = Some("span".to_owned());
             page.range.start = position;
             page.series = page_series(citation_index, page_scheme.as_deref());
-            text_page = Some(TextPage { page, citation_index, page_scheme });
+            text_page = Some(TextPage { page, depth, citation_index, page_scheme });
         }
         if identity
             .as_ref()

@@ -9,15 +9,23 @@ description = "What the products build on the structure engine: the A2AJ citator
 default = []
 canada = ["legal-structure/canada"]
 canlii = ["legal-structure/canlii"]
-citator = ["legal-structure/citator", "dep:legal-citations", "dep:scraper", "dep:ego-tree"]
+citator = ["legal-structure/citator", "dep:legal-citations", "dep:scraper", "dep:ego-tree", "dep:strsim", "dep:url", "dep:indexmap"]
 document-query = ["legal-structure/document-query", "dep:legal-document-query"]
 structure-inference = ["legal-structure/structure-inference"]
 # A document of A2AJ's, read from its API's records or from the local store (src/a2aj.rs).
-a2aj-reader = ["canada", "structure-inference", "citator", "canlii", "dep:url"]
-a2aj-store = ["a2aj-reader", "document-query", "dep:rusqlite"]
+a2aj-reader = ["canada", "structure-inference", "citator", "canlii"]
+# The engine's read-only SQLite files, each connection kept while its copy of the file is (src/sqlite.rs).
+sqlite = ["dep:rusqlite"]
+a2aj-store = ["a2aj-reader", "document-query", "sqlite"]
 # The note-up graph built from the local A2AJ store (src/citator_graph.rs, the citator-graph bin).
 citator-graph = ["citator", "document-query", "a2aj-store", "structure-inference"]
+# The journals database, its search index and the final contracts' registry (src/journal_store.rs).
+journal-store = ["sqlite", "citator", "document-query", "legal-structure/journal"]
 quote-verification = ["document-query"]
+# Decisions publishers abroad hold, read from their markup (src/foreign_case.rs).
+# CourtListener's US decisions: its bulk store, else its API (src/courtlistener.rs).
+courtlistener = ["sqlite", "citator", "legal-structure/opinion"]
+foreign-case = ["citator", "legal-structure/native-markup", "legal-structure/uk", "legal-structure/us"]
 # The TypeScript declarations of its types the engine serves (native/legal-structure-node's export-types).
 binding-types = ["dep:ts-rs", "legal-structure/binding-types", "legal-structure-model/binding-types", "legal-document-query?/binding-types", "legal-citations?/binding-types"]
 
@@ -30,16 +38,23 @@ regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 sha2 = "0.11"
+# A Retry-After's HTTP date (src/http.rs).
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 unicode-normalization = "0.1"
 ts-rs = { version = "12", optional = true, features = ["serde-json-impl"] }
 rusqlite = { version = "0.40.2", features = ["bundled"], optional = true }
 url = { version = "2.5", optional = true }
+# A brief's review keeps its occurrences and authorities in the order the brief cites them (brief.rs).
+indexmap = { version = "2", features = ["serde"], optional = true }
 # A CourtListener page's markup parsed as a browser parses it (courtlistener_page.rs), as legal-citations reads HTML.
 scraper = { version = "0.27", default-features = false, optional = true }
 ego-tree = { version = "0.11", optional = true }
+# One edit distance: a brief's misread docket names (brief.rs).
+strsim = { version = "0.11", optional = true }
 
-[build-dependencies]
-sha2 = "0.11"
+# The engine's requests (src/http.rs); the page's engine sends through its host instead.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = "3"
 
 [[bin]]
 name = "citator-graph"

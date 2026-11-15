@@ -17,8 +17,6 @@ mod text_notes;
 mod citator;
 #[cfg(all(feature = "citator", feature = "document-query"))]
 mod text_units;
-#[cfg(all(feature = "citator", feature = "canlii"))]
-mod canlii;
 mod filing;
 pub use filing::{filing_cover, FiledBy, FilingCover, PartyGroup};
 use legal_structure_model::document;
@@ -42,13 +40,10 @@ pub mod judgment;
 #[cfg(feature = "structure-inference")]
 mod provider_text;
 mod tables;
-#[cfg(feature = "structure-inference")]
 #[cfg(feature = "citator")]
 pub use citator::*;
 #[cfg(all(feature = "citator", feature = "document-query"))]
 pub use text_units::text_units;
-#[cfg(all(feature = "citator", feature = "canlii"))]
-pub use canlii::{canlii_case_url, canlii_court_route, canlii_law_url};
 pub use document::{
     provision_mark, CitedAuthority, ContinuationKind, Derivation, DocumentStructure, ManuscriptEdits, MarkupAncestor,
     MarkupElement, NodeKind, NodeReading, PrimaryRole, SourceContinuation, SourceFragment, SourceJoin, StructureNode,
@@ -69,7 +64,7 @@ pub use legal_structure_model::layout;
 pub use locator::{bare_label, collapse_labels, expand_labels, normalize_compact_numbered_section_locator, normalize_section_locator, parse_ordinal};
 pub mod statute;
 #[cfg(feature = "native-markup")]
-pub use native_markup::{analyze_native_markup, NativeMarkupInput};
+pub use native_markup::{analyze_native_markup, decode_entities, NativeMarkupInput};
 #[cfg(feature = "structure-inference")]
 pub use provider_text::{
     provider_text_document_structure, provider_text_outline_reading, windows_1252_punctuation, ProviderPage, ProviderSectionMap, ProviderTextInput,

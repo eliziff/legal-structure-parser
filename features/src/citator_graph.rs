@@ -17,6 +17,7 @@ use legal_structure::{
     caselaw_citation_lookup_key, classify_citator_excerpt, pair_numbered_footnotes, provider_text_document_structure,
     NodeKind, DocumentQuery, ProviderTextInput,
 };
+use legal_citations::reference_names::{cited_names as citations_names, read_citations};
 use legal_citations::{Authority, Citation, Form, Options, PinpointKind};
 use regex::Regex;
 use rusqlite::{params, params_from_iter, types::ValueRef, Connection, OpenFlags};
@@ -74,10 +75,10 @@ fn key_of(citation: &str) -> Option<String> {
     caselaw_citation_lookup_key(citation).ok().filter(|key| !key.is_empty())
 }
 
-/// The engine's case citations in `text`, with the name each form counts as. Only full citations count, so short forms
-/// are not resolved (a fifth of the engine's time).
-fn case_citations(text: &str) -> Vec<Citation> {
-    legal_citations::extract(text, &Options { resolve: false, ..Options::default() }).into_iter()
+/// The engine's case citations among a text's (`read_citations`, short forms unresolved: only full citations count),
+/// with the name each form counts as.
+fn case_citations(citations: Vec<Citation>) -> Vec<Citation> {
+    citations.into_iter()
         .filter(|citation| citation.form == Form::Full && citation.authority == Authority::Case && citation.key.is_some())
         .collect()
 }
@@ -156,13 +157,16 @@ fn excerpt(units: &[u16], start: usize, end: usize) -> String {
     collapsed.chars().take_while(|character| { taken += character.len_utf16(); taken <= EXCERPT_MAX }).collect()
 }
 
-/// A decision's citations of other cases: the edges it gives, and how many cited itself.
-fn case_edges(case: &Case) -> (Vec<Edge>, u64, u64) {
-    let citations = case_citations(&case.text);
+/// A decision's citations, read once: the edges its citations of other cases give, how many cited itself, and the
+/// names its statute citations give (`cited_names`, which a reading of the decision takes in place of reading it again).
+fn case_edges(case: &Case) -> (Vec<Edge>, u64, u64, Vec<String>) {
+    let read = read_citations(&case.text);
+    let names = citations_names(&read);
+    let citations = case_citations(read);
     let total = citations.len() as u64;
     let citations: Vec<&Citation> = citations.iter().filter(|citation| !case.own.contains(citation.key.as_ref().unwrap())).collect();
     let own = total - citations.len() as u64;
-    if citations.is_empty() { return (Vec::new(), total, own); }
+    if citations.is_empty() { return (Vec::new(), total, own, names); }
     // The structure engine's numbered paragraphs, by character range; a citation is in the one holding its start.
     let paragraphs: Vec<(i64, usize, usize)> = case.input.clone().and_then(|input| provider_text_document_structure(input).ok()).map(|structure| {
         DocumentQuery::new().blocks(&structure, Some(NodeKind::Paragraph))
@@ -199,7 +203,7 @@ fn case_edges(case: &Case) -> (Vec<Edge>, u64, u64) {
             excerpt: excerpt(&text, start, end),
         }
     }).collect();
-    (edges, total, own)
+    (edges, total, own, names)
 }
 
 /// A curated citation list, in the scanned text's language, else the other; an empty list is the provider's.
@@ -219,7 +223,7 @@ fn build_cases(graph: &Connection, options: &GraphOptions, summary: &mut GraphSu
     let store_path = options.store.clone();
     let skipped = Arc::new(Mutex::new((0u64, 0u64)));
     let counted = Arc::clone(&skipped);
-    let mut add_case = graph.prepare("INSERT INTO case_doc VALUES (?, ?, ?, ?, ?, ?, ?, ?)")?;
+    let mut add_case = graph.prepare("INSERT INTO case_doc VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")?;
     let mut add_edge = graph.prepare("INSERT INTO edge (cited_key, cited_citation, case_id, paragraph, text_offset, pinpoints,
         excerpt) VALUES (?, ?, ?, ?, ?, ?, ?)")?;
     let mut add_provider = graph.prepare("INSERT INTO provider_edge (case_id, direction, citation, citation_key) VALUES (?, ?, ?, ?)")?;
@@ -265,17 +269,19 @@ fn build_cases(graph: &Connection, options: &GraphOptions, summary: &mut GraphSu
         }
         Ok(())
     }, case_edges, |case, result| {
-        let (edges, total, own) = result.unwrap_or_else(|error| {
-            summary.failures += 1;
-            eprintln!("{} {}: {error}", case.dataset, case.citation.as_deref().unwrap_or_default());
-            (Vec::new(), 0, 0)
-        });
+        let (edges, total, own, names) = result.map(|(edges, total, own, names)| (edges, total, own, Some(names)))
+            .unwrap_or_else(|error| {
+                summary.failures += 1;
+                eprintln!("{} {}: {error}", case.dataset, case.citation.as_deref().unwrap_or_default());
+                (Vec::new(), 0, 0, None)
+            });
         summary.cases_indexed += 1;
         summary.case_citation_occurrences += total;
         summary.self_citations_skipped += own;
         summary.edges += edges.len() as u64;
+        let names = names.map(|names| serde_json::to_string(&names)).transpose()?;
         add_case.execute(params![case.sequence, case.store_id, case.citation, case.name, case.dataset, case.date, case.url,
-            case.language])?;
+            case.language, names])?;
         for edge in &edges {
             add_edge.execute(params![edge.key, edge.citation, case.sequence, edge.paragraph, edge.offset as i64,
                 edge.pinpoints, edge.excerpt])?;
@@ -419,7 +425,7 @@ fn build_commentary(graph: &Connection, options: &GraphOptions, summary: &mut Gr
 const SCHEMA: &str = "
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE case_doc (id INTEGER PRIMARY KEY, store_id INTEGER NOT NULL, citation TEXT, name TEXT, court TEXT, date TEXT,
-  url TEXT, language TEXT NOT NULL);
+  url TEXT, language TEXT NOT NULL, cited_names TEXT);
 CREATE TABLE edge (id INTEGER PRIMARY KEY, cited_key TEXT NOT NULL, cited_citation TEXT NOT NULL,
   case_id INTEGER NOT NULL REFERENCES case_doc(id), paragraph INTEGER, text_offset INTEGER NOT NULL, pinpoints TEXT,
   excerpt TEXT NOT NULL);
@@ -438,6 +444,7 @@ CREATE TABLE commentary (id INTEGER PRIMARY KEY, article_id INTEGER NOT NULL REF
 const INDEXES: &str = "
 CREATE INDEX edge_cited_idx ON edge(cited_key, case_id, text_offset);
 CREATE INDEX case_key_key_idx ON case_key(citation_key);
+CREATE INDEX case_doc_store_idx ON case_doc(store_id, language);
 CREATE INDEX provider_edge_key_idx ON provider_edge(citation_key, direction);
 CREATE INDEX provider_edge_case_idx ON provider_edge(case_id);
 INSERT INTO authority_metric SELECT cited_key, COUNT(DISTINCT case_id),
@@ -494,12 +501,19 @@ pub fn graph_path(store: &Path) -> PathBuf { store.with_file_name("noteup.sqlite
 
 // ---- Queries -----------------------------------------------------------------------------------------------------
 
-/// Read-only connections to graphs, kept while their copy of the file is: unmapped, as the builder replaces the file.
-static GRAPHS: Mutex<Vec<(PathBuf, crate::a2aj_store::Stamp, Connection)>> = Mutex::new(Vec::new());
-
 /// Runs `work` on a read-only connection to the graph; None where no graph is built.
 fn with_graph<T>(path: &Path, work: impl FnOnce(&Connection) -> GraphResult<T>) -> GraphResult<Option<T>> {
-    crate::a2aj_store::kept(&GRAPHS, path, |path| Ok(crate::a2aj_store::open_read_only(path)?), |connection, _| work(connection))
+    Ok(crate::sqlite::read_unmapped(path, |connection, _| work(connection).map_err(|error| error.to_string()))?)
+}
+
+/// The names a store decision's statute citations give (`reference_names::cited_names`), as the graph read them when it
+/// read the decision's citations, in the language of the text it read; none where the graph is not built, or did not
+/// read that text.
+pub fn cited_names(store: &Path, id: i64, language: Language) -> Option<Vec<String>> {
+    let names = with_graph(&graph_path(store), |graph| Ok(graph
+        .prepare_cached("SELECT cited_names FROM case_doc WHERE store_id = ? AND language = ?")?
+        .query_row(params![id, language.code()], |row| row.get::<_, Option<String>>(0)).ok().flatten()));
+    serde_json::from_str(&names.ok()???).ok()
 }
 
 /// A court's place in the hierarchy, from the citation engine's registry: 5 apex, 4 appellate, 3 superior or

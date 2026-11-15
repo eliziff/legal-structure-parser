@@ -10,14 +10,12 @@ use legal_structure::{
     JS_WHITESPACE_CLASS,
 };
 use regex::Regex;
+use crate::sqlite::sql;
 use rusqlite::{Connection, OptionalExtension};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
-pub fn sql(error: rusqlite::Error) -> String {
-    error.to_string()
-}
 
 /// The fields of a document of the store that are text.
 pub fn fields(document: &Document<StoreRow>, columns: &[&str]) -> Result<Vec<String>, String> {

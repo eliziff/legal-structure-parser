@@ -3,6 +3,7 @@ use crate::{
     Derivation, DetectionProfile, Evidence, DocumentStructure, EngineError,
     NodeKind, ScalarRange, ScalarText, Scope, ScopeKind, StructureNode,
 };
+use crate::analysis::CitedText;
 use aho_corasick::{AhoCorasick, AhoCorasickKind};
 use regex::Regex;
 use serde::Deserialize;
@@ -522,7 +523,7 @@ pub(crate) fn provider_text_reading(
     };
     let (text, claims) = provider_source(std::mem::take(&mut input.text), &ordered);
     let mut evidence = evidence(&input, text, claims);
-    let coordinates = ScalarText::new(&evidence.structure.text);
+    let coordinates = CitedText::new(&evidence.structure.text);
     if let (true, Some(map)) = (has_text, &input.section_map) {
         evidence.structure.nodes = provider_claims(&coordinates, map);
     }

@@ -9,7 +9,7 @@ use crate::{citation_occurrences_in_text, sentence_end};
 /// first sentence rather than standing as one.
 pub fn text_units(text: &str, sentences: bool) -> Vec<[usize; 2]> {
     let citations: Vec<(usize, usize)> = if sentences {
-        citation_occurrences_in_text(text).into_iter().map(|cite| (cite.start, cite.end)).collect()
+        citation_occurrences_in_text(text, 0).into_iter().map(|cite| (cite.start, cite.end)).collect()
     } else {
         Vec::new()
     };

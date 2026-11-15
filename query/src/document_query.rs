@@ -380,6 +380,9 @@ pub struct DocumentQuery {
     source_page: OnceLock<TextFragmentPage>,
     /// Where the names of legal references end in the document's text (UTF-16, sorted).
     legal_reference_ends: OnceLock<Vec<usize>>,
+    /// The names the document's own statute citations give, where its reading already holds them (a store decision's,
+    /// read when the citator read it): its text is then not read for citations again.
+    cited_names: Option<Vec<String>>,
 }
 
 impl DocumentQuery {
@@ -389,12 +392,18 @@ impl DocumentQuery {
         self.source_page.get_or_init(|| TextFragmentPage::new(page()))
     }
 
+    /// A query of a document whose reading holds the names its statute citations give.
+    pub fn with_cited_names(cited_names: Option<Vec<String>>) -> Self {
+        Self { cited_names, ..Self::default() }
+    }
+
     /// Reads where the names of legal references a publisher links end in the document's text, with `ends` (byte
-    /// offsets in that text) on the first call: a plan for a page that links them breaks its terms there.
-    pub fn read_legal_reference_ends(&self, document: &DocumentStructure, ends: impl FnOnce(&str) -> Vec<usize>) {
+    /// offsets in that text, given the names its citations give where known) on the first call: a plan for a page that
+    /// links them breaks its terms there.
+    pub fn read_legal_reference_ends(&self, document: &DocumentStructure, ends: impl FnOnce(&str, Option<&[String]>) -> Vec<usize>) {
         self.legal_reference_ends.get_or_init(|| {
             let text = self.text(document);
-            let mut bytes = ends(text.value);
+            let mut bytes = ends(text.value, self.cited_names.as_deref());
             bytes.sort_unstable();
             let (mut units, mut at) = (0, 0);
             bytes.into_iter().filter(|&byte| text.value.is_char_boundary(byte)).map(|byte| {

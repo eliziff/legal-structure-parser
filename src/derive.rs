@@ -1,7 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use legal_structure_model::document::{Derivation, DocumentStructure, NodeKind, StructureNode};
-use legal_structure_model::text::ScalarText;
-use crate::{inference, Evidence};
+#[cfg(feature = "structure-inference")]
+use crate::analysis::CitedText;
+#[cfg(feature = "structure-inference")]
+use crate::inference;
+use crate::Evidence;
 
 /// The structure from a reader's evidence: its own nodes, with what inference finds (or the blocks it was given in
 /// place of inference), each node's parent resolved from the place (or id) it names: a node's label or alias, a
@@ -10,7 +13,7 @@ use crate::{inference, Evidence};
 pub(crate) fn derive(mut evidence: Evidence, precomputed: Option<Vec<StructureNode>>) -> DocumentStructure {
     #[cfg(feature = "structure-inference")]
     let inferred = precomputed.unwrap_or_else(|| {
-        inference::inferred_blocks(&evidence, &ScalarText::new(&evidence.structure.text))
+        inference::inferred_blocks(&evidence, &CitedText::new(&evidence.structure.text))
     });
     #[cfg(not(feature = "structure-inference"))]
     let inferred = precomputed.unwrap_or_default();

@@ -21,10 +21,6 @@ pub fn compact_provision_label(value: &str) -> String {
         .collect()
 }
 
-pub fn normalize_numbered_section_locator(value: &str) -> String {
-    normalize_compact_numbered_section_locator(&compact_provision_label(value))
-}
-
 /// A section's place as a link names it ("sec5(2)", "secIV"), or a heading's by its title ("sectitle:general
 /// provisions"), from a citation's locator ("s. 5 (2)", "section IV", "sec5(2)"); empty where it names neither.
 pub fn normalize_section_locator(locator: &str) -> String {

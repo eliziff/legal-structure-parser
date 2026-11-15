@@ -1,6 +1,7 @@
 //! Formal and sentence headings, as a judgment's text prints them.
 
 //GLOB super
+use crate::analysis::CitedText;
 use legal_structure_model::layout::ends_on;
 
 /// Where an outline's enumerator opening a text ends, with the space after it: "IV. ", "2.", "c) ", "(a) ", "5.2. ". A Roman
@@ -23,7 +24,7 @@ pub(super) fn level_opens(value: &str) -> bool {
         .is_some_and(|character| character.is_uppercase() || character.is_numeric())
 }
 
-pub(super) fn heading_level(words: &[&str], enumerated: bool) -> bool {
+pub(super) fn heading_level(words: &[&str], enumerated: bool, heads_paragraph: bool) -> bool {
     if words.is_empty() || (!enumerated && words.len() > 12) {
         return false;
     }
@@ -47,8 +48,10 @@ pub(super) fn heading_level(words: &[&str], enumerated: bool) -> bool {
         return false;
     }
     // (A sentence ending on a colon introduces what follows: "Bird C.J.B.C. concluded his reasons as follows:", "The
-    // warrant recited that:"; "Reasons for judgment:" heads.)
-    last.ends_with('?') || heading_title_case(words) || enumerated || words.len() <= if last.ends_with(':') { 3 } else { 6 }
+    // warrant recited that:"; "Reasons for judgment:" heads. Over a numbered paragraph of the decision, "Breach of the
+    // Tribunal's order:" / "[45] The ...", a line ending on a colon heads what it stands over: it introduces no quotation.)
+    last.ends_with('?') || heading_title_case(words) || enumerated || last.ends_with(':') && heads_paragraph
+        || words.len() <= if last.ends_with(':') { 3 } else { 6 }
 }
 
 /// Every longer word (four letters or more) opens on a capital.
@@ -85,24 +88,24 @@ pub(super) fn trim_leading_parenthetical(value: &str) -> &str {
     }
 }
 
-pub(crate) fn formal_heading(value: &str) -> bool {
-    heading_levels(value).is_some()
+pub(crate) fn formal_heading(value: &str, text: &CitedText<'_>) -> bool {
+    heading_levels(value, text).is_some()
 }
 
 /// A formal heading's path, a level at a time, each with its enumerator ("IV. Analysis A. The
 /// Right ..." is "IV. Analysis" then "A. The Right ..."), as A2AJ runs a decision's heading path
-/// onto one line; None where the value is no formal heading.
-pub(crate) fn heading_levels(value: &str) -> Option<Vec<String>> {
-    heading_levels_within(value, false).or_else(|| cited_heading(value).then(|| vec![value.trim().to_owned()]))
+/// onto one line; None where the value is no formal heading. `text` holds the value's citations.
+pub(crate) fn heading_levels(value: &str, text: &CitedText<'_>) -> Option<Vec<String>> {
+    heading_levels_within(value, false, false).or_else(|| cited_heading(value, text).then(|| vec![value.trim().to_owned()]))
 }
 
 /// A heading naming a decision by its citation ("(1) British Columbia Supreme Court (Ehrcke J.), 2008 BCSC 1726, 90
 /// B.C.L.R. (4th) 177", a judgment's history): read with each citation one word, its points and brackets no level's.
-fn cited_heading(value: &str) -> bool {
-    if value.len() > 240 || !value.bytes().any(|byte| byte.is_ascii_digit()) {
+fn cited_heading(value: &str, text: &CitedText<'_>) -> bool {
+    if value.len() > 240 || !crate::analysis::may_cite(value) {
         return false;
     }
-    let mut spans = crate::analysis::citation_spans(value);
+    let mut spans = text.spans(value);
     if spans.is_empty() {
         return false;
     }
@@ -113,7 +116,7 @@ fn cited_heading(value: &str) -> bool {
             masked.replace_range(span.range.clone(), "Citation");
         }
     }
-    heading_levels_within(&masked, false).is_some()
+    heading_levels_within(&masked, false, false).is_some()
 }
 
 /// [`heading_levels`] for a path the paragraph number after it on its line vouches for: each
@@ -121,10 +124,10 @@ fn cited_heading(value: &str) -> bool {
 /// Was there abuse of authority in the assessment of the merit criteria, particularly at the
 /// interview and informal discussion stages? 45 Subsection ...").
 pub(crate) fn joined_heading_levels(value: &str) -> Option<Vec<String>> {
-    heading_levels_within(value, true)
+    heading_levels_within(value, true, false)
 }
 
-pub(super) fn heading_levels_within(value: &str, joined: bool) -> Option<Vec<String>> {
+pub(super) fn heading_levels_within(value: &str, joined: bool, heads_paragraph: bool) -> Option<Vec<String>> {
     let heading = trim_leading_parenthetical(value);
     let excluded = if joined { "![]{}" } else { ";![]{}" };
     if heading.is_empty()
@@ -141,7 +144,7 @@ pub(super) fn heading_levels_within(value: &str, joined: bool) -> Option<Vec<Str
     for (index, word) in words.iter().enumerate() {
         let opener = |next: &&str| !heading_enumerator(next) && level_opens(next);
         if heading_enumerator(word) && words.get(index + 1).is_some_and(opener) {
-            if start < index && !heading_level(&words[start..index], enumerated) {
+            if start < index && !heading_level(&words[start..index], enumerated, heads_paragraph) {
                 return None;
             }
             if index > level {
@@ -152,7 +155,7 @@ pub(super) fn heading_levels_within(value: &str, joined: bool) -> Option<Vec<Str
             enumerated = true;
         }
     }
-    if !heading_level(&words[start..], enumerated) {
+    if !heading_level(&words[start..], enumerated, heads_paragraph) {
         return None;
     }
     levels.push(words[level..].join(" "));
@@ -212,11 +215,15 @@ pub(crate) fn after_marker(following: &str) -> &str {
 
 /// A line standing between paragraphs read as the heading of what follows it (`following`): its path
 /// a level at a time ("IV. Analysis A. The Right ..."), or a sentence heading as one level.
-pub(crate) fn heading_between(line: &str, following: &str) -> Option<Vec<String>> {
+pub(crate) fn heading_between(line: &str, following: &str, text: &CitedText<'_>) -> Option<Vec<String>> {
     if !may_head(line) {
         return None;
     }
-    heading_levels(line).or_else(|| sentence_heading(line, after_marker(following)).then(|| vec![line.to_owned()]))
+    // (Over a numbered paragraph, "[11] The court ...", the line heads what follows: a colon then introduces no quotation.)
+    let over_paragraph = after_marker(following).len() < following.trim_start().len();
+    heading_levels(line, text)
+        .or_else(|| over_paragraph.then(|| heading_levels_within(line, false, true)).flatten())
+        .or_else(|| sentence_heading(line, after_marker(following)).then(|| vec![line.to_owned()]))
 }
 
 pub(crate) fn sentence_heading(value: &str, following: &str) -> bool {

@@ -71,3 +71,112 @@ pub fn footnote_propositions(units: &[AuthorityTextUnit], context: QuoteContext)
     }).collect();
     FootnotePropositions { propositions, body_starts, anchors: read.calls }
 }
+
+/// The quotations a brief's units give to check, and the citation parts each is checked against: read with the marked
+/// quotations' reader (quote verification).
+#[cfg(feature = "quote-verification")]
+mod quotations {
+    use super::*;
+
+    /// How far past a quotation a citation in its own unit may start and still be the quotation's (UTF-16 units).
+    const QUOTED_CITATION_REACH: usize = 400;
+
+    /// A unit's citations as its quotations' sources are read from them: where each of its citations starts, with the span
+    /// its authority's citation covers (a quotation inside one is the cited work's title, no quotation), and the parts its
+    /// text splits into as a note's citation parts. UTF-16 offsets in the unit's text.
+    #[derive(Deserialize, Default)]
+    #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+    pub struct UnitCitations {
+        pub occurrences: Vec<UnitCitation>,
+        pub parts: Vec<[usize; 2]>,
+    }
+
+    #[derive(Deserialize)]
+    #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+    pub struct UnitCitation {
+        pub start: usize,
+        pub cited: Option<[usize; 2]>,
+    }
+
+    /// A citation part a quotation is checked against: its unit's place among those given, the part's place among the
+    /// unit's, and the unit's citations starting in it that cite for the quotation, by their place among the unit's.
+    #[derive(Serialize)]
+    #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+    pub struct QuotationCandidate {
+        pub unit: usize,
+        pub part: usize,
+        pub occurrences: Vec<usize>,
+    }
+
+    /// A quotation to check: its unit's place among those given, the quoted words and where they stand in the unit's text
+    /// (UTF-16), and the citation parts it is checked against.
+    #[derive(Serialize)]
+    #[cfg_attr(feature = "binding-types", derive(ts_rs::TS))]
+    pub struct PropositionQuotation {
+        pub unit: usize,
+        pub start: usize,
+        pub end: usize,
+        pub text: String,
+        pub candidates: Vec<QuotationCandidate>,
+    }
+
+    /// The quotations to check in the units, each with the citation parts it is checked against (the quote and proposition
+    /// model). A quotation in the body belongs to the note whose call ends the passage it is in, the next call after it,
+    /// and only where the note's proposition (`context`) holds it; it is checked against that note's parts. One with no
+    /// note after it, or in a note's own text, is checked against the parts of its own unit that a citation starting
+    /// within reach after it cites. A quotation inside a citation's span is that citation's quoted title. With `text_only`,
+    /// only the body's quotations are read, none a note holds. `citations` is each unit's, in the units' order.
+    pub fn proposition_quotations(units: &[AuthorityTextUnit], citations: &[UnitCitations], context: QuoteContext,
+        text_only: bool) -> Vec<PropositionQuotation> {
+        let read = footnote_propositions(units, context);
+        let passages = read.propositions.iter().map(|proposition| (proposition.footnote_id, proposition))
+            .collect::<std::collections::HashMap<_, _>>();
+        let none = UnitCitations::default();
+        let cited = |index: usize| citations.get(index).unwrap_or(&none);
+        let mut quotations = Vec::new();
+        for (index, unit) in units.iter().enumerate() {
+            if text_only && unit.kind != "body" {
+                continue;
+            }
+            let own = cited(index);
+            for quote in crate::quote_verification::marked_quote_spans(&unit.text) {
+                if own.occurrences.iter().any(|item| item.cited.is_some_and(|[start, end]| start <= quote.start && quote.end <= end)) {
+                    continue;
+                }
+                let offset = read.body_starts.get(index).copied().flatten();
+                let end = offset.unwrap_or(0) + quote.end;
+                let anchor = offset.and_then(|_| read.anchors.iter().find(|&&(_, at)| at >= end));
+                if let Some(passage) = anchor.and_then(|(note, _)| passages.get(note)) {
+                    if end - quote.end + quote.start < passage.start || end > passage.end {
+                        continue;
+                    }
+                }
+                // The note after the quotation, by its id and where its call stands in the quotation's unit.
+                let next = anchor.map(|&(note, at)| (note, at - offset.unwrap_or(0)));
+                let notes = next.map(|(note, _)| units.iter().enumerate()
+                    .filter(|(_, item)| item.kind == "footnote" && item.footnote_id.map(|id| id as u64) == Some(note))
+                    .map(|(at, _)| at).collect::<Vec<_>>()).unwrap_or_default();
+                // The quotation's own unit's citations that start within reach after it, before the next note's call.
+                let following = own.occurrences.iter().enumerate().filter(|(_, item)| item.start >= quote.end
+                    && item.start - quote.end <= QUOTED_CITATION_REACH && next.is_none_or(|(_, call)| item.start < call))
+                    .map(|(at, _)| at).collect::<Vec<_>>();
+                let sources = if notes.is_empty() { vec![index] } else { notes };
+                let candidates = sources.into_iter().flat_map(|source| {
+                    let theirs = cited(source);
+                    let citing = if source == index { following.clone() } else { (0..theirs.occurrences.len()).collect() };
+                    theirs.parts.iter().enumerate().filter_map(|(part, &[from, to])| {
+                        let occurrences = citing.iter().copied()
+                            .filter(|&at| (from..to).contains(&theirs.occurrences[at].start)).collect::<Vec<_>>();
+                        (source != index || to > quote.end && from <= quote.end + QUOTED_CITATION_REACH && !occurrences.is_empty())
+                            .then_some(QuotationCandidate { unit: source, part, occurrences })
+                    }).collect::<Vec<_>>()
+                }).collect();
+                quotations.push(PropositionQuotation { unit: index, start: quote.start, end: quote.end, text: quote.text,
+                    candidates });
+            }
+        }
+        quotations
+    }
+}
+#[cfg(feature = "quote-verification")]
+pub use quotations::*;

@@ -309,6 +309,48 @@ pub fn marked_quote_spans(text: &str) -> Vec<MarkedQuoteSpan> {
         .collect()
 }
 
+/// The marks a quotation can be set in, opening or closing.
+const QUOTE_MARKS: [char; 10] = ['"', '\u{201c}', '\u{201d}', '\u{00ab}', '\u{00bb}', '\u{201e}', '\'', '\u{2018}', '\u{2019}',
+    '\u{201a}'];
+
+/// `text` in the quotation marks `raw` (the quotation as the document sets it, its marks included) opens and closes with;
+/// as it is where `raw` has none. A mark `text` already opens or closes with stays, and only the missing one is added.
+pub fn quoted_as_written(text: &str, raw: &str) -> String {
+    let mark = |value: Option<char>| value.filter(|mark| QUOTE_MARKS.contains(mark));
+    let raw = raw.trim_matches(javascript_whitespace);
+    let marks = (raw.chars().count() >= 2).then(|| (mark(raw.chars().next()), mark(raw.chars().next_back())));
+    let value = text.trim_matches(javascript_whitespace);
+    let Some((Some(open), Some(close))) = marks else { return value.to_owned() };
+    if value.is_empty() {
+        return String::new();
+    }
+    match (mark(value.chars().next()).is_some(), mark(value.chars().next_back()).is_some()) {
+        (true, true) => value.to_owned(),
+        (true, false) => format!("{value}{close}"),
+        (false, true) => format!("{open}{value}"),
+        (false, false) => format!("{open}{value}{close}"),
+    }
+}
+
+/// Where `quotes` stand in `text` (UTF-16 offsets): each quotation's every occurrence, each searched for after the last,
+/// then the spans in order, a span inside or across an earlier one left out, the longer of two at one place kept.
+pub fn quote_spans(text: &str, quotes: &[String]) -> Vec<[usize; 2]> {
+    let text = text.encode_utf16().collect::<Vec<_>>();
+    let mut spans = Vec::new();
+    for quote in quotes.iter().map(|quote| quote.trim_matches(javascript_whitespace)).filter(|quote| !quote.is_empty()) {
+        let quote = quote.encode_utf16().collect::<Vec<_>>();
+        let mut from = 0;
+        while let Some(at) = (from + quote.len() <= text.len()).then(|| text[from..].windows(quote.len())
+            .position(|window| window == quote.as_slice())).flatten().map(|at| at + from) {
+            spans.push([at, at + quote.len()]);
+            from = at + quote.len();
+        }
+    }
+    spans.sort_by(|a, b| a[0].cmp(&b[0]).then(b[1].cmp(&a[1])));
+    let mut cursor = 0;
+    spans.into_iter().filter(|&[start, end]| (start >= cursor).then(|| cursor = end).is_some()).collect()
+}
+
 /// A citation of a text, outside its marked quotations, that pinpoints paragraphs: its lookup key and every paragraph
 /// it names, a range written out (one reversed or spanning more than 59 past its first, as written).
 #[cfg(feature = "citator")]
